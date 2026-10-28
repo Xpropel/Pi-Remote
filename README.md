@@ -107,10 +107,13 @@ cd ui && npx tsc -b && npm run build
 
 Make sure tests pass before submitting, and that the change contains no `.env` files, tokens, private keys, or real session content.
 
-## Authors
+## Credits
 
-- **Muse** (Meta)
-- **DeepSeek**
+- **Xpropel**: originator of the idea, project lead
+- **Muse** (Meta): UI design
+- **DeepSeek**: code implementation
+- **Claude**: project planning
+- **ChatGPT**: form design
 
 ## Star History
 

@@ -107,10 +107,13 @@ cd ui && npx tsc -b && npm run build
 
 提交代码前请确保测试通过，且不包含 `.env`、token、私钥或真实会话内容。
 
-## 作者
+## 贡献
 
-- **Muse**（Meta）
-- **DeepSeek**
+- **Xpropel**：idea 开创者、项目主导
+- **Muse**（Meta）：UI 设计
+- **DeepSeek**：代码执行
+- **Claude**：项目规划
+- **ChatGPT**：表单设计
 
 ## Star 趋势
 
