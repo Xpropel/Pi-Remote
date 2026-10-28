@@ -48,7 +48,13 @@ The full protocol definition is in [readyUI/data-interface.md](readyUI/data-inte
 
 ## Quick start
 
-Requirements: Node ≥ 22.18, and pi installed globally.
+**Prerequisite: install pi on your device first.** Pi-Remote is a companion tool for [pi](https://github.com/earendil-works/pi) and does not include pi itself. Before using Pi-Remote, install pi on the machine you want to control and make sure it runs:
+
+```bash
+npm install -g @earendil-works/pi-coding-agent
+```
+
+Requirements: Node ≥ 22.18.
 
 The following runs the full loop on one machine, no server involved:
 

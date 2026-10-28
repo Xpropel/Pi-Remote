@@ -48,7 +48,13 @@ Pi-Remote 通过 pi 官方扩展 API 接入正在运行的 pi 会话，不修改
 
 ## 快速开始
 
-环境要求：Node ≥ 22.18，本机已全局安装 pi。
+**前置条件：先在自己的设备上安装 pi。** Pi-Remote 是 [pi](https://github.com/earendil-works/pi) 的配套工具，本身不包含 pi。使用本项目前，请先在你的设备上安装 pi 并确认能正常运行：
+
+```bash
+npm install -g @earendil-works/pi-coding-agent
+```
+
+环境要求：Node ≥ 22.18。
 
 以下为本机闭环（不依赖服务器）：
 
