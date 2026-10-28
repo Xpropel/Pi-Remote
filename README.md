@@ -7,7 +7,7 @@
 <p align="center">Multi-device sync for the pi terminal: mirror a live session to the browser, view it, send messages, and run commands remotely.</p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Xpropel/pi-remote" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Xpropel/Pi-Remote" alt="License"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22.18-339933" alt="Node"></a>
   <a href="https://github.com/Xpropel/Pi-Remote/stargazers"><img src="https://img.shields.io/github/stars/Xpropel/Pi-Remote" alt="Stars"></a>
 </p>
@@ -127,7 +127,7 @@ Make sure tests pass before submitting, and that the change contains no `.env` f
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Xpropel/pi-remote&type=Date)](https://star-history.com/#Xpropel/pi-remote&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Xpropel/Pi-Remote&type=Date)](https://star-history.com/#Xpropel/Pi-Remote&Date)
 
 ## License
 
