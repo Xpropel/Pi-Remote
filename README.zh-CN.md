@@ -7,7 +7,7 @@
 <p align="center">pi 的多端同步工具：将会话从本机终端实时镜像到浏览器，远程查看、发消息、执行命令。</p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Xpropel/pi-remote" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Xpropel/Pi-Remote" alt="License"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22.18-339933" alt="Node"></a>
   <a href="https://github.com/Xpropel/Pi-Remote/stargazers"><img src="https://img.shields.io/github/stars/Xpropel/Pi-Remote" alt="Stars"></a>
 </p>
@@ -127,7 +127,7 @@ cd ui && npx tsc -b && npm run build
 
 ## Star 趋势
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Xpropel/pi-remote&type=Date)](https://star-history.com/#Xpropel/pi-remote&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Xpropel/Pi-Remote&type=Date)](https://star-history.com/#Xpropel/Pi-Remote&Date)
 
 ## 许可证
 
