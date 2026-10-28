@@ -115,7 +115,6 @@ cd ui && npx tsc -b && npm run build
 | UI 设计 | Muse（Meta） |
 | 代码执行 | DeepSeek |
 | 项目规划 | Claude、ChatGPT |
-| 表单设计 | ChatGPT |
 
 ## Star 趋势
 

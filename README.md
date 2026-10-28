@@ -115,7 +115,6 @@ Make sure tests pass before submitting, and that the change contains no `.env` f
 | UI design | Muse (Meta) |
 | Code implementation | DeepSeek |
 | Project planning | Claude, ChatGPT |
-| Form design | ChatGPT |
 
 ## Star History
 
