@@ -1,10 +1,28 @@
 English | [简体中文](README.zh-CN.md)
 
 # pi-remote — multi-device sync for the pi terminal
+[![GitHub stars](https://img.shields.io/github/stars/Xpropel/pi-remote?style=social)](https://github.com/Xpropel/pi-remote/stargazers)
+[![License](https://img.shields.io/github/license/Xpropel/pi-remote)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.18-339933)](package.json)
+[![Last commit](https://img.shields.io/github/last-commit/Xpropel/pi-remote)](https://github.com/Xpropel/pi-remote/commits/main)
+
 
 Without changing pi's source code or hijacking the terminal: using pi's official **extension API** (`pi.on()` events + `pi.sendUserMessage()` injection),
 it **mirrors in real time** the pi session running in your local terminal to a phone/another computer's browser. From the remote side you can send messages and commands to the same session —
 the remote experience is equivalent to the terminal (model switching, thinking level, compaction, session tree, queue, usage and cost — nothing is missed).
+
+
+<p align="center">
+  <img src="assets/readme/desktop-session-list.png" alt="Pi-Remote desktop UI" width="100%">
+</p>
+<p align="center"><sub>Demo data from the built-in development gallery — no real sessions or credentials.</sub></p>
+
+## At a glance
+
+- **Your terminal stays yours** — pi runs unchanged on your machine; Pi-Remote attaches through its official extension API.
+- **One session, every screen** — mirror the live session to a phone or another browser, and send messages or commands back into the same session.
+- **No separate agent runtime** — the relay only routes JSON frames; model credentials and source code stay on your device.
+- **Unified UI, six skins** — Cursor / Claude / Codex looks in dark and light, with a shared settings system and a mobile-first shell.
 
 ```
 Local machine (Windows)                                          Cloud server (<your-server-ip>)
@@ -55,7 +73,7 @@ Local machine (Windows)                                          Cloud server (<
 | `ui/src/components/kit/` | Base components ported from the Cursor 3 Agents Window (read-only `--cw-*` tokens) |
 | `web/` | Build output of `ui` (**do not edit by hand**; generated and deployed by `deploy-web.ps1`) |
 
-See [ui/README.md](ui/README.md) for entry points, directories, tokens, the development gallery, and the visual comparison workflow.
+See [ui/README.md](ui/README.md) for entry points, directories, tokens, the development gallery, and the development gallery.
 
 ### D. Shared: contracts and docs (`readyUI/` contracts + `DOC/` technical designs) — not part of the deployment path
 
@@ -82,7 +100,7 @@ D:\pi-myself\
 ├─ web/                          # frontend build (deployed to the server, served by relay on the same 7002 port)
 ├─ readyUI/                      # contracts and review docs (the frontend team develops against data-interface.md)
 ├─ DOC/                          # technical design and protocol deltas (10 backend / 20 local device / 30 ops / 50 protocol / 71 protocol v4 / 76 settings write bridge / device-harness / session-registry)
-├─ test/                         # npm test (1,200+ cases): store / relay protocol / frontend sync and command channel / extension pure functions / attach windows / device roster / launch and deployment scripts / new UI components and pure functions (test/pi-*.test.mjs) / source structure checks (pi-structure)
+├─ test/                         # npm test (2,000+ cases): store / relay protocol / frontend sync and command channel / extension pure functions / attach windows / device roster / launch and deployment scripts / new UI components and pure functions (test/pi-*.test.mjs) / source structure checks (pi-structure)
 ├─ deploy/                       # deployment/ops: see deploy/README.md
 │  ├─ sync-extension.ps1         #   extension → ~/.pi/agent/extensions/ (MD5 verification)
 │  ├─ deploy-relay.ps1           #   relay → cloud server (MD5 verification + restart + loopback check)
@@ -101,7 +119,7 @@ D:\pi-myself\
 ├─ .pi/plan/                     # local: initial task planning
 ├─ logs/                         # runtime: logs (gitignore)
 ├─ .env / .env.example           # local configuration (.env is gitignored; .env.example is the template)
-└─ package.json                  # npm run relay (start local integration testing) / npm test / npm run test:e2e
+└─ package.json                  # npm run relay (start local integration testing) / npm test
 ```
 
 ## 3. How a single piece of data travels
@@ -116,6 +134,20 @@ D:\pi-myself\
 | Disconnect / relay restart | After reconnecting, the extension uses head/tail hashes to fetch only the messages from the downtime; page reconnects pass `since:{rev,seq}` and receive only incremental snapshots |
 | "Opening a session" on the phone | UI sends `harness_start{cwd or sessionId}` → relay validates the device allowlist/index → commands the attach window to spawn `start-pi.cmd` → the new room appears in `room_list` → the frontend subscribes automatically (not browsing history, but actually starting a session) |
 | Device online/offline | attach window connects/disconnects → `device_register` updates the in-memory online bit + a full `session_manifest` → the frontend roster and the "N ended" collapsible section update in real time |
+
+
+## Screenshots
+
+<table>
+<tr>
+<td width="50%"><img src="assets/readme/desktop-conversation.png" alt="Conversation with tool output and session rail" width="100%"><br><sub>Conversation, tool output, and the status rail</sub></td>
+<td width="50%"><img src="assets/readme/desktop-settings.png" alt="Unified settings v2" width="100%"><br><sub>Unified settings — 11 pages × six skins</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="assets/readme/mobile-list.png" alt="Mobile session list" width="100%"><br><sub>Mobile session list (list / drawer modes)</sub></td>
+<td width="50%"><em>More screenshots are generated from the development gallery; the gallery contains demo fixtures only.</em></td>
+</tr>
+</table>
 
 ## 4. Quick start
 
@@ -178,12 +210,19 @@ npm test            # unit/protocol tests, no pi or model required: store, relay
 
 ## 7. Current status (everything empirically verified)
 
-- ✅ In-repo tests: `npm test` (**1,200+ cases**: store / relay protocol / frontend sync and command channel / transcript / extension pure functions / attach windows / device roster / launch rules on three platforms / start-pi.sh / deployment script consistency / new UI components and pure functions / source structure checks; run on both macOS and Windows, with a few platform-specific cases skipped on each) + `npm run test:e2e` (13 scenarios: streaming merge, tool output, large-image placeholder, frame size, since deltas, busy steer, interrupt, compaction, remote bash length limit, command acceptance/dedupe, long sessions, relay restart resumption)
+- ✅ In-repo tests: `npm test` (**2,000+ cases**: store / relay protocol / frontend sync and command channel / transcript / extension pure functions / attach windows / device roster / launch rules on three platforms / start-pi.sh / deployment script consistency / new UI components and pure functions / source structure checks; run on both macOS and Windows, with a few platform-specific cases skipped on each) + `（端到端测试工具不随本公开仓提供）
 - ✅ Early one-off E2E scripts (not in the repository): 26 commands executed for real one by one (real set_model switch round-trip, official compact return, new_session/fork/clone actually taking effect, bash switch gating, live usage_state pushes...)
 - ✅ Full cloud path: local pi → cloud relay → public viewer; review history from relay's in-memory hot cache; conversation bodies are not written to disk by default, and setting `PI_REMOTE_PERSIST_TRANSCRIPTS=1` enables persistence and restart recovery
 - ✅ New UI: desktop / mobile layouts (switch automatically by width, with a width-limited conversation column on tablets), light and dark themes, command palette (⌘K), slash / @ menus, model switching, stop button, approval cards, terminal / changes / files panes, click an image to open the lightbox
 - ✅ Frontend/backend type/static checks: `tsc -b` 0 errors, `oxlint` 0 errors
 - 📋 Deferred: true virtualization for long sessions (currently mounts the latest 300 entries at a time; click "show N earlier entries" to mount another page — see `ui/src/pi/model/transcriptWindow.ts`), reload_runtime, enabling strict in `ui/tsconfig.app.json`, extracting `usageText` into a React-free module for unit testing — see `ui/README.md`
+
+
+## Star history
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Xpropel/pi-remote&type=Date)](https://star-history.com/#Xpropel/pi-remote&Date)
+
+<sub>Auto-generated by star-history.com as the repository gains stars.</sub>
 
 ## License
 

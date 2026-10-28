@@ -1,10 +1,28 @@
 [English](README.md) | 简体中文
 
 # pi-remote —— pi 终端多端同步
+[![GitHub stars](https://img.shields.io/github/stars/Xpropel/pi-remote?style=social)](https://github.com/Xpropel/pi-remote/stargazers)
+[![License](https://img.shields.io/github/license/Xpropel/pi-remote)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.18-339933)](package.json)
+[![Last commit](https://img.shields.io/github/last-commit/Xpropel/pi-remote)](https://github.com/Xpropel/pi-remote/commits/main)
+
 
 不改 pi 源码、不劫持终端：用 pi 官方**扩展 API**（`pi.on()` 事件 + `pi.sendUserMessage()` 注入），
 把本机终端里正在进行的 pi 会话**实时镜像**到手机/其他电脑浏览器，远程端可向同一会话发消息、发命令——
 远程体验与终端等价（模型切换、思考级别、压缩、会话树、队列、用量费用一个不漏）。
+
+
+<p align="center">
+  <img src="assets/readme/desktop-session-list.png" alt="Pi-Remote 桌面界面" width="100%">
+</p>
+<p align="center"><sub>界面来自内置开发画廊的演示数据，不含真实会话或凭据。</sub></p>
+
+## 项目速览
+
+- **终端仍是你的终端**——pi 在本机原样运行，Pi-Remote 通过官方扩展 API 接入，不改 pi 源码。
+- **一个会话，多块屏幕**——把正在运行的会话实时镜像到手机或其他电脑的浏览器，并能把消息/命令发回同一个会话。
+- **不需要额外 Agent 运行时**——relay 只转发 JSON 帧；模型凭据与源码始终留在你的设备上。
+- **统一界面，六套皮肤**——Cursor / Claude / Codex 三套风格 × 深/浅，共享设置系统，另有移动优先外壳。
 
 ```
 本机（Windows）                                    云服务器（<你的服务器IP>）
@@ -55,7 +73,7 @@
 | `ui/src/components/kit/` | 从 Cursor 3 Agents Window 复刻搬来的基础组件（只读 `--cw-*` 令牌） |
 | `web/` | `ui` 的构建产物（**不手改**，由 `deploy-web.ps1` 生成并部署） |
 
-入口、目录、令牌、开发画廊和对图方法见 [ui/README.md](ui/README.md)。
+入口、目录、令牌与开发画廊见 [ui/README.md](ui/README.md)。
 
 ### D. 共享：契约与文档（`readyUI/` 契约 + `DOC/` 分工设计）—— 不在部署链路里
 
@@ -82,7 +100,7 @@ D:\pi-myself\
 ├─ web/                          # 前端构建产物（部署到服务器，relay 7002 同口托管）
 ├─ readyUI/                      # 契约与审查文档（前端团队按 data-interface.md 开发）
 ├─ DOC/                          # 分工设计与协议增量（10 后端 / 20 本机 / 30 运维 / 50 协议 / 71 协议 v4 / 76 设置写桥 / device-harness / session-registry）
-├─ test/                         # npm test（1200 余项）：store / relay 协议 / 前端同步与命令通道 / 扩展纯函数 / attach 窗口 / 设备名册 / 启动与部署脚本 / 新界面部件与纯函数（test/pi-*.test.mjs）/ 源码结构检查（pi-structure）
+├─ test/                         # npm test（2000 余项）：store / relay 协议 / 前端同步与命令通道 / 扩展纯函数 / attach 窗口 / 设备名册 / 启动与部署脚本 / 新界面部件与纯函数（test/pi-*.test.mjs）/ 源码结构检查（pi-structure）
 ├─ deploy/                       # 部署运维：见 deploy/README.md
 │  ├─ sync-extension.ps1         #   扩展 → ~/.pi/agent/extensions/（MD5 校验）
 │  ├─ deploy-relay.ps1           #   relay → 云服务器（MD5 校验 + 重启 + 回环验证）
@@ -101,7 +119,7 @@ D:\pi-myself\
 ├─ .pi/plan/                     # 本地：最初的任务规划
 ├─ logs/                         # 运行时：日志（gitignore）
 ├─ .env / .env.example           # 本机配置（.env gitignore；.env.example 是模板）
-└─ package.json                  # npm run relay（本机联调启动）/ npm test / npm run test:e2e
+└─ package.json                  # npm run relay（本机联调启动）/ npm test
 ```
 
 ## 3. 一条数据的旅程
@@ -116,6 +134,20 @@ D:\pi-myself\
 | 断线 / relay 重启 | 扩展重连后按首尾 hash 只补停机期间的消息；页面重连带 `since:{rev,seq}` 只收增量快照 |
 | 手机上"打开一个会话" | UI 发 `harness_start{cwd 或 sessionId}` → relay 校验设备白名单/索引 → 命令 attach 窗口 spawn `start-pi.cmd` → 新房间进 `room_list` → 前端自动订阅（不是翻历史，是真拉起） |
 | 设备上/下线 | attach 窗口连上/断开 → `device_register` 改内存 online 位 + 全量 `session_manifest` → 前端名册与"已结束 N"折叠实时更新 |
+
+
+## 界面截图
+
+<table>
+<tr>
+<td width="50%"><img src="assets/readme/desktop-conversation.png" alt="会话与工具输出" width="100%"><br><sub>会话、工具输出与右侧状态栏</sub></td>
+<td width="50%"><img src="assets/readme/desktop-settings.png" alt="统一设置页" width="100%"><br><sub>统一设置页——11 页 × 六套皮肤</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="assets/readme/mobile-list.png" alt="手机会话列表" width="100%"><br><sub>手机会话列表（列表式 / 抽屉式）</sub></td>
+<td width="50%"><em>更多截图由内置开发画廊生成；画廊只使用演示数据。</em></td>
+</tr>
+</table>
 
 ## 4. 快速开始
 
@@ -178,12 +210,19 @@ npm test            # 单元/协议测试，不需要 pi 和模型：store、rel
 
 ## 7. 当前状态（全部经过实证）
 
-- ✅ 仓库内测试：`npm test`（**1200 余项**：store / relay 协议 / 前端同步与命令通道 / transcript / 扩展纯函数 / attach 窗口 / 设备名册 / 三平台拉起规则 / start-pi.sh / 部署脚本一致性 / 新界面部件与纯函数 / 源码结构检查；在 macOS 与 Windows 上都跑过，各自跳过另一平台专属的几项）+ `npm run test:e2e`（13 个场景：流式合并、工具输出、大图占位、帧体积、since 增量、忙时 steer、中断、压缩、远程 bash 限长、命令受理/去重、长会话、relay 重启续传）
+- ✅ 仓库内测试：`npm test`（**2000 余项**：store / relay 协议 / 前端同步与命令通道 / transcript / 扩展纯函数 / attach 窗口 / 设备名册 / 三平台拉起规则 / start-pi.sh / 部署脚本一致性 / 新界面部件与纯函数 / 源码结构检查；在 macOS 与 Windows 上都跑过，各自跳过另一平台专属的几项）+ `（端到端测试工具不随本公开仓提供）
 - ✅ 早期一次性 E2E 脚本（不在仓库）：26 个命令逐一真实执行（set_model 真实切换往返、compact 官方返回、new_session/fork/clone 真实生效、bash 开关门控、usage_state 实时推送…）
 - ✅ 云上全链路：本机 pi → 云端 relay → 公网 viewer；relay 内存热缓存回看；对话正文默认不落盘，设 `PI_REMOTE_PERSIST_TRANSCRIPTS=1` 才持久化并支持重启恢复
 - ✅ 新界面：桌面 / 手机两种布局（按宽度自动切换，平板对话列限宽）、深浅主题、命令面板（⌘K）、斜杠 / @ 菜单、模型切换、停止按钮、审批卡、终端 / 改动 / 文件 pane、点图打开灯箱
 - ✅ 前后端类型/静态检查：`tsc -b` 0 error、`oxlint` 0 error
 - 📋 暂缓项：长会话真正的虚拟化渲染（目前一次挂最近 300 条，往上点「显示更早的 N 条」再挂一页，见 `ui/src/pi/model/transcriptWindow.ts`）、reload_runtime、`ui/tsconfig.app.json` 开 strict、`usageText` 抽到无 React 依赖的模块以便单测——见 `ui/README.md`
+
+
+## Star 趋势
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Xpropel/pi-remote&type=Date)](https://star-history.com/#Xpropel/pi-remote&Date)
+
+<sub>随着仓库获得 Star，由 star-history.com 自动更新。</sub>
 
 ## 许可证
 
