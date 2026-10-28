@@ -9,6 +9,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Xpropel/pi-remote" alt="License"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22.18-339933" alt="Node"></a>
+  <a href="https://github.com/Xpropel/Pi-Remote/stargazers"><img src="https://img.shields.io/github/stars/Xpropel/Pi-Remote" alt="Stars"></a>
 </p>
 
 <p align="center"><a href="README.md">English</a> | 简体中文</p>
