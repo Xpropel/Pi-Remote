@@ -109,11 +109,13 @@ Make sure tests pass before submitting, and that the change contains no `.env` f
 
 ## Credits
 
-- **Xpropel**: originator of the idea, project lead
-- **Muse** (Meta): UI design
-- **DeepSeek**: code implementation
-- **Claude**: project planning
-- **ChatGPT**: form design
+| Role | Contributor |
+| --- | --- |
+| Originator of the idea, project lead | Xpropel |
+| UI design | Muse (Meta) |
+| Code implementation | DeepSeek |
+| Project planning | Claude |
+| Form design | ChatGPT |
 
 ## Star History
 
