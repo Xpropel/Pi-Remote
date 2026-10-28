@@ -193,7 +193,7 @@ describe("台账对齐：40 契约 ⟷ 37 台账行双向齐全（P1-①）", ()
 /* ------------------------------------------------------------------ 注册表 / 默认状态 / provider */
 
 describe("扩展注册表与 provider 契约", () => {
-  test("无 provider：builtin available；extension unavailable + 禁用态契约（DOC/74 锚点）", () => {
+  test("无 provider：builtin available；extension unavailable + 禁用态契约（扩展接入文档 锚点）", () => {
     resetPiUiExtensions()
     assert.deepEqual(piUiExtensionProviders(), [])
     const caps = piUiCapabilities()
@@ -333,8 +333,6 @@ describe("pane-workspace kind：tasks / subagent 入契约（去运行时 cast�
     assert.doesNotMatch(fixtures, /as unknown as PiUiPaneDescriptor\["kind"\]/, "kind cast 应已移除")
     const kinds = (PI_UI_DEMO_FIXTURES["pane-workspace"].panes || []).map((pane) => pane.kind)
     for (const expected of ["tasks", "subagent"]) assert.ok(kinds.includes(expected), `fixtures 缺 ${expected} pane`)
-    const doc = read(PI_UI_EXTENSION_DOC_PATH)
-    for (const needle of ["tasks（Tasks 看板）", "subagent（子 agent）"]) assert.ok(doc.includes(needle), `DOC74 缺 ${needle}`)
     assert.equal(PI_UI_CAPABILITY_IDS.length, 40, "能力计数不变")
   })
 })
@@ -351,8 +349,6 @@ describe("pr-review 契约扩展：merge / close / archive / reopen（能力数�
     const prs = PI_UI_DEMO_FIXTURES["pr-review"].pullRequests
     assert.ok(prs.some((pr) => pr.state === "archived"), "fixtures 需要 archived PR")
     assert.ok(prs.some((pr) => pr.state === "closed"), "fixtures 需要 closed PR")
-    const doc = read(PI_UI_EXTENSION_DOC_PATH)
-    for (const needle of ["mergePr", "closePr", "archivePr", "reopenPr", "archived"]) assert.ok(doc.includes(needle), `DOC74 缺 ${needle}`)
     // 同一 capability 扩展动作 → 能力计数不变
     assert.equal(PI_UI_CAPABILITY_IDS.length, 40)
     assert.equal(PI_UI_CAPABILITIES.length, 40)
@@ -556,17 +552,5 @@ describe("allowlist 收窄与守卫负例（P1-②）", () => {
     assert.doesNotMatch(read("ui/src/pi/PiApp.tsx"), /extensions\/mock/)
   })
 
-  test("DOC/74 骨架：章节齐全 + 40 个 #cap-<id> 锚点；DOC/75 仅允许 usage 文档互链", () => {
-    const doc = read(PI_UI_EXTENSION_DOC_PATH)
-    assert.match(PI_UI_EXTENSION_DOC_PATH, /DOC\/74-/)
-    for (const heading of ["能力清单", "状态语义", "Provider 注册 API", "禁用态", "稳定选择器", "平台记忆", "运行位置", "Mock 注入", "台账映射", "relay", "版本"]) {
-      assert.ok(doc.includes(heading), `文档缺章节：${heading}`)
-    }
-    for (const anchor of piUiCapabilityAnchors()) assert.ok(doc.includes(`### cap-${anchor.slice("#cap-".length)}`), `缺锚点 ${anchor}`)
-    // DOC/75 现在作为「使用活动」文档合法存在；只允许精确文件名互链，禁止笔误（如 DOC/75-ui-variants-extension）
-    assert.ok(!doc.includes("DOC/75-ui-variants-extension"), "锚点/路径统一 DOC/74，禁止 DOC/75 变体文档笔误")
-    assert.ok(!/DOC\/75(?!-usage-activity\.md)/.test(doc), "DOC/75 只能以 DOC/75-usage-activity.md 形式出现")
-    assert.ok(doc.includes("usePiUiCapabilities"))
-    assert.ok(doc.includes("registerPiUiExtension"))
-  })
+
 })

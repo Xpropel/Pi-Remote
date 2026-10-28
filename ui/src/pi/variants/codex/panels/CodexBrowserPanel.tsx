@@ -5,7 +5,7 @@ import { useCodexCapability } from "../logic/capability"
 
 /**
  * Browser 面板（CX-PANEL-07 / [X-图6③][X-§5]）：地址栏 + 标签页 + 页面画布 + 点选评论入口。
- * 能力 `browser-pane`：生产无 provider → 完整 UI 但禁用（地址栏只读、按钮 disabled、DOC/74 说明）；
+ * 能力 `browser-pane`：生产无 provider → 完整 UI 但禁用（地址栏只读、按钮 disabled、扩展接入文档 说明）；
  * dev mock 注入 → 标签/打开/关闭走契约 actions（openUrl/activateTab/closeTab）并联动状态。
  */
 export function CodexBrowserPanel({ onClose }: { onClose?: () => void }) {

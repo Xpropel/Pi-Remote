@@ -372,7 +372,7 @@ export function CodexSettingsPage({
                     stage={!permissions.interactive}
                     onToggle={() => {
                       if (!permissions.interactive) {
-                        relay.notify(`权限档位需要 permission-tiers 扩展：${permissions.view?.reason ?? "未接入"}（见 ${permissions.view?.docsPath ?? "DOC/74"}）`, "warn")
+                        relay.notify(`权限档位需要 permission-tiers 扩展：${permissions.view?.reason ?? "未接入"}（见 ${permissions.view?.docsPath ?? "扩展接入文档"}）`, "warn")
                         return
                       }
                       setPermissionChoice(row.id)

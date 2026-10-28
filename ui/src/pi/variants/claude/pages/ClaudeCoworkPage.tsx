@@ -82,7 +82,7 @@ export function ClaudeCoworkPage({ p }: { p: PiContainerProps }) {
           </p>
         ))}
         {(caps.dataOf("artifacts")?.artifacts ?? []).length === 0 ? (
-          <p className="claude-list-empty">{caps.statusOf("artifacts") === "unavailable" ? "本机 pi 未提供产出物数据（DOC/74 #cap-artifacts）；deck 预览需扩展产物能力" : "还没有产出物。"}</p>
+          <p className="claude-list-empty">{caps.statusOf("artifacts") === "unavailable" ? "本机 pi 未提供产出物数据（扩展接入文档 #cap-artifacts）；deck 预览需扩展产物能力" : "还没有产出物。"}</p>
         ) : null}
       </section>
       {head.cwd ? (

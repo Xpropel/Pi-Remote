@@ -128,7 +128,7 @@ export interface PiUiCapabilityMeta {
   group: PiUiCapabilityGroup
   /** 一句话说明（文档 + 禁用态原因） */
   description: string
-  /** 用户文档锚点（`DOC/74-ui-variants-extension.md#cap-<id>`） */
+  /** 用户文档锚点（`扩展接入文档.md#cap-<id>`） */
   docAnchor: string
   /** 初始状态：生产默认全部 `unavailable`（未来 relay / 扩展探测可覆盖） */
   defaultStatus: PiUiCapabilityStatus

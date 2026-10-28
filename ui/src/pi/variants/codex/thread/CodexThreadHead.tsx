@@ -6,7 +6,7 @@ import { copyToClipboard, roomDevice, roomTitle } from "../logic/view"
 
 /**
  * 线程头（[X-图1] / CX-THREAD-06）：标题 + 设备 + ⋯ 菜单 + Open / Commit（首发动作）。
- * Open 走 `file-editor` 能力、Commit 走 `git-commit` 能力：生产无 provider 时禁用并解释（DOC/74 锚点）；
+ * Open 走 `file-editor` 能力、Commit 走 `git-commit` 能力：生产无 provider 时禁用并解释（扩展接入文档 锚点）；
  * dev mock 注入后可点（动作由扩展 provider 承接）。呈现自写。
  */
 export function CodexThreadHead({ p }: { p: VariantAppProps }) {

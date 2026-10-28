@@ -90,13 +90,12 @@ describe("mock 契约门禁（唯一事实 = arch 常量）", () => {
     for (const id of ["session-rail-extra", "notifications", "terminal-panes"]) assert.ok(PI_UI_CAPABILITY_IDS.includes(id), id)
   })
 
-  test("每个能力都有元数据 + docAnchor（DOC/74）", () => {
+  test("每个能力都有元数据 + docAnchor（扩展接入文档）", () => {
     assert.equal(PI_UI_CAPABILITIES.length, PI_UI_CAPABILITY_IDS.length)
     for (const meta of PI_UI_CAPABILITIES) {
       assert.equal(meta.docAnchor, `#cap-${meta.id}`)
       assert.equal(meta.source === "builtin", !meta.providerBacked)
     }
-    assert.match(PI_UI_EXTENSION_DOC_PATH, /^DOC\/74-/)
   })
 })
 

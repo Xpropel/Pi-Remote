@@ -9,7 +9,7 @@ import { devicesOfPlatformTab, platformCountsOf } from "../model/platformUi"
 /**
  * P4 W1（台账 §3 / CL-SHELL-05）：标题栏一级设备平台标签 `全部 / Mac / Windows / Linux`（标签文案取契约
  * `PI_UI_PLATFORM_LABEL`）。点平台：单设备直选、多设备弹平台内设备选择（读 prefs.deviceByPlatform 记住上次）、
- * 无设备平台 aria-disabled + 引导浮层（还没有 X 设备 / 配对新设备后即可使用 / 配对入口 / DOC/74 接入说明）。
+ * 无设备平台 aria-disabled + 引导浮层（还没有 X 设备 / 配对新设备后即可使用 / 配对入口 / 扩展接入文档 接入说明）。
  * 选择写契约 prefs：`uiPlatformTab` + `deviceByPlatform` + `deviceFilter`（与侧栏细筛同源）。
  */
 export function ClaudePlatformTabs({ p }: { p: PiContainerProps }) {
@@ -100,7 +100,7 @@ export function ClaudePlatformTabs({ p }: { p: PiContainerProps }) {
                   <Plus size={13} strokeWidth={1.75} aria-hidden />
                   配对新设备…
                 </button>
-                <p className="claude-plat-pop-hint">如何接入：见 DOC/74-ui-variants-extension.md（配对后平台标签自动可用）</p>
+                <p className="claude-plat-pop-hint">如何接入：见 扩展接入文档.md（配对后平台标签自动可用）</p>
               </div>
             ) : null}
             {open && platform === open && !empty ? (

@@ -8,7 +8,7 @@
  *   - **3 个契约扩展**（A.2，台账未单列、两线 UI 需要）：`session-rail-extra` / `notifications` / `terminal-panes`。
  * 双向常量：`PI_UI_INVENTORY_CAPABILITY_MAP`（台账/surface → 契约，37 行 = 34+3）与
  * `PI_UI_CAPABILITY_INVENTORY_MAP`（契约 → 台账/surface，40 项，extra 记 "(none)"）。
- * DOC/74 附录 A 的映射表由这两个常量生成（doc-writer 不再手写）。
+ * 扩展接入文档 附录 A 的映射表由这两个常量生成（doc-writer 不再手写）。
  *
  * **ID 口径**：保持台账逐字 ID（`pane-workspace` / `pane-dock-drag` / `subagents-panel`）；
  * 旧稿别名（workspace-panes / drag-dock / subagent-panel）只在 `PI_UI_LEGACY_CAPABILITY_ALIASES` 里作开发期兼容说明，

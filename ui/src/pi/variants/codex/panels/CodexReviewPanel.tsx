@@ -194,7 +194,7 @@ export function CodexReviewPanel({ p, phone = false, onClose, onOpenTerminal }: 
                     title={item.disabled ? item.cap?.view?.reason : undefined}
                     onClick={() => {
                       if (item.disabled) {
-                        relay.notify(`「${item.label}」需要 git 扩展接入：${item.cap?.view?.reason ?? "未接入"}（见 ${item.cap?.view?.docsPath ?? "DOC/74"}）`, "warn")
+                        relay.notify(`「${item.label}」需要 git 扩展接入：${item.cap?.view?.reason ?? "未接入"}（见 ${item.cap?.view?.docsPath ?? "扩展接入文档"}）`, "warn")
                         return
                       }
                       setScope(item.key)

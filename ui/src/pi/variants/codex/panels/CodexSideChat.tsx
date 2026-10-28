@@ -6,7 +6,7 @@ import { useCodexCapability } from "../logic/capability"
 
 /**
  * Side chat 面板（CX-PANEL-11 / [X-§5]）：借当前上下文旁路提问，不打断主对话。
- * 能力 `side-chat`：生产无 provider → 完整 UI 禁用 + DOC/74#cap-side-chat；dev mock → 发送走 actions.sendMessage 并联动。
+ * 能力 `side-chat`：生产无 provider → 完整 UI 禁用 + 扩展接入文档#cap-side-chat；dev mock → 发送走 actions.sendMessage 并联动。
  */
 export function CodexSideChat({ onClose }: { onClose?: () => void }) {
   const cap = useCodexCapability("side-chat")

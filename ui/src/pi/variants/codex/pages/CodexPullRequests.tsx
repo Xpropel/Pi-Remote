@@ -27,7 +27,7 @@ const REFERENCE_ROWS: PrRow[] = [
 
 /**
  * PR 页（CX-PAGE-06/07，台账 §4.4 / X-图16）：列表（全部/打开/已合并/已关闭/已归档）+ 详情（元信息/评审状态/Checks/文件）。
- * 能力 `pr-review`：生产无 provider → 全部动作禁用 + DOC/74#cap-pr-review；dev mock 注入 → 合并/关闭/归档/重开
+ * 能力 `pr-review`：生产无 provider → 全部动作禁用 + 扩展接入文档#cap-pr-review；dev mock 注入 → 合并/关闭/归档/重开
  * 分别走契约 `actions.mergePr/closePr/archivePr/reopenPr` 并联动的状态；评审动作 approve/requestChanges 同步接入。
  */
 export function CodexPullRequests({ p, onOpenSession }: { p: VariantAppProps; onOpenSession: (id: string) => void }) {

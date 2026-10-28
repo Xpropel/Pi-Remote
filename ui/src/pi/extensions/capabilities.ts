@@ -11,7 +11,7 @@
 import type { PiUiCapability, PiUiCapabilityGroup, PiUiCapabilityMeta, PiUiCapabilityStatus } from "./types.ts"
 
 /** 用户文档路径（能力锚点 = `${PI_UI_EXTENSION_DOC_PATH}#cap-<id>`） */
-export const PI_UI_EXTENSION_DOC_PATH = "DOC/74-ui-variants-extension.md"
+export const PI_UI_EXTENSION_DOC_PATH = "扩展接入文档.md"
 
 const DEFAULT_REASON = "当前 pi 没有提供这项能力的数据源；接入扩展（或等待 relay/pi 支持）后即可启用。"
 

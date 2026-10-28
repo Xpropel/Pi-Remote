@@ -176,7 +176,7 @@ const subagents: PiUiSubagent[] = [
   { id: "agent-demo-explorer", name: "explorer", role: "代码检索", status: "running", task: "定位设备平台标签的渲染入口", startedAt: PI_UI_DEMO_NOW - 90_000 },
   { id: "agent-demo-verifier", name: "verifier", role: "验证", status: "done", task: "跑独立性守卫 37/37", startedAt: PI_UI_DEMO_NOW - 300_000, finishedAt: PI_UI_DEMO_NOW - 200_000 },
   { id: "agent-demo-reviewer", name: "reviewer", role: "审查", status: "running", task: "核对 diff 行内评论攒批", startedAt: PI_UI_DEMO_NOW - 60_000 },
-  { id: "agent-demo-writer", name: "doc-writer", role: "文档", status: "failed", task: "DOC/74 示例校验（失败：锚点缺 1 个）", startedAt: PI_UI_DEMO_NOW - 420_000, finishedAt: PI_UI_DEMO_NOW - 360_000 },
+  { id: "agent-demo-writer", name: "doc-writer", role: "文档", status: "failed", task: "扩展接入文档 示例校验（失败：锚点缺 1 个）", startedAt: PI_UI_DEMO_NOW - 420_000, finishedAt: PI_UI_DEMO_NOW - 360_000 },
 ]
 
 const orchestration: PiUiSubagentOrchestration = {
@@ -224,7 +224,7 @@ const gitStates: PiUiGitState[] = [
 ]
 
 const gitStages: PiUiGitStageState[] = [
-  { repoPath: "~/code/pi-remote", staged: ["DOC/74-ui-variants-extension.md"], unstaged: ["ui/src/pi/extensions/types.ts", "ui/src/pi/extensions/mock/store.ts"], canStage: true, canRevert: true },
+  { repoPath: "~/code/pi-remote", staged: ["扩展接入文档.md"], unstaged: ["ui/src/pi/extensions/types.ts", "ui/src/pi/extensions/mock/store.ts"], canStage: true, canRevert: true },
 ]
 
 const worktrees: PiUiWorktree[] = [
@@ -296,14 +296,14 @@ const reviewThreads: PiUiReviewThread[] = [
 
 const editableFiles: PiUiEditableFile[] = [
   { path: "ui/src/pi/extensions/mock/store.ts", content: "// P4.2 mock store（演示内容）\nexport const demo = true\n", language: "typescript", dirty: true, updatedAt: PI_UI_DEMO_NOW - 10_000 },
-  { path: "DOC/74-ui-variants-extension.md", content: "# UI 变体扩展接入（演示摘录）\n\n## cap-artifacts\n\n演示数据 · 非真实\n", language: "markdown", dirty: false, updatedAt: PI_UI_DEMO_NOW - 2 * H },
+  { path: "扩展接入文档.md", content: "# UI 变体扩展接入（演示摘录）\n\n## cap-artifacts\n\n演示数据 · 非真实\n", language: "markdown", dirty: false, updatedAt: PI_UI_DEMO_NOW - 2 * H },
   { path: "test/pi-ui-mock.test.mjs", content: "// 双态 / provider 门禁演示\n", language: "javascript", dirty: false, updatedAt: PI_UI_DEMO_NOW - 3 * H },
 ]
 
 const bareTabs: PiUiBareTab[] = [
   { id: "tab-demo-1", title: "pi-remote · pi-ui-mock", kind: "session" },
   { id: "tab-demo-2", title: "billing-service", kind: "session" },
-  { id: "tab-demo-3", title: "DOC/74 预览", kind: "doc" },
+  { id: "tab-demo-3", title: "扩展接入文档 预览", kind: "doc" },
 ]
 
 const themeCustomization: PiUiThemeCustomization = { accent: "#d97757", surface: "#f9f9f7", fontFamily: "Newsreader", importedFrom: "design-spec §1" }

@@ -291,7 +291,7 @@ export function UsageActivityPage({ deviceId, relay, theme: forcedTheme, classNa
           ) : null}
           {!loading && (reason === "unsupported" || reason === "timeout" || reason === "invalid" || previewState === "error" || previewState === "unavailable") ? (
             <p className="pi-usage-footnote">
-              <a href="DOC/75-usage-activity.md">查看接入说明（DOC/75-usage-activity.md §5.3/§7.5）</a>
+              <span>数据口径见项目文档（未随本仓库提供）</span>
               {showRetry ? (
                 <button type="button" className="pi-usage-retry" onClick={real.refresh}>
                   重试

@@ -209,7 +209,7 @@ export function ClaudeSettingsPage({ p }: { p: PiContainerProps }) {
               <ClaudeRow
                 key={item.capability}
                 label={item.meta.label}
-                hint={item.status === "available" ? "已接入" : item.status === "simulated" ? "模拟演示 · 非真实" : `${item.meta.unavailableReason}（DOC/74 ${item.meta.docAnchor}）`}
+                hint={item.status === "available" ? "已接入" : item.status === "simulated" ? "模拟演示 · 非真实" : `${item.meta.unavailableReason}（扩展接入文档 ${item.meta.docAnchor}）`}
                 control={<span data-pi-capability={item.capability} data-capability-state={item.status}>{item.status}</span>}
               />
             ))}
