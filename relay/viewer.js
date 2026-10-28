@@ -12,7 +12,7 @@ const { ROOT, DEFAULT_CONFIG, normalizeAccount, positiveInt, warnAdminTokenSepar
 const { RELAY_CAPS, hasCap, parseHello, helloVersionError, helloText, errorFrame, send, broadcast, ackFrame, snapshotBodyFrom, snapshotFrame } = require("./wire");
 const { PrefsStore, cleanPrefsSubset } = require("./prefs");
 const { attachCommon, keepalive } = require("./conn");
-const { PAIR_CODES_MAX, newPairCode, formatPairCode, requestSource } = require("./pairing");
+const { PAIR_CODES_MAX, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairSourceBlocked, notePairFailure, requestSource } = require("./pairing");
 const { commandTimeoutMs, MESSAGE_COMMANDS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, pruneDedupe, dedupeKeyOf } = require("./commands");
 const { MAX_DEVICE_NAME, UNREGISTERED_DEVICE, normPath, cwdAllowed, underRoots, boundAccount } = require("./devices");
 const { replaySessionArchives } = require("./sessionArchive");
@@ -593,7 +593,7 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
       onMessage(msg) {
         const s = ws._state;
         if (!s.authed) {
-          if (msg.type === "auth" && msg.role === "viewer" && safeEqual(msg.token, cfg.viewerToken)) {
+          if (msg.type === "auth" && msg.role === "viewer" && cfg.viewerToken && safeEqual(msg.token, cfg.viewerToken)) {
             // 低-12：显式声明了过低协议版本的握手要明确拒绝，不能静默按 minProto 放行。
             // 不带 proto 的老客户端仍走兼容期 v3（既有测试/旧前端都依赖这一行为）。
             const protoError = helloVersionError(msg);
@@ -1048,6 +1048,84 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             ctx.pairCodes.set(code, { accountId: normalizeAccount(cfg.accountId), name, expiresAt });
             log("生成配对码:", name || "-", "有效至", new Date(expiresAt).toISOString());
             send(ws, ackFrame(origId, true, { data: { code: formatPairCode(code), expiresAt } }), cfg);
+            break;
+          }
+          case "pair_lookup": {
+            // 二维码链接确认页拉待链接设备信息：只对 pending 条目（pair_request 申请、连接还活着的）
+            // 回非秘密元数据；普通手输码、不存在、已过期的码一律失败，失败按来源计入配对限速记账。
+            const origId = msg.id ? String(msg.id) : null;
+            const now = Date.now();
+            if (pairSourceBlocked(ctx.pairFailures, source, now)) {
+              send(ws, errorFrame("rate_limited", "配对尝试太频繁，请一分钟后再试", { id: origId }), cfg);
+              return;
+            }
+            const code = normalizePairCode(msg.code);
+            const entry = code ? ctx.pairCodes.get(code) : null;
+            const expired = !!entry && entry.expiresAt <= now;
+            if (!entry || !entry.pending || expired) {
+              notePairFailure(ctx.pairFailures, source, now);
+              if (expired) ctx.pairCodes.delete(code);
+              log("pair_lookup 失败:", source, expired ? "配对码过期" : "配对码无效或不是待链接码");
+              send(ws, errorFrame(expired ? "pair_expired" : "pair_invalid", undefined, { id: origId }), cfg);
+              return;
+            }
+            const found = { type: "pair_lookup_result", name: entry.pending.device.name, platform: entry.pending.device.platform, expiresAt: entry.expiresAt, checkDigits: pairCheckDigits(code) };
+            if (origId) found.id = origId;
+            send(ws, found, cfg);
+            // 通知等待端「码已被扫/被查」：窗口切处理中態。只发一次（重复 lookup 不重发），
+            // 等待端不依赖这帧完成主链路（pair_result 才是结果），发不出去也不影响批准流程。
+            if (!entry.pending.claimed && entry.pending.ws && entry.pending.ws.readyState === 1) {
+              entry.pending.claimed = true;
+              try { send(entry.pending.ws, { type: "pair_claimed" }, cfg); } catch {}
+            }
+            break;
+          }
+          case "pair_approve": {
+            // 手机端批准二维码链接：先过管理员门（与 pair_create 同门），再走 local 侧的共用签发段，
+            // 结果沿 pending 的等待连接回 pair_result；本端只回 ack，不经手设备令牌明文之外的东西。
+            if (rejectAdmin(ws, msg, cfg)) break;
+            const origId = msg.id ? String(msg.id) : null;
+            const now = Date.now();
+            if (pairSourceBlocked(ctx.pairFailures, source, now)) {
+              send(ws, ackFrame(origId, false, { error: "配对尝试太频繁，请一分钟后再试", code: "rate_limited" }), cfg);
+              return;
+            }
+            const code = normalizePairCode(msg.code);
+            const entry = code ? ctx.pairCodes.get(code) : null;
+            const expired = !!entry && entry.expiresAt <= now;
+            if (!entry || !entry.pending || expired) {
+              notePairFailure(ctx.pairFailures, source, now);
+              if (expired) ctx.pairCodes.delete(code);
+              log("pair_approve 失败:", source, expired ? "配对码过期" : "配对码无效或不是待链接码");
+              send(ws, ackFrame(origId, false, { code: expired ? "pair_expired" : "pair_invalid" }), cfg);
+              return;
+            }
+            const pendingWs = entry.pending.ws;
+            if (!pendingWs || pendingWs.readyState !== 1) {
+              // 等待端已经断开（其 close 处理通常已删码，这里兜底）：删码并告知批准端重跑 attach --link
+              ctx.pairCodes.delete(code);
+              log("pair_approve 失败：等待连接已断开");
+              send(ws, ackFrame(origId, false, { error: "设备等待连接已断开，请在设备上重新运行 attach --link", code: "offline" }), cfg);
+              return;
+            }
+            if (typeof ctx.issuePairEntry !== "function") {
+              send(ws, ackFrame(origId, false, { error: "relay 内部未就绪", code: "server_error" }), cfg);
+              return;
+            }
+            const r = ctx.issuePairEntry({ code, entry, cleaned: entry.pending.device, presentedToken: entry.pending.deviceToken, exceptWs: pendingWs });
+            if (!r.ok) {
+              // 签发被拒（如重新配对旧令牌不达标）：等待端同步收到失败，别让它干等到过期；
+              // 本次申请到此为止，删码关连接，设备想再试要重新 attach --link。
+              send(pendingWs, { type: "pair_result", ok: false, code: r.code, error: r.error }, cfg);
+              try { pendingWs.close(1000, "pair done"); } catch {}
+              ctx.pairCodes.delete(code);
+              send(ws, ackFrame(origId, false, { error: r.error, code: r.code }), cfg);
+              return;
+            }
+            send(pendingWs, { type: "pair_result", ok: true, accountId: r.accountId, deviceId: r.deviceId, deviceToken: r.deviceToken }, cfg);
+            try { pendingWs.close(1000, "pair done"); } catch {}
+            log("二维码链接批准完成:", r.accountId, r.deviceId);
+            send(ws, ackFrame(origId, true, { deviceId: r.deviceId, data: { deviceId: r.deviceId, name: entry.pending.device.name } }), cfg);
             break;
           }
           case "device_revoke": {

@@ -224,6 +224,7 @@ macOS 打包 `web/` 时会关掉 `._*` 资源叉和 xattr 扩展头（`COPYFILE_
 
 - 网页上生成配对码、撤销设备都需要 adminToken；未配置或输错时统一返回 `admin_required`，不会生成码、不会撤销设备，也不会泄露 relay 到底配没配管理员令牌。
 - 本机配对：Windows 用 `node deploy\attach.cjs --pair XXXX-XXXX`，macOS / Linux 用 `deploy/attach.sh --pair XXXX-XXXX`；`.env` 里还没有 relay 地址时加 `--relay ws://<你的服务器IP>:7001`。配对成功后写入 `PI_REMOTE_DEVICE_ID` 和 `PI_REMOTE_DEVICE_TOKEN`，令牌不打印。
+- 扫码链接（v2.0.1 新增，与 `--pair` 二选一）：在本机运行 `attach --link`（Windows：`node deploy\attach.cjs --link`），它向 relay 申请同一个配对码，在终端打印二维码、完整链接与对照码，并打开一个本机窗口页出示同样的码；手机扫码（或在落地页手输对照码）打开确认页，核对设备名、平台与 2 位核对字后用 adminToken 点「确认链接」，relay 才签发令牌并沿等待连接回给 attach 落盘（与 `--pair` 共用同一落盘段与 0600 规则）。码与手输码同表、同 10 分钟有效、一次性，attach 断开即作废；二维码里的码绑定等待中的这台设备且必须经管理员批准，被转发也无法把别人的设备配进来。relay 版本太旧不认识 `--link` 时会明确提示改用 `--pair`。
 - `attach --pair` 和 `--init` 都会把 `.env` 落盘权限收紧到 **0600**（新建时即 0600；已有的宽权限也会被 `chmod` 收紧）。如果无法收紧权限，命令直接报错退出，不会留下同机其他用户可读的令牌文件。不要把 adminToken 写进 `.env` 或命令行参数——它只放在服务器 env 和网页本机存储里。
 - 设备被撤销后连接会被断开；重新在网页生成配对码并在本机执行 `attach --pair`，之后重启 pi 让扩展重新读取设备令牌。
 - 本机 `.env` 可用 `node deploy\setup.cjs ws://<你的服务器IP>:7001` 从本机环境变量 `PI_REMOTE_LOCAL_TOKEN` 或 `relay/config.json` 生成。启动 pi：在项目目录运行 `deploy\start-pi.cmd`（macOS / Linux：`deploy/start-pi.sh`）。`start-pi.cmd` 必须保持 CRLF，`.sh` 必须保持 LF（`.gitattributes` 已固定）。

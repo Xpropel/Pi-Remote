@@ -67,6 +67,23 @@ export function deviceRevokeFrame(deviceId: string, adminToken: string) {
   return { type: "device_revoke", deviceId, adminToken }
 }
 
+/**
+ * 二维码设备链接第一步（qr-pairing §3.2）：手机扫码落地后按码查待链接设备的非秘密元数据
+ * （name / platform / expiresAt / checkDigits，checkDigits 由 relay 下发、页面只显示不计算）。
+ * 只查不核销：码不存在 / 已过期 / 不是待链接条目回 pair_invalid / pair_expired。
+ */
+export function pairLookupFrame(code: string) {
+  return { type: "pair_lookup", code }
+}
+
+/**
+ * 二维码设备链接第二步：管理员在落地页确认后才核销码、签发设备令牌（沿待链接连接下发给 pi 运行端）。
+ * adminToken 与 pair_create 同门，只放在这条命令帧里，不参与 viewer 握手、不进 URL。
+ */
+export function pairApproveFrame(code: string, adminToken: string) {
+  return { type: "pair_approve", code, adminToken }
+}
+
 export function serverInfo(msg: { proto?: unknown; caps?: unknown; serverName?: unknown }): ServerInfo {
   const proto = typeof msg.proto === "number" && Number.isInteger(msg.proto) && msg.proto > 0 ? msg.proto : 3
   if (proto < 4) return V3_SERVER

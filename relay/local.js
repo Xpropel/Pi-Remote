@@ -8,7 +8,7 @@ const { safeId, safeEqual, log } = require("./util");
 const { normalizeAccount } = require("./config");
 const { RELAY_CAPS, parseHello, helloVersionError, helloText, hasCap, failureCode, errorFrame, send, broadcast, ackFrame, snapshotBodyFrom, snapshotFrame } = require("./wire");
 const { attachCommon, keepalive } = require("./conn");
-const { PAIR_FAIL_WINDOW_MS, PAIR_FAIL_MAX, PAIR_FAIL_SOURCES_MAX, sha256hex, normalizePairCode, requestSource, checkDeviceToken } = require("./pairing");
+const { PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken } = require("./pairing");
 const { REMOTE_MESSAGE_EVENTS, finishWaiter, settleEntry } = require("./commands");
 const { MAX_DEVICE_NAME, normalizePlatform, cleanProjects, blankDevice, boundAccount } = require("./devices");
 const { cancelResend, restartResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, broadcastRoomAttention, broadcastRoomWaiting } = require("./rooms");
@@ -560,6 +560,70 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
     send(ws, errorFrame("device_mismatch", "这台设备已经配对，必须用设备令牌连接（共享 localToken 不能冒用；" + what + "）"), cfg);
   };
 
+  /**
+   * 配对设备信息规整（handlePair 与 pair_request 同口径）：id 可选但给了就必须 safeId；
+   * name 必填（设备没给时用码条目里预置的名字兜底），platform 必填。不合规返回 null。
+   */
+  const cleanPairDevice = (device, fallbackName) => {
+    const raw = device && typeof device === "object" ? device : {};
+    const wantId = typeof raw.id === "string" ? raw.id.trim() : "";
+    const name = (typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : fallbackName || "").slice(0, MAX_DEVICE_NAME);
+    const platform = normalizePlatform(raw.platform);
+    if ((wantId && !safeId(wantId)) || !name || !platform) return null;
+    return { wantId, name, platform };
+  };
+
+  /**
+   * 配对签发共用段：handlePair（设备拿手输码来消费）与 viewer 的 pair_approve（手机批准
+   * 二维码链接的 pending 条目）共用，保证两条路径的防接管校验与签发口径完全一致，不写第二份。
+   * 流程：定设备 id 与绑定账号 → 重新配对必须用 checkDeviceToken 核验出示的旧令牌 →
+   * 签发新令牌（只存 sha256 哈希）→ 登记设备 → 删码（一次性）→ 踢掉该设备旧令牌连接 → 广播名册。
+   * 返回 {ok:true, accountId, deviceId, deviceToken} 或 {ok:false, code, error}；
+   * 失败一律不删码、不签发，调用方决定怎么回执（handlePair 是码可重试，approve 路径会作废条目）。
+   */
+  const issueForPairEntry = ({ code, entry, cleaned, presentedToken, exceptWs }) => {
+    const now = Date.now();
+    const deviceId = cleaned.wantId || crypto.randomUUID();
+    const accountId = boundAccount(index, devices, deviceId, entry.accountId);
+    // 已知 deviceId + 还有有效令牌：这是一次"替换/重新配对"，必须出示旧设备令牌。
+    // 否则任何人拿一个自己生成的配对码就能接管网页名册里看到的那台设备。
+    let replacing = false;
+    try {
+      replacing = index.hasDeviceToken(accountId, deviceId);
+    } catch {}
+    if (replacing) {
+      const oldToken = typeof presentedToken === "string" ? presentedToken : "";
+      const verified = oldToken ? checkDeviceToken(index, devices, cfg, deviceId, oldToken) : { ok: false };
+      if (!verified.ok) {
+        log("拒绝重新配对：缺少或错误旧设备令牌", accountId, deviceId);
+        return { ok: false, code: "device_mismatch", error: "这台设备已经配过对；重新配对需要旧设备令牌（先撤销或在本机 attach --pair 时带上原令牌）" };
+      }
+    }
+    const deviceToken = crypto.randomBytes(PROTOCOL.limits.deviceTokenBytes).toString("base64url");
+    try {
+      index.issueDeviceToken(accountId, deviceId, sha256hex(deviceToken));
+      index.touchAccount(accountId);
+      index.upsertDevice(accountId, { id: deviceId, name: cleaned.name, platform: cleaned.platform, pairedAt: now });
+    } catch (e) {
+      log("配对写入失败（配对码保留，可重试）:", e.message);
+      return { ok: false, code: "server_error", error: "设备令牌保存失败" };
+    }
+    ctx.pairCodes.delete(code); // 只能用一次
+    ctx.dropDevice(deviceId, { tokenOnly: true, except: exceptWs });
+    log("设备配对:", accountId, deviceId, cleaned.name, cleaned.platform);
+    rooms.broadcastRoomList();
+    return { ok: true, accountId, deviceId, deviceToken };
+  };
+  // viewer 通道的 pair_approve 经 ctx 调用同一签发段（与 ctx.dropDevice 同款跨通道共用方式）
+  ctx.issuePairEntry = issueForPairEntry;
+
+  /** 撤下某条连接挂着的二维码待链接码：出示端断开/重复申请时调用，码随连接生死，不悬空。 */
+  const dropPairPending = (ws) => {
+    for (const [code, e] of ctx.pairCodes) {
+      if (e.pending && e.pending.ws === ws) ctx.pairCodes.delete(code);
+    }
+  };
+
   /** 配对：未鉴权连接的第一帧。校验配对码 → 签发设备令牌（只存 hash）→ 回 pair_result 后关闭连接 */
   const handlePair = (ws, msg, source) => {
     clearTimeout(ws._state.authTimer);
@@ -569,56 +633,54 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
     };
     const fail = (code, error) => reply({ type: "pair_result", ok: false, code, error: error || PROTOCOL.errors[code].message });
     const now = Date.now();
-    const recent = (ctx.pairFailures.get(source) || []).filter((t) => t > now - PAIR_FAIL_WINDOW_MS);
-    if (recent.length >= PAIR_FAIL_MAX) return fail("rate_limited", "配对尝试太频繁，请一分钟后再试");
+    if (pairSourceBlocked(ctx.pairFailures, source, now)) return fail("rate_limited", "配对尝试太频繁，请一分钟后再试");
     const code = normalizePairCode(msg.code);
     const entry = code ? ctx.pairCodes.get(code) : null;
     if (!entry || entry.expiresAt <= now) {
-      // 挪到 Map 末尾，Map 就按最近出错排序；来源太多时挤掉最久没出错的
-      ctx.pairFailures.delete(source);
-      ctx.pairFailures.set(source, [...recent, now]);
-      if (ctx.pairFailures.size > PAIR_FAIL_SOURCES_MAX) ctx.pairFailures.delete(ctx.pairFailures.keys().next().value);
+      notePairFailure(ctx.pairFailures, source, now);
       if (entry) ctx.pairCodes.delete(code);
       log("配对失败:", source, entry ? "配对码过期" : "配对码无效");
       return fail(entry ? "pair_expired" : "pair_invalid");
     }
-    const device = msg.device && typeof msg.device === "object" ? msg.device : {};
-    const wantId = typeof device.id === "string" ? device.id.trim() : "";
-    const name = (typeof device.name === "string" && device.name.trim() ? device.name.trim() : entry.name).slice(0, MAX_DEVICE_NAME);
-    const platform = normalizePlatform(device.platform);
-    if ((wantId && !safeId(wantId)) || !name || !platform) {
+    const cleaned = cleanPairDevice(msg.device, entry.name);
+    if (!cleaned) {
       return fail("bad_args", "设备信息不完整：需要 name、platform，id 只能用字母数字和 ._-");
     }
-    const deviceId = wantId || crypto.randomUUID();
-    const accountId = boundAccount(index, devices, deviceId, entry.accountId);
-    // 已知 deviceId + 还有有效令牌：这是一次"替换/重新配对"，必须出示旧设备令牌。
-    // 否则任何人拿一个自己生成的配对码就能接管网页名册里看到的那台设备。
-    let replacing = false;
-    try {
-      replacing = index.hasDeviceToken(accountId, deviceId);
-    } catch {}
-    if (replacing) {
-      const oldToken = typeof msg.deviceToken === "string" ? msg.deviceToken : "";
-      const verified = oldToken ? checkDeviceToken(index, devices, cfg, deviceId, oldToken) : { ok: false };
-      if (!verified.ok) {
-        log("拒绝重新配对：缺少或错误旧设备令牌", accountId, deviceId);
-        return fail("device_mismatch", "这台设备已经配过对；重新配对需要旧设备令牌（先撤销或在本机 attach --pair 时带上原令牌）");
-      }
+    const r = issueForPairEntry({ code, entry, cleaned, presentedToken: msg.deviceToken, exceptWs: ws });
+    if (!r.ok) return fail(r.code, r.error);
+    reply({ type: "pair_result", ok: true, accountId: r.accountId, deviceId: r.deviceId, deviceToken: r.deviceToken });
+  };
+
+  /**
+   * 二维码链接申请：未鉴权连接的预鉴权帧（与 pair 并列）。relay 生成与 pair_create 同表、
+   * 同 TTL 的码，条目绑定本连接（pending），连接保持开启等手机端 pair_approve 核销；
+   * 连接断开即删码（close 处理里 dropPairPending）。失败回 pair_request_result{ok:false,code}，
+   * 连接不关——出示端可以改正后在本连接重试。
+   */
+  const handlePairRequest = (ws, msg, source) => {
+    clearTimeout(ws._state.authTimer);
+    const fail = (code, error) => send(ws, { type: "pair_request_result", ok: false, code, error: error || PROTOCOL.errors[code].message }, cfg);
+    const now = Date.now();
+    if (pairSourceBlocked(ctx.pairFailures, source, now)) return fail("rate_limited", "配对尝试太频繁，请一分钟后再试");
+    // 一条连接只挂一个待链接条目：重复申请先撤旧码，免得一个终端占着多个码位
+    dropPairPending(ws);
+    const cleaned = cleanPairDevice(msg.device, "");
+    if (!cleaned) {
+      notePairFailure(ctx.pairFailures, source, now);
+      return fail("bad_args", "设备信息不完整：需要 name、platform，id 只能用字母数字和 ._-");
     }
-    const deviceToken = crypto.randomBytes(PROTOCOL.limits.deviceTokenBytes).toString("base64url");
-    try {
-      index.issueDeviceToken(accountId, deviceId, sha256hex(deviceToken));
-      index.touchAccount(accountId);
-      index.upsertDevice(accountId, { id: deviceId, name, platform, pairedAt: now });
-    } catch (e) {
-      log("配对写入失败（配对码保留，可重试）:", e.message);
-      return fail("server_error", "设备令牌保存失败");
-    }
-    ctx.pairCodes.delete(code); // 只能用一次
-    ctx.dropDevice(deviceId, { tokenOnly: true, except: ws });
-    log("设备配对:", accountId, deviceId, name, platform);
-    reply({ type: "pair_result", ok: true, accountId, deviceId, deviceToken });
-    rooms.broadcastRoomList();
+    for (const [k, e] of ctx.pairCodes) if (e.expiresAt <= now) ctx.pairCodes.delete(k);
+    if (ctx.pairCodes.size >= PAIR_CODES_MAX) return fail("rate_limited", "未使用的配对码太多，等旧的过期后再生成");
+    const code = newPairCode(ctx.pairCodes);
+    const expiresAt = now + (cfg.pairCodeTtlMs || PROTOCOL.limits.pairCodeTtlMs);
+    // 账号只认 relay 配置：设备侧申请不能指定账号，也不采信客户端上报的 accountId
+    const accountId = normalizeAccount(cfg.accountId);
+    // 重新配对时 attach 会带上 .env 里的旧设备令牌：先存进 pending，approve 签发前由共用段核验
+    const presentedToken = typeof msg.deviceToken === "string" ? msg.deviceToken : "";
+    ctx.pairCodes.set(code, { accountId, name: cleaned.name, expiresAt, pending: { ws, device: cleaned, deviceToken: presentedToken } });
+    // 日志不打印码本身（与 pair_create 同口径）；核对字是派生值，可以记
+    log("设备申请二维码链接码:", cleaned.name, cleaned.platform, "核对字", pairCheckDigits(code), "有效至", new Date(expiresAt).toISOString());
+    send(ws, { type: "pair_request_result", ok: true, code: formatPairCode(code), expiresAt, checkDigits: pairCheckDigits(code) }, cfg);
   };
 
   const registered = (ws, room) => {
@@ -669,6 +731,10 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
         if (!s.authed) {
           if (msg.type === "pair") {
             handlePair(ws, msg, source);
+            return;
+          }
+          if (msg.type === "pair_request") {
+            handlePairRequest(ws, msg, source);
             return;
           }
           const fail = (code, error) => {
@@ -1310,6 +1376,8 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
     });
 
     ws.on("close", () => {
+      // 二维码待链接码随出示连接生死：连接一断，pending 条目立即作废（手机再扫只会得到 pair_invalid）
+      dropPairPending(ws);
       const room = ws._room;
       if (room && room.local === ws) {
         room.local = null;

@@ -134,7 +134,8 @@ import {
   type LazySend,
 } from "./lazySession"
 import { headerMeta } from "./presence"
-import { V3_SERVER, authFrame, deviceRevokeFrame, hasCap, isCid, newCid, pairCreateFrame, serverInfo, type ServerInfo } from "./protocol"
+import { V3_SERVER, authFrame, deviceRevokeFrame, hasCap, isCid, newCid, pairApproveFrame, pairCreateFrame, pairLookupFrame, serverInfo, type ServerInfo } from "./protocol"
+import { parsePairLookup, type PairLookupInfo } from "./pairLink"
 import { mobileNavFromPrefsSubset } from "@/pi/model/prefs"
 import type { PiMobileNavMode } from "@/pi/mobile/types"
 import { emptyRemoteQueue, parseRemoteQueueItem, parseRemoteQueueState, type RemoteQueueState } from "./remoteQueue"
@@ -4099,6 +4100,26 @@ export function useRelay() {
     await channel.raw(deviceRevokeFrame(deviceId, secret), "没有收到回应，撤销结果未知，请看设备列表确认")
   }, [channel])
 
+  /**
+   * 二维码设备链接第一步（qr-pairing §3.2）：手机扫码落地后按码查待链接设备。
+   * 只查不核销，回包只有非秘密元数据（name / platform / expiresAt / checkDigits），清洗在 relay/pairLink.ts；
+   * 码不对 / 已过期由 relay 回 pair_invalid / pair_expired，旧 relay 回 unknown_type（落地页据此给升级提示）。
+   */
+  const lookupPairLink = useCallback(async (code: string): Promise<PairLookupInfo> => {
+    const data = await channel.raw(pairLookupFrame(code), "没有收到回应，请重试")
+    return parsePairLookup(data)
+  }, [channel])
+
+  /**
+   * 二维码设备链接第二步：管理员确认后 relay 才核销码、签发设备令牌，并沿待链接连接下发给 pi 运行端落盘。
+   * 与 pair_create 同门：必须带管理员令牌（本地没存够长直接 admin_required，不发帧）。
+   */
+  const approvePairLink = useCallback(async (code: string, adminToken: string) => {
+    const secret = adminToken.trim()
+    if (!adminTokenReady(secret)) throw new RelayError("admin_required", ADMIN_TOKEN_COPY.required)
+    await channel.raw(pairApproveFrame(code, secret), "没有收到回应，链接结果未知，请到设备列表确认")
+  }, [channel])
+
   const selectedDevice = devices.find((device) => device.id === selectedDeviceId) ?? null
   const listedSessions = useMemo(
     () =>
@@ -4313,6 +4334,8 @@ export function useRelay() {
     createSession,
     createPairCode,
     revokeDevice,
+    lookupPairLink,
+    approvePairLink,
   }
 }
 

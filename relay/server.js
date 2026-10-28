@@ -217,7 +217,8 @@ function startRelay(overrides = {}) {
       persist: !!cfg.persistTranscripts,
     });
     rooms.bindStore(store);
-    // pairCodes：码 → {accountId, name, expiresAt}，只在内存；pairFailures：来源 → 它最近配对失败的时间戳
+    // pairCodes：码 → {accountId, name, expiresAt}，只在内存；二维码链接（pair_request）申请的条目
+    // 多带 pending:{ws, device, deviceToken?}，绑定申请连接、连接断开即删码；pairFailures：来源 → 它最近配对失败的时间戳
     const ctx = { index, devices, pairCodes: new Map(), pairFailures: new Map(), startedAt: Date.now(), usage: null };
     const usageBroker = new UsageBroker({ cfg, index, devices, rooms });
     ctx.usage = usageBroker;

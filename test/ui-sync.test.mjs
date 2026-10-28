@@ -1151,7 +1151,7 @@ test("设备管理弹窗源码：密码输入只存本机，空令牌禁用生�
   assert.match(useRelay, /safeStore\.set\(ADMIN_TOKEN_STORAGE_KEY, next\)/)
   assert.match(useRelay, /pairCreateFrame\(secret\)/)
   assert.match(useRelay, /deviceRevokeFrame\(deviceId, secret\)/)
-  assert.equal((useRelay.match(/if \(!adminTokenReady\(secret\)\) throw new RelayError\("admin_required"/g) || []).length, 2, "两个管理 API 在空令牌时都不发帧")
+  assert.equal((useRelay.match(/if \(!adminTokenReady\(secret\)\) throw new RelayError\("admin_required"/g) || []).length, 3, "三个管理 API 在空令牌时都不发帧")
 })
 
 test("连接状态：首次连接用加载条；断开后倒计时重连，连上过的叫重连、没连上过的叫连不上", () => {

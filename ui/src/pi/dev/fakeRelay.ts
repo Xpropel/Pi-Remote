@@ -141,6 +141,9 @@ function defaults(): Relay {
     refreshSessions: noop,
     createSession: async () => ({ ok: true as const }),
     createPairCode: async () => ({ code: "", expiresAt: 0 }),
+    // 二维码设备链接：假 relay 没有待链接条目，回一个空形状让画廊能渲染落地页骨架
+    lookupPairLink: async () => ({ name: "", platform: "", expiresAt: 0, checkDigits: "" }),
+    approvePairLink: resolved,
     revokeDevice: resolved,
   }
 }

@@ -14,7 +14,7 @@ const RELAY_VERSION = "4.0.0";
  * 注意：session.files / fs.browse 是 attach 声明、relay 只转发的能力，不在 relay 的
  * 能力表里（relay 通过 room_list.devices[].features 把设备侧能力透传给网页）。
  */
-const RELAY_CAPS = ["device.token", "dialog.observe", "dialog.respond", "err.v4", "health", "msg.cid", "prefs.sync", "room.attention", "room.dialogs", "room.label", "session.purge", "sync.v3", "usage.activity.v1"];
+const RELAY_CAPS = ["device.qr-link", "device.token", "dialog.observe", "dialog.respond", "err.v4", "health", "msg.cid", "prefs.sync", "room.attention", "room.dialogs", "room.label", "session.purge", "sync.v3", "usage.activity.v1"];
 const CODE_RE = /^[a-z][a-z0-9_]*$/;
 
 /** 对方连接在握手里声明过这个能力（新帧/新字段只发给声明过的一方） */
@@ -144,7 +144,15 @@ function send(ws, frame, cfg, opts) {
 function broadcast(conns, frame, cfg, opts) {
   const list = conns instanceof Set ? [...conns] : (conns || []);
   if (!list.length) return;
-  const data = typeof frame === "string" ? frame : JSON.stringify(frame);
+  let data;
+  try {
+    data = typeof frame === "string" ? frame : JSON.stringify(frame);
+  } catch (e) {
+    // 与 send 的兜底口径一致（R-6）：序列化不了的帧记一行日志、跳过本次广播，
+    // 不能让异常从定时器/setImmediate 路径上抛到进程级、把广播打成半截。
+    log("广播序列化失败，跳过本次广播:", e && e.message);
+    return;
+  }
   for (const c of list) send(c, data, cfg, opts);
 }
 

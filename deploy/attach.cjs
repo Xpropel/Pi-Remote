@@ -22,6 +22,7 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const net = require("node:net");
+const http = require("node:http");
 const { spawn, spawnSync } = require("node:child_process");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -438,8 +439,15 @@ function normalizePairCode(raw) {
   return code;
 }
 
+/** 配对码的展示形态：裸码按一半分组（8 位 → XXXX-XXXX），与 relay 的 formatPairCode 同口径 */
+function formatPairCode(code) {
+  const raw = String(code == null ? "" : code).toUpperCase().replace(/[\s-]+/g, "");
+  const len = Number(PROTOCOL.limits && PROTOCOL.limits.pairCodeLength) || 8;
+  return raw.length === len && len % 2 === 0 ? raw.slice(0, len / 2) + "-" + raw.slice(len / 2) : raw;
+}
+
 function parseArgs(argv) {
-  const out = { dirs: [], maxHours: DEFAULT_MAX_HOURS, viewerPort: 0, init: false, help: false, pair: "", relay: "", doctor: false, env: "", allowRemote: false };
+  const out = { dirs: [], maxHours: DEFAULT_MAX_HOURS, viewerPort: 0, init: false, help: false, pair: "", link: false, relay: "", doctor: false, env: "", allowRemote: false };
   const args = Array.isArray(argv) ? argv : [];
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i]);
@@ -448,7 +456,9 @@ function parseArgs(argv) {
     else if (a === "--help" || a === "-h") out.help = true;
     else if (a === "--pair" || a.startsWith("--pair=")) {
       out.pair = normalizePairCode(a.startsWith("--pair=") ? a.slice("--pair=".length) : args[++i]);
-    } else if (a === "--relay" || a.startsWith("--relay=")) {
+    }
+    else if (a === "--link") out.link = true;
+    else if (a === "--relay" || a.startsWith("--relay=")) {
       const raw = String(a.startsWith("--relay=") ? a.slice("--relay=".length) : args[++i] ?? "").trim();
       if (!/^wss?:\/\/\S+$/.test(raw)) throw new Error("--relay 需要 ws:// 或 wss:// 地址");
       out.relay = raw;
@@ -818,6 +828,11 @@ function requestPairing({ relay, code, deviceId, deviceName, deviceToken, platfo
 
 function pairHint(platform = HOST_PLATFORM) {
   return platform === "win32" ? "node deploy\\attach.cjs --pair <配对码>" : "deploy/attach.sh --pair <配对码>";
+}
+
+/** 扫码链接命令：与 pairHint 并列的第二条配对路径（pi 运行端出示二维码，手机确认） */
+function linkHint(platform = HOST_PLATFORM) {
+  return platform === "win32" ? "node deploy\\attach.cjs --link" : "deploy/attach.sh --link";
 }
 
 /** 本机自检命令：启动失败时要指给用户看的那条 */
@@ -2803,10 +2818,12 @@ function launcherText(platform = HOST_PLATFORM) {
 function printHelp() {
   console.log(`pi-remote attach [项目目录...] [--max-hours 12] [--init]
 pi-remote attach --pair XXXX-XXXX [--relay ws://<服务器>:7001]
+pi-remote attach --link [--relay ws://<服务器>:7001]
 pi-remote attach --doctor
 
 开一个连接窗口：登记本机设备，窗口内扩展才连 relay。
   --pair        用网页上「添加设备」给的配对码换这台电脑自己的设备令牌，写进 .env 后退出
+  --link        在本机出示二维码与对照码，手机扫码确认后把设备令牌写进 .env 后退出（relay 需支持扫码链接；太旧时改用 --pair）
   --relay       配对时使用的 relay 地址（.env 还没配 PI_REMOTE_RELAY 时用）
   --env <file>  显式指定 env 文件（默认仓库根 .env；也可用 ATTACH_ENV_FILE）
                 本地真实测试必须用独立 env + 127.0.0.1 relay，禁止连生产
@@ -2979,11 +2996,11 @@ async function doctorMain(args, envPath, opts = {}) {
   else add("ok", ".env", envPath);
   if (!cfg.relay) add("fail", "没有 PI_REMOTE_RELAY", "在 .env 里填 ws://<服务器>:7001");
   else add("ok", "relay 地址", cfg.relay);
-  if (!cfg.deviceId) add("fail", "没有设备编号", "运行 " + initHint(platform) + " 或 " + pairHint(platform));
+  if (!cfg.deviceId) add("fail", "没有设备编号", "运行 " + initHint(platform) + "、" + pairHint(platform) + " 或 " + linkHint(platform));
   else add("ok", "设备编号", cfg.deviceId);
   if (cfg.deviceToken) add("ok", "设备令牌", "已配对（不会打印）");
-  else if (cfg.token) add("warn", "只有共享令牌", "建议在网页「添加或管理设备」生成配对码，再运行 " + pairHint(platform));
-  else add("fail", "没有任何令牌", "先配对：" + pairHint(platform));
+  else if (cfg.token) add("warn", "只有共享令牌", "建议在网页「添加或管理设备」生成配对码，再运行 " + pairHint(platform) + "；或运行 " + linkHint(platform) + " 在本机出示二维码扫码链接");
+  else add("fail", "没有任何令牌", "先配对：" + pairHint(platform) + "，或扫码链接：" + linkHint(platform));
 
   if (cfg.relay) {
     const safety = attachRelaySafetyError(cfg.relay, { allowRemote: args.allowRemote });
@@ -3151,6 +3168,7 @@ async function main(argv) {
   else console.log(`[attach] env 文件：${envPath}（来源：默认仓库根 .env；本地测试请用 --env 或 ATTACH_ENV_FILE 指向独立 env）`);
   if (args.doctor) return doctorMain(args, envPath);
   if (args.pair) return pairMain(args, envPath, { enforceSafety: true });
+  if (args.link) return linkMain(args, envPath, { enforceSafety: true });
   if (args.init) {
     const result = initEnvFile(envPath, { deviceName: macComputerName() });
     if (result.changed) console.log("已写入 .env：PI_REMOTE_DEVICE_ID=" + result.deviceId);
@@ -3159,11 +3177,11 @@ async function main(argv) {
   }
   const cfg = loadConfig(envPath);
   if (!cfg.deviceId) {
-    console.error("缺少 PI_REMOTE_DEVICE_ID。请先配对：" + pairHint() + "（或 " + initHint() + "）");
+    console.error("缺少 PI_REMOTE_DEVICE_ID。请先配对：" + pairHint() + "，或扫码链接：" + linkHint() + "（或 " + initHint() + "）");
     return 1;
   }
   if (!cfg.relay || (!cfg.token && !cfg.deviceToken)) {
-    console.error("缺少 PI_REMOTE_RELAY，或 PI_REMOTE_TOKEN 与设备令牌都没配。请先配对：" + pairHint());
+    console.error("缺少 PI_REMOTE_RELAY，或 PI_REMOTE_TOKEN 与设备令牌都没配。请先配对：" + pairHint() + "，或扫码链接：" + linkHint());
     return 1;
   }
   // ② 本地安全 guard：非 localhost relay 默认直接退出，必须 --allow-remote 显式确认
@@ -3199,6 +3217,16 @@ async function main(argv) {
   return 0;
 }
 
+/** --pair / --link 共用落盘：把签发到的设备编号 + 令牌写进 .env（令牌不打印），写完收紧文件权限 */
+function persistPairResult(args, envPath, cfg, result) {
+  const vars = { PI_REMOTE_DEVICE_ID: result.deviceId, PI_REMOTE_DEVICE_TOKEN: result.deviceToken };
+  if (args.relay && args.relay !== cfg.relay) vars.PI_REMOTE_RELAY = args.relay;
+  if (!cfg.deviceName || !fs.existsSync(envPath)) vars.PI_REMOTE_DEVICE_NAME = cfg.deviceName;
+  writeEnvVars(envPath, vars);
+  // 设备令牌已落盘：再显式收紧一次，避免旧 .env 的宽权限被 writeEnvVars 之外的路径沿用
+  restrictEnvFileMode(envPath);
+}
+
 /** --pair：换设备令牌并写进 .env；已有的设备编号带上，名册和会话清单保持不变 */
 async function pairMain(args, envPath, opts = {}) {
   const out = opts.writeOut || ((line) => console.log(line));
@@ -3232,15 +3260,770 @@ async function pairMain(args, envPath, opts = {}) {
     err(`配对失败（${result.code}）：${result.error}`);
     return 1;
   }
-  const vars = { PI_REMOTE_DEVICE_ID: result.deviceId, PI_REMOTE_DEVICE_TOKEN: result.deviceToken };
-  if (args.relay && args.relay !== cfg.relay) vars.PI_REMOTE_RELAY = args.relay;
-  if (!cfg.deviceName || !fs.existsSync(envPath)) vars.PI_REMOTE_DEVICE_NAME = cfg.deviceName;
-  writeEnvVars(envPath, vars);
-  // 设备令牌已落盘：再显式收紧一次，避免旧 .env 的宽权限被 writeEnvVars 之外的路径沿用
-  restrictEnvFileMode(envPath);
+  persistPairResult(args, envPath, cfg, result);
   out(`配对成功：设备 ${result.deviceId}，令牌已写入 ${envPath}（令牌不打印，.env 权限 600）`);
   out("下一步：重启正在运行的 pi（扩展启动时读取令牌），然后运行 attach 打开连接窗口。");
   return 0;
+}
+
+/* ---------- --link：pi 运行端出示二维码 / 对照码，手机确认后落盘 ----------
+ * 流程（findings/qr-pairing-design.md §2/§3/§6）：本机连 relay 本地通道发 pair_request 申请码
+ * （码仍由 relay 发行，与手输码同一张表、同一 TTL、一次性），终端 + 本机窗口页出示二维码；
+ * 手机扫码在 viewer 落地页批准后，relay 沿这条等待连接回 pair_result，本机复用 persistPairResult 落盘。
+ * 二维码只是码的搬运工：码绑定这条连接，连接断开即失效；手输 --pair 长期保留为兜底。
+ */
+
+let qrLibCache = null;
+/** vendored 二维码编码器（deploy/qrcode.js）；部署包缺文件时返回 null，出示自动降级为只打印链接 + 码 */
+function loadQrLib() {
+  if (qrLibCache) return qrLibCache;
+  try {
+    qrLibCache = require("./qrcode.js");
+  } catch {
+    qrLibCache = null;
+  }
+  return qrLibCache;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+
+/** 用系统默认浏览器打开本地窗口页；失败不致命（调用方打印 URL 兜底） */
+function openBrowserDefault(url, platform = HOST_PLATFORM, spawnImpl = spawn) {
+  try {
+    let file;
+    let args;
+    if (platform === "win32") {
+      file = "cmd.exe";
+      args = ["/c", "start", "", String(url)];
+    } else if (platform === "darwin") {
+      file = "open";
+      args = [String(url)];
+    } else {
+      file = "xdg-open";
+      args = [String(url)];
+    }
+    const child = spawnImpl(file, args, { detached: true, stdio: "ignore" });
+    if (child && typeof child.on === "function") child.on("error", () => {});
+    if (child && typeof child.unref === "function") child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 终端出示：字符二维码（带 4 模块静区）+ 链接全文 + 格式化码 + 核对字 + 防转发提示。
+ *  版本过高或渲染宽度超限时降级为只打印链接 + 码（窗口页里仍有真码大图）。 */
+function printLinkOffer(state, { out, terminalWidth }) {
+  const qr = loadQrLib();
+  let svg = "";
+  let lines = null;
+  if (qr) {
+    try {
+      const m = qr.createQrMatrix(state.url);
+      svg = qr.matrixToSvg(m.modules);
+      if (m.version <= 16) {
+        const rendered = qr.matrixToTerminalLines(m.modules, { quiet: 4 });
+        if (rendered.length && rendered[0].length <= terminalWidth) lines = rendered;
+      }
+    } catch {}
+  }
+  state.qrSvg = svg;
+  out("");
+  out("用手机扫一扫下面的二维码，在手机上确认后，这台设备就链接好了：");
+  if (lines) {
+    for (const line of lines) out(line);
+  } else {
+    out("（终端里没画二维码：窗口太窄、链接太长或编码器不可用。用下面的链接和对照码，或打开图形窗口看大图二维码）");
+  }
+  out("");
+  out("扫不了码时，用手机浏览器打开这个链接，再输入对照码：");
+  out("  " + state.url);
+  out("设备对照码：" + state.codeFormatted);
+  if (state.checkDigits) out("核对字：" + state.checkDigits + "（手机确认页会显示同一个核对字，对上再点确认）");
+  out(`链接码只能用一次，到期作废（剩余约 ${formatRemain(state.expiresAt - Date.now())}）；不要拍照转发给别人。`);
+}
+
+/** 窗口页轮询 /state 的数据面：只放出示所需字段，令牌永不进这个通道 */
+function linkWindowStateJson(state) {
+  return {
+    phase: state.phase,
+    deviceName: state.deviceName,
+    platformLabel: state.platformLabel,
+    codeFormatted: state.codeFormatted || "",
+    checkDigits: state.checkDigits || "",
+    qrSvg: state.qrSvg || "",
+    url: state.url || "",
+    expiresAt: state.expiresAt || 0,
+    ttlMs: state.ttlMs || 0,
+    serverNow: Date.now(),
+  };
+}
+
+/**
+ * 链接窗口页（用户定版设计：qr-window-design，四态同窗切换）。
+ * 服务端只负责把当前 state 烤进首屏 JSON，之后页面每 900ms 轮询 /state 换态；
+ * 二维码是真码 SVG（qrcode.js 矩阵渲染，含 4 模块静区、深码浅底），倒计时以 expiresAt 为准。
+ */
+function renderLinkPage(state) {
+  const initial = JSON.stringify(linkWindowStateJson(state)).replace(/</g, "\\u003c");
+  const deviceName = escapeHtml(state.deviceName || "");
+  const platform = escapeHtml(state.platformLabel || "");
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pi-Remote · 链接这台设备</title>
+<style>
+  :root{
+    --page-bg:#0e0e10; --main-bg:rgba(20,20,23,.55);
+    --t1:#ededf0; --t2:#c9c9cf; --t3:#a9a9b1; --t4:#7c7c84; --t5:#5f5f66;
+    --ic:#8e8e96; --ink:#ececf1;
+    --line:rgba(255,255,255,.08); --card-line:rgba(255,255,255,.07);
+    --accent:#a78bfa; --wait:#e0a63f; --ok:#3fb96f;
+    --hover:rgba(255,255,255,.045); --sel:rgba(255,255,255,.07);
+    --font:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,"Roboto Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{ font-family:var(--font); color:var(--t1); background:var(--page-bg); -webkit-font-smoothing:antialiased; }
+  .stage{
+    min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:34px 20px 56px;
+    background:
+      radial-gradient(880px 520px at 10% -8%, rgba(106,74,224,.16), rgba(106,74,224,0) 60%),
+      radial-gradient(760px 520px at 96% 108%, rgba(47,90,160,.12), rgba(47,90,160,0) 62%),
+      linear-gradient(160deg,#17181b 0%,#0e0e10 58%,#101013 100%);
+  }
+  .win{
+    width:400px; max-width:92vw; border-radius:16px; overflow:hidden; background:var(--main-bg);
+    -webkit-backdrop-filter:blur(28px) saturate(1.2); backdrop-filter:blur(28px) saturate(1.2);
+    border:1px solid var(--line); box-shadow:0 24px 64px rgba(0,0,0,.5), 0 4px 16px rgba(0,0,0,.35);
+  }
+  .whead{ display:flex; align-items:flex-start; padding:20px 22px 0; }
+  .whead .tt{ flex:1; min-width:0; }
+  .whead h1{ font-size:15px; font-weight:600; color:var(--t1); line-height:21px; }
+  .whead .sub{ margin-top:3px; font-size:12.5px; line-height:17px; color:var(--t3); }
+  .xbtn{
+    width:26px; height:26px; flex:none; margin:-2px -4px 0 10px; border:0; border-radius:6px;
+    background:transparent; color:var(--ic); cursor:pointer; display:flex; align-items:center; justify-content:center;
+  }
+  .xbtn:hover{ background:var(--hover); color:var(--t1); }
+  .devrow{ margin:16px 22px 0; display:flex; align-items:center; gap:10px; background:rgba(255,255,255,.05); border-radius:10px; padding:9px 12px; }
+  .devtile{ width:30px; height:30px; flex:none; border-radius:8px; background:rgba(255,255,255,.09); color:#dcdce0; display:flex; align-items:center; justify-content:center; }
+  .devrow .dn{ flex:1; min-width:0; }
+  .devrow .dn .n{ font-size:13.5px; font-weight:600; color:var(--t1); line-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .devrow .dn .m{ font-size:11.5px; color:var(--t4); line-height:15px; margin-top:1px; }
+  .ondot{ width:7px; height:7px; border-radius:50%; background:var(--ok); flex:none; }
+  .devrow .st{ font-size:11.5px; color:var(--t3); flex:none; }
+  .wbody{ padding:20px 22px 22px; }
+  .qrcard{ position:relative; width:260px; margin:0 auto; border-radius:12px; background:#f4f4f5; padding:26px; box-shadow:0 2px 10px rgba(0,0,0,.35); }
+  .qrbox{ width:208px; height:208px; }
+  .qrbox svg{ display:block; width:208px; height:208px; }
+  .qrcard .veil{
+    position:absolute; inset:0; border-radius:12px; display:none;
+    align-items:center; justify-content:center; flex-direction:column; gap:9px;
+    background:rgba(16,16,18,.58); color:#f2f2f4; text-align:center; padding:0 18px;
+  }
+  .qrcard .veil.show{ display:flex; }
+  .qrcard .veil .vt{ font-size:13.5px; font-weight:600; line-height:19px; }
+  .qrcard .veil .vs{ font-size:11.5px; line-height:16px; color:rgba(242,242,244,.72); }
+  .spin{ width:26px; height:26px; border-radius:50%; flex:none; border:3px solid rgba(255,255,255,.22); border-top-color:#fff; animation:sp 0.9s linear infinite; }
+  @keyframes sp{ to{ transform:rotate(360deg);} }
+  .qr-hint{ margin-top:14px; text-align:center; font-size:13px; line-height:18px; color:var(--t3); }
+  .qr-hint b{ color:var(--t2); font-weight:600; }
+  .is-expired .qrbox{ filter:grayscale(1); opacity:.28; }
+  .is-processing .qrbox{ opacity:.35; }
+  .divider{ height:1px; background:var(--card-line); margin:20px 0 16px; }
+  .codelab{ display:flex; align-items:baseline; justify-content:space-between; }
+  .codelab .lb{ font-size:11px; letter-spacing:.12em; color:var(--t4); text-transform:uppercase; }
+  .codelab .alt{ font-size:11.5px; color:var(--t5); }
+  .coderow{ margin-top:8px; display:flex; align-items:center; gap:8px; }
+  .code{
+    flex:1; text-align:center; font-family:var(--mono); font-size:27px; font-weight:600; letter-spacing:3px; color:var(--ink);
+    line-height:36px; background:rgba(255,255,255,.04); border:1px solid var(--card-line); border-radius:10px; padding:7px 4px 8px;
+  }
+  .code .dash{ color:var(--t5); }
+  .is-expired .code{ color:var(--t5); text-decoration:line-through; text-decoration-thickness:1px; }
+  .copybtn{
+    width:38px; height:38px; flex:none; border:1px solid var(--card-line); border-radius:10px;
+    background:rgba(255,255,255,.04); color:var(--ic); cursor:pointer; display:flex; align-items:center; justify-content:center;
+  }
+  .copybtn:hover{ background:var(--hover); color:var(--t1); }
+  .is-expired .copybtn, .is-processing .copybtn{ opacity:.35; pointer-events:none; }
+  .cdrow{ margin-top:16px; display:flex; align-items:center; gap:10px; }
+  .cdrow .ct{ font-size:12.5px; color:var(--t3); white-space:nowrap; }
+  .cdrow .ct b{ font-family:var(--mono); font-weight:600; color:var(--t2); font-size:12.5px; }
+  .cdrow .ct.warn b{ color:var(--wait); }
+  .cdrow .ct .digits{ font-size:15px; color:var(--t1); }
+  .track{ flex:1; height:3px; border-radius:99px; background:rgba(255,255,255,.09); overflow:hidden; }
+  .track i{ display:block; height:100%; border-radius:99px; background:var(--accent); transition:width 1s linear; }
+  .is-expired .track i{ background:var(--t5); }
+  .foot{ margin-top:14px; font-size:11.5px; line-height:16px; color:var(--t5); }
+  .actions{ margin-top:18px; display:flex; gap:8px; }
+  .btn{
+    flex:1; height:36px; border-radius:9px; border:0; cursor:pointer; font-family:var(--font); font-size:13.5px; font-weight:600;
+    display:flex; align-items:center; justify-content:center; gap:7px;
+  }
+  .btn.pri{ background:#ececf1; color:#17181b; }
+  .btn.pri:hover{ background:#ffffff; }
+  .btn.ghost{ background:rgba(255,255,255,.06); color:var(--t2); flex:0 0 104px; }
+  .btn.ghost:hover{ background:rgba(255,255,255,.09); color:var(--t1); }
+  .okwrap{ padding:8px 0 2px; text-align:center; }
+  .okring{
+    width:64px; height:64px; margin:6px auto 0; border-radius:50%; border:2px solid var(--ok);
+    display:flex; align-items:center; justify-content:center; color:var(--ok); box-shadow:0 0 0 8px rgba(63,185,111,.10);
+  }
+  .okwrap h2{ margin-top:16px; font-size:16px; font-weight:600; color:var(--t1); }
+  .okwrap p{ margin-top:6px; font-size:13px; line-height:19px; color:var(--t3); }
+  .okwrap .auto{ margin-top:12px; font-size:12px; color:var(--t5); }
+  .okwrap .auto b{ font-family:var(--mono); color:var(--t3); font-weight:600; }
+  .statepane{ display:none; }
+  .statepane.on{ display:block; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <section class="win" id="win" aria-label="设备链接窗口">
+    <div class="whead">
+      <div class="tt">
+        <h1>链接这台设备</h1>
+        <div class="sub">用手机扫码，或在手机上输入对照码，把这台正在运行 pi 的设备链接到你的账号。</div>
+      </div>
+      <button class="xbtn" title="关闭" aria-label="关闭" onclick="doneClose()">
+        <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="devrow">
+      <div class="devtile">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 14h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      </div>
+      <div class="dn">
+        <div class="n">${deviceName}</div>
+        <div class="m">${platform} · pi 正在这台设备上运行</div>
+      </div>
+      <span class="ondot" title="在线"></span><span class="st">在线</span>
+    </div>
+    <div class="wbody">
+
+      <div class="statepane on" data-pane="1">
+        <div class="qrcard">
+          <div class="qrbox"></div>
+          <div class="veil" id="veilConn">
+            <div class="spin"></div>
+            <div class="vt">正在向 relay 申请链接码…</div>
+            <div class="vs">马上就好</div>
+          </div>
+        </div>
+        <div class="qr-hint">用手机相机或浏览器<b>扫一扫</b>上方二维码</div>
+        <div class="divider"></div>
+        <div class="codelab"><span class="lb">设备对照码</span><span class="alt">扫不了码时，在手机上输入这一枚</span></div>
+        <div class="coderow">
+          <div class="code paircode">····<span class="dash">-</span>····</div>
+          <button class="copybtn" title="复制对照码" aria-label="复制对照码" onclick="copyCode()">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M11 5V3.6A1.6 1.6 0 0 0 9.4 2H3.6A1.6 1.6 0 0 0 2 3.6v5.8A1.6 1.6 0 0 0 3.6 11H5" stroke="currentColor" stroke-width="1.3"/></svg>
+          </button>
+        </div>
+        <div class="cdrow" id="digitsrow" style="display:none">
+          <span class="ct">核对字 <b class="digits"></b></span>
+          <span class="ct" style="color:var(--t5)">手机确认页会显示同一个核对字，对上再点确认</span>
+        </div>
+        <div class="cdrow">
+          <span class="ct cdtext">剩余 <b>--:--</b></span>
+          <div class="track"><i class="cdbar"></i></div>
+          <span class="ct" style="color:var(--t5)">到期自动失效</span>
+        </div>
+        <div class="foot">二维码与对照码是同一枚一次性链接码，只可使用一次；链接成功后立即失效。不要拍照转发给别人。</div>
+      </div>
+
+      <div class="statepane is-processing" data-pane="2">
+        <div class="qrcard">
+          <div class="qrbox"></div>
+          <div class="veil show">
+            <div class="spin"></div>
+            <div class="vt">已扫码，正在完成链接…</div>
+            <div class="vs">请在手机上确认链接这台设备</div>
+          </div>
+        </div>
+        <div class="qr-hint">手机已打开链接页，<b>请在手机上确认</b></div>
+        <div class="divider"></div>
+        <div class="codelab"><span class="lb">设备对照码</span><span class="alt">已被手机领取，无需再输入</span></div>
+        <div class="coderow">
+          <div class="code paircode" style="color:var(--t4)">····<span class="dash">-</span>····</div>
+          <button class="copybtn" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M11 5V3.6A1.6 1.6 0 0 9.4 2H3.6A1.6 1.6 0 0 0 2 3.6v5.8A1.6 1.6 0 0 0 3.6 11H5" stroke="currentColor" stroke-width="1.3"/></svg>
+          </button>
+        </div>
+        <div class="cdrow">
+          <span class="ct cdtext">剩余 <b>--:--</b></span>
+          <div class="track"><i class="cdbar"></i></div>
+          <span class="ct" style="color:var(--t5)">等待手机确认</span>
+        </div>
+        <div class="foot">如果不是你本人扫的码，请直接关闭这个窗口（或在终端按 Ctrl-C），这枚码会立即作废。</div>
+      </div>
+
+      <div class="statepane" data-pane="3">
+        <div class="okwrap">
+          <div class="okring">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M4.5 12.5l5 5L19.5 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <h2>链接成功</h2>
+          <p>这台设备已链接到你的账号。<br>现在可以在手机上查看并控制它的 pi 会话。</p>
+          <div class="auto">窗口将在 <b id="autoclose">5</b> 秒后自动关闭</div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" onclick="regen()">再链接一台</button>
+          <button class="btn pri" onclick="doneClose()">完成</button>
+        </div>
+        <div class="foot" style="text-align:center">这枚链接码已使用并失效，截图留存也无法再次使用。</div>
+      </div>
+
+      <div class="statepane is-expired" data-pane="4">
+        <div class="qrcard">
+          <div class="qrbox"></div>
+          <div class="veil show">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5.2l3.4 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <div class="vt">这枚链接码已过期</div>
+            <div class="vs">为安全起见，链接码到期后自动失效</div>
+          </div>
+        </div>
+        <div class="qr-hint">二维码已失效，扫码不会有任何效果</div>
+        <div class="divider"></div>
+        <div class="codelab"><span class="lb">设备对照码</span><span class="alt">已失效</span></div>
+        <div class="coderow">
+          <div class="code paircode">····<span class="dash">-</span>····</div>
+          <button class="copybtn" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="9" height="9" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M11 5V3.6A1.6 1.6 0 0 0 9.4 2H3.6A1.6 1.6 0 0 0 2 3.6v5.8A1.6 1.6 0 0 0 3.6 11H5" stroke="currentColor" stroke-width="1.3"/></svg>
+          </button>
+        </div>
+        <div class="actions">
+          <button class="btn pri" onclick="regen()">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 1.8v2.6h-2.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            重新生成链接码
+          </button>
+        </div>
+        <div class="foot">重新生成后，旧码彻底作废，只有新码有效。若按钮没反应，说明 attach 已经退出，回终端重新运行即可。</div>
+      </div>
+
+    </div>
+  </section>
+</div>
+<script>
+  var S = ${initial};
+  var phase = "";
+  var closeTimer = null;
+  var closeLeft = 0;
+  function el(id){ return document.getElementById(id); }
+  function all(sel){ return Array.prototype.slice.call(document.querySelectorAll(sel)); }
+  function setPane(n){
+    all('.statepane').forEach(function(p){ p.classList.toggle('on', +p.getAttribute('data-pane') === n); });
+  }
+  function fmtRemain(ms){
+    if (ms < 0) ms = 0;
+    var s = Math.ceil(ms / 1000);
+    var mm = String(Math.floor(s / 60)); var ss = String(s % 60);
+    if (mm.length < 2) mm = '0' + mm;
+    if (ss.length < 2) ss = '0' + ss;
+    return mm + ':' + ss;
+  }
+  function tickCountdown(){
+    if (!S.expiresAt) return;
+    var remain = S.expiresAt - Date.now();
+    var total = S.ttlMs > 0 ? S.ttlMs : 600000;
+    all('.cdtext').forEach(function(t){
+      t.innerHTML = '剩余 <b>' + fmtRemain(remain) + '</b>';
+      t.classList.toggle('warn', remain <= 60000);
+    });
+    all('.cdbar').forEach(function(b){ b.style.width = Math.max(0, Math.min(100, remain / total * 100)) + '%'; });
+    if (remain <= 0 && (phase === 'waiting' || phase === 'processing')) setPane(4);
+  }
+  function startCloseCountdown(){
+    stopCloseCountdown();
+    closeLeft = 5;
+    var e = el('autoclose');
+    if (e) e.textContent = closeLeft;
+    closeTimer = setInterval(function(){
+      closeLeft--;
+      if (closeLeft <= 0){ stopCloseCountdown(); doneClose(); return; }
+      if (e) e.textContent = closeLeft;
+    }, 1000);
+  }
+  function stopCloseCountdown(){ if (closeTimer){ clearInterval(closeTimer); closeTimer = null; } }
+  function applyState(s){
+    S = s;
+    if (s.qrSvg) all('.qrbox').forEach(function(b){
+      if (b.getAttribute('data-svg') !== s.qrSvg){ b.innerHTML = s.qrSvg; b.setAttribute('data-svg', s.qrSvg); }
+    });
+    if (s.codeFormatted){
+      var html = s.codeFormatted.replace('-', '<span class="dash">-</span>');
+      all('.paircode').forEach(function(c){ c.innerHTML = html; });
+    }
+    var dr = el('digitsrow');
+    if (dr) dr.style.display = s.checkDigits ? '' : 'none';
+    if (s.checkDigits) all('.digits').forEach(function(d){ d.textContent = s.checkDigits; });
+    el('veilConn').style.display = s.phase === 'connecting' ? 'flex' : 'none';
+    if (s.phase !== phase){
+      phase = s.phase;
+      stopCloseCountdown();
+      if (phase === 'done'){ setPane(3); startCloseCountdown(); }
+      else if (phase === 'expired') setPane(4);
+      else if (phase === 'processing') setPane(2);
+      else setPane(1);
+    }
+    tickCountdown();
+  }
+  function regen(){ try { fetch('/regen', { method: 'POST' }); } catch (e) {} }
+  function doneClose(){ try { window.close(); } catch (e) {} }
+  function copyCode(){
+    var t = (S.codeFormatted || '').replace(/-/g, '');
+    if (t && navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).catch(function(){});
+  }
+  setInterval(tickCountdown, 250);
+  setInterval(function(){
+    fetch('/state').then(function(r){ return r.json(); }).then(applyState).catch(function(){});
+  }, 900);
+  applyState(S);
+</script>
+</body>
+</html>`;
+}
+
+/** 本机窗口页服务：只绑 127.0.0.1 随机端口；GET / 出页面、GET /state 出状态、POST /regen 请求重新生成 */
+function startLinkWindowServer(state, opts = {}) {
+  const onRegen = typeof opts.onRegen === "function" ? opts.onRegen : () => {};
+  const server = http.createServer((req, res) => {
+    try {
+      const u = new URL(String(req.url || "/"), "http://127.0.0.1");
+      if (req.method === "GET" && u.pathname === "/state") {
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+        res.end(JSON.stringify(linkWindowStateJson(state)));
+        return;
+      }
+      if (req.method === "POST" && u.pathname === "/regen") {
+        onRegen();
+        res.writeHead(204, { "Cache-Control": "no-store" });
+        res.end();
+        return;
+      }
+      if (req.method === "GET" && (u.pathname === "/" || u.pathname === "/index.html")) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        res.end(renderLinkPage(state));
+        return;
+      }
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("not found");
+    } catch {
+      try {
+        res.writeHead(500);
+        res.end();
+      } catch {}
+    }
+  });
+  return new Promise((resolve) => {
+    server.once("error", () => resolve(null));
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({
+        server,
+        url: `http://127.0.0.1:${addr.port}/`,
+        close: () => {
+          try {
+            server.close();
+          } catch {}
+        },
+      });
+    });
+  });
+}
+
+/**
+ * 一轮 --link 尝试：连本地通道，第一帧发 pair_request，等 pair_request_result（onCode 出示），
+ * 再等 pair_result（结果帧与 requestPairing 同形）。过期有三种到达方式——pair_expired 帧、
+ * pair_result/error 带 pair_expired、本地到点——都归一成 { ok:false, code:"pair_expired", expired:true }。
+ * relay 太旧不认识 pair_request（unknown_type）→ code:"unsupported"，调用方提示改用 --pair。
+ */
+function requestLinkAttempt({ relay, deviceId, deviceName, deviceToken, platform = HOST_PLATFORM, WebSocketImpl, timeoutMs = PAIR_TIMEOUT_MS, onCode, onClaimed, registerAbort }) {
+  return new Promise((resolve) => {
+    let WS = WebSocketImpl;
+    if (!WS) {
+      try {
+        WS = require("ws");
+      } catch (e) {
+        resolve({ ok: false, code: "internal", error: "无法加载 ws：" + (e && e.message ? e.message : e) });
+        return;
+      }
+    }
+    const expiredResult = () => ({
+      ok: false,
+      code: "pair_expired",
+      expired: true,
+      error: (PROTOCOL.errors.pair_expired && PROTOCOL.errors.pair_expired.message) || "链接码已过期，请重新生成",
+    });
+    let done = false;
+    let ws;
+    let expiryTimer = null;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(hardTimer);
+      if (expiryTimer) clearTimeout(expiryTimer);
+      try {
+        ws && ws.close();
+      } catch {}
+      resolve(result);
+    };
+    const hardTimer = setTimeout(() => finish({ ok: false, code: "timeout", error: "relay 没有回应链接请求" }), timeoutMs);
+    if (typeof registerAbort === "function") registerAbort(() => finish({ ok: false, code: "aborted", error: "已取消" }));
+    try {
+      ws = new WS(relay);
+    } catch (e) {
+      finish({ ok: false, code: "offline", error: "连不上 relay：" + (e && e.message ? e.message : e) });
+      return;
+    }
+    const device = { name: deviceName || defaultDeviceName(platform), platform: platformId(platform) };
+    if (deviceId) device.id = deviceId;
+    // 重新链接已有设备时 relay 要核验旧令牌防接管：与 pair 帧同口径，device 内外各放一份
+    if (deviceToken) device.deviceToken = String(deviceToken);
+    const onOpen = () => {
+      try {
+        const frame = { type: "pair_request", proto: PROTOCOL.proto, device };
+        if (deviceToken) frame.deviceToken = String(deviceToken);
+        ws.send(JSON.stringify(frame));
+      } catch (e) {
+        finish({ ok: false, code: "offline", error: "发送链接请求失败：" + (e && e.message ? e.message : e) });
+      }
+    };
+    const onMessage = (data) => {
+      let msg;
+      try {
+        msg = JSON.parse(typeof data === "string" ? data : String(data));
+      } catch {
+        return;
+      }
+      if (!msg || typeof msg.type !== "string") return;
+      if (msg.type === "pair_request_result") {
+        clearTimeout(hardTimer);
+        const code = String(msg.code || "").toUpperCase().replace(/[\s-]+/g, "");
+        const expiresAt = Number(msg.expiresAt) || 0;
+        if (!code || !expiresAt) {
+          finish({ ok: false, code: "pair_invalid", error: "relay 回的链接码不完整" });
+          return;
+        }
+        const info = { code, expiresAt, checkDigits: msg.checkDigits == null ? "" : String(msg.checkDigits) };
+        try {
+          if (onCode) onCode(info);
+        } catch {}
+        expiryTimer = setTimeout(() => finish(expiredResult()), Math.max(0, expiresAt - Date.now()));
+        return;
+      }
+      if (msg.type === "pair_claimed") {
+        try {
+          if (onClaimed) onClaimed();
+        } catch {}
+        return;
+      }
+      if (msg.type === "pair_expired") {
+        finish(expiredResult());
+        return;
+      }
+      if (msg.type === "pair_result") {
+        if (msg.ok && typeof msg.deviceId === "string" && typeof msg.deviceToken === "string" && msg.deviceToken) {
+          finish({ ok: true, accountId: msg.accountId || "admin", deviceId: msg.deviceId, deviceToken: msg.deviceToken });
+        } else if ((msg.code || "") === "pair_expired") {
+          finish(expiredResult());
+        } else {
+          finish({ ok: false, code: msg.code || "pair_invalid", error: msg.error || PROTOCOL.errors.pair_invalid.message });
+        }
+        return;
+      }
+      if (msg.type === "error" && typeof msg.code === "string") {
+        if (msg.code === "unknown_type") {
+          finish({ ok: false, code: "unsupported", error: "relay 版本太旧，不支持扫码链接（先升级服务器上的 relay）" });
+        } else if (msg.code === "pair_expired") {
+          finish(expiredResult());
+        } else {
+          finish({ ok: false, code: msg.code, error: msg.error || "relay 拒绝了链接请求" });
+        }
+      }
+    };
+    const onClose = () => finish({ ok: false, code: "offline", error: "等待链接时 relay 断开了连接" });
+    if (typeof ws.on === "function") {
+      ws.on("open", onOpen);
+      ws.on("message", onMessage);
+      ws.on("close", onClose);
+      ws.on("error", () => {});
+    } else {
+      ws.onopen = onOpen;
+      ws.onmessage = (ev) => onMessage(ev && ev.data !== undefined ? ev.data : ev);
+      ws.onclose = onClose;
+      ws.onerror = () => {};
+    }
+  });
+}
+
+/** --link：向 relay 申请链接码 → 终端 + 本机窗口出示 → 等手机批准 → 复用 persistPairResult 落盘 */
+async function linkMain(args, envPath, opts = {}) {
+  const out = opts.writeOut || ((line) => console.log(line));
+  const err = opts.writeErr || ((line) => console.error(line));
+  const platform = opts.platform || HOST_PLATFORM;
+  const cfg = loadConfig(envPath, opts.env || process.env, platform);
+  const relay = args.relay || cfg.relay;
+  if (!relay) {
+    err("不知道 relay 地址：加上 --relay ws://<服务器>:7001，或先在 .env 里配 PI_REMOTE_RELAY");
+    return 1;
+  }
+  if (opts.enforceSafety === true) {
+    const relaySafety = attachRelaySafetyError(relay, { allowRemote: args.allowRemote });
+    if (relaySafety) {
+      err(relaySafety);
+      return 2;
+    }
+    if (!isLocalRelayHost(relayHostOf(relay) || "")) printRemoteRelayWarning(relay, envPath);
+  }
+  const deviceName = cfg.deviceName || defaultDeviceName(platform);
+  const viewerPort = args.viewerPort || Number((opts.env || process.env).PI_REMOTE_VIEWER_PORT) || 7002;
+  const viewer = viewerUrlFromRelay(relay, viewerPort);
+  const state = {
+    phase: "connecting",
+    deviceName,
+    platformLabel: platformLabel(platform),
+    code: "",
+    codeFormatted: "",
+    checkDigits: "",
+    url: "",
+    qrSvg: "",
+    expiresAt: 0,
+    ttlMs: 0,
+    issuedAt: 0,
+  };
+
+  // 窗口页「重新生成」/ 成功页「再链接一台」的等待者：linkMain 主循环在收尾态等它
+  let regenResolve = null;
+  const pokeRegen = (why) => {
+    if (regenResolve) regenResolve(why || "regen");
+  };
+  const waitRegen = (ms) =>
+    new Promise((resolve) => {
+      if (!(ms > 0)) {
+        resolve("timeout");
+        return;
+      }
+      const timer = setTimeout(() => {
+        regenResolve = null;
+        resolve("timeout");
+      }, ms);
+      regenResolve = (why) => {
+        clearTimeout(timer);
+        regenResolve = null;
+        resolve(why || "regen");
+      };
+    });
+
+  let win = null;
+  if (opts.linkWindow !== false) {
+    win = await startLinkWindowServer(state, { onRegen: () => pokeRegen("regen") });
+    if (win && opts.openBrowser !== false) openBrowserDefault(win.url, platform, opts.spawnImpl || spawn);
+  }
+
+  let aborted = false;
+  let abortAttempt = null;
+  const signalSource = opts.signalSource || process;
+  const onSignal = () => {
+    aborted = true;
+    if (abortAttempt) abortAttempt();
+    pokeRegen("abort");
+  };
+  const bindSignals = opts.bindSignals !== false;
+  if (bindSignals) {
+    signalSource.on("SIGINT", onSignal);
+    signalSource.on("SIGTERM", onSignal);
+  }
+
+  const terminalWidth = Number(opts.terminalWidth) || (process.stdout && process.stdout.columns) || 80;
+  out(`正在向 ${relay} 申请链接码…`);
+  if (win) out(`链接窗口：${win.url}（只在本机 127.0.0.1 打开；没自动弹出来就把这个地址粘到浏览器里，或直接看终端）`);
+
+  let exitCode = 1;
+  try {
+    for (;;) {
+      state.phase = "connecting";
+      state.code = "";
+      state.codeFormatted = "";
+      state.checkDigits = "";
+      state.url = "";
+      state.qrSvg = "";
+      state.expiresAt = 0;
+      state.ttlMs = 0;
+      const result = await requestLinkAttempt({
+        relay,
+        deviceId: cfg.deviceId,
+        deviceName,
+        deviceToken: cfg.deviceToken,
+        platform,
+        WebSocketImpl: opts.WebSocketImpl,
+        timeoutMs: opts.timeoutMs,
+        registerAbort: (fn) => {
+          abortAttempt = fn;
+        },
+        onClaimed: () => {
+          state.phase = "processing";
+        },
+        onCode: (info) => {
+          state.phase = "waiting";
+          state.code = info.code;
+          state.codeFormatted = formatPairCode(info.code);
+          state.checkDigits = info.checkDigits;
+          state.expiresAt = info.expiresAt;
+          state.issuedAt = Date.now();
+          state.ttlMs = Math.max(0, info.expiresAt - state.issuedAt);
+          state.url = viewer + "#pair=" + info.code;
+          printLinkOffer(state, { out, terminalWidth });
+        },
+      });
+      abortAttempt = null;
+      if (aborted || result.code === "aborted") {
+        out("已取消链接。");
+        exitCode = 130;
+        break;
+      }
+      if (result.ok) {
+        persistPairResult(args, envPath, cfg, result);
+        state.phase = "done";
+        out(`链接成功：设备 ${result.deviceId}，令牌已写入 ${envPath}（令牌不打印，.env 权限 600）`);
+        out("下一步：重启正在运行的 pi（扩展启动时读取令牌），然后运行 attach 打开连接窗口。");
+        const linger = opts.doneLingerMs == null ? 6000 : Number(opts.doneLingerMs);
+        const why = await waitRegen(linger);
+        if (why === "regen" && !aborted) continue;
+        exitCode = aborted ? 130 : 0;
+        break;
+      }
+      if (result.expired || result.code === "pair_expired") {
+        state.phase = "expired";
+        err("这枚链接码已过期，没有完成链接。");
+        out("重新运行 " + linkHint(platform) + " 会生成新码；也可以改用手输配对码：" + pairHint(platform));
+        const grace = opts.regenGraceMs == null ? (win ? 30000 : 0) : Number(opts.regenGraceMs);
+        const why = grace > 0 ? await waitRegen(grace) : "timeout";
+        if (why === "regen" && !aborted) {
+          out("正在生成新的链接码…");
+          continue;
+        }
+        exitCode = aborted ? 130 : 1;
+        break;
+      }
+      err(`链接失败（${result.code}）：${result.error}`);
+      if (result.code === "unsupported") err("改用手输配对码：" + pairHint(platform) + "（先在网页「添加设备」里生成配对码）");
+      exitCode = 1;
+      break;
+    }
+  } finally {
+    if (bindSignals) {
+      signalSource.removeListener("SIGINT", onSignal);
+      signalSource.removeListener("SIGTERM", onSignal);
+    }
+    if (win) win.close();
+  }
+  return exitCode;
 }
 
 module.exports = {
@@ -3291,6 +4074,15 @@ module.exports = {
   requestPairing,
   pairMain,
   pairHint,
+  linkHint,
+  formatPairCode,
+  persistPairResult,
+  requestLinkAttempt,
+  linkMain,
+  startLinkWindowServer,
+  renderLinkPage,
+  linkWindowStateJson,
+  openBrowserDefault,
   doctorHint,
   doctorMain,
   tcpProbe,

@@ -10,8 +10,9 @@
  * 清完向声明了 session.purge 的 viewer 广播 session_removed，并刷新 room_list。
  *
  * 幂等：已经不存在的副本再清一遍不报错；在线房间永远不动，也不会出现在广播的 ids 里。
- * 广播只包含「正文副本确实清掉」的 id：删文件失败还广播「已删除」会让网页误以为删成功，
- * relay 重启后会话完整复活（报告 relay 中-4）。
+ * 广播只包含「正文副本确实清掉、且索引墓碑确实立住」的 id：删文件失败还广播「已删除」会让网页误以为删成功，
+ * relay 重启后会话完整复活（报告 relay 中-4）；forgetSession 返回 false 不抛错时同理，
+ * 旧行还在却广播，同样会让会话复活成空壳（R-2）。
  */
 const fs = require("node:fs");
 const { broadcast, hasCap } = require("./wire");
@@ -67,10 +68,19 @@ function purgeSessions({ accountId, deviceId, ids, rooms, store, devices, index,
       rooms.map.delete(id);
     }
     if (dev && dev.archives) dev.archives.delete(id);
+    // forgetSession 失败有两种形态：抛错，或返回 false 不抛错（参数不合/墓碑写盘失败）。
+    // 只套 try/catch 会把 return false 当成功：索引旧行（带会话名/路径）还在，却广播了
+    // session_removed，会话随即在清单里「复活」成空壳（R-2）。返回值也要查：
+    // 墓碑没立住就不计入 done、不广播，索引行还留在盘上，下一轮 purge 能按它重试 forget。
+    let forgot = false;
     try {
-      index.forgetSession(accountId, deviceId, id, Date.now());
+      forgot = index.forgetSession(accountId, deviceId, id, Date.now()) !== false;
     } catch (e) {
       log("purge 索引失败:", id, e.message);
+    }
+    if (!forgot) {
+      log("purge 索引墓碑未立住，本轮不广播 session_removed，等待下轮重试:", id);
+      continue;
     }
     done.push(id);
   }

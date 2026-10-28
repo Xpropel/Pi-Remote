@@ -1,11 +1,14 @@
-import { Suspense, useEffect, useRef } from "react"
+import { Suspense, useEffect, useRef, useState } from "react"
 import { PiSettingsHost } from "@/pi/hooks/PiSettingsHost"
 import { usePiDevice } from "@/pi/hooks/usePiDevice"
 import { usePiTheme } from "@/pi/hooks/usePiTheme"
 import { usePiUiState } from "@/pi/hooks/usePiUiState"
 import type { PiMobileNavMode } from "@/pi/mobile/types"
+import { PI_UI_IDS } from "@/pi/containers/types"
+import { PairLinkLanding } from "@/pi/PairLinkLanding"
 import { PiVariantBoundary } from "@/pi/PiVariantBoundary"
 import { PiVariantLoading, piVariantDefOf, type VariantAppProps } from "@/pi/variants"
+import { takePairLinkFromLocation } from "@/relay/pairLink"
 import { useRelay } from "@/relay/useRelay"
 import "@/pi/styles/privacy.css"
 
@@ -29,6 +32,9 @@ export default function PiApp() {
   const relay = useRelay()
   const device = usePiDevice()
   const [ui, act] = usePiUiState()
+  // 二维码设备链接落地（qr-pairing §3.2）：启动时命中 #pair= 就先进落地视图（hash 在取码时已清掉，
+  // 码只留在内存里）；落地页与皮肤无关（三套变体共用一份），退出后才进下面的变体树。
+  const [pairEntry, setPairEntry] = useState(() => takePairLinkFromLocation())
   // P11 prefs-sync（additive）：mobileNav 跨设备跟随账号。
   // 1) 采用服务端值（旧 relay = null 不覆盖本地）；采用后记入 lastPushed，避免回声回发。
   // 2) 本地值变化且已认证 → 上行 {mobileNav}；首连无服务端记录时以本地值 seed。
@@ -77,6 +83,23 @@ export default function PiApp() {
     theme,
     layout: device.viewport,
     device: device.frame,
+  }
+  if (pairEntry) {
+    // 成功后「查看设备列表」：先把配对对话框的开态写进 ui 状态，再退落地页——变体树挂载时它就是开的
+    const showDevices = () => {
+      const overlay = { id: PI_UI_IDS.pairing }
+      if (device.viewport === "phone") act.openSheet(overlay)
+      else act.openDialog(overlay)
+      setPairEntry(null)
+    }
+    return (
+      <PairLinkLanding
+        relay={relay}
+        initialCode={pairEntry.code}
+        onExit={() => setPairEntry(null)}
+        onShowDevices={showDevices}
+      />
+    )
   }
   return (
     <PiSettingsHost relay={relay} ui={ui} act={act} keyboardOpen={device.frame.keyboard}>

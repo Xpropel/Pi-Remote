@@ -33,6 +33,16 @@ function formatPairCode(code) {
   return code.slice(0, half) + "-" + code.slice(half);
 }
 
+/**
+ * 核对字（防误批）：对裸码做带域分隔的 sha256，取摘要前两字节折成 00-99 的两位数（补零成 2 字符）。
+ * 只由 relay 计算：pair_request_result 与 pair_lookup 的回包都带 checkDigits，终端与手机确认页同显
+ * 这两位数供人工核对，展示端只显示、不许自己算——算法只此一份实现，避免三端各写一份日久漂移。
+ */
+function pairCheckDigits(code) {
+  const digest = crypto.createHash("sha256").update("pair-check:" + String(code)).digest();
+  return String((digest[0] * 256 + digest[1]) % 100).padStart(2, "0");
+}
+
 /** 用户输入的配对码：不分大小写，忽略空格和短横线；长度或字符不对返回空串 */
 function normalizePairCode(v) {
   if (typeof v !== "string") return "";
@@ -76,6 +86,24 @@ function requestSource(req) {
 }
 
 /**
+ * 配对失败记账（ctx.pairFailures：来源 → 最近失败时间戳数组），pair / pair_request / pair_lookup 共用一本账。
+ * pairSourceBlocked 只查不记：窗口内失败已达上限返回 true，调用方直接回 rate_limited（被限时不再追加记账，
+ * 免得锁定窗口被自己的重试一直续命）。notePairFailure 记一次失败：先剪掉窗口外的旧账，
+ * 再把来源挪到 Map 末尾（按最近出错排序），来源太多时挤掉最久没出错的。
+ */
+function pairSourceBlocked(failures, source, now) {
+  const recent = (failures.get(source) || []).filter((t) => t > now - PAIR_FAIL_WINDOW_MS);
+  return recent.length >= PAIR_FAIL_MAX;
+}
+
+function notePairFailure(failures, source, now) {
+  const recent = (failures.get(source) || []).filter((t) => t > now - PAIR_FAIL_WINDOW_MS);
+  failures.delete(source);
+  failures.set(source, [...recent, now]);
+  if (failures.size > PAIR_FAIL_SOURCES_MAX) failures.delete(failures.keys().next().value);
+}
+
+/**
  * v4 设备鉴权：令牌的 sha256 和账号下每一行做定时安全比较。
  * 令牌属于别的设备 → device_mismatch；属于这台但已作废 → device_revoked；对不上任何一行 → auth_failed。
  */
@@ -92,4 +120,4 @@ function checkDeviceToken(index, devices, cfg, deviceId, token) {
   return { ok: true, accountId };
 }
 
-module.exports = { PAIR_FAIL_WINDOW_MS, PAIR_FAIL_MAX, PAIR_FAIL_SOURCES_MAX, PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, requestSource, checkDeviceToken };
+module.exports = { PAIR_FAIL_WINDOW_MS, PAIR_FAIL_MAX, PAIR_FAIL_SOURCES_MAX, PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken };
