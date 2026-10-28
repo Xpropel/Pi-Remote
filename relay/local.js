@@ -29,13 +29,49 @@ function cloneQueueSide(value) {
   }
 }
 
-/** 把 queue_update 的 steering / followUp 留在房间上。没收到过就不建这份缓存。 */
+/** 房间级「最后状态」缓存的体积防御（R-3，与 remote_queue 的条数 + 字段上限同口径）：
+ *  条数上限与 remote_queue 一致（120）；单份缓存的序列化字节上限取补发口径的缺省值
+ *  （maxPayloadBytes 256KB——补发端对超限帧本就整帧跳过，存得再大也发不出去）。
+ *  超限时整帧不缓存、保留上一份，避免扩展异常时一条坏帧把大对象钉在房间上，
+ *  让房间内存只涨不降、每次订阅补发都白做一次大序列化。 */
+const ROOM_STATE_CACHE_MAX_ITEMS = 120;
+const ROOM_STATE_CACHE_MAX_BYTES = 256 * 1024;
+
+/** 值序列化后的 UTF-8 字节数；不可序列化按无穷大算。 */
+function serializedBytes(value) {
+  try {
+    const text = JSON.stringify(value);
+    return typeof text === "string" ? Buffer.byteLength(text) : Infinity;
+  } catch {
+    return Infinity;
+  }
+}
+
+/** 深拷贝并量体积：序列化后超过 maxBytes（或不可序列化）返回 undefined，调用方据此不缓存。 */
+function cloneWithinBytes(value, maxBytes) {
+  if (value === undefined) return undefined;
+  if (serializedBytes(value) > maxBytes) return undefined;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+}
+
+/** 把 queue_update 的 steering / followUp 留在房间上。没收到过就不建这份缓存。
+ *  体积防御（R-3）：每侧数组先截到条数上限，整份再量字节，超限整帧不缓存、
+ *  保留上一份（条目正文是用户待发原文，不逐条截断——总量封顶已足够兜底）。 */
 function rememberQueue(room, event) {
   const queue = {};
-  if (event && Object.prototype.hasOwnProperty.call(event, "steering")) queue.steering = cloneQueueSide(event.steering);
-  if (event && Object.prototype.hasOwnProperty.call(event, "followUp")) queue.followUp = cloneQueueSide(event.followUp);
+  if (event && Object.prototype.hasOwnProperty.call(event, "steering")) {
+    queue.steering = cloneQueueSide(Array.isArray(event.steering) ? event.steering.slice(0, ROOM_STATE_CACHE_MAX_ITEMS) : event.steering);
+  }
+  if (event && Object.prototype.hasOwnProperty.call(event, "followUp")) {
+    queue.followUp = cloneQueueSide(Array.isArray(event.followUp) ? event.followUp.slice(0, ROOM_STATE_CACHE_MAX_ITEMS) : event.followUp);
+  }
   // 与 taskList 对齐的时间戳：补发时让前端知道这份队列是哪个时刻的。
   queue.at = Date.now();
+  if (serializedBytes(queue) > ROOM_STATE_CACHE_MAX_BYTES) return;
   room.queue = queue;
 }
 
@@ -91,10 +127,13 @@ function rememberRemoteQueue(room, event) {
 }
 
 /** 任务清单最后状态：只接受数组（空数组 = 清空），深拷贝后留在房间上，避免事件对象后续被改。
- *  source 只认契约里的 todo / plan；at 只留有限数字。没收到过就不建这份缓存。 */
+ *  source 只认契约里的 todo / plan；at 只留有限数字。没收到过就不建这份缓存。
+ *  体积防御（R-3）：先截条数再整体量字节，超限整帧不缓存、保留上一份清单。 */
 function rememberTaskList(room, event) {
   if (!room || !event || !Array.isArray(event.tasks)) return;
-  const cached = { tasks: cloneQueueSide(event.tasks) };
+  const tasks = cloneWithinBytes(event.tasks.slice(0, ROOM_STATE_CACHE_MAX_ITEMS), ROOM_STATE_CACHE_MAX_BYTES);
+  if (tasks === undefined) return;
+  const cached = { tasks };
   if (event.source === "todo" || event.source === "plan") cached.source = event.source;
   if (typeof event.at === "number" && Number.isFinite(event.at)) cached.at = event.at;
   room.taskList = cached;
@@ -103,6 +142,7 @@ function rememberTaskList(room, event) {
 /** 子智能体状态最后一份全量快照：只接受数组（空数组 = 清空），深拷贝后留在房间上。
  *  at 只留有限数字；agents 非数组、或非空但一条都认不出（缺 id / 非法 status）都算坏帧，
  *  不覆盖现有缓存（与 UI 的“坏帧保留上一帧、认不出的条目跳过”一致）。
+ *  条数与总字节另有上限（R-3，见 ROOM_STATE_CACHE_MAX_*），超限同样不覆盖。
  *  没收到过就不建这份缓存。 */
 const AGENT_STATUSES = new Set(["queued", "running", "succeeded", "failed", "aborted"]);
 function validAgentItem(raw) {
@@ -112,11 +152,15 @@ function validAgentItem(raw) {
 }
 function rememberAgentState(room, event) {
   if (!room || !event || !Array.isArray(event.agents)) return;
-  const agents = [];
+  const valid = [];
   for (const raw of event.agents) {
-    if (validAgentItem(raw)) agents.push(cloneQueueSide(raw));
+    if (validAgentItem(raw)) valid.push(raw);
+    if (valid.length >= ROOM_STATE_CACHE_MAX_ITEMS) break;
   }
-  if (event.agents.length && !agents.length) return;
+  if (event.agents.length && !valid.length) return;
+  // 体积防御（R-3）：认得出的条目整体量字节，超限整帧不缓存、保留上一份快照。
+  const agents = cloneWithinBytes(valid, ROOM_STATE_CACHE_MAX_BYTES);
+  if (agents === undefined) return;
   const cached = { agents };
   if (typeof event.at === "number" && Number.isFinite(event.at)) cached.at = event.at;
   room.agentState = cached;
@@ -297,11 +341,24 @@ function runningToolId(event) {
   return typeof id === "string" && id ? id : "";
 }
 
+/** 进行中工具条数硬顶（R-3，与 ASSISTANT_INDEX_MAX 同级）：工具的 end 帧丢失时
+ *  条目只涨不降，必须封顶；超限丢最旧（被丢条目迟到的 update 会按「没见过 start」
+ *  重新建一条、迟到的 end 按不存在处理，都与现状口径一致）。 */
+const RUNNING_TOOLS_MAX = 128;
+
+/** 工具名 / 参数 / 中间输出的单项体积上限：与房间状态缓存同口径（256KB）。
+ *  超限返回 undefined，调用方不写这一项（保留先前记下的值），避免一条坏帧把
+ *  大 args / partialResult 钉在房间上。 */
+function cloneToolField(value) {
+  return cloneWithinBytes(value, ROOM_STATE_CACHE_MAX_BYTES);
+}
+
 function ensureRunningTool(room, id) {
   if (!room.runningTools) room.runningTools = [];
   for (const entry of room.runningTools) if (entry.toolCallId === id) return entry;
   const entry = { toolCallId: id, fromStart: false };
   room.runningTools.push(entry);
+  while (room.runningTools.length > RUNNING_TOOLS_MAX) room.runningTools.shift();
   return entry;
 }
 
@@ -313,8 +370,14 @@ function rememberToolStart(room, event) {
   const entry = ensureRunningTool(room, id);
   entry.fromStart = true;
   if (typeof entry.startedAt !== "number" || !Number.isFinite(entry.startedAt)) entry.startedAt = Date.now();
-  if (event && Object.prototype.hasOwnProperty.call(event, "toolName")) entry.toolName = cloneQueueSide(event.toolName);
-  if (event && Object.prototype.hasOwnProperty.call(event, "args")) entry.args = cloneQueueSide(event.args);
+  if (event && Object.prototype.hasOwnProperty.call(event, "toolName")) {
+    const toolName = cloneToolField(event.toolName);
+    if (toolName !== undefined) entry.toolName = toolName;
+  }
+  if (event && Object.prototype.hasOwnProperty.call(event, "args")) {
+    const args = cloneToolField(event.args);
+    if (args !== undefined) entry.args = args;
+  }
 }
 
 /** 工具中间输出：没收到过 start 也记。toolName 有才覆盖；partialResult 有才写下。 */
@@ -322,8 +385,14 @@ function rememberToolUpdate(room, event) {
   const id = runningToolId(event);
   if (!id) return;
   const entry = ensureRunningTool(room, id);
-  if (event && typeof event.toolName === "string" && event.toolName) entry.toolName = cloneQueueSide(event.toolName);
-  if (event && Object.prototype.hasOwnProperty.call(event, "partialResult")) entry.partialResult = cloneQueueSide(event.partialResult);
+  if (event && typeof event.toolName === "string" && event.toolName) {
+    const toolName = cloneToolField(event.toolName);
+    if (toolName !== undefined) entry.toolName = toolName;
+  }
+  if (event && Object.prototype.hasOwnProperty.call(event, "partialResult")) {
+    const partialResult = cloneToolField(event.partialResult);
+    if (partialResult !== undefined) entry.partialResult = partialResult;
+  }
 }
 
 function forgetRunningTool(room, id) {

@@ -865,7 +865,7 @@ function sessionRootFromEnv(environ = process.env) {
 
 /**
  * pi 会话目录名：去掉首部斜杠，把 / \ : 换成 -，再包一层 --。
- * D:\pi-myself → --D--pi-myself--；/Users/user/CLI/Pi-Remote → --Users-a-CLI-Pi-Remote--（按真实路径，/tmp 记作 --private-tmp--）
+ * D:\pi-myself → --D--pi-myself--；/Users/user/CLI/Pi-Remote → --Users-user-CLI-Pi-Remote--（按真实路径，/tmp 记作 --private-tmp--）
  */
 function encodeCwdDir(cwd, platform = HOST_PLATFORM) {
   const resolved = realDir(cwd, platform);

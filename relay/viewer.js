@@ -649,7 +649,9 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
           case "get_sessions": {
             const origId = msg.id ? String(msg.id) : null;
             const deviceId = typeof msg.deviceId === "string" ? msg.deviceId.trim() : "";
-            const accountId = typeof msg.accountId === "string" && msg.accountId.trim() ? msg.accountId.trim() : normalizeAccount(cfg.accountId);
+            // R-5：账号只认本连接的握手口径（viewerAccount），忽略 msg.accountId
+            // ——与文件头口径及 prefs/usage 的做法一致，客户端上报不作数。
+            const accountId = viewerAccount();
             if (origId) {
               const key = queryKey(ws, origId);
               // 同一个 (连接, id) 重复查询（前端重试/连点）会覆盖 map 条目：必须先撤掉旧定时器，

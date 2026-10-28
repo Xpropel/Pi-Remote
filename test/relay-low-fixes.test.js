@@ -6,6 +6,10 @@
  * 全部是单元测试 + 真实 startRelay 的最小拓扑，不跑 UI/e2e。
  * 低-10 的端到端用例已在 test/relay-runtime-hardening.test.js 里（去重键绑定命令/参数），
  * 本文件只补一条键组成的纯函数断言并标注 verified。
+ *
+ * 另含 findings/relay.md 的两条回归：R-3（房间状态缓存条数/字节上限）、
+ * R-5（get_sessions 只认连接账号、忽略 viewer 上报的 accountId）。
+ * 以及免服务器模式 §2.3：webRoot 缺 index.html 时启动告警（只告警、不拦启动）。
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -511,3 +515,194 @@ test("低-19：切房因房间满失败时保留原房间订阅；成功切房�
   assert.equal(roomC.viewers.size, 1);
   assert.equal(roomB.viewers.size, 1);
 });
+
+/* ---------------- R-3：房间状态缓存上限（findings/relay.md） ---------------- */
+
+async function localWithRoom(relay, roomId) {
+  const c = await wsClient(relay.localPort);
+  c.send({ type: "auth", role: "local", token: LOCAL_TOKEN });
+  assert.equal((await c.type("auth_result")).ok, true);
+  c.send({ type: "room_register", room: { id: roomId, label: "t", cwd: "/tmp", epoch: 1, instance: "inst-a" } });
+  await c.type("room_registered");
+  return c;
+}
+
+/** 轮询直到断言成立（本连接的帧是顺序处理的，用另一份缓存的出现当「前面的帧已处理完」的探针）。 */
+async function until(fn, ms = 3000) {
+  const start = Date.now();
+  let lastErr;
+  while (Date.now() - start <= ms) {
+    try {
+      return fn();
+    } catch (e) {
+      lastErr = e;
+      await sleep(20);
+    }
+  }
+  throw lastErr;
+}
+
+test("R-3：进行中工具缓存有条数硬顶（128），超限丢最旧", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const c = await localWithRoom(relay, "room-r3-tools");
+  t.after(() => c.close());
+  const TOTAL = 140;
+  for (let i = 0; i < TOTAL; i++) {
+    c.send({ type: "event", room: "room-r3-tools", event: { type: "tool_execution_start", toolCallId: "call_" + i, toolName: "bash", args: { i } } });
+  }
+  const room = relay.rooms.peek("room-r3-tools");
+  await until(() => {
+    assert.ok(room.runningTools, "应已建进行中工具缓存");
+    assert.equal(room.runningTools.length, 128);
+  });
+  const ids = room.runningTools.map((e) => e.toolCallId);
+  assert.equal(ids[0], "call_" + (TOTAL - 128), "最旧的条目应被丢弃");
+  assert.equal(ids[ids.length - 1], "call_" + (TOTAL - 1), "最新条目保留");
+});
+
+test("R-3：工具 args / partialResult 超过单项字节上限不进缓存，正常大小照常记", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const c = await localWithRoom(relay, "room-r3-fields");
+  t.after(() => c.close());
+  const room = relay.rooms.peek("room-r3-fields");
+  const entryOf = (id) => (room.runningTools || []).find((e) => e.toolCallId === id);
+  const big = "x".repeat(300 * 1024);
+
+  c.send({ type: "event", room: "room-r3-fields", event: { type: "tool_execution_start", toolCallId: "big1", toolName: "bash", args: { blob: big } } });
+  await until(() => {
+    const e = entryOf("big1");
+    assert.ok(e && typeof e.startedAt === "number", "start 帧应已处理完");
+  });
+  assert.equal(entryOf("big1").toolName, "bash");
+  assert.equal(entryOf("big1").args, undefined, "超限 args 不进缓存");
+
+  // 大 partialResult 后面跟一帧只改 toolName 的 update 当处理探针：探针生效时大帧必已处理完
+  c.send({ type: "event", room: "room-r3-fields", event: { type: "tool_execution_update", toolCallId: "big1", partialResult: big } });
+  c.send({ type: "event", room: "room-r3-fields", event: { type: "tool_execution_update", toolCallId: "big1", toolName: "bash2" } });
+  await until(() => assert.equal(entryOf("big1").toolName, "bash2"));
+  assert.equal(entryOf("big1").partialResult, undefined, "超限 partialResult 不进缓存");
+
+  // 正常大小照常记（上限不误伤正常负载）
+  c.send({ type: "event", room: "room-r3-fields", event: { type: "tool_execution_start", toolCallId: "small1", toolName: "read", args: { command: "ls" } } });
+  c.send({ type: "event", room: "room-r3-fields", event: { type: "tool_execution_update", toolCallId: "small1", partialResult: "part" } });
+  await until(() => {
+    assert.deepEqual(entryOf("small1").args, { command: "ls" });
+    assert.equal(entryOf("small1").partialResult, "part");
+  });
+});
+
+test("R-3：任务清单缓存截条数（120）；整份超字节上限不覆盖旧缓存", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const c = await localWithRoom(relay, "room-r3-tasks");
+  t.after(() => c.close());
+  const room = relay.rooms.peek("room-r3-tasks");
+
+  const many = Array.from({ length: 200 }, (_, i) => ({ id: String(i), content: "t" + i, status: "pending" }));
+  c.send({ type: "event", room: "room-r3-tasks", event: { type: "task_list_state", tasks: many, source: "todo" } });
+  await until(() => {
+    assert.ok(room.taskList, "应已建任务清单缓存");
+    assert.equal(room.taskList.tasks.length, 120);
+  });
+  assert.equal(room.taskList.tasks[0].id, "0");
+  assert.equal(room.taskList.tasks[119].id, "119");
+
+  c.send({ type: "event", room: "room-r3-tasks", event: { type: "task_list_state", tasks: [{ id: "keep", content: "x", status: "pending" }], source: "todo" } });
+  await until(() => assert.equal(room.taskList.tasks.length, 1));
+
+  // 一条 300KB 内容的清单：整帧不缓存；用 agent_state 当顺序探针确认该帧已处理完
+  c.send({ type: "event", room: "room-r3-tasks", event: { type: "task_list_state", tasks: [{ id: "huge", content: "x".repeat(300 * 1024), status: "pending" }], source: "todo" } });
+  c.send({ type: "event", room: "room-r3-tasks", event: { type: "agent_state", agents: [{ id: "probe", status: "running" }] } });
+  await until(() => assert.ok(room.agentState, "探针帧应已处理"));
+  assert.deepEqual(room.taskList.tasks.map((x) => x.id), ["keep"], "超限清单不能覆盖旧缓存");
+});
+
+test("R-3：子智能体状态缓存截条数（120）；整份超字节上限不覆盖旧缓存", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const c = await localWithRoom(relay, "room-r3-agents");
+  t.after(() => c.close());
+  const room = relay.rooms.peek("room-r3-agents");
+
+  const many = Array.from({ length: 200 }, (_, i) => ({ id: "a" + i, status: "running" }));
+  c.send({ type: "event", room: "room-r3-agents", event: { type: "agent_state", agents: many } });
+  await until(() => {
+    assert.ok(room.agentState, "应已建子智能体状态缓存");
+    assert.equal(room.agentState.agents.length, 120);
+  });
+  assert.equal(room.agentState.agents[0].id, "a0");
+  assert.equal(room.agentState.agents[119].id, "a119");
+
+  c.send({ type: "event", room: "room-r3-agents", event: { type: "agent_state", agents: [{ id: "keep", status: "succeeded" }] } });
+  await until(() => assert.equal(room.agentState.agents.length, 1));
+
+  // 单条带 300KB 字段：整份超限不缓存；用 queue_update 当顺序探针
+  c.send({ type: "event", room: "room-r3-agents", event: { type: "agent_state", agents: [{ id: "huge", status: "running", label: "x".repeat(300 * 1024) }] } });
+  c.send({ type: "event", room: "room-r3-agents", event: { type: "queue_update", steering: ["probe"], followUp: [] } });
+  await until(() => assert.ok(room.queue, "探针帧应已处理"));
+  assert.deepEqual(room.agentState.agents.map((x) => x.id), ["keep"], "超限快照不能覆盖旧缓存");
+});
+
+test("R-3：待发队列缓存每侧截条数（120）；整份超字节上限不覆盖旧缓存", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const c = await localWithRoom(relay, "room-r3-queue");
+  t.after(() => c.close());
+  const room = relay.rooms.peek("room-r3-queue");
+
+  const many = Array.from({ length: 200 }, (_, i) => "m" + i);
+  c.send({ type: "event", room: "room-r3-queue", event: { type: "queue_update", steering: many, followUp: [] } });
+  await until(() => {
+    assert.ok(room.queue, "应已建待发队列缓存");
+    assert.equal(room.queue.steering.length, 120);
+  });
+  assert.equal(room.queue.steering[0], "m0");
+  assert.equal(room.queue.steering[119], "m119");
+
+  c.send({ type: "event", room: "room-r3-queue", event: { type: "queue_update", steering: ["keep"], followUp: [] } });
+  await until(() => assert.deepEqual(room.queue.steering, ["keep"]));
+
+  // 一条 300KB 待发原文：整份超限不缓存；用 task_list_state 当顺序探针
+  c.send({ type: "event", room: "room-r3-queue", event: { type: "queue_update", steering: ["x".repeat(300 * 1024)], followUp: [] } });
+  c.send({ type: "event", room: "room-r3-queue", event: { type: "task_list_state", tasks: [{ id: "probe", content: "p", status: "pending" }], source: "todo" } });
+  await until(() => assert.ok(room.taskList, "探针帧应已处理"));
+  assert.deepEqual(room.queue.steering, ["keep"], "超限队列不能覆盖旧缓存");
+});
+
+/* ---------------- R-5：get_sessions 账号口径（findings/relay.md） ---------------- */
+
+test("R-5：get_sessions 忽略 viewer 上报的 accountId，只查本连接账号", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const ownAccount = relay.cfg.accountId;
+  // 本连接账号下种一台设备 + 一个会话
+  relay.index.upsertDevice(ownAccount, { id: "dev-own", name: "本机", platform: "linux" });
+  relay.index.applyManifest(ownAccount, "dev-own", { sessions: [{ id: "sess-own", name: "自己的会话", path: "/tmp/a.jsonl" }] });
+  // 另一账号下种一台设备 + 一个会话（多账号数据共存于同一索引时的情形）
+  relay.index.upsertDevice("other-acct", { id: "dev-other", name: "别人的设备", platform: "linux" });
+  relay.index.applyManifest("other-acct", "dev-other", { sessions: [{ id: "sess-other", name: "别人的会话", path: "/tmp/b.jsonl" }] });
+
+  const v = await wsClient(relay.viewerPort);
+  t.after(() => v.close());
+  v.send({ type: "auth", role: "viewer", token: VIEWER_TOKEN });
+  assert.equal((await v.type("auth_result")).ok, true);
+
+  // 上报别人账号 + 别人设备：修复前会列出别人的会话，修复后按本账号查 → no_device
+  v.send({ type: "get_sessions", id: "q1", deviceId: "dev-other", accountId: "other-acct" });
+  const denied = await v.type("error", (f) => f.id === "q1");
+  assert.equal(denied.code, "no_device", "跨账号上报不能读到另一账号的设备/会话");
+
+  // 上报别人账号 + 自己的设备：账号被忽略，照常列出自己的会话（单账号行为不变）
+  v.send({ type: "get_sessions", id: "q2", deviceId: "dev-own", accountId: "other-acct" });
+  const list = await v.type("session_list", (f) => f.id === "q2");
+  assert.deepEqual(list.sessions.map((s) => s.id), ["sess-own"]);
+
+  // 不带 accountId 的常规查询同样正常
+  v.send({ type: "get_sessions", id: "q3", deviceId: "dev-own" });
+  const list2 = await v.type("session_list", (f) => f.id === "q3");
+  assert.deepEqual(list2.sessions.map((s) => s.id), ["sess-own"]);
+});
+
+/* ---------------- web 物料告警（免服务器模式 §2.3） ---------------- */

@@ -399,6 +399,7 @@ function sessionFileRow(value: unknown): SessionEntry | null {
 }
 
 export function useRelay() {
+  /** 页面是否经 Cloudflare quick tunnel 打开（源 hostname 判定，免服务器模式 §4.3）：页面源在打开时就定了，连接期间不变。 */
   const [token, setToken] = useState(() => safeStore.get("pi_remote_viewer_token") || "")
   /** 管理命令的独立口令；只存本机浏览器，不进 viewer 握手，也不在界面明文回显。 */
   const [adminToken, setAdminTokenValue] = useState(() => safeStore.get(ADMIN_TOKEN_STORAGE_KEY) || "")
@@ -2802,6 +2803,9 @@ export function useRelay() {
   /** 退出登录：忘掉这台浏览器保存的 token，断开连接、清空界面回到登录页 */
   const logout = useCallback(() => {
     safeStore.remove("pi_remote_viewer_token")
+    // 管理员令牌同属这次登录的凭据：退出时一并忘掉（状态 + localStorage 存储键），
+    // 否则下次打开页面会被静默读回、直接可用，退出登录等于没退（UI 中-2）
+    setAdminToken("")
     tokenRef.current = ""
     authedRef.current = false
     setToken("")
@@ -2846,7 +2850,7 @@ export function useRelay() {
     saveOutbox(outboxStorage(), EMPTY_OUTBOX)
     outboxRef.current = EMPTY_OUTBOX
     setOutboxState(EMPTY_OUTBOX)
-  }, [clearPendingFiles, clearPendingImages, dispatch])
+  }, [clearPendingFiles, clearPendingImages, dispatch, setAdminToken])
 
   /** retryKey：从失败气泡点"重试"时传入那条气泡的 key，v4 下先摘掉它再发一条新的 */
   const sendText = useCallback(async (textOverride?: string, retryKey?: string) => {
@@ -4174,6 +4178,7 @@ export function useRelay() {
     adminToken,
     setAdminToken,
     authed,
+    /** 经 Cloudflare 隧道连接（免服务器模式 §4.3）：PiApp 顶部据此出示小徽标 */
     status,
     everConnected,
     retryAt,

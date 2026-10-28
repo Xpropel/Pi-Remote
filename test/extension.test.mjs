@@ -1466,3 +1466,143 @@ test("O2 断线交回：重连 sync 后重发观察形态 open（startedAt 沿�
   assert.equal(frames.filter((f) => f.type === "dialog_open").length, 0, "已落定的 dialog 不再重发")
   b.uninstallDialogTap()
 })
+
+/* ---- 第三轮审查修复的回归用例：帧兜底 / 鉴权截止 / 命令串行 ---- */
+
+test("帧处理顶层兜底：handle 同步抛错或异步拒绝都只丢该帧，不冒泡、后续帧照常处理", () => {
+  const RealWS = globalThis.WebSocket
+  const instances = []
+  globalThis.WebSocket = class {
+    constructor() { instances.push(this) }
+    send() {}
+    close() {}
+  }
+  try {
+    const b = new ext.Bridge()
+    b.gateOpen = () => true
+    b.connect()
+    const ws = instances[0]
+    ws.onopen()
+    assert.ok(b.authTimer, "onopen 后鉴权截止已挂上")
+    const origHandle = b.handle.bind(b)
+    let calls = 0
+    b.handle = (msg) => {
+      calls += 1
+      if (msg.type === "boom") throw new Error("畸形帧炸了")
+      if (msg.type === "boom_async") return Promise.reject(new Error("异步处理炸了"))
+      return origHandle(msg)
+    }
+    assert.doesNotThrow(() => ws.onmessage({ data: JSON.stringify({ type: "boom" }) }), "同步异常不能冒泡进 ws 事件分发")
+    assert.doesNotThrow(() => ws.onmessage({ data: JSON.stringify({ type: "boom_async" }) }), "异步拒绝也要被兜住（未处理拒绝会让本测试进程失败）")
+    ws.onmessage({ data: JSON.stringify({ type: "auth_result", ok: true, proto: 4, caps: ["sync.v3"] }) })
+    assert.equal(calls, 3)
+    assert.equal(b.authed, true, "炸帧之后正常帧照常处理")
+    assert.equal(b.authTimer, null, "鉴权成功后截止定时器已清")
+    b.closing = true
+    b.clearTimers()
+  } finally {
+    globalThis.WebSocket = RealWS
+  }
+})
+
+test("鉴权截止：relay 不回 auth_result 时关连接并走既有重连，不再永久挂住", (t) => {
+  const RealWS = globalThis.WebSocket
+  const instances = []
+  globalThis.WebSocket = class {
+    constructor() { instances.push(this); this.closed = false }
+    send() {}
+    close() { this.closed = true; if (this.onclose) this.onclose() }
+  }
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  try {
+    const b = new ext.Bridge()
+    b.gateOpen = () => true
+    b.connect()
+    const ws = instances[0]
+    ws.onopen()
+    assert.ok(b.authTimer, "onopen 后鉴权截止已挂上")
+    t.mock.timers.tick(14999)
+    assert.equal(ws.closed, false, "截止前不能误关")
+    t.mock.timers.tick(1)
+    assert.equal(ws.closed, true, "15 秒未收到鉴权结果应关掉这条 socket")
+    assert.equal(b.authTimer, null)
+    assert.equal(b.ws, null, "onclose 已接管收尾（socketGone）")
+    assert.equal(b.connected, false)
+    assert.ok(b.reconnectTimer, "已按既有退避安排重连")
+    t.mock.timers.tick(1000)
+    assert.equal(instances.length, 2, "退避到点后真的建了新连接")
+    b.closing = true
+    b.ws = null
+    b.clearTimers()
+  } finally {
+    t.mock.timers.reset()
+    globalThis.WebSocket = RealWS
+  }
+})
+
+test("命令超时只超时回包：串行队列等底层命令真正结束才放行下一条，且结果只回一次", async () => {
+  const b = new ext.Bridge()
+  const sent = []
+  b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) } }
+  b.connected = true
+  b.roomId = "A"
+  const calls = []
+  let releaseFirst
+  const firstGate = new Promise((r) => { releaseFirst = r })
+  b.executeCommand = async (command) => {
+    calls.push(command)
+    if (command === "slow") await firstGate
+    return { ok: true }
+  }
+  // 第一条预算 1000ms（timeoutMs 2500 − 1500），但本体被 gate 挂住迟迟不结束
+  b.runCommand({ id: "1", room: "A", command: "slow", args: {}, timeoutMs: 2500 })
+  b.runCommand({ id: "2", room: "A", command: "set_session_name", args: { name: "x" }, timeoutMs: 30000 })
+  const results = (id) => sent.filter((m) => m.type === "command_result" && m.id === id)
+  const deadline = Date.now() + 3000
+  while (!results("1").length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+  const r1 = results("1")[0]
+  assert.ok(r1, "第一条应已超时回包")
+  assert.equal(r1.ok, false)
+  assert.equal(r1.code, "timeout")
+  await new Promise((r) => setTimeout(r, 50))
+  assert.deepEqual(calls, ["slow"], "第一条本体未结束前，第二条绝不能开始执行")
+  releaseFirst()
+  const deadline2 = Date.now() + 2000
+  while (!results("2").length && Date.now() < deadline2) await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual(calls, ["slow", "set_session_name"], "本体结束后队列才放行第二条")
+  assert.equal(results("2")[0].ok, true)
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(results("1").length, 1, "本体迟到 settle 不能给第一条补发第二次结果")
+  b.clearTimers()
+})
+
+test("排队超时语义不变：轮到执行时已过截止的命令不执行、回 queue_timeout", async () => {
+  const b = new ext.Bridge()
+  const sent = []
+  b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) } }
+  b.connected = true
+  b.roomId = "A"
+  const calls = []
+  let releaseFirst
+  const firstGate = new Promise((r) => { releaseFirst = r })
+  b.executeCommand = async (command) => {
+    calls.push(command)
+    if (command === "slow") await firstGate
+    return { ok: true }
+  }
+  b.runCommand({ id: "1", room: "A", command: "slow", args: {}, timeoutMs: 30000 })
+  b.runCommand({ id: "2", room: "A", command: "set_session_name", args: { name: "x" }, timeoutMs: 2500 })
+  // 第二条的截止（约 1000ms）先于第一条本体结束到来
+  await new Promise((r) => setTimeout(r, 1150))
+  releaseFirst()
+  const results = (id) => sent.filter((m) => m.type === "command_result" && m.id === id)
+  const deadline = Date.now() + 2000
+  while (!results("2").length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+  assert.equal(results("1")[0].ok, true, "第一条放行后正常完成")
+  const r2 = results("2")[0]
+  assert.ok(r2, "第二条应有回包")
+  assert.equal(r2.ok, false)
+  assert.equal(r2.code, "queue_timeout")
+  assert.deepEqual(calls, ["slow"], "过截止的命令不能被执行")
+  b.clearTimers()
+})

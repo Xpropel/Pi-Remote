@@ -557,6 +557,9 @@ const LIVENESS_TICK_MS = 10000;
 const WAKE_GAP_MS = 30000;
 const IDLE_PROBE_MS = 60000;
 const PROBE_DEAD_MS = 20000;
+/** 连上后等 auth_result 的截止：relay 假死或中间网络黑洞时，连接会停在「已建立、永不回包」，
+ *  而探活要求已鉴权，未鉴权连接永远够不到——没有截止就会在这条死连接上永久挂住。 */
+const AUTH_RESULT_TIMEOUT_MS = 15000;
 
 /** 日志写文件，不写 stdout：TUI 模式下 console.log 会打花界面，rpc/json 模式下 stdout 是协议通道，
  *  混进一行日志客户端就解析失败。PI_REMOTE_DEBUG=1 时另抄一份到 stderr。 */
@@ -2845,6 +2848,8 @@ class Bridge {
   authed = false;
   backoff = RECONNECT_MIN;
   reconnectTimer: any = null;
+  /** 本条连接的鉴权截止定时器（connect 时挂、auth_result / 连接作废时清） */
+  authTimer: any = null;
   closing = false;
   livenessTimer: any = null;
   lastTick = 0;
@@ -2982,6 +2987,7 @@ class Bridge {
 
   clearTimers() {
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.clearAuthDeadline();
     if (this.syncTimer) { clearTimeout(this.syncTimer); this.syncTimer = null; }
     if (this.probeTimer) { clearTimeout(this.probeTimer); this.probeTimer = null; }
     if (this.coalesceTimer) { clearTimeout(this.coalesceTimer); this.coalesceTimer = null; }
@@ -3063,6 +3069,7 @@ class Bridge {
 
   suspendConnection() {
     this.clearExactExpiry();
+    this.clearAuthDeadline();
     if (this.manifestTimer) { clearTimeout(this.manifestTimer); this.manifestTimer = null; }
     this.pendingManifest = null;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
@@ -3150,6 +3157,7 @@ class Bridge {
         this.confirmedRoom = null;
         log("已连接 relay:", RELAY_URL);
         this.send(authFrame(process.env, this.platform));
+        this.armAuthDeadline(ws);
         // 重连后补注册 + 对齐镜像，并重发当前忙闲与用量。两者都只在变化时推送，
         // relay 重启后它缓存的值没了，不重发的话新订阅者一直拿不到。
         // 必须走 room_register：新连接在 relay 侧还没绑定房间（relay 可能刚重启），轻量 sync 会被直接忽略。
@@ -3178,7 +3186,16 @@ class Bridge {
         } catch {
           return;
         }
-        this.handle(msg);
+        // 顶层兜底（与 forward()「绝不能抛」同一条红线）：单帧处理出异常只丢这一帧并记日志，
+        // 不能冒泡进 ws 事件分发、把宿主进程的事件循环带下水。只记帧类型/命令名，不记帧内容。
+        try {
+          const r: any = this.handle(msg);
+          if (r && typeof r.catch === "function") {
+            r.catch((e: any) => log("处理帧异步异常:", msg.type, e?.message || String(e)));
+          }
+        } catch (e: any) {
+          log("处理帧异常（已丢弃该帧）:", msg.type, typeof msg.command === "string" ? msg.command : "", e?.message || String(e));
+        }
       };
 
       ws.onclose = () => {
@@ -3208,11 +3225,30 @@ class Bridge {
     }
   }
 
+  /** 鉴权截止：onopen 发完鉴权帧后挂上；AUTH_RESULT_TIMEOUT_MS 内没等到 auth_result 就关掉
+   *  这条 socket，让既有 onclose → scheduleReconnect 接管。归属按 socket 认：回调触发时连接
+   *  已被新连接取代、或已经鉴权成功，都不动手。 */
+  armAuthDeadline(ws: any) {
+    this.clearAuthDeadline();
+    this.authTimer = setTimeout(() => {
+      this.authTimer = null;
+      if (this.ws !== ws || this.authed || this.closing) return;
+      log("连接后", Math.round(AUTH_RESULT_TIMEOUT_MS / 1000), "秒未收到鉴权结果（auth_timeout），关闭连接重连");
+      try { ws.close(); } catch {}
+    }, AUTH_RESULT_TIMEOUT_MS);
+    if (this.authTimer.unref) this.authTimer.unref();
+  }
+
+  clearAuthDeadline() {
+    if (this.authTimer) { clearTimeout(this.authTimer); this.authTimer = null; }
+  }
+
   /** 当前连接没了（收到 close，或被判定为半开连接主动丢弃）：清掉只属于这条连接的状态 */
   socketGone() {
     this.connected = false;
     this.authed = false;
     this.ws = null;
+    this.clearAuthDeadline();
     this.confirmedRoom = null;
     this.probeSentAt = 0;
     // 接管门控随连接作废（重连后 relay 补发当前值）；持留 dialog 交回本机弹窗——
@@ -4734,6 +4770,7 @@ class Bridge {
   handle(msg: any) {
     if (!msg || typeof msg.type !== "string") return;
     if (msg.type === "auth_result") {
+      this.clearAuthDeadline();
       this.authed = !!msg.ok;
       if (!msg.ok) {
         const code = typeof msg.code === "string" ? msg.code : "";
@@ -4900,20 +4937,45 @@ class Bridge {
     // 比 relay 的 waiter 早 1.5s 收尾：本机先报"超时"，viewer 拿到的是明确原因而不是 relay 的笼统超时
     const budget = Number(msg.timeoutMs) > 0 ? Math.max(1000, Number(msg.timeoutMs) - 1500) : 60000;
     const deadline = Date.now() + budget;
-    const run = () => {
+    // 返回两个 Promise：reply 是「回包时机」（带超时竞速，viewer 按它拿结果）；
+    // settled 是「底层命令真正结束」（executeCommand 本体 settle，超时不算结束）。
+    // 两者必须分开：远程 bash 自身硬顶 120s、通道预算只有约 58.5s，超时回包时命令本体还在跑，
+    // 串行队列若按 reply 放行，后续写命令会和它交错执行（副作用层面的串行被击穿）。
+    const run = (queued: boolean): { reply: Promise<any>; settled: Promise<any> } => {
       const left = deadline - Date.now();
-      if (left <= 0) return Promise.reject(new RemoteError("queue_timeout", "排队超时：前面的命令占用太久，" + command + " 未执行"));
+      // 未执行就出局的分支：reply 照常拒绝（回包口径不变），settled 吞掉拒绝——
+      // 它只供队列判放行，绝不能把上一条的错误传染给下一条命令
+      const rejectBoth = (e: RemoteError) => {
+        const r = Promise.reject(e);
+        return { reply: r, settled: r.then(() => undefined, () => undefined) };
+      };
+      if (left <= 0) {
+        return rejectBoth(new RemoteError("queue_timeout", "排队超时：前面的命令占用太久，" + command + " 未执行"));
+      }
       // 入队时还在原会话，轮到它执行时可能已经切走：在新会话上执行会改错对象，结果还回给旧房间的观众
       if (msg.room && this.roomId && String(msg.room) !== this.roomId) {
-        return Promise.reject(new RemoteError("session_switched", "目标会话已切换（当前会话 " + this.roomId + "），命令未执行"));
+        return rejectBoth(new RemoteError("session_switched", "目标会话已切换（当前会话 " + this.roomId + "），命令未执行"));
       }
-      return this.withTimeout(Promise.resolve().then(() => this.executeCommand(command, args)), left, command);
+      const exec = Promise.resolve().then(() => this.executeCommand(command, args));
+      const reply = this.withTimeout(exec, left, command);
+      if (queued) {
+        reply.catch((e: any) => {
+          if (remoteErrorCode(e) === "timeout") {
+            log("命令", command, "回包已超时，但本体仍在后台执行；串行队列等它真正结束才放行下一条");
+          }
+        });
+      }
+      // 队列只借它判「能不能放行下一条」，结果本身已由 reply 处理：两个方向都吞掉，防未处理拒绝
+      const settled = exec.then(() => undefined, () => undefined);
+      return { reply, settled };
     };
     let p: Promise<any>;
-    if (IMMEDIATE_COMMANDS.has(RPC_ALIAS[command] || command)) p = run();
+    if (IMMEDIATE_COMMANDS.has(RPC_ALIAS[command] || command)) p = run(false).reply;
     else {
-      p = this.cmdQueue.then(run);
-      this.cmdQueue = p.catch(() => {});
+      const chained = this.cmdQueue.then(() => run(true));
+      p = chained.then((x) => x.reply);
+      // 队列推进看 settled（本体结束），不看 reply（回包时机）；run 本身抛错时队列照常往下走
+      this.cmdQueue = chained.then((x) => x.settled, () => undefined);
     }
     p.then(
       (data) => this.sendResult(room, id, true, data),

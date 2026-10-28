@@ -123,3 +123,14 @@ test("接线：session_archive 写入走 LRU、读取 touch、登出清空；历
   assert.match(relay, /historyCacheCovers\(cache, fromIndex\) \? historyWindowFrom\(cache, fromIndex\) : null/, "缓存覆盖时零请求切页")
   assert.doesNotMatch(relay, /fetchWindow\(probe\.total - cursor\.index \+ window\)/, "旧的整段重拉路径必须移除")
 })
+
+test("接线：退出登录连管理员令牌一并清除（UI 中-2 回归）", () => {
+  const relay = relaySource()
+  const start = relay.indexOf("const logout = useCallback")
+  assert.notEqual(start, -1, "logout 必须存在")
+  const logoutBody = relay.slice(start, relay.indexOf("/** retryKey", start))
+  // setAdminToken("") 是既有 setter 的清空口径：传空即清状态并 remove ADMIN_TOKEN_STORAGE_KEY
+  assert.match(logoutBody, /setAdminToken\(""\)/, "logout 必须调用 setAdminToken(\"\") 清管理员令牌（状态 + localStorage）")
+  assert.match(logoutBody, /\}, \[[^\]]*setAdminToken[^\]]*\]\)/, "setAdminToken 必须进 logout 的 useCallback 依赖")
+  assert.match(relay, /else safeStore\.remove\(ADMIN_TOKEN_STORAGE_KEY\)/, "setAdminToken 传空删存储键的口径不能被改掉")
+})
