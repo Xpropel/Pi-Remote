@@ -116,6 +116,8 @@ cd ui && npx tsc -b && npm run build
 | 代码执行 | DeepSeek |
 | 项目规划 | Claude、ChatGPT |
 
+完整作者名单见 [AUTHORS.md](AUTHORS.md)。
+
 ## Star 趋势
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Xpropel/pi-remote&type=Date)](https://star-history.com/#Xpropel/pi-remote&Date)

@@ -116,6 +116,8 @@ Make sure tests pass before submitting, and that the change contains no `.env` f
 | Code implementation | DeepSeek |
 | Project planning | Claude, ChatGPT |
 
+The full author list is in [AUTHORS.md](AUTHORS.md).
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Xpropel/pi-remote&type=Date)](https://star-history.com/#Xpropel/pi-remote&Date)
