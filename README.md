@@ -2,42 +2,54 @@ English | [简体中文](README.zh-CN.md)
 
 # pi-remote
 
-Your pi session, running on your computer, mirrored into the browser on your phone.
+Multi-device sync for the pi terminal: mirror a live session to the browser, view it, send messages, and run commands remotely.
 
 [![License](https://img.shields.io/github/license/Xpropel/pi-remote)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.18-339933)](package.json)
 
-I spend a lot of time in the terminal with [pi](https://github.com/earendil-works/pi), and sessions tend to run long. I don't always want to sit at my desk while one finishes. pi-remote exists so I can pick my phone up, open a web page, and see the same live session — read what the agent is doing, send a message, steer it, then put the phone away. The session itself never leaves the terminal it started in.
-
-It doesn't patch pi or scrape the terminal. Everything goes through pi's official extension API (event subscription plus `sendUserMessage` injection), so pi upgrades don't break it and there's no fork to maintain.
+pi-remote attaches to a running pi session through pi's official extension API. It does not modify pi's source code and does not take over the terminal. The session stays in the local pi process at all times; the browser shows a real-time mirror of that session and can send messages and commands back to it, including switching models, changing the thinking level, compacting context, and navigating the session tree. The local side runs on Windows, macOS, and Linux, and several machines can be connected at the same time.
 
 <p align="center">
   <img src="assets/readme/desktop-session-list.png" alt="pi-remote desktop UI" width="100%">
 </p>
-<p align="center"><sub>Screenshots use demo data from the built-in development gallery, not real sessions.</sub></p>
+<p align="center"><sub>Screenshots use demo data from the built-in development gallery. No real sessions or credentials.</sub></p>
 
-## How it fits together
+## Features
+
+- **Live mirroring** — output, tool calls, and status changes in the terminal sync to the browser in real time, with incremental catch-up after a reconnect.
+- **Remote input** — send messages to the session from the browser. While pi is busy, messages can queue or steer, and delivery is confirmed.
+- **Remote commands** — switch model and thinking level, compact manually, create / fork / clone sessions, navigate the session tree, and inspect usage. Commands execute in the local pi process.
+- **Multiple devices** — several machines can share one relay. The UI lists each device, its online state, and its sessions, and can start a new session on a chosen device.
+- **Desktop and mobile UI** — separate layouts for desktop and mobile, with six skins: Cursor, Claude, and Codex looks in dark and light.
+- **Usage visibility** — token and cost usage updates with the session and is shown in the UI status area.
+- **Connection gating** — a device is reachable only while its attach window is running. Closing the window disconnects it immediately.
+
+## How it works
 
 ```
-pi on your machine ──extension──▶ relay (a small server) ──▶ browser on phone / another computer
+local pi (extension) ──7001──▶ relay (server) ──7002──▶ browser
 ```
 
-- The **extension** (`extension/pi-remote-sync.ts`) lives inside the pi process. It streams session events out and delivers remote messages and commands back in. Switching models, changing the thinking level, compacting, forking a session — all of that is a command the browser sends and pi executes locally.
-- The **relay** (`relay/`) is a small Node service that forwards frames and keeps the session index. It never has your model keys or your code. It only moves JSON around.
-- The **web UI** (`ui/`) is what you open in the browser. Desktop and mobile get their own layouts, and there are six skins (Cursor / Claude / Codex looks, dark and light) if you get bored of one.
+| Component | Location | Role |
+|---|---|---|
+| Sync extension | `extension/pi-remote-sync.ts` | Runs inside the pi process. Forwards session events, receives remote messages and commands and executes them locally, reconnects after drops |
+| Relay | `relay/` | Node service running on a server. Handles authentication, forwarding, and the device/session index. Holds no model credentials and no local files |
+| Web UI | `ui/` | Served by the relay. Renders the session stream, sends messages and commands, manages devices and sessions |
 
-Several machines can connect to the same relay at once, and the UI shows which are online and what sessions each one has.
+The full protocol definition is in [readyUI/data-interface.md](readyUI/data-interface.md).
 
-## Try it locally first
+## Quick start
 
-No server needed — the whole loop runs on one machine. You need Node ≥ 22.18 and pi installed globally.
+Requirements: Node ≥ 22.18, and pi installed globally.
+
+The following runs the full loop on one machine, no server involved:
 
 Windows:
 
 ```powershell
 npm install
-npm run relay          # listens on 127.0.0.1:7001 (extension) and 7002 (web UI)
-deploy\start-pi.cmd    # in a second terminal: starts pi wired up to the relay
+npm run relay          # 127.0.0.1:7001 (extension channel) and 7002 (web UI)
+deploy\start-pi.cmd    # in a second terminal: start pi
 ```
 
 macOS / Linux:
@@ -46,42 +58,47 @@ macOS / Linux:
 npm install
 npm run relay
 node deploy/setup.cjs ws://127.0.0.1:7001
-deploy/sync-extension.sh   # installs the extension into ~/.pi/agent/extensions/
-deploy/attach.sh           # opens the attach window; your machine comes online
-deploy/start-pi.sh         # in a second terminal: starts pi
+deploy/sync-extension.sh   # install the extension into ~/.pi/agent/extensions/
+deploy/attach.sh           # open the attach window; the device comes online
+deploy/start-pi.sh         # in a second terminal: start pi
 ```
 
-Then open `http://127.0.0.1:7002` and enter the viewer token from your `.env`. You should see the session from your terminal.
+Open `http://127.0.0.1:7002` and enter the viewer token from your `.env`.
 
-For real use, the relay runs on a small server of yours (under systemd), and on your machine you open the attach window before starting pi. Server setup, token rotation and troubleshooting live in [deploy/README.md](deploy/README.md) — it goes into much more detail than this page.
+For running the relay on a server (systemd setup, token management, troubleshooting), see [deploy/README.md](deploy/README.md).
 
-**The attach window is a physical switch.** While it's open, your machine is reachable. Close it and the extension disconnects immediately; nothing remote can touch your computer. I like that it's that simple.
+## Security model
 
-## Security, in plain words
+- The extension and the web UI use separate tokens: a local token for the extension-to-relay channel and a viewer token for web login. Both configuration files are gitignored.
+- The extension channel (7001) binds to 127.0.0.1 by default. The web channel (7002) serves the page and WebSocket only; it exposes no file endpoints.
+- Anyone holding the viewer token can send messages to a session, and pi runs with tool permissions. Treat the token as a password. For access over the public internet, use a private network, a tunnel, or a TLS reverse proxy instead of exposing port 7002 directly.
+- Remote bash is disabled by default and must be enabled explicitly on the local machine; its working directory is restricted to session directories and registered projects.
+- Conversation content is not persisted by default. Persistence is opt-in, with a 30-day retention.
 
-- There are two tokens: one for the extension talking to the relay, one for logging into the web UI (the viewer token). Both config files are gitignored. Don't commit them.
-- **Treat the viewer token like a password.** Anyone holding it can send prompts to your pi, and pi runs with tool permissions — that's effectively remote control of your machine. Don't expose port 7002 to the open internet as-is: keep it on your own network or a tunnel, or put an HTTPS reverse proxy in front.
-- The extension channel binds to localhost by default, and remote bash is off unless you explicitly enable it on the machine itself.
-- Conversation content is forwarded, not stored, by default. Persistence is an opt-in switch, and stored data cleans itself up after 30 days.
+## Known limitations
 
-## Where it stands, honestly
+- Long transcripts are not virtualized. The UI mounts the most recent 300 messages and loads older ones page by page.
+- The relay needs a server you manage (the local loop mode excepted).
+- pi-remote is designed for personal, single-user use. There is no multi-user permission system.
 
-I use this every day, so it's past the demo stage. It's also built around one person's habits, and a few edges are still rough:
-
-- Long transcripts aren't truly virtualized yet. The UI mounts the most recent 300 messages and pages older ones in on demand. Fine day to day, tedious in very long sessions.
-- Windows and macOS are the platforms I actually test on. The Linux local side works through tmux, but I use it less, so it may have more sharp corners than I know about.
-- The UI moves fast and the docs occasionally lag the code. If something here doesn't match reality, an issue is welcome.
-
-## Digging deeper
+## Documentation
 
 - Deployment and troubleshooting: [deploy/README.md](deploy/README.md)
 - UI development: [ui/README.md](ui/README.md)
-- Exact sync protocol and command shapes: [readyUI/data-interface.md](readyUI/data-interface.md)
+- Sync protocol and command definitions: [readyUI/data-interface.md](readyUI/data-interface.md)
+- Terminal vs. remote capability inventory: [readyUI/pi-interface-inventory.md](readyUI/pi-interface-inventory.md)
 
-## Contributing
+## Development
 
-PRs are welcome. Run `npm test` before submitting (it needs neither pi nor a model), and for UI changes also `cd ui && npx tsc -b && npm run build`. Please don't commit `.env` files, tokens, or real session content. For security issues, use the repository's private reporting channel instead of a public issue.
+```bash
+npm install
+npm --prefix ui install
+npm test              # unit and protocol tests; needs neither pi nor a model
+cd ui && npx tsc -b && npm run build
+```
+
+Make sure tests pass before submitting, and that the change contains no `.env` files, tokens, private keys, or real session content.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)
