@@ -114,7 +114,7 @@ cd ui && npx tsc -b && npm run build
 | idea 开创、项目主导 | Xpropel |
 | UI 设计 | Muse（Meta） |
 | 代码执行 | DeepSeek |
-| 项目规划 | Claude |
+| 项目规划 | Claude、ChatGPT |
 | 表单设计 | ChatGPT |
 
 ## Star 趋势
