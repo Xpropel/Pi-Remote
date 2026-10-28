@@ -22,6 +22,7 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const net = require("node:net");
+const dgram = require("node:dgram");
 const http = require("node:http");
 const { spawn, spawnSync } = require("node:child_process");
 
@@ -447,7 +448,7 @@ function formatPairCode(code) {
 }
 
 function parseArgs(argv) {
-  const out = { dirs: [], maxHours: DEFAULT_MAX_HOURS, viewerPort: 0, init: false, help: false, pair: "", link: false, relay: "", doctor: false, env: "", allowRemote: false };
+  const out = { dirs: [], maxHours: DEFAULT_MAX_HOURS, viewerPort: 0, init: false, help: false, pair: "", link: false, share: false, tunnel: false, relay: "", doctor: false, env: "", allowRemote: false };
   const args = Array.isArray(argv) ? argv : [];
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i]);
@@ -458,6 +459,8 @@ function parseArgs(argv) {
       out.pair = normalizePairCode(a.startsWith("--pair=") ? a.slice("--pair=".length) : args[++i]);
     }
     else if (a === "--link") out.link = true;
+    else if (a === "--share") out.share = true;
+    else if (a === "--tunnel") out.tunnel = true;
     else if (a === "--relay" || a.startsWith("--relay=")) {
       const raw = String(a.startsWith("--relay=") ? a.slice("--relay=".length) : args[++i] ?? "").trim();
       if (!/^wss?:\/\/\S+$/.test(raw)) throw new Error("--relay 需要 ws:// 或 wss:// 地址");
@@ -1433,6 +1436,10 @@ class AttachController {
     this.expiresAt = now + Math.round(this.maxHours * 3600 * 1000);
     // viewer 端口可配（--viewer-port / PI_REMOTE_VIEWER_PORT），状态行提示的地址才对得上
     this.viewerPort = Number(opts.viewerPort) > 0 ? Number(opts.viewerPort) : (Number(process.env.PI_REMOTE_VIEWER_PORT) > 0 ? Number(process.env.PI_REMOTE_VIEWER_PORT) : 7002);
+    /** 免服务器模式：状态行的 viewer 地址走管家的当前出示源（隧道网址/局域网地址会动态变）；缺省仍按 relay 推导 */
+    this.viewerUrlProvider = typeof opts.viewerUrlProvider === "function" ? opts.viewerUrlProvider : null;
+    /** 窗口关闭时的额外清理（免服务器模式管家回收子进程）；同步发起即可，控制器不等它完成 */
+    this.onShutdown = typeof opts.onShutdown === "function" ? opts.onShutdown : null;
     this.startPi = opts.startPi || startPiFor(this.platform);
     /** sessionId 形态拉起的占用记录（按会话 id，不按目录）：id -> { at, tmuxSession? } */
     this.spawnedBySession = new Map();
@@ -1559,7 +1566,7 @@ class AttachController {
       expiresAt: this.expiresAt,
       now,
       activeCount: this.onlineRooms.length,
-      viewer: viewerUrlFromRelay(this.relay, this.viewerPort),
+      viewer: this.viewerUrlProvider ? this.viewerUrlProvider() : viewerUrlFromRelay(this.relay, this.viewerPort),
       authMode: this.authMode,
       keepAwake: !!this.awakeChild,
     });
@@ -2787,6 +2794,11 @@ class AttachController {
     this.clearTimers();
     if (this.launchWaiters.size) this.abandonLaunchWaiters();
     this.releaseKeepAwake();
+    if (this.onShutdown) {
+      try {
+        this.onShutdown();
+      } catch {}
+    }
     this.unbindProcessSignals();
     if (this._onExit) {
       process.removeListener("exit", this._onExit);
@@ -2819,11 +2831,14 @@ function printHelp() {
   console.log(`pi-remote attach [项目目录...] [--max-hours 12] [--init]
 pi-remote attach --pair XXXX-XXXX [--relay ws://<服务器>:7001]
 pi-remote attach --link [--relay ws://<服务器>:7001]
+pi-remote attach --share
 pi-remote attach --doctor
 
 开一个连接窗口：登记本机设备，窗口内扩展才连 relay。
   --pair        用网页上「添加设备」给的配对码换这台电脑自己的设备令牌，写进 .env 后退出
   --link        在本机出示二维码与对照码，手机扫码确认后把设备令牌写进 .env 后退出（relay 需支持扫码链接；太旧时改用 --pair）
+  --share       免服务器模式：拉起本机 relay 并开公网隧道，只出示访问地址（局域网地址 + 隧道网址，各带二维码），不配对
+  --tunnel      连接窗口 / --link 时顺带开 Cloudflare 公网隧道（仅免服务器模式；默认关，按需开；网址每次都会变）
   --relay       配对时使用的 relay 地址（.env 还没配 PI_REMOTE_RELAY 时用）
   --env <file>  显式指定 env 文件（默认仓库根 .env；也可用 ATTACH_ENV_FILE）
                 本地真实测试必须用独立 env + 127.0.0.1 relay，禁止连生产
@@ -3138,6 +3153,36 @@ async function doctorMain(args, envPath, opts = {}) {
   const viewer = viewerUrlFromRelay(cfg.relay, viewerPort);
   if (cfg.relay) add("ok", "viewer 地址", viewer);
 
+  // 免服务器（本地）模式：配置一致性、本地 relay 存活、cloudflared 准备情况、
+  // 以及对管家记录在案的运行中隧道参数做目标核对（设计 §5.3：只许指向 viewer 端口）
+  const modeInfo = localModeInfo(cfg.relay, opts.root || ROOT);
+  if (modeInfo.configExists) {
+    if (modeInfo.local) add("ok", "免服务器模式", "本地 relay 配置在位（" + modeInfo.configPath + "），attach 开窗时当管家拉起本机 relay");
+    else add("warn", "本地 relay 配置对不上", "relay/config.json 在，但 .env 的 PI_REMOTE_RELAY 不是指向它的本机回环地址；attach 不会接管这个 relay");
+    const healthy = await (opts.healthProbe || ((port) => httpHealthz(port, 1500)))(modeInfo.viewerPort);
+    if (healthy) add("ok", "本地 relay", `http://127.0.0.1:${modeInfo.viewerPort}/healthz 正常`);
+    else add("info", "本地 relay", "当前没在跑（开 attach 窗口时自动拉起，不用手动管）");
+    const cfLib = loadCloudflaredLib();
+    let cfDetail = "";
+    if (cfLib) {
+      try {
+        const resolved = await (opts.resolveCloudflared || ((o) => cfLib.resolveCloudflared(o)))({ allowDownload: false, env: opts.env || process.env });
+        cfDetail = `${resolved.bin}（${resolved.source === "path" ? "系统已装" : resolved.source === "cache" ? "已下载缓存" : "已指定"}）`;
+      } catch {}
+    }
+    if (cfDetail) add("ok", "cloudflared", cfDetail);
+    else add("info", "cloudflared", "还没准备：第一次开隧道（--tunnel / --share）时自动从官方 Release 下载钉死版本并校验哈希（约 40MB）");
+    let keeperRec = null;
+    try {
+      keeperRec = JSON.parse(fs.readFileSync(keeperStatePath(opts.env || process.env), "utf8"));
+    } catch {}
+    if (keeperRec && Array.isArray(keeperRec.tunnelArgs) && keeperRec.tunnelArgs.length) {
+      const verdict = cfLib ? cfLib.verifyTunnelArgsSafe(keeperRec.tunnelArgs, { viewerPort: modeInfo.viewerPort, localPort: modeInfo.localPort }) : "cloudflared 模块缺失，无法核对";
+      if (!verdict) add("ok", "隧道目标核对", `记录中的隧道只指向 viewer 端口 ${modeInfo.viewerPort}，本地通道 ${modeInfo.localPort} 未进隧道${keeperRec.tunnelUrl ? "；当前网址 " + keeperRec.tunnelUrl : ""}`);
+      else add("fail", "隧道目标异常", verdict);
+    }
+  }
+
   const logFile = path.join(os.homedir(), ".pi", "agent", "pi-remote-sync.log");
   try {
     const tail = fs.readFileSync(logFile, "utf8").trim().split(/\r?\n/).slice(-3);
@@ -3169,6 +3214,7 @@ async function main(argv) {
   if (args.doctor) return doctorMain(args, envPath);
   if (args.pair) return pairMain(args, envPath, { enforceSafety: true });
   if (args.link) return linkMain(args, envPath, { enforceSafety: true });
+  if (args.share) return shareMain(args, envPath);
   if (args.init) {
     const result = initEnvFile(envPath, { deviceName: macComputerName() });
     if (result.changed) console.log("已写入 .env：PI_REMOTE_DEVICE_ID=" + result.deviceId);
@@ -3191,6 +3237,37 @@ async function main(argv) {
     return 2;
   }
   if (!isLocalRelayHost(relayHostOf(cfg.relay) || "")) printRemoteRelayWarning(cfg.relay, envPath);
+  // 免服务器模式：attach 当管家——先把本机 relay 拉起来并等就绪（控制器写状态文件放行扩展在那之后，
+  // 顺序不能反，否则扩展连空端口白白退避）；--tunnel 按需顺带开公网隧道。关窗时控制器 shutdown 钩子回收管家。
+  let keeper = null;
+  const modeInfo = localModeInfo(cfg.relay);
+  if (modeInfo.local) {
+    keeper = createLocalKeeper({
+      config: modeInfo.config,
+      relay: cfg.relay,
+      viewerPort: args.viewerPort || undefined,
+      out: (line) => console.log(line),
+      onTunnel: (t) => {
+        const line = tunnelStatusLine(t);
+        if (line) console.log(line);
+      },
+    });
+    try {
+      const ensured = await keeper.ensureRelay();
+      console.log(
+        ensured.owned
+          ? "免服务器模式：本地 relay 已由 attach 拉起（关掉这个窗口，整套本地服务就停）"
+          : "免服务器模式：本地 relay 已在运行（不是本窗口拉起的，本窗口不接管它）",
+      );
+      printLocalAccessLines(keeper, (line) => console.log(line));
+      if (args.tunnel) Promise.resolve(keeper.startTunnel()).catch(() => {});
+    } catch (e) {
+      console.error("本地 relay 没能启动：" + (e && e.message ? e.message : e));
+      await keeper.stop();
+      return 1;
+    }
+    process.on("exit", () => keeper.killAllSync());
+  }
   const ctl = new AttachController({
     relay: cfg.relay,
     token: cfg.token,
@@ -3209,6 +3286,12 @@ async function main(argv) {
     dirs: args.dirs,
     maxHours: args.maxHours,
     viewerPort: args.viewerPort,
+    viewerUrlProvider: keeper ? () => keeper.origin() : undefined,
+    onShutdown: keeper
+      ? () => {
+          keeper.stop();
+        }
+      : undefined,
     attachFile: defaultAttachFile(),
     bindSignals: true,
     exit: (code) => process.exit(code),
@@ -3883,7 +3966,8 @@ async function linkMain(args, envPath, opts = {}) {
   }
   const deviceName = cfg.deviceName || defaultDeviceName(platform);
   const viewerPort = args.viewerPort || Number((opts.env || process.env).PI_REMOTE_VIEWER_PORT) || 7002;
-  const viewer = viewerUrlFromRelay(relay, viewerPort);
+  // 本地模式下会被管家的当前出示源覆盖（见下方管家接入段），故用 let
+  let viewer = viewerUrlFromRelay(relay, viewerPort);
   const state = {
     phase: "connecting",
     deviceName,
@@ -3897,6 +3981,8 @@ async function linkMain(args, envPath, opts = {}) {
     ttlMs: 0,
     issuedAt: 0,
   };
+  // 免服务器模式的管家（下方接入）：非本地模式恒为 null，link 行为与旧版完全一致
+  let keeper = null;
 
   // 窗口页「重新生成」/ 成功页「再链接一台」的等待者：linkMain 主循环在收尾态等它
   let regenResolve = null;
@@ -3941,6 +4027,61 @@ async function linkMain(args, envPath, opts = {}) {
   }
 
   const terminalWidth = Number(opts.terminalWidth) || (process.stdout && process.stdout.columns) || 80;
+
+  // 免服务器模式：先当管家把本机 relay 拉起来（就绪后才发 pair_request，否则必然连空端口）；
+  // --tunnel 时顺带开隧道，网址就绪后出示源变了——同一枚码换新地址重出示（码与地址无关，
+  // 手机已经打开的确认页照常批准）。opts.keeperFactory === null 时测试可显式关掉这段。
+  if (opts.keeperFactory !== null) {
+    const info = localModeInfo(relay, opts.root || ROOT);
+    if (info.local || opts.keeperFactory) {
+      const factory = opts.keeperFactory || ((o) => createLocalKeeper(o));
+      keeper = factory({
+        config: info.config || {},
+        relay,
+        root: opts.root || ROOT,
+        platform,
+        out,
+        env: opts.env || process.env,
+        stateFile: opts.stateFile,
+        healthz: opts.healthz,
+        spawnImpl: opts.keeperSpawnImpl,
+        spawnSyncImpl: opts.spawnSyncImpl,
+        readyTimeoutMs: opts.readyTimeoutMs,
+        lanDeps: opts.lanDeps,
+        resolveCloudflared: opts.resolveCloudflared,
+        tunnelSpawnImpl: opts.tunnelSpawnImpl,
+        tunnelHome: opts.tunnelHome,
+        onTunnel: (t) => {
+          if (t.status === "failed") err(tunnelStatusLine(t));
+        },
+      });
+    }
+    if (keeper) {
+      try {
+        await keeper.ensureRelay();
+      } catch (e) {
+        err("本地 relay 没能启动：" + (e && e.message ? e.message : e));
+        if (bindSignals) {
+          signalSource.removeListener("SIGINT", onSignal);
+          signalSource.removeListener("SIGTERM", onSignal);
+        }
+        if (win) win.close();
+        await keeper.stop();
+        return 1;
+      }
+      viewer = keeper.origin();
+      keeper.setOnOriginChange(() => {
+        if (!state.code || (state.phase !== "waiting" && state.phase !== "processing")) return;
+        const next = keeper.origin() + "#pair=" + state.code;
+        if (next === state.url) return;
+        state.url = next;
+        out("访问地址已更新（公网隧道已就绪）：同一枚链接码，改扫这个新地址的二维码——");
+        printLinkOffer(state, { out, terminalWidth });
+      });
+      if (args.tunnel) Promise.resolve(keeper.startTunnel()).catch(() => {});
+    }
+  }
+
   out(`正在向 ${relay} 申请链接码…`);
   if (win) out(`链接窗口：${win.url}（只在本机 127.0.0.1 打开；没自动弹出来就把这个地址粘到浏览器里，或直接看终端）`);
 
@@ -3977,7 +4118,7 @@ async function linkMain(args, envPath, opts = {}) {
           state.expiresAt = info.expiresAt;
           state.issuedAt = Date.now();
           state.ttlMs = Math.max(0, info.expiresAt - state.issuedAt);
-          state.url = viewer + "#pair=" + info.code;
+          state.url = (keeper ? keeper.origin() : viewer) + "#pair=" + info.code;
           printLinkOffer(state, { out, terminalWidth });
         },
       });
@@ -4022,8 +4163,986 @@ async function linkMain(args, envPath, opts = {}) {
       signalSource.removeListener("SIGTERM", onSignal);
     }
     if (win) win.close();
+    if (keeper) {
+      try {
+        await keeper.stop();
+      } catch {}
+    }
   }
   return exitCode;
+}
+
+/* ---------- 免服务器（本地）模式：attach 当管家 ----------
+ * 设计 findings/local-tunnel-design.md §2/§3/§4/§5。模式判定：.env 的 relay 指向回环
+ * 且仓库里有 relay/config.json（setup.cjs --local 的产物）。管家职责：拉起并看护本机 relay
+ * （就绪之后才轮到控制器写状态文件放行扩展）、算局域网出示地址、按需（--tunnel / --share）
+ * 开 Cloudflare quick tunnel 并换源重出示。relay 本体与协议零改动；隧道只穿 viewer 端口，
+ * 本地通道（localPort）永不进隧道。隧道默认关：不开时行为与纯局域网完全一致。
+ */
+
+let cloudflaredLibCache;
+function loadCloudflaredLib() {
+  if (cloudflaredLibCache !== undefined) return cloudflaredLibCache;
+  try {
+    cloudflaredLibCache = require("./cloudflared.cjs");
+  } catch {
+    cloudflaredLibCache = null;
+  }
+  return cloudflaredLibCache;
+}
+
+const LOCAL_RELAY_READY_TIMEOUT_MS = 15000;
+const RELAY_RESTART_MIN_MS = 2000;
+const RELAY_RESTART_MAX_MS = 30000;
+const KEEPER_STATE_NAME = "pi-remote-local.json";
+
+/** 管家状态文件与连接窗口状态文件同目录（~/.pi/agent/）：记录自有 relay/隧道 pid 供残留清理与 doctor 核对 */
+function keeperStatePath(environ = process.env) {
+  return path.join(path.dirname(defaultAttachFile(environ)), KEEPER_STATE_NAME);
+}
+
+/** 读 relay/config.json（setup --local 的产物）；不存在/解析失败返回 null */
+function readLocalRelayConfig(root = ROOT) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(root, "relay", "config.json"), "utf8"));
+    return cfg && typeof cfg === "object" && !Array.isArray(cfg) ? cfg : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * local 模式判定：有本地 relay 配置 + relay 地址是回环 + 端口与配置的 localPort 对得上。
+ * 端口对不上说明 .env 指的是另一个本地 relay（开发调试等），attach 不接管、不拉起、不杀。
+ */
+function localModeInfo(relayUrl, root = ROOT) {
+  const configPath = path.join(root, "relay", "config.json");
+  const config = readLocalRelayConfig(root);
+  const info = {
+    local: false,
+    configExists: !!config,
+    configPath,
+    config,
+    localPort: config ? Number(config.localPort) || 7001 : 7001,
+    viewerPort: config ? Number(config.viewerPort) || 7002 : 7002,
+  };
+  if (!config || !relayUrl) return info;
+  const host = relayHostOf(relayUrl);
+  if (!host || !isLocalRelayHost(host)) return info;
+  let port = 7001;
+  try {
+    port = Number(new URL(relayUrl).port) || 7001;
+  } catch {
+    return info;
+  }
+  info.local = port === info.localPort;
+  return info;
+}
+
+const VIRTUAL_IFACE_TOKENS = ["utun", "tun", "tap", "vmnet", "vbox", "wsl", "docker", "loopback", "vethernet", "hyper-v", "virtual"];
+
+/** 网卡打分（纯函数）：剔内部/非 IPv4/link-local；默认路由源地址置顶；虚拟网卡降分。高分在前。 */
+function rankLanCandidates(interfaces, routeAddress = "") {
+  const out = [];
+  for (const [name, list] of Object.entries(interfaces || {})) {
+    for (const item of Array.isArray(list) ? list : []) {
+      if (!item || item.internal) continue;
+      if (item.family !== "IPv4" && item.family !== 4) continue;
+      const address = String(item.address || "");
+      const m = address.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (!m || m.slice(1).some((n) => Number(n) > 255)) continue;
+      if (address.startsWith("169.254.")) continue;
+      let score = 100;
+      const lower = String(name).toLowerCase();
+      if (VIRTUAL_IFACE_TOKENS.some((t) => lower.includes(t))) score -= 500;
+      if (routeAddress && address === routeAddress) score += 1000;
+      out.push({ name, address, score });
+    }
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out;
+}
+
+/** 默认路由源地址：UDP socket 只 connect 不发包，问操作系统「出门走哪块网卡」。失败/超时返回 "" */
+function defaultRouteAddress(deps = {}) {
+  return new Promise((resolve) => {
+    let socket;
+    try {
+      socket = deps.createSocket ? deps.createSocket("udp4") : dgram.createSocket("udp4");
+    } catch {
+      resolve("");
+      return;
+    }
+    let done = false;
+    const finish = (addr) => {
+      if (done) return;
+      done = true;
+      try {
+        socket.close();
+      } catch {}
+      resolve(addr || "");
+    };
+    const timer = setTimeout(() => finish(""), deps.timeoutMs || 1000);
+    try {
+      socket.on("error", () => {
+        clearTimeout(timer);
+        finish("");
+      });
+      socket.connect(80, deps.target || "223.5.5.5", () => {
+        clearTimeout(timer);
+        let addr = "";
+        try {
+          addr = String(socket.address().address || "");
+        } catch {}
+        finish(addr);
+      });
+    } catch {
+      clearTimeout(timer);
+      finish("");
+    }
+  });
+}
+
+/** 局域网出示地址（只影响出示、不影响监听）：主地址 origin + 候选 origins + 备选 origins */
+async function lanOrigin(viewerPort, deps = {}) {
+  const port = Number(viewerPort) || 7002;
+  const routeAddress = deps.defaultRouteAddress !== undefined ? deps.defaultRouteAddress : await defaultRouteAddress(deps);
+  const interfaces = deps.networkInterfaces ? deps.networkInterfaces() : os.networkInterfaces();
+  const ranked = rankLanCandidates(interfaces, routeAddress || "");
+  let chosen = ranked.find((c) => routeAddress && c.address === routeAddress) || ranked[0] || null;
+  if (!chosen && routeAddress) chosen = { name: "(默认路由)", address: routeAddress, score: 0 };
+  const toOrigin = (address) => `http://${address}:${port}/`;
+  return {
+    address: chosen ? chosen.address : "",
+    origin: chosen ? toOrigin(chosen.address) : "",
+    candidates: ranked.map((c) => ({ name: c.name, address: c.address, origin: toOrigin(c.address) })),
+    alternatives: ranked.filter((c) => !chosen || c.address !== chosen.address).map((c) => toOrigin(c.address)),
+  };
+}
+
+/**
+ * 当前出示源（纯函数，三级优先）：隧道网址 > 局域网地址（relay 在回环时） > viewerUrlFromRelay 推导。
+ * lan 传 lanOrigin() 预先算好的 origin，保证本函数同步可用（状态行要同步调）。服务器模式行为与旧版一致。
+ */
+function currentViewerOrigin({ relay, viewerPort, tunnelUrl = "", lan = "" } = {}) {
+  if (tunnelUrl) return String(tunnelUrl).replace(/\/?$/, "/");
+  const derived = viewerUrlFromRelay(relay, viewerPort);
+  if (lan && isLocalRelayHost(relayHostOf(relay) || "")) return lan;
+  return derived;
+}
+
+/** GET http://127.0.0.1:<port>/healthz 是否 200（relay 的存活口径，不带任何令牌） */
+function httpHealthz(port, timeoutMs = 1500, httpImpl = http) {
+  return new Promise((resolve) => {
+    let req;
+    try {
+      req = httpImpl.get({ host: "127.0.0.1", port: Number(port), path: "/healthz", timeout: timeoutMs }, (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
+      });
+    } catch {
+      resolve(false);
+      return;
+    }
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.on("error", () => resolve(false));
+  });
+}
+
+function pidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (e) {
+    return !!(e && e.code === "EPERM");
+  }
+}
+
+/** 进程命令行（核对残留 pid 是不是我们拉起的那个进程，防 pid 复用误杀）：Linux 读 /proc，darwin 用 ps，其他平台返回 ""=核对不了 */
+function processCmdline(pid, platform = HOST_PLATFORM, spawnSyncImpl = spawnSync) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return "";
+  try {
+    if (platform === "linux") return fs.readFileSync(`/proc/${n}/cmdline`, "utf8").replace(/\0/g, " ");
+    if (platform === "darwin") {
+      const r = spawnSyncImpl("ps", ["-p", String(n), "-o", "command="], { encoding: "utf8", timeout: 3000 });
+      return r && !r.error && r.status === 0 ? String(r.stdout || "") : "";
+    }
+  } catch {}
+  return "";
+}
+
+/** 杀进程组（POSIX 子进程以 detached 拉起、自成一组；负 pid 连组收，不留孤儿）。win32 退回单进程 kill */
+function killProcessGroup(child, signal, platform = HOST_PLATFORM, killImpl) {
+  if (!child || child.pid == null) return;
+  if (platform !== "win32") {
+    try {
+      (killImpl || ((pid, sig) => process.kill(pid, sig)))(-child.pid, signal);
+      return;
+    } catch {}
+  }
+  try {
+    child.kill(signal);
+  } catch {}
+}
+
+function waitForExit(child, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!child || child.exitCode != null || child.signalCode != null) {
+      resolve(true);
+      return;
+    }
+    let done = false;
+    const timer = setTimeout(() => {
+      if (!done) {
+        done = true;
+        resolve(false);
+      }
+    }, timeoutMs);
+    child.once("exit", () => {
+      if (!done) {
+        done = true;
+        clearTimeout(timer);
+        resolve(true);
+      }
+    });
+  });
+}
+
+/**
+ * 本地 relay 管家。生命周期（设计 §2.2）：
+ *   ensureRelay：清残留 → 探活（已有健康 relay 直接用、不接管不杀）→ spawn relay/server.js
+ *                → 等 /healthz 就绪（超时抛错并带子进程输出尾巴）；自有 relay 退出按 2s→30s 退避重拉。
+ *   startTunnel：按需开 quick tunnel（失败只报状态、绝不抛——隧道故障不影响局域网）。
+ *   stop：先关隧道 → 再关自有 relay → 最后删管家状态文件。
+ */
+function createLocalKeeper(opts = {}) {
+  const root = opts.root || ROOT;
+  const config = opts.config || {};
+  const platform = opts.platform || HOST_PLATFORM;
+  const localPort = Number(config.localPort) || 7001;
+  const viewerPort = Number(opts.viewerPort) || Number(config.viewerPort) || 7002;
+  const relay = opts.relay || `ws://127.0.0.1:${localPort}`;
+  const out = typeof opts.out === "function" ? opts.out : (line) => console.log(line);
+  const spawnImpl = opts.spawnImpl || spawn;
+  const healthz = opts.healthz || ((port) => httpHealthz(port, 1500, opts.httpImpl));
+  const readyTimeoutMs = opts.readyTimeoutMs != null ? Number(opts.readyTimeoutMs) : LOCAL_RELAY_READY_TIMEOUT_MS;
+  const stateFile = opts.stateFile || keeperStatePath(opts.env || process.env);
+  const relayEntry = path.join(root, "relay", "server.js");
+
+  let active = false;
+  let stopped = false;
+  let relayChild = null;
+  let relayOwned = false;
+  let foreignOwner = false;
+  let relayExitInfo = null;
+  let outputTail = [];
+  let restartTimer = null;
+  let restartDelay = RELAY_RESTART_MIN_MS;
+  let lan = { address: "", origin: "", candidates: [], alternatives: [] };
+  let tunnel = null;
+  let tunnelUrlValue = "";
+  let tunnelStatus = "off";
+  let wroteState = false;
+  let originChangeCb = typeof opts.onOriginChange === "function" ? opts.onOriginChange : null;
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function pushTail(chunk) {
+    for (const line of String(chunk).split(/\r?\n/)) {
+      if (!line) continue;
+      outputTail.push(line);
+      if (outputTail.length > 30) outputTail.shift();
+    }
+  }
+  function tailText() {
+    return outputTail.slice(-12).join("\n");
+  }
+  function notifyTunnel(info) {
+    if (typeof opts.onTunnel === "function") {
+      try {
+        opts.onTunnel(info);
+      } catch {}
+    }
+  }
+  function fireOriginChange() {
+    if (originChangeCb) {
+      try {
+        originChangeCb(origin());
+      } catch {}
+    }
+  }
+  function writeState() {
+    try {
+      writeJsonAtomic(stateFile, {
+        ownerPid: process.pid,
+        root,
+        localPort,
+        viewerPort,
+        relayPid: relayChild ? relayChild.pid : 0,
+        relayOwned,
+        tunnelPid: tunnel && tunnel.child() ? tunnel.child().pid : 0,
+        tunnelUrl: tunnelUrlValue,
+        tunnelArgs: tunnel ? tunnel.args || [] : [],
+        updatedAt: Date.now(),
+      });
+      wroteState = true;
+    } catch {}
+  }
+
+  /** §5.4 残留清理：上个管家已死时，它拉起的 relay/cloudflared 是孤儿——命令行核对无误才收；
+      管家还活着 → 标 foreign 不抢；核对不上（pid 复用/无关进程）→ 绝不误杀，只清记录。 */
+  async function cleanupStale() {
+    let rec = null;
+    try {
+      rec = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    } catch {
+      return;
+    }
+    if (!rec || typeof rec !== "object") {
+      removeQuiet(stateFile);
+      return;
+    }
+    if (Number(rec.ownerPid) === process.pid) return;
+    if (pidAlive(rec.ownerPid)) {
+      foreignOwner = true;
+      return;
+    }
+    const killed = [];
+    const relayPid = Number(rec.relayPid);
+    if (pidAlive(relayPid)) {
+      const cmd = processCmdline(relayPid, platform, opts.spawnSyncImpl || spawnSync);
+      if (cmd && cmd.includes(relayEntry)) {
+        try {
+          process.kill(relayPid, "SIGTERM");
+          killed.push(relayPid);
+          out(`清理上次残留的本地 relay（pid ${relayPid}，上一个连接窗口已不在）`);
+        } catch {}
+      }
+    }
+    const tunnelPid = Number(rec.tunnelPid);
+    if (pidAlive(tunnelPid)) {
+      const cmd = processCmdline(tunnelPid, platform, opts.spawnSyncImpl || spawnSync);
+      if (cmd && cmd.includes("cloudflared")) {
+        try {
+          process.kill(tunnelPid, "SIGTERM");
+          killed.push(tunnelPid);
+        } catch {}
+      }
+    }
+    removeQuiet(stateFile);
+    // 等孤儿真的退场，免得探活/拉起撞上正在关闭的旧进程
+    for (const pid of killed) {
+      const deadline = Date.now() + 3000;
+      while (pidAlive(pid) && Date.now() < deadline) await sleep(100);
+    }
+  }
+
+  async function spawnRelayChild() {
+    outputTail = [];
+    relayExitInfo = null;
+    const child = spawnImpl(process.execPath, [relayEntry], {
+      cwd: root,
+      detached: platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...(opts.env || process.env) },
+    });
+    relayChild = child;
+    relayOwned = true;
+    if (child.stdout && typeof child.stdout.on === "function") child.stdout.on("data", pushTail);
+    if (child.stderr && typeof child.stderr.on === "function") child.stderr.on("data", pushTail);
+    if (typeof child.unref === "function") child.unref();
+    child.on("error", () => {});
+    child.on("exit", (code, signal) => {
+      if (relayChild === child) relayChild = null;
+      relayExitInfo = { code, signal };
+      writeState();
+      if (!stopped && active && relayOwned) scheduleRestart();
+    });
+    writeState();
+    return child;
+  }
+
+  async function waitRelayReady() {
+    const deadline = Date.now() + readyTimeoutMs;
+    for (;;) {
+      if (relayExitInfo) throw new Error(`本地 relay 启动后立刻退出（code ${relayExitInfo.code}）：\n${tailText()}`);
+      if (await healthz(viewerPort)) return;
+      if (Date.now() > deadline) throw new Error(`本地 relay ${Math.round(readyTimeoutMs / 1000)}s 内没就绪（http://127.0.0.1:${viewerPort}/healthz 没通）：\n${tailText()}`);
+      await sleep(250);
+    }
+  }
+
+  function scheduleRestart() {
+    if (restartTimer || stopped || !active) return;
+    const delay = restartDelay;
+    restartDelay = Math.min(RELAY_RESTART_MAX_MS, restartDelay * 2);
+    out(`本地 relay 退出了，${Math.round(delay / 1000)}s 后自动重拉（窗口不关，扩展会自己重连）`);
+    restartTimer = setTimeout(async () => {
+      restartTimer = null;
+      if (stopped || !active) return;
+      try {
+        await spawnRelayChild();
+        await waitRelayReady();
+        restartDelay = RELAY_RESTART_MIN_MS;
+        out("本地 relay 已恢复");
+      } catch (e) {
+        out("本地 relay 重拉失败：" + (e && e.message ? e.message : e));
+        if (relayChild) {
+          try {
+            relayChild.kill("SIGKILL");
+          } catch {}
+          relayChild = null;
+        }
+        scheduleRestart();
+      }
+    }, delay);
+    if (restartTimer.unref) restartTimer.unref();
+  }
+
+  async function killRelayChild() {
+    const child = relayChild;
+    relayChild = null;
+    if (!child) return;
+    killProcessGroup(child, "SIGTERM", platform, opts.killImpl);
+    const exited = await waitForExit(child, 3000);
+    if (!exited) {
+      killProcessGroup(child, "SIGKILL", platform, opts.killImpl);
+      await waitForExit(child, 1000);
+    }
+  }
+
+  async function ensureRelay() {
+    if (active) return { owned: relayOwned, healthy: await healthz(viewerPort), foreignOwner };
+    active = true;
+    await cleanupStale();
+    lan = await lanOrigin(viewerPort, opts.lanDeps);
+    if (await healthz(viewerPort)) {
+      relayOwned = false;
+      return { owned: false, healthy: true, foreignOwner };
+    }
+    if (foreignOwner) {
+      out("另一个连接窗口正在管理本地 relay，等它拉起即可（本窗口不重复拉）");
+      return { owned: false, healthy: false, foreignOwner: true };
+    }
+    await spawnRelayChild();
+    try {
+      await waitRelayReady();
+    } catch (e) {
+      await killRelayChild();
+      relayOwned = false;
+      throw e;
+    }
+    return { owned: true, healthy: true, foreignOwner: false };
+  }
+
+  async function startTunnel() {
+    if (tunnel) return { status: tunnelStatus, url: tunnelUrlValue };
+    const cf = loadCloudflaredLib();
+    if (!cf) {
+      tunnelStatus = "failed";
+      notifyTunnel({ status: "failed", url: "", error: "cloudflared 模块缺失（部署包里没有 deploy/cloudflared.cjs）" });
+      return { status: "failed", url: "" };
+    }
+    tunnelStatus = "starting";
+    notifyTunnel({ status: "starting", url: "" });
+    let resolved;
+    try {
+      resolved = await (opts.resolveCloudflared || ((o) => cf.resolveCloudflared(o)))({ log: out });
+    } catch (e) {
+      tunnelStatus = "failed";
+      notifyTunnel({ status: "failed", url: "", error: e && e.message ? e.message : String(e) });
+      return { status: "failed", url: "" };
+    }
+    if (stopped) return { status: "failed", url: "" };
+    out(`隧道启动中（cloudflared ${resolved.version || cf.CLOUDFLARED_VERSION}，来源：${resolved.source === "path" ? "系统已装" : resolved.source}）…`);
+    tunnel = (opts.tunnelStartImpl || ((o) => cf.startTunnel(o)))({
+      bin: resolved.bin,
+      viewerPort,
+      localPort,
+      home: opts.tunnelHome || path.join(os.homedir(), ".pi-remote", "cloudflared", "tunnel-home"),
+      spawnImpl: opts.tunnelSpawnImpl,
+      onUrl: (url) => {
+        tunnelUrlValue = url;
+        writeState();
+        fireOriginChange();
+      },
+      onReady: (url) => {
+        tunnelStatus = "ready";
+        notifyTunnel({ status: "ready", url: url || tunnelUrlValue });
+      },
+      onExit: () => {
+        if (stopped) return;
+        const had = tunnelUrlValue;
+        tunnelUrlValue = "";
+        writeState();
+        // 就绪后掉线只有这一条通报路径；启动阶段退出不在这里报——ready 的拒绝带
+        // cloudflared 输出尾巴（原因更具体），紧接着会到，别把同一件事报两遍
+        if (tunnelStatus === "ready") {
+          tunnelStatus = "failed";
+          notifyTunnel({ status: "failed", url: "", error: "隧道进程退出了，已回落局域网地址" });
+        }
+        if (had) fireOriginChange();
+      },
+    });
+    writeState();
+    tunnel.ready.then(
+      () => {},
+      (e) => {
+        if (stopped) return;
+        if (tunnelStatus === "failed") return; // 已由 onExit（就绪后掉线）报过
+        tunnelStatus = "failed";
+        notifyTunnel({ status: "failed", url: "", error: e && e.message ? e.message : String(e) });
+      },
+    );
+    return { status: tunnelStatus, url: tunnelUrlValue };
+  }
+
+  function origin() {
+    return currentViewerOrigin({ relay, viewerPort, tunnelUrl: tunnelUrlValue, lan: lan.origin });
+  }
+
+  async function stop() {
+    if (stopped) return;
+    stopped = true;
+    active = false;
+    if (restartTimer) {
+      clearTimeout(restartTimer);
+      restartTimer = null;
+    }
+    // 退出顺序（设计 §2.2）：先关隧道 → 再关自有 relay → 最后删管家状态文件
+    if (tunnel) {
+      const t = tunnel;
+      tunnel = null;
+      tunnelUrlValue = "";
+      try {
+        await t.stop();
+      } catch {}
+    }
+    if (relayOwned) await killRelayChild();
+    relayOwned = false;
+    if (wroteState) {
+      removeQuiet(stateFile);
+      wroteState = false;
+    }
+  }
+
+  /** 进程 exit 时的同步兜底：来不及 await stop() 时至少把信号发出去，不留孤儿进程 */
+  function killAllSync() {
+    try {
+      if (tunnel && tunnel.child()) killProcessGroup(tunnel.child(), "SIGKILL", platform, opts.killImpl);
+    } catch {}
+    try {
+      if (relayOwned && relayChild) killProcessGroup(relayChild, "SIGKILL", platform, opts.killImpl);
+    } catch {}
+  }
+
+  return {
+    ensureRelay,
+    startTunnel,
+    stop,
+    killAllSync,
+    origin,
+    setOnOriginChange: (fn) => {
+      originChangeCb = typeof fn === "function" ? fn : null;
+    },
+    lanInfo: () => lan,
+    tunnelUrl: () => tunnelUrlValue,
+    tunnelState: () => ({ status: tunnelStatus, url: tunnelUrlValue }),
+    isRelayOwned: () => relayOwned,
+    localPort,
+    viewerPort,
+    stateFile,
+  };
+}
+
+/** 隧道状态 → 一句人话（ready/failed 才值得出声，starting 由调用方按场景决定） */
+function tunnelStatusLine(t) {
+  if (!t) return "";
+  if (t.status === "ready") return `公网隧道已就绪：${t.url}（每次重启网址都会变；关掉窗口即关）`;
+  if (t.status === "failed") return `公网隧道没开起来：${t.error || "未知原因"}（不影响局域网使用，手机连同一 Wi-Fi 照样能打开）`;
+  if (t.status === "starting") return "公网隧道启动中…";
+  return "";
+}
+
+/** 本地模式开窗时打印的访问地址行：局域网主地址 + 备选 + 无局域网时的兜底说明 */
+function printLocalAccessLines(keeper, out) {
+  const lan = keeper.lanInfo();
+  if (lan.origin) {
+    out(`局域网地址（手机连同一个 Wi-Fi 打开）：${lan.origin}`);
+    if (lan.alternatives && lan.alternatives.length) out(`  手机打不开时试试：${lan.alternatives.join(" 、 ")}`);
+  } else {
+    out(`没探到可用的局域网地址（没连 Wi-Fi/网线？）：本机先用 http://127.0.0.1:${keeper.viewerPort}/ ，出门改用 --tunnel`);
+  }
+}
+
+/* ---------- --share：只出示访问地址（不配对） ----------
+ * 免服务器模式专用：管家拉起本机 relay + 按需开隧道，窗口页与终端并列出示
+ * 局域网地址与隧道网址（各带二维码）。窗口骨架与 /state 轮询沿用 link 窗口的做法，
+ * 样式令牌同一套（不另起设计体系）。窗口开着地址才有效，关窗即全停。
+ */
+
+function shareQrSvg(state, key, url) {
+  if (!url) return "";
+  state._svgCache = state._svgCache || {};
+  const hit = state._svgCache[key];
+  if (hit && hit.url === url) return hit.svg;
+  let svg = "";
+  const qr = loadQrLib();
+  if (qr) {
+    try {
+      svg = qr.matrixToSvg(qr.createQrMatrix(url).modules);
+    } catch {}
+  }
+  state._svgCache[key] = { url, svg };
+  return svg;
+}
+
+/** 分享窗口 /state 数据面：双源地址 + 隧道状态；令牌永不进这个通道 */
+function shareWindowStateJson(state) {
+  const tunnelUrl = state.tunnel ? state.tunnel.url || "" : "";
+  return {
+    deviceName: state.deviceName || "",
+    platformLabel: state.platformLabel || "",
+    lanUrl: state.lanUrl || "",
+    lanCandidates: state.lanCandidates || [],
+    lanQrSvg: shareQrSvg(state, "lan", state.lanUrl || ""),
+    tunnelStatus: state.tunnel ? state.tunnel.status || "off" : "off",
+    tunnelUrl,
+    tunnelQrSvg: shareQrSvg(state, "tunnel", tunnelUrl),
+    tunnelError: state.tunnel && state.tunnel.error ? state.tunnel.error : "",
+    serverNow: Date.now(),
+  };
+}
+
+function renderSharePage(state) {
+  const initial = JSON.stringify(shareWindowStateJson(state)).replace(/</g, "\\u003c");
+  const deviceName = escapeHtml(state.deviceName || "");
+  const platform = escapeHtml(state.platformLabel || "");
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pi-Remote · 分享访问地址</title>
+<style>
+  :root{
+    --page-bg:#0e0e10; --main-bg:rgba(20,20,23,.55);
+    --t1:#ededf0; --t2:#c9c9cf; --t3:#a9a9b1; --t4:#7c7c84; --t5:#5f5f66;
+    --ic:#8e8e96; --ink:#ececf1;
+    --line:rgba(255,255,255,.08); --card-line:rgba(255,255,255,.07);
+    --accent:#a78bfa; --wait:#e0a63f; --ok:#3fb96f;
+    --font:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,"Roboto Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{ font-family:var(--font); color:var(--t1); background:var(--page-bg); -webkit-font-smoothing:antialiased; }
+  .stage{
+    min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:34px 20px 56px;
+    background:
+      radial-gradient(880px 520px at 10% -8%, rgba(106,74,224,.16), rgba(106,74,224,0) 60%),
+      radial-gradient(760px 520px at 96% 108%, rgba(47,90,160,.12), rgba(47,90,160,0) 62%),
+      linear-gradient(160deg,#17181b 0%,#0e0e10 58%,#101013 100%);
+  }
+  .win{
+    width:400px; max-width:92vw; border-radius:16px; overflow:hidden; background:var(--main-bg);
+    -webkit-backdrop-filter:blur(28px) saturate(1.2); backdrop-filter:blur(28px) saturate(1.2);
+    border:1px solid var(--line); box-shadow:0 24px 64px rgba(0,0,0,.5), 0 4px 16px rgba(0,0,0,.35);
+  }
+  .whead{ display:flex; align-items:flex-start; padding:20px 22px 0; }
+  .whead .tt{ flex:1; min-width:0; }
+  .whead h1{ font-size:15px; font-weight:600; color:var(--t1); line-height:21px; }
+  .whead .sub{ margin-top:3px; font-size:12.5px; line-height:17px; color:var(--t3); }
+  .devrow{ margin:16px 22px 0; display:flex; align-items:center; gap:10px; background:rgba(255,255,255,.05); border-radius:10px; padding:9px 12px; }
+  .devtile{ width:30px; height:30px; flex:none; border-radius:8px; background:rgba(255,255,255,.09); color:#dcdce0; display:flex; align-items:center; justify-content:center; }
+  .devrow .dn{ flex:1; min-width:0; }
+  .devrow .dn .n{ font-size:13.5px; font-weight:600; color:var(--t1); line-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .devrow .dn .m{ font-size:11.5px; color:var(--t4); line-height:15px; margin-top:1px; }
+  .ondot{ width:7px; height:7px; border-radius:50%; background:var(--ok); flex:none; }
+  .devrow .st{ font-size:11.5px; color:var(--t3); flex:none; }
+  .wbody{ padding:20px 22px 22px; }
+  .seclab{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px; }
+  .seclab .lb{ font-size:11px; letter-spacing:.12em; color:var(--t4); text-transform:uppercase; }
+  .seclab .alt{ font-size:11.5px; color:var(--t5); }
+  .seclab .alt.ready{ color:var(--ok); }
+  .seclab .alt.waiting{ color:var(--wait); }
+  .qrcard{ position:relative; width:260px; margin:0 auto; border-radius:12px; background:#f4f4f5; padding:26px; box-shadow:0 2px 10px rgba(0,0,0,.35); }
+  .qrbox{ width:208px; height:208px; }
+  .qrbox svg{ display:block; width:208px; height:208px; }
+  .qrbox .empty{ width:208px; height:208px; display:flex; align-items:center; justify-content:center; color:#55555c; font-size:12.5px; text-align:center; padding:0 18px; line-height:19px; }
+  .urlbox{
+    margin-top:12px; text-align:center; font-family:var(--mono); font-size:13px; color:var(--ink);
+    background:rgba(255,255,255,.04); border:1px solid var(--card-line); border-radius:10px; padding:9px 8px;
+    word-break:break-all; line-height:19px;
+  }
+  .urlbox.dim{ color:var(--t5); font-family:var(--font); }
+  .divider{ height:1px; background:var(--card-line); margin:22px 0 18px; }
+  .cand{ margin-top:8px; text-align:center; font-size:11.5px; line-height:17px; color:var(--t5); word-break:break-all; }
+  .foot{ margin-top:14px; font-size:11.5px; line-height:16px; color:var(--t5); }
+</style>
+</head>
+<body>
+<div class="stage">
+  <section class="win" aria-label="分享访问地址窗口">
+    <div class="whead">
+      <div class="tt">
+        <h1>分享访问地址</h1>
+        <div class="sub">这台电脑正以免服务器模式运行 Pi-Remote。出门用公网地址，在家用局域网地址，手机扫码或输入网址打开。</div>
+      </div>
+    </div>
+    <div class="devrow">
+      <div class="devtile">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 14h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      </div>
+      <div class="dn">
+        <div class="n">${deviceName}</div>
+        <div class="m">${platform} · 免服务器（本地）模式</div>
+      </div>
+      <span class="ondot" title="在线"></span><span class="st">在线</span>
+    </div>
+    <div class="wbody">
+      <div class="seclab"><span class="lb">公网地址 · 出门用</span><span class="alt" id="tstatus">隧道启动中…</span></div>
+      <div class="qrcard"><div class="qrbox" id="tqr"><div class="empty">隧道就绪后这里会出现二维码</div></div></div>
+      <div class="urlbox dim" id="turl">正在向 Cloudflare 申请这次的网址…</div>
+      <div class="foot">公网网址每次重启都会变，变了请重新看这个页面；关掉 attach 窗口，隧道立即关闭，网址随即失效。</div>
+      <div class="divider"></div>
+      <div class="seclab"><span class="lb">局域网地址 · 同一 Wi-Fi</span><span class="alt">在家用这个，不用等隧道</span></div>
+      <div class="qrcard"><div class="qrbox" id="lqr"><div class="empty">没有可用的局域网地址</div></div></div>
+      <div class="urlbox" id="lurl"></div>
+      <div class="cand" id="lcand"></div>
+      <div class="foot">只有 viewer 端口会经隧道对外，本地通道永远只留在这台电脑上。打开页面要输入的 viewer 令牌就是门锁：地址只给信任的人。</div>
+    </div>
+  </section>
+</div>
+<script>
+  var S = ${initial};
+  function el(id){ return document.getElementById(id); }
+  function setQr(id, svg){
+    var box = el(id);
+    if (!box) return;
+    if (svg){
+      if (box.getAttribute('data-svg') !== svg){ box.innerHTML = svg; box.setAttribute('data-svg', svg); }
+    }
+  }
+  function applyState(s){
+    S = s;
+    var ts = el('tstatus'), tu = el('turl');
+    if (s.tunnelStatus === 'ready'){
+      ts.textContent = '已就绪'; ts.className = 'alt ready';
+      tu.textContent = s.tunnelUrl; tu.className = 'urlbox';
+      setQr('tqr', s.tunnelQrSvg);
+    } else if (s.tunnelStatus === 'failed'){
+      ts.textContent = '没开起来'; ts.className = 'alt waiting';
+      tu.textContent = s.tunnelError || '隧道没能建立，局域网地址照常可用'; tu.className = 'urlbox dim';
+    } else if (s.tunnelStatus === 'starting'){
+      ts.textContent = '启动中…'; ts.className = 'alt waiting';
+    } else {
+      ts.textContent = '未开启'; ts.className = 'alt';
+      tu.textContent = '隧道未开启'; tu.className = 'urlbox dim';
+    }
+    if (s.lanUrl){
+      el('lurl').textContent = s.lanUrl;
+      setQr('lqr', s.lanQrSvg);
+      el('lcand').textContent = (s.lanCandidates && s.lanCandidates.length)
+        ? '打不开时试试：' + s.lanCandidates.join(' 、 ') : '';
+    } else {
+      el('lurl').textContent = '没有可用的局域网地址（没连 Wi-Fi/网线？）';
+      el('lurl').className = 'urlbox dim';
+    }
+  }
+  setInterval(function(){
+    fetch('/state').then(function(r){ return r.json(); }).then(applyState).catch(function(){});
+  }, 900);
+  applyState(S);
+</script>
+</body>
+</html>`;
+}
+
+/** 分享窗口服务：与 link 窗口同一骨架（只绑 127.0.0.1 随机端口，/state 轮询） */
+function startShareWindowServer(state) {
+  const server = http.createServer((req, res) => {
+    try {
+      const u = new URL(String(req.url || "/"), "http://127.0.0.1");
+      if (req.method === "GET" && u.pathname === "/state") {
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+        res.end(JSON.stringify(shareWindowStateJson(state)));
+        return;
+      }
+      if (req.method === "GET" && (u.pathname === "/" || u.pathname === "/index.html")) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        res.end(renderSharePage(state));
+        return;
+      }
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("not found");
+    } catch {
+      try {
+        res.writeHead(500);
+        res.end();
+      } catch {}
+    }
+  });
+  return new Promise((resolve) => {
+    server.once("error", () => resolve(null));
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({
+        server,
+        url: `http://127.0.0.1:${addr.port}/`,
+        close: () => {
+          try {
+            server.close();
+          } catch {}
+        },
+      });
+    });
+  });
+}
+
+/** 终端打印一条网址的字符二维码（太长/太窄时降级为只印网址） */
+function printUrlQr(url, { out, terminalWidth }) {
+  const qr = loadQrLib();
+  if (!qr || !url) return;
+  try {
+    const m = qr.createQrMatrix(url);
+    if (m.version > 16) return;
+    const lines = qr.matrixToTerminalLines(m.modules, { quiet: 4 });
+    if (lines.length && lines[0].length <= terminalWidth) {
+      for (const line of lines) out(line);
+    }
+  } catch {}
+}
+
+function printShareOffer(state, { out, terminalWidth }) {
+  out("");
+  if (state.lanUrl) {
+    out("局域网地址（手机连同一个 Wi-Fi，扫一扫或输入网址）：");
+    printUrlQr(state.lanUrl, { out, terminalWidth });
+    out("  " + state.lanUrl);
+    if (state.lanCandidates && state.lanCandidates.length) out(`  手机打不开时试试：${state.lanCandidates.join(" 、 ")}`);
+  } else {
+    out("没探到可用的局域网地址（没连 Wi-Fi/网线？），先用下面的公网地址。");
+  }
+}
+
+function printTunnelOffer(url, { out, terminalWidth }) {
+  out("");
+  out("公网地址（出门也能打开，手机扫一扫）：");
+  printUrlQr(url, { out, terminalWidth });
+  out("  " + url);
+  out("这个网址每次重启都会变；关掉 attach 窗口，隧道立即关闭、网址随即失效。");
+}
+
+/** --share：本地模式专用。管家拉起 relay + 开隧道，只出示双源地址，常驻到 Ctrl-C */
+async function shareMain(args, envPath, opts = {}) {
+  const out = opts.writeOut || ((line) => console.log(line));
+  const err = opts.writeErr || ((line) => console.error(line));
+  const platform = opts.platform || HOST_PLATFORM;
+  const root = opts.root || ROOT;
+  const terminalWidth = Number(opts.terminalWidth) || (process.stdout && process.stdout.columns) || 80;
+  const cfg = loadConfig(envPath, opts.env || process.env, platform);
+  const relay = args.relay || cfg.relay;
+  if (!relay) {
+    err("不知道 relay 地址：先运行 node deploy/setup.cjs --local 初始化免服务器模式");
+    return 1;
+  }
+  const info = localModeInfo(relay, root);
+  if (!info.local) {
+    err("--share 只用于免服务器（本地 relay）模式：当前 .env 的 relay 不是本机本地模式。");
+    err("  先运行 node deploy/setup.cjs --local 生成本地配置，再运行 attach --share。");
+    return 1;
+  }
+  const state = {
+    deviceName: cfg.deviceName || defaultDeviceName(platform),
+    platformLabel: platformLabel(platform),
+    lanUrl: "",
+    lanCandidates: [],
+    tunnel: { status: "off", url: "", error: "" },
+  };
+  let tunnelPrinted = false;
+  const factory = opts.keeperFactory || ((o) => createLocalKeeper(o));
+  const keeper = factory({
+    config: info.config,
+    relay,
+    root,
+    platform,
+    out,
+    env: opts.env || process.env,
+    stateFile: opts.stateFile,
+    healthz: opts.healthz,
+    spawnImpl: opts.spawnImpl,
+    spawnSyncImpl: opts.spawnSyncImpl,
+    readyTimeoutMs: opts.readyTimeoutMs,
+    lanDeps: opts.lanDeps,
+    resolveCloudflared: opts.resolveCloudflared,
+    tunnelSpawnImpl: opts.tunnelSpawnImpl,
+    tunnelHome: opts.tunnelHome,
+    onTunnel: (t) => {
+      state.tunnel.status = t.status;
+      if (t.url) state.tunnel.url = t.url;
+      if (t.error) state.tunnel.error = t.error;
+      const line = tunnelStatusLine(t);
+      if (line) out(line);
+      if (t.status === "ready" && t.url && !tunnelPrinted) {
+        tunnelPrinted = true;
+        printTunnelOffer(t.url, { out, terminalWidth });
+      }
+    },
+  });
+
+  let win = null;
+  let aborted = false;
+  const signalSource = opts.signalSource || process;
+  const bindSignals = opts.bindSignals !== false;
+  let resolveWait = null;
+  const waitPromise = new Promise((resolve) => {
+    resolveWait = resolve;
+  });
+  const onSignal = () => {
+    aborted = true;
+    if (resolveWait) resolveWait();
+  };
+  if (bindSignals) {
+    signalSource.on("SIGINT", onSignal);
+    signalSource.on("SIGTERM", onSignal);
+  }
+  try {
+    let ensured;
+    try {
+      ensured = await keeper.ensureRelay();
+    } catch (e) {
+      err("本地 relay 没能启动：" + (e && e.message ? e.message : e));
+      return 1;
+    }
+    const lan = keeper.lanInfo();
+    state.lanUrl = lan.origin;
+    state.lanCandidates = lan.alternatives;
+    out(ensured.owned ? "免服务器模式：本地 relay 已拉起" : "免服务器模式：本地 relay 已在运行（不是本窗口拉起的，不接管）");
+    if (opts.shareWindow !== false) {
+      win = await startShareWindowServer(state);
+      if (win && opts.openBrowser !== false) openBrowserDefault(win.url, platform, opts.spawnImplForBrowser || spawn);
+    }
+    printShareOffer(state, { out, terminalWidth });
+    if (win) out(`分享窗口：${win.url}（只在本机 127.0.0.1 打开；隧道网址就绪后页面会自动更新）`);
+    state.tunnel.status = "starting";
+    await keeper.startTunnel();
+    out("分享中：这个窗口开着，上面两个地址就有效；按 Ctrl-C 关闭（隧道与本地 relay 一并停）。");
+    await waitPromise;
+  } finally {
+    if (bindSignals) {
+      signalSource.removeListener("SIGINT", onSignal);
+      signalSource.removeListener("SIGTERM", onSignal);
+    }
+    if (win) win.close();
+    await keeper.stop();
+  }
+  return aborted ? 130 : 0;
 }
 
 module.exports = {
@@ -4111,6 +5230,26 @@ module.exports = {
   resolveEnvFile,
   attachRelaySafetyError,
   printRemoteRelayWarning,
+  loadCloudflaredLib,
+  keeperStatePath,
+  readLocalRelayConfig,
+  localModeInfo,
+  rankLanCandidates,
+  defaultRouteAddress,
+  lanOrigin,
+  currentViewerOrigin,
+  httpHealthz,
+  pidAlive,
+  processCmdline,
+  createLocalKeeper,
+  tunnelStatusLine,
+  printLocalAccessLines,
+  shareMain,
+  shareWindowStateJson,
+  renderSharePage,
+  startShareWindowServer,
+  printShareOffer,
+  printTunnelOffer,
 };
 
 if (require.main === module) {

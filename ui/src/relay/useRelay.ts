@@ -42,6 +42,7 @@ import {
   findStartedRoom,
   folderAllowed,
   isUnknownType,
+  isViaTunnelHostname,
   mergeDeviceSessions,
   parseDirList,
   parseRooms,
@@ -400,6 +401,7 @@ function sessionFileRow(value: unknown): SessionEntry | null {
 
 export function useRelay() {
   /** 页面是否经 Cloudflare quick tunnel 打开（源 hostname 判定，免服务器模式 §4.3）：页面源在打开时就定了，连接期间不变。 */
+  const isViaTunnel = isViaTunnelHostname(location.hostname)
   const [token, setToken] = useState(() => safeStore.get("pi_remote_viewer_token") || "")
   /** 管理命令的独立口令；只存本机浏览器，不进 viewer 握手，也不在界面明文回显。 */
   const [adminToken, setAdminTokenValue] = useState(() => safeStore.get(ADMIN_TOKEN_STORAGE_KEY) || "")
@@ -4179,6 +4181,7 @@ export function useRelay() {
     setAdminToken,
     authed,
     /** 经 Cloudflare 隧道连接（免服务器模式 §4.3）：PiApp 顶部据此出示小徽标 */
+    isViaTunnel,
     status,
     everConnected,
     retryAt,

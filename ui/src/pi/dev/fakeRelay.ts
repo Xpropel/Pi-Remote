@@ -20,6 +20,7 @@ function defaults(): Relay {
     adminToken: "",
     setAdminToken: noop,
     authed: false,
+    isViaTunnel: false,
     status: "未连接",
     everConnected: false,
     retryAt: null,

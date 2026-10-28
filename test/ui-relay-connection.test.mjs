@@ -13,6 +13,7 @@ import {
   rememberSessionArchive,
   touchSessionArchive,
 } from "../ui/src/relay/sessionArchive.ts"
+import { isViaTunnelHostname, TUNNEL_COPY } from "../ui/src/relay/devices.ts"
 
 const relaySource = () => readFileSync(new URL("../ui/src/relay/useRelay.ts", import.meta.url), "utf8")
 const archiveOf = (id) => ({ id, messages: [{ id: `${id}-m1`, role: "user", text: "hi" }] })
@@ -133,4 +134,27 @@ test("接线：退出登录连管理员令牌一并清除（UI 中-2 回归）",
   assert.match(logoutBody, /setAdminToken\(""\)/, "logout 必须调用 setAdminToken(\"\") 清管理员令牌（状态 + localStorage）")
   assert.match(logoutBody, /\}, \[[^\]]*setAdminToken[^\]]*\]\)/, "setAdminToken 必须进 logout 的 useCallback 依赖")
   assert.match(relay, /else safeStore\.remove\(ADMIN_TOKEN_STORAGE_KEY\)/, "setAdminToken 传空删存储键的口径不能被改掉")
+})
+
+test("经隧道判定：hostname 以 .trycloudflare.com 结尾才为真（免服务器模式 §4.3）", () => {
+  assert.equal(isViaTunnelHostname("abc-def.trycloudflare.com"), true, "quick tunnel 网址应判真")
+  assert.equal(isViaTunnelHostname("ABC-DEF.trycloudflare.com"), true, "大小写不敏感")
+  assert.equal(isViaTunnelHostname("trycloudflare.com"), false, "裸域名（无子域）不算")
+  assert.equal(isViaTunnelHostname("eviltrycloudflare.com"), false, "仿冒域名不算")
+  assert.equal(isViaTunnelHostname("x.trycloudflare.com.evil.com"), false, "后缀在中间不算")
+  assert.equal(isViaTunnelHostname("192.168.1.10"), false, "局域网 IP 不算")
+  assert.equal(isViaTunnelHostname("pi-remote.upropel2.xyz"), false, "自有服务器域名不算")
+  assert.equal(isViaTunnelHostname(""), false)
+})
+
+test("接线：useRelay 回传 isViaTunnel，PiApp 据此出示隧道徽标（免服务器模式 §4.3）", () => {
+  const relay = relaySource()
+  assert.match(relay, /const isViaTunnel = isViaTunnelHostname\(location\.hostname\)/, "useRelay 必须按页面源 hostname 判定")
+  assert.match(relay, /\n    isViaTunnel,\n/, "isViaTunnel 必须进 useRelay 返回对象")
+  const app = readFileSync(new URL("../ui/src/pi/PiApp.tsx", import.meta.url), "utf8")
+  assert.match(app, /relay\.isViaTunnel/, "PiApp 必须消费 relay.isViaTunnel")
+  assert.match(app, /TUNNEL_COPY\.badge/, "徽标文案必须走 TUNNEL_COPY")
+  assert.equal(TUNNEL_COPY.badge, "经 Cloudflare 隧道连接")
+  const fake = readFileSync(new URL("../ui/src/pi/dev/fakeRelay.ts", import.meta.url), "utf8")
+  assert.match(fake, /isViaTunnel: false/, "假 relay 默认值必须补 isViaTunnel（类型闸门）")
 })

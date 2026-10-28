@@ -8,6 +8,7 @@ import { PI_UI_IDS } from "@/pi/containers/types"
 import { PairLinkLanding } from "@/pi/PairLinkLanding"
 import { PiVariantBoundary } from "@/pi/PiVariantBoundary"
 import { PiVariantLoading, piVariantDefOf, type VariantAppProps } from "@/pi/variants"
+import { TUNNEL_COPY } from "@/relay/devices"
 import { takePairLinkFromLocation } from "@/relay/pairLink"
 import { useRelay } from "@/relay/useRelay"
 import "@/pi/styles/privacy.css"
@@ -84,6 +85,16 @@ export default function PiApp() {
     layout: device.viewport,
     device: device.frame,
   }
+  // 免服务器模式 §4.3：页面经 Cloudflare quick tunnel 打开时，顶部居中一条小徽标说明连接方式。
+  // 纯前端判定（relay.isViaTunnel 看页面源 hostname），三套皮肤共用一份、只提示不拦截操作；
+  // 落地页（扫隧道二维码链接新设备时先到这里）与主界面都出示。
+  const tunnelBadge = relay.isViaTunnel ? (
+    <div className="pointer-events-none fixed inset-x-0 top-2 z-[90] flex justify-center px-4">
+      <span className="rounded-full border border-solid border-(--cw-border) bg-(--cw-surface) px-3 py-1 text-(length:--cw-text-sm) leading-(--cw-leading-sm) text-(--cw-pi-text-secondary) shadow-lg">
+        {TUNNEL_COPY.badge}
+      </span>
+    </div>
+  ) : null
   if (pairEntry) {
     // 成功后「查看设备列表」：先把配对对话框的开态写进 ui 状态，再退落地页——变体树挂载时它就是开的
     const showDevices = () => {
@@ -93,16 +104,20 @@ export default function PiApp() {
       setPairEntry(null)
     }
     return (
-      <PairLinkLanding
-        relay={relay}
-        initialCode={pairEntry.code}
-        onExit={() => setPairEntry(null)}
-        onShowDevices={showDevices}
-      />
+      <>
+        {tunnelBadge}
+        <PairLinkLanding
+          relay={relay}
+          initialCode={pairEntry.code}
+          onExit={() => setPairEntry(null)}
+          onShowDevices={showDevices}
+        />
+      </>
     )
   }
   return (
     <PiSettingsHost relay={relay} ui={ui} act={act} keyboardOpen={device.frame.keyboard}>
+      {tunnelBadge}
       <PiVariantBoundary variant={variant.id} onFallback={() => act.setUiVariant("cursor")}>
         <Suspense fallback={<PiVariantLoading variant={variant.id} />}>
           <Variant {...app} />

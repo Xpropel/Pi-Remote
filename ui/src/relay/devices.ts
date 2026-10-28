@@ -47,6 +47,20 @@ export const ADMIN_TOKEN_COPY = {
   invalid: "管理员令牌不正确/未配置",
 } as const
 
+/** 经 Cloudflare 隧道打开页面时的提示文案（免服务器模式 §4.3）。 */
+export const TUNNEL_COPY = {
+  badge: "经 Cloudflare 隧道连接",
+} as const
+
+/**
+ * 当前页面是否经 Cloudflare quick tunnel 打开：quick tunnel 的网址恒为
+ * https://<随机词>.trycloudflare.com，hostname 以 .trycloudflare.com 结尾即是。
+ * 纯前端判定、零后端改动；裸 trycloudflare.com（无子域）不算，仿冒后缀也不算。
+ */
+export function isViaTunnelHostname(hostname: string): boolean {
+  return typeof hostname === "string" && hostname.toLowerCase().endsWith(".trycloudflare.com")
+}
+
 /** 输入框非空才允许管理操作；只做本地判断，正确与否以 relay 的 admin_required 为准。 */
 export function adminTokenReady(token: string): boolean {
   return token.trim().length > 0

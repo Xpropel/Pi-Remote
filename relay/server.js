@@ -342,6 +342,21 @@ function startRelay(overrides = {}) {
   }
 }
 
+/* ---------------- web 物料检查（免服务器模式 §2.3） ----------------
+ * webRoot 缺 index.html 时，手机/浏览器打开页面只会 404，看起来像 relay 坏了，其实是
+ * 发布包没带 web/（或 ui 还没构建）。启动时明确告警并给解决办法，避免误诊；
+ * 只告警、不拦启动——API 与 WebSocket 不依赖静态页面，照常工作。返回 true 表示物料齐全。
+ */
+function warnMissingWebRoot(cfg, logger = log) {
+  const root = cfg && cfg.webRoot ? String(cfg.webRoot) : "";
+  const indexFile = root ? path.join(root, "index.html") : "";
+  let ok = false;
+  try { ok = !!indexFile && fs.statSync(indexFile).isFile(); } catch { ok = false; }
+  if (ok) return true;
+  logger(`警告：web 页面物料缺失（${indexFile || "webRoot 未配置"} 不是可用的 index.html）——手机/浏览器打开页面会是 404，但 relay 的 API 与 WebSocket 照常工作。解决办法：重新安装完整的发布包（应包含 web/ 目录），或先在 ui/ 执行 npm run build 并把产物部署到 relay 的 web/ 目录。`);
+  return false;
+}
+
 /* ---------------- main ---------------- */
 async function main() {
   // 进程级逃逸兜底最先装：启动阶段（loadConfig/建目录/监听）抛出的异常也要留下日志、
@@ -358,6 +373,7 @@ async function main() {
       process.exit(1);
     }
     fs.mkdirSync(LOG_DIR, { recursive: true });
+    warnMissingWebRoot(cfg);
     relay = await startRelay(cfg);
   } catch (e) {
     console.error("[relay] 启动失败：", e && e.message ? e.message : e);
@@ -406,4 +422,4 @@ async function main() {
 }
 
 if (require.main === module) main();
-module.exports = { main, startRelay, loadConfig, commandTimeoutMs, shrinkImagesDeep, normalizePlatform, normPath, cwdAllowed, cleanProjects, requestSource, DEFAULT_CONFIG, RELAY_VERSION };
+module.exports = { main, startRelay, warnMissingWebRoot, loadConfig, commandTimeoutMs, shrinkImagesDeep, normalizePlatform, normPath, cwdAllowed, cleanProjects, requestSource, DEFAULT_CONFIG, RELAY_VERSION };

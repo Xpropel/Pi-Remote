@@ -20,7 +20,7 @@ const net = require("node:net");
 const { spawn } = require("node:child_process");
 const WebSocket = require("ws");
 
-const { startRelay } = require("../relay/server.js");
+const { startRelay, warnMissingWebRoot } = require("../relay/server.js");
 const { helloVersionError } = require("../relay/wire.js");
 const { dedupeKeyOf, armWaiter, COMMAND_RECONCILE_GRACE_MS } = require("../relay/commands.js");
 const { normPath, cwdAllowed, underRoots } = require("../relay/devices.js");
@@ -706,3 +706,33 @@ test("R-5：get_sessions 忽略 viewer 上报的 accountId，只查本连接账�
 });
 
 /* ---------------- web 物料告警（免服务器模式 §2.3） ---------------- */
+
+test("web 物料：warnMissingWebRoot 缺 index.html 时告警一次、齐全时不告警", () => {
+  const lines = [];
+  const capture = (...a) => lines.push(a.join(" "));
+  const root = tmpDir("pi-webroot-");
+  assert.equal(warnMissingWebRoot({ webRoot: root }, capture), false, "缺 index.html 应判物料缺失");
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /web 页面物料缺失/);
+  assert.match(lines[0], /照常工作/, "告警必须说明 API/WS 不受影响");
+  fs.writeFileSync(path.join(root, "index.html"), "<html></html>");
+  lines.length = 0;
+  assert.equal(warnMissingWebRoot({ webRoot: root }, capture), true, "有 index.html 应判物料齐全");
+  assert.equal(lines.length, 0, "物料齐全时不该有任何告警");
+});
+
+test("web 物料：webRoot 缺 index.html 不拦启动——relay 照常起、healthz 200、页面 404", async (t) => {
+  const relay = await boot({ webRoot: tmpDir("pi-webroot-") });
+  t.after(() => relay.close());
+  const health = await fetch(`http://127.0.0.1:${relay.viewerPort}/healthz`);
+  assert.equal(health.status, 200, "物料缺失时 healthz 必须照常");
+  const page = await fetch(`http://127.0.0.1:${relay.viewerPort}/`);
+  assert.equal(page.status, 404, "缺 index.html 的页面就是 404（这正是告警要避免误诊的现状）");
+});
+
+test("web 物料：main 启动段接了 warnMissingWebRoot（源码接线）", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "relay", "server.js"), "utf8");
+  const mainAt = src.indexOf("async function main()");
+  assert.ok(mainAt > 0, "main 必须还在");
+  assert.match(src.slice(mainAt), /warnMissingWebRoot\(cfg\)/, "main 启动段必须调用物料告警");
+});
