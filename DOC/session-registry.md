@@ -1,6 +1,6 @@
 # 会话登记（Session Registry）：服务端索引层设计
 
-> **执行期**：索引文件布局以 `DOC/10-relay-backend.md` 与 `DOC/00-overview.md` 为准（`accounts/admin` 目录形式：`data/accounts/index.jsonl`、`data/accounts/admin/devices.jsonl`、`data/accounts/admin/sessions/<设备>.jsonl`）。本文是概念设计，不单独作为落地路径依据。
+> **执行期**：索引文件布局以 `DOC/10-relay-backend.md` 与 `DOC/71-protocol-v4.md` 为准（`accounts/admin` 目录形式：`data/accounts/index.jsonl`、`data/accounts/admin/devices.jsonl`、`data/accounts/admin/sessions/<设备>.jsonl`）。本文是概念设计，不单独作为落地路径依据。
 
 > 本文是 harness 的**会话管理组件**规范：服务器只保存「账户 → 设备 → 会话清单」三级索引（KB 级），
 > **不再保存任何对话内容**；对话内容的唯一副本在本机。

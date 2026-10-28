@@ -2,7 +2,7 @@
 
 > 这是三端共同遵守的契约。机器可读部分（版本、能力、错误码、上限）在 `protocol/v4.json`，是唯一事实源；
 > `relay/protocol.json` 与扩展里的 `PROTOCOL` 块由 `node protocol/sync.cjs` 生成，`test/protocol.test.js` 保证不过期。
-> 背景与分期见 `DOC/70-interface-v4-plan.md`。Linux 端已纳入，形态是服务器式（阿里云 Ubuntu 24.04、无桌面、tmux 拉起），设计写在 `deploy/README.md`（Linux 端负责人起草）。
+> 背景与分期见 `DOC/71-protocol-v4.md`。Linux 端已纳入，形态是服务器式（阿里云 Ubuntu 24.04、无桌面、tmux 拉起），设计写在 `deploy/README.md`（Linux 端负责人起草）。
 
 ## 0. 兼容原则
 

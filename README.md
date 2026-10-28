@@ -61,15 +61,10 @@
 |---|---|
 | `readyUI/data-interface.md`（**v3.1，唯一事实源**） | 传输层、12 种下行信封、增量同步（rev/seq/since）、命令受理与去重、38 种 pi 事件 + 2 扩展级事件及载荷投影、45 个远程命令、消息/toolResult 数据结构、流式重建算法、TS 类型 |
 | `readyUI/pi-interface-inventory.md` | 接口普查总账（事件矩阵/33 命令核对/未暴露机会/路线图/进度） |
-| `DOC/00-overview.md` | 分工总纲：四条工作流（本机/服务器/UI/共享）+ 阶段 0-3 验收标准 + 风险与决策记录 |
 | `DOC/10-relay-backend.md` | 后端设计：index.js 索引模块、applyManifest 七条规则、帧处理、命令路由/白名单 |
 | `DOC/20-local-device.md` | 本机设计：attach 命令生命周期、`.env` 设备身份、扩展改动点、Windows spawn 规则 |
 | `DOC/30-server-ops.md` | 运维设计：systemd + token env 文件、部署、迁移、备份、换 token、回滚 |
-| `DOC/40-frontend.md` | 前端设计：useRelay 改动、启用/新建流程状态机、错误文案表（旧界面时期的设计：useRelay、状态机和文案部分仍然有效，组件与文件落位已过时，现行界面见 ui/README.md） |
 | `DOC/50-protocol-delta.md` | 共享协议增量：10 个新帧、7 个错误码、参数表、新旧兼容矩阵 |
-| `DOC/60-ui-enhancement.md` | UI 增强设计：状态栏 + 16 个弹窗 + 命令中心 + slash 路由 + 文案表（旧界面时期的设计；文件落位已过时，现行界面见 ui/README.md） |
-| `DOC/74-ui-variants-extension.md` | 三套 UI 变体与扩展能力体系：40 项能力、禁用态/模拟态、provider 接入、设备平台标签/工作模式/运行位置映射、示例与版本策略 |
-| `DOC/75-usage-activity.md` | 设置页「使用活动」：使用统计口径（API 处理量/本地时区/无金额）、隐私边界、协议能力位 `usage.activity.v1` 接入与旧端降级 |
 | `DOC/device-harness.md` / `DOC/session-registry.md` | 概念层来源：attach 窗口模型 / 服务器只存索引模型 |
 
 ## 2. 目录结构
@@ -169,7 +164,6 @@ npm test            # 单元/协议测试，不需要 pi 和模型：store、rel
 | 改界面 / 加设计屏 / 对图 | `ui/README.md`（入口、目录、令牌、开发画廊 gallery.html、L1 / L2 / L3） |
 | 了解某能力"终端有、远端有没有" | `readyUI/pi-interface-inventory.md` |
 | 部署/换 token/排障 | `deploy/README.md` |
-| 某功能怎么分工、验收标准是什么 | `DOC/00-overview.md`（总纲）→ 对应流的 `DOC/10|20|30|40` 详情 |
 
 ## 6. 安全边界
 

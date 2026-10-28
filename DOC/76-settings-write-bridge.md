@@ -1,6 +1,6 @@
 # 76 · 设置写桥 `settings_set`（扩展侧，additive）
 
-> **状态**：已实现（2026-10-28，分支 `ui`，未提交）。只改扩展 + 测试/文档；设置页 UI 仍由另一工作流验收，未改。
+> **状态**：已实现（2026-10-28），包含扩展命令、测试与设置页接线。
 > **pi 基线**：`@earendil-works/pi-coding-agent` **1.3.0**（本机全局安装；`settings.schema.json` / `settings-manager.d.ts` 与本文一致）。
 > **一句话**：新增 `settings_set` 命令，把**白名单内的 pi 设置**原子写入全局 `~/.pi/agent/settings.json`；写入后运行中的 pi 不会热更新，命令诚实返回 `restartRequired:true`。
 > **协议性质**：**additive**——不新增帧名、不升 `proto`、不新增能力位、不改 relay；旧 relay 原样转发命令，旧扩展回 `unknown_command`。UI 不依赖能力位，按命令结果/错误码决定是否展示可写。
@@ -218,7 +218,7 @@ node --test test/extension-settings-write.test.mjs
 - `test/extension-settings-write.test.mjs`：新增测试。
 - `package.json`：`npm test` 注册测试文件。
 - `DOC/71-protocol-v4.md` §9.4：additive 说明与链接。
-- `DOC/60-ui-enhancement.md` §5.6：旧只读设置块的追加说明。
+- `DOC/71-protocol-v4.md` §5.6：旧只读设置块的追加说明。
 - `readyUI/data-interface.md` §4.11.2 B：`settings_set` 行。
 - 本文档。
 

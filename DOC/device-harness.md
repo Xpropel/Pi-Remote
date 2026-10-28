@@ -1,6 +1,6 @@
 # 多设备与远程打开 PI
 
-> **概念仍有效。** 本文说明设备与连接窗口要改成什么样，以及为什么不把 pi 放到服务器上跑。执行以 `DOC/00-overview.md` 与 `DOC/10-relay-backend.md`、`DOC/20-local-device.md`、`DOC/40-frontend.md`、`DOC/50-protocol-delta.md` 为准。
+> **概念仍有效。** 本文说明设备与连接窗口要改成什么样，以及为什么不把 pi 放到服务器上跑。执行以 `DOC/71-protocol-v4.md` 与 `DOC/10-relay-backend.md`、`DOC/20-local-device.md`、`DOC/71-protocol-v4.md`、`DOC/50-protocol-delta.md` 为准。
 
 私人使用：一台云上的 relay，多台自己的电脑（Windows、Mac）连上来。网页和手机先选设备，再看这台设备上的会话；**设备正在"连接窗口"内时**，网页可以打开 PI、启用本机未活动的会话、或在指定目录里新建会话。
 
@@ -213,7 +213,7 @@ data/accounts/<账户>/sessions/<设备>.jsonl   # 该设备上的对话清单
 
 ## 12. 落地顺序
 
-> 阶段划分以 `DOC/00-overview.md` 为准。连接命令取代了原「常驻进程」步骤。
+> 阶段划分以 `DOC/71-protocol-v4.md` 为准。连接命令取代了原「常驻进程」步骤。
 
 0. **索引层**：清单落盘、扩展 `session_manifest`（这一步沿用现有常连，不带窗口门控）、`get_sessions`，以及 `room_register` 带上账户/设备字段。不依赖连接命令。设备字段缺省归「未登记设备」。
 1. **连接窗口**：`deploy/attach.cjs`（登记、状态文件、窗口门控、按 `cwd` / `sessionId` 拉起），以及 `harness_start` 路由和设备级命令寻址。
@@ -222,7 +222,7 @@ data/accounts/<账户>/sessions/<设备>.jsonl   # 该设备上的对话清单
 
 ## 13. 决策（已在 00 号文档落定）
 
-下表以 `DOC/00-overview.md` §8 为准，不再待拍板。
+下表以 `DOC/71-protocol-v4.md` §8 为准，不再待拍板。
 
 | # | 决策 | 落定 |
 |---|---|---|
