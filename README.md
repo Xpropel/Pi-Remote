@@ -111,7 +111,7 @@ Make sure tests pass before submitting, and that the change contains no `.env` f
 
 | Role | Contributor |
 | --- | --- |
-| Originator of the idea, project lead | Xpropel |
+| Founder | Xpropel |
 | UI design | Muse (Meta) |
 | Code implementation | DeepSeek |
 | Project planning | Claude, ChatGPT |
