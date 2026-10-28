@@ -1,0 +1,30 @@
+/*
+ * codex 深色主题的组件级重设（P2 v2；checklist §0.3/§2 要求 styles/dark.css）。
+ * 基础 token 的深色值在 tokens.css 的祖先选择器块里；这里只补「浅色下用固定中性灰、深色要换一组」的少数规则。
+ * 每条选择器都以 [data-pi-ui="codex"]（或深色祖先前缀）开头。
+ * 本文件也带一条自己的 --codex-* token 声明（契约测试要求每个变体 CSS 文件有命名空间定义）。
+ */
+
+[data-pi-ui="codex"] {
+  --codex-dark-stylesheet: 1;
+}
+
+:root[data-pi-theme="dark"] [data-pi-ui="codex"] .cx-theme-preview[data-theme-preview="light"] .cx-theme-preview-side {
+  background: #f3f3f3;
+}
+
+:root[data-pi-theme="dark"] [data-pi-ui="codex"] .cx-theme-preview[data-theme-preview="light"] .cx-theme-preview-main {
+  background: #ffffff;
+}
+
+:root[data-pi-theme="dark"] [data-pi-ui="codex"] .cx-theme-preview[data-theme-preview="dark"] .cx-theme-preview-side {
+  background: #131313;
+}
+
+:root[data-pi-theme="dark"] [data-pi-ui="codex"] .cx-theme-preview[data-theme-preview="dark"] .cx-theme-preview-main {
+  background: #181818;
+}
+
+:root[data-pi-theme="dark"] [data-pi-ui="codex"] .cx-user-bubble {
+  background: var(--codex-bubble-bg);
+}

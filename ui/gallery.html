@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>pi 设计屏画廊（开发用）</title>
+    <link id="app-favicon" rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body>
+    <!--
+      开发画廊（实施计划 D6、P2.4）：L1 / L2 对图的基准页，不进生产包。
+      只在 PI_GALLERY=1 时进构建（见 vite.config.ts：脚本内联进本页，能从 file:// 直接打开），dev server 下直接打开 /gallery.html。
+      路由：#/pi 是索引；#/pi/<id>?vp=1440x900|390x844&theme=light|dark 是一个设计屏（舞台贴在左上角，尺寸 = 该视口）。
+      PI-UI-REFS 架构线：上面两条路由都支持 &ui=cursor|claude|codex（索引页顶部有变体切换）。
+        - #/pi 的 ui= 只做舞台/屏幕的变体标记（静态屏自己的根节点决定样式作用域）；
+        - #/live/<id>?...&ui=claude|codex 按该变体渲染整棵真实容器树 + 假 relay，是两套新设计整屏对图的入口。
+    -->
+    <div id="root"></div>
+    <script type="module" src="/src/pi/dev/main.tsx"></script>
+  </body>
+</html>

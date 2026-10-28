@@ -1,0 +1,18 @@
+/**
+ * 手机端设置 · 外观页样例色（只在手机设置作用域内）。
+ *
+ * 强调色五点与三张界面身份卡的颜色是设计稿里的固定样例值，不是皮肤基色；
+ * 六套皮肤本身仍只消费 tokens.css 的 --st-*。放在 CSS 里而不是 TSX 内联，
+ * 保持「组件不写字面色值」的结构守卫口径。
+ */
+[data-pi-settings-mobile] {
+  --sm-accent-violet: #6d4bc4;
+  --sm-accent-blue: #2b7fd4;
+  --sm-accent-clay: #d97757;
+  --sm-accent-green: #3fb970;
+  --sm-accent-graphite: #6e6e76;
+
+  --sm-style-accent-cursor: #6d4bc4;
+  --sm-style-accent-claude: #d97757;
+  --sm-style-accent-codex: #2b7fd4;
+}

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link id="app-favicon" rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="alternate icon" href="/favicon.ico" sizes="any" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <!-- 浅 / 深两种都支持；实际用哪种由下面的首帧脚本按偏好写到 <html style="color-scheme"> -->
+    <meta name="color-scheme" content="light dark" />
+    <!--
+      状态栏 / 加到主屏幕时的颜色：浅色 = --cw-bg（tokens.css），深色 = --cw-bg（pi-theme.css 深色，design §6.5）。
+      跟随系统时照 media；选了固定主题时首帧脚本（之后是 usePiTheme）只让和主题一致的那一份生效（design §4.3"状态栏颜色跟主题走"）。
+    -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F7F7F7" data-pi-theme-color="light" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#161617" data-pi-theme-color="dark" />
+    <title>pi</title>
+    <script>
+      /*
+       * 首帧主题（P6.4；P7 B1 起 index.html 就是新界面的入口，原 next.html 已删）：同步执行、先于样式与 React，避免浅 / 深色闪烁。
+       * 只写 <html data-pi-theme> / style.colorScheme（再加上面两个 theme-color 的 media），不写 data-theme，不加 style-nova。
+       * 偏好 = localStorage["pi_remote_pi_prefs"].theme（"system" / "light" / "dark"；usePiUiState 存，设置页和显示选项改的就是它）。
+       * 新键里没有合法 theme 时取旧界面的 localStorage["pi-remote.theme"]（只有 light / dark），否则跟随系统——
+       * 和 ui/src/pi/model/prefs.ts 的 piThemePrefOf 同一条规则（test/pi-p6-a.test.mjs 两边逐条比）。旧键只读，不再写。
+       * 跟随系统时听 matchMedia；别的标签页改了偏好（storage 事件）跟着变。React 起来以后由 pi/hooks/usePiTheme 接手。
+       *
+       * PI-UI-REFS 架构线（Lead 裁决 Q2，2026-10-26）：同一段脚本再按 localStorage["pi_remote_pi_prefs"].ui 预写 <html data-pi-ui>
+       * 和该变体的 S0 底色，避免首帧先闪一下 cursor：
+       *   - 取值规则和 model/prefs.ts 的 migratePiPrefs 一致：cursor / claude / codex 之外（缺失 / 非法 / 存储读不了）一律回退 cursor；
+       *   - 底色取 design-spec §1.2 表 1-A / §2.2 / §7 对照表的 S0：claude #f9f9f7（深色 #0b0b0b）、codex #ececec（深色 #0d0d0d），
+       *     cursor 不写底色（现有 tokens.css 自己管）；
+       *   - React 挂载后由 PiApp 的 effect 设 window.__PI_UI_READY__ 并接管 data-pi-ui（以偏好为准）、清掉这里的临时底色，
+       *     本脚本只在接管前写；数据仍不写存储。
+       */
+      (function () {
+        var KEY = "pi_remote_pi_prefs";
+        var LEGACY = "pi-remote.theme";
+        /* 变体 S0 底色（design-spec §1.2 表 1-A / §2.2；七、§7 对照表：Claude S0 #f9f9f7、Codex S0 #ececec） */
+        var UI_BG = {
+          claude: { light: "#f9f9f7", dark: "#0b0b0b" },
+          codex: { light: "#ececec", dark: "#0d0d0d" },
+        };
+        var root = document.documentElement;
+        var media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+        function read(key) {
+          try {
+            return window.localStorage.getItem(key);
+          } catch (error) {
+            return null;
+          }
+        }
+
+        /** 新键内容（JSON 字符串可多层）→ 对象；解析不了 = null */
+        function storedPrefs() {
+          try {
+            var value = read(KEY);
+            while (typeof value === "string") value = JSON.parse(value);
+            return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+          } catch (error) {
+            return null;
+          }
+        }
+
+        function storedTheme() {
+          var prefs = storedPrefs();
+          var theme = prefs ? prefs.theme : null;
+          return theme === "system" || theme === "light" || theme === "dark" ? theme : null;
+        }
+
+        /** 偏好里的界面变体；缺失 / 非法回退 cursor（同 prefs.ts 的 piUiVariantOf） */
+        function storedUi() {
+          var prefs = storedPrefs();
+          var ui = prefs ? prefs.ui : null;
+          return ui === "cursor" || ui === "claude" || ui === "codex" ? ui : "cursor";
+        }
+
+        function pref() {
+          var theme = storedTheme();
+          if (theme) return theme;
+          var legacy = read(LEGACY);
+          return legacy === "light" || legacy === "dark" ? legacy : "system";
+        }
+
+        /** 首帧变体标记 + S0 底色；React（PiApp）接管后以偏好为准，这里不再写 */
+        function applyUi(theme) {
+          if (window.__PI_UI_READY__) return;
+          var ui = storedUi();
+          root.setAttribute("data-pi-ui", ui);
+          var bg = UI_BG[ui];
+          root.style.backgroundColor = bg ? bg[theme] : "";
+        }
+
+        function apply() {
+          var p = pref();
+          var theme = p === "system" ? (media && media.matches ? "dark" : "light") : p;
+          root.setAttribute("data-pi-theme", theme);
+          root.style.colorScheme = theme;
+          var metas = document.querySelectorAll('meta[name="theme-color"][data-pi-theme-color]');
+          for (var i = 0; i < metas.length; i++) {
+            var own = metas[i].getAttribute("data-pi-theme-color");
+            metas[i].setAttribute("media", p === "system" ? "(prefers-color-scheme: " + own + ")" : own === theme ? "all" : "not all");
+          }
+          applyUi(theme);
+        }
+
+        apply();
+
+        if (media) {
+          var onSystemChange = function () {
+            if (pref() === "system") apply();
+          };
+          if (typeof media.addEventListener === "function") media.addEventListener("change", onSystemChange);
+          else if (typeof media.addListener === "function") media.addListener(onSystemChange);
+        }
+
+        window.addEventListener("storage", function (event) {
+          if (event.key === KEY || event.key === LEGACY || event.key === null) apply();
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/pi/main.tsx"></script>
+  </body>
+</html>

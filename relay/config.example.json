@@ -1,0 +1,69 @@
+{
+  "_note": "relay 配置模板，不含真实令牌；请复制为 relay/config.json（已在 .gitignore）或改用环境变量。文件里以 _ 开头的键只是说明，relay 会忽略。本文件缺省值与 relay/config.js 的 DEFAULT_CONFIG 对齐，删掉某项即使用默认值。localToken / viewerToken / adminToken 都必须至少 16 字符；占位符 change-me 和短值会被当作未配置。",
+  "_tokens": "localToken：扩展/attach 走 7001 通道的共享口令（兼容期）；viewerToken：网页/手机走 7002 通道的共享口令，会发到浏览器，必须独立随机；adminToken：生成配对码、撤销设备的管理员令牌，至少 16 字符且不能与前两者相同。三者都可用环境变量 PI_REMOTE_LOCAL_TOKEN / PI_REMOTE_VIEWER_TOKEN / PI_REMOTE_ADMIN_TOKEN 覆盖，环境变量优先。",
+
+  "localToken": "change-me",
+  "viewerToken": "change-me",
+  "adminToken": "",
+
+  "_listen": "监听地址与端口。local 通道默认只听回环（扩展/attach 从本机或隧道连入），要对公网开放必须显式改 localHost（或 PI_REMOTE_LOCAL_HOST）；viewer 默认全网卡，手机要能连，可用 PI_REMOTE_VIEWER_HOST 收紧。port=0 表示随机端口（测试用）。",
+  "localPort": 7001,
+  "viewerPort": 7002,
+  "localHost": "127.0.0.1",
+  "viewerHost": "0.0.0.0",
+
+  "_payload": "单帧上限与限速。viewer 单条消息 ≤ maxPayloadBytes（默认 256KB），超限断开；local 通道放宽到 localMaxPayloadBytes（全量快照/大 command_result 可达数 MB）。viewer 每连接默认 20 条/秒、突发 60；已认证 local 不限速。maxViewersPerRoom：单房间同时观看人数上限。",
+  "maxPayloadBytes": 262144,
+  "localMaxPayloadBytes": 16777216,
+  "ratePerSec": 20,
+  "rateBurst": 60,
+  "maxViewersPerRoom": 20,
+
+  "_viewerAuth": "viewer 认证防护（7002 对公网开放，token 在页面里可见）：同一来源在窗口内失败 viewerAuthFailMax 次后锁定 viewerAuthLockMs；成功认证清空失败计数。maxUnauthenticatedViewers：同时处于“已连接未认证”的 viewer 上限。",
+  "viewerAuthFailMax": 10,
+  "viewerAuthFailWindowMs": 60000,
+  "viewerAuthLockMs": 30000,
+  "maxUnauthenticatedViewers": 100,
+
+  "_storage": "会话存储。dataDir / accountsDir 为相对路径时按仓库根目录解析；名册与会话索引放 accountsDir，对话正文（默认不落盘）放 dataDir。persistTranscripts=true（或 PI_REMOTE_PERSIST_TRANSCRIPTS=1）才把正文写入 data/rooms。cacheSize/cacheMaxBytes：每房间内存热缓存条数/字节上限；flushIntervalMs：批量落盘间隔；retentionDays：房间文件保留天数。maxSnapshotRecords/maxSnapshotBytes：单房间快照安全阀。dataDir/accountsDir 也可用 PI_REMOTE_DATA_DIR / PI_REMOTE_ACCOUNTS_DIR 覆盖。",
+  "dataDir": "data/rooms",
+  "accountsDir": "data/accounts",
+  "cacheSize": 500,
+  "cacheMaxBytes": 16777216,
+  "maxSnapshotRecords": 10000,
+  "maxSnapshotBytes": 25165824,
+  "flushIntervalMs": 200,
+  "retentionDays": 30,
+  "persistTranscripts": false,
+
+  "_transport": "传输。perMessageDeflate：viewer 通道压缩（≥1KB 的帧，快照通常压到 1/5 以下）；viewerLagBytes：发送缓冲超过它时跳过可丢的流式 delta；viewerMaxBufferBytes：已积压 + 本帧超过它时拒绝该帧，已积压本身超过它时断开慢连接。",
+  "perMessageDeflate": true,
+  "viewerLagBytes": 1048576,
+  "viewerMaxBufferBytes": 67108864,
+
+  "_memory": "内存淘汰。roomIdleEvictMs：离线且无人观看的房间元数据保留时长；storeIdleEvictMs：存储热缓存空闲淘汰（文件保留）；snapshotCacheTtlMs：快照缓存 TTL；dedupeTtlMs：命令去重表保留时长（重发同 dedupeKey 返回首个结果）。",
+  "roomIdleEvictMs": 21600000,
+  "storeIdleEvictMs": 1800000,
+  "snapshotCacheTtlMs": 1500,
+  "dedupeTtlMs": 600000,
+
+  "_sessions": "设备窗口/会话清单。maxSessionsListed：单设备一次列出的会话上限；harnessStartTimeoutMs：拉起新 pi 会话（harness_start）的超时；resendSnapshotWaitMs：订阅后补发快照的等待上限。webRoot：静态页面根目录，留空 = 仓库 web/（相对路径按进程 cwd 解析，一般留空）；exitOnListenError：监听失败是否直接退出（默认 true，测试/嵌入方设 false 让启动以 reject 报错）。",
+  "maxSessionsListed": 200,
+  "harnessStartTimeoutMs": 10000,
+  "resendSnapshotWaitMs": 3000,
+  "webRoot": "",
+  "exitOnListenError": true,
+
+  "_identity": "账号与身份。accountId：本 relay 的设备/房间/会话清单一律登记到这个账号（缺省 admin，也可用环境变量 PI_REMOTE_RELAY_ACCOUNT 覆盖），不采信客户端上报；已登记过的设备沿用原账号。serverName：侧栏底部身份行的中转服务器显示名（可选，留空则客户端用 window.location.hostname）。allowLegacyLocal：兼容期是否仍接受共享 localToken 登录（PI_REMOTE_ALLOW_LEGACY_LOCAL=0 关闭，关闭后只认配对换来的设备令牌）。pairCodeTtlMs：配对码有效期。",
+  "accountId": "admin",
+  "serverName": "",
+  "allowLegacyLocal": true,
+  "pairCodeTtlMs": 600000,
+
+  "_quiet": "quiet=true 关闭 relay 的常规日志（只保留 console.error 告警）；排障时不要开。",
+  "quiet": false,
+
+  "_notify": "页面外通知（webhook 渠道，编排器 relay/notify.js）：notifyWebhookUrl 是目标地址——ntfy 接法写成 https://ntfy.sh/<话题> 或自建 ntfy 地址/<话题>（话题在 URL 路径里）。这个地址本身就是凭据：只许写在服务器侧的 relay/config.json 或环境变量 PI_REMOTE_NOTIFY_WEBHOOK_URL（env 优先），绝不要把真实地址写进仓库里的任何文件。留空 = 整渠道禁用、零行为变化。notifyEvents 是三类事件的开关，默认全关，逐个改成 true 才发（防意外轰炸）；只认布尔 true，字符串 \"true\" 会被按非法值回退。部署说明见 deploy/README.md 的“页面外通知”一节。",
+  "notifyWebhookUrl": "",
+  "notifyEvents": { "turn_done": false, "turn_error": false, "dialog_waiting": false }
+}

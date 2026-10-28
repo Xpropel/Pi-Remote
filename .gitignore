@@ -1,0 +1,17 @@
+node_modules/
+.env
+relay/config.json
+logs/
+*.log
+web/
+data/
+backup/
+deploy/known_hosts
+.pi/
+ui/dist/
+.DS_Store
+
+mock-evidence/
+
+# 内部任务材料：仅精选 Markdown 已入库，其余（日志/证据/env/截图/worktrees）不入库
+/.agents/

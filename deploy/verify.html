@@ -1,0 +1,116 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>pi-remote 部署验证</title>
+<style>body{font-family:system-ui;margin:24px;background:#0b0d12;color:#e6e6e6}
+.card{background:#151922;border:1px solid #262c3a;border-radius:12px;padding:16px;margin:12px 0}
+.ok{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24}
+code{background:#000;padding:2px 6px;border-radius:4px}
+iframe{width:100%;height:520px;border:1px solid #262c3a;border-radius:12px;background:#fff}
+input{background:#0b0d12;color:#e6e6e6;border:1px solid #262c3a;border-radius:8px;padding:8px}
+button{background:#1f6feb;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer}
+</style></head><body>
+<h2>pi-remote 部署验证</h2>
+<div class="card">
+  <label for="tok">viewer token（只从输入框读，不进地址栏/浏览历史/Referer）：</label>
+  <input id="tok" type="password" autocomplete="off" style="width:min(420px,100%);margin-left:8px">
+  <button id="go" type="button" style="margin-left:8px">开始检测</button>
+  <span id="hint" class="warn" style="margin-left:8px"></span>
+</div>
+<div id="out" class="card">填 token 后点「开始检测」。</div>
+<h3>实际页面（同源托管）</h3>
+<iframe id="frame" src=""></iframe>
+<!-- 由 deploy-web.ps1 随站点部署，打开 http://<服务器>:7002/verify.html。
+     必须同源打开：file:// 或别的源读不到 relay 的响应状态（没有 CORS 头）。 -->
+<script type="module">
+const Q = new URLSearchParams(location.search);
+const BASE = (Q.get("base") || location.origin).replace(/\/$/, "");
+const WS = BASE.replace(/^http/, "ws") + "/";
+document.getElementById("frame").src = BASE + "/";
+
+const lines = [];
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
+const out = document.getElementById("out");
+function add(ok, text) { lines.push(`<div class="${ok?"ok":"bad"}">${ok?"✔":"✘"} ${esc(text)}</div>`); }
+function render() {
+  const fails = lines.filter((l) => l.includes('class="bad"')).length;
+  out.innerHTML = lines.join("") + `<div class="${fails?"bad":"ok"}" style="margin-top:10px;font-weight:600">${fails ? fails + " 项未通过" : "全部通过"}</div>`;
+}
+
+if (location.protocol === "file:" || (Q.get("base") && new URL(BASE).origin !== location.origin)) {
+  add(false, "本页不是从 relay 同源打开：下面的 HTTP 检测会全部显示 ERR。请打开 " + BASE + "/verify.html");
+}
+
+async function get(url) {
+  try {
+    const r = await fetch(url, { cache: "no-store" });
+    return { status: r.status, text: await r.text() };
+  } catch (e) {
+    return { status: "ERR:" + e.message, text: "" };
+  }
+}
+
+document.getElementById("go").addEventListener("click", async () => {
+  const TOKEN = document.getElementById("tok").value.trim();
+  if (!TOKEN) {
+    document.getElementById("hint").textContent = "先填 viewer token";
+    return;
+  }
+  document.getElementById("hint").textContent = "";
+  lines.length = 0;
+  render();
+
+  // 1) 静态资源：主 JS/CSS 名带内容 hash，从 index.html 里现取
+  const index = await get(BASE + "/");
+  add(index.status === 200, `GET / → ${index.status}`);
+  const js = (index.text.match(/src="(\/assets\/index-[^"]+\.js)"/) || [])[1];
+  const css = (index.text.match(/href="(\/assets\/index-[^"]+\.css)"/) || [])[1];
+  for (const [label, p] of [["主 JS", js], ["主 CSS", css]]) {
+    if (!p) { add(false, `index.html 里找不到${label}（构建产物不完整？）`); continue; }
+    const r = await get(BASE + p);
+    add(r.status === 200, `GET ${label} ${p} → ${r.status}`);
+  }
+  const ico = await get(BASE + "/favicon.svg");
+  add(ico.status === 200, `GET favicon.svg → ${ico.status}`);
+
+  // 2) 路径穿越必须被拒。浏览器会把字面的 /../ 在发出前规范化掉（实际请求的是 /relay/server.js），
+  //    所以用编码斜杠 ..%2f 让 ".." 原样到达服务器
+  const travPath = "/assets/..%2f..%2frelay%2fserver.js";
+  const trav = await get(BASE + travPath);
+  add(typeof trav.status === "number" && trav.status !== 200 && !/startRelay/.test(trav.text), `路径穿越 ${travPath} → ${trav.status}（非 200 即正确）`);
+
+  // 3) viewer 鉴权（同源 WS，用的就是页面默认连的地址）
+  const auth = await new Promise((res) => {
+    const ws = new WebSocket(WS);
+    const t = setTimeout(() => { try { ws.close(); } catch {} res({ result: "timeout" }); }, 12000);
+    ws.onopen = () => ws.send(JSON.stringify({ type: "auth", role: "viewer", token: TOKEN }));
+    ws.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.type === "auth_result") { clearTimeout(t); try { ws.close(); } catch {} res({ result: m.ok ? "ok" : (m.error || "rejected"), msg: m }); }
+    };
+    ws.onerror = () => { clearTimeout(t); res({ result: "ws-error" }); };
+  });
+  add(auth.result === "ok", `viewer 鉴权（token 来自输入框）→ ${auth.result}`);
+  if (auth.result === "ok") {
+    // v3 relay 才回 boot（增量同步 / 命令去重的协议版本）；旧 relay 说明后端没部署上新版
+    add(!!auth.msg.boot, `relay 协议版本 → ${auth.msg.boot ? "v3（boot=" + auth.msg.boot + "）" : "旧版（没有 boot 字段，请重新 deploy-relay）"}`);
+    const rooms = Array.isArray(auth.msg.rooms) ? auth.msg.rooms : [];
+    add(true, `房间 ${rooms.length} 个，在线 ${rooms.filter((r) => r.online).length} 个`);
+  }
+
+  // 4) 错误 token 必须被拒
+  const authBad = await new Promise((res) => {
+    const ws = new WebSocket(WS);
+    const t = setTimeout(() => { try { ws.close(); } catch {} res("timeout"); }, 12000);
+    ws.onopen = () => ws.send(JSON.stringify({ type: "auth", role: "viewer", token: "WRONG" }));
+    ws.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.type === "auth_result") { clearTimeout(t); try { ws.close(); } catch {} res(m.ok ? "WRONGLY-ACCEPTED" : "rejected"); }
+    };
+    ws.onerror = () => { clearTimeout(t); res("ws-error"); };
+  });
+  add(authBad === "rejected", `错误 token → ${authBad}（rejected 才正确）`);
+
+  render();
+});
+render();
+</script>
+</body></html>

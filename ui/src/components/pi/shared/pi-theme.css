@@ -1,0 +1,459 @@
+/*
+ * Pi-Remote 主题（design §6.5、§4.6；a 区拥有）。只做三件事：
+ * 1. 定义 --cw-pi-* 变量（浅色 / 深色）；
+ * 2. 在深色下重设 kit 的 --cw-* 取值（kit 组件只读 token，所以自动变深色）——深色整套是推断，只做结构与对比度验收；
+ * 3. 在 390×844 下重设尺寸 token（手机字号与密度，推断）。
+ * 作用域：PiRoot 的根节点 [data-pi-root]，以及 PiRoot / 舞台镜像到 <html> 上的 data-pi-theme / data-pi-layout
+ * （portal 出去的菜单也跟着变）。离开 pi 路由时 <html> 上的属性被清掉，章节帧不受影响。
+ * :root:root[...] 的特异性高于 tokens.local.css 的 :root:root 覆盖；[data-pi-root][...] 直接落在根节点上。
+ */
+
+/* ---------- 1. Pi 变量（浅色 = 默认） ---------- */
+:root:root[data-pi-theme],
+[data-pi-root] {
+  --cw-pi-attention: var(--cw-blue);
+  --cw-pi-error: var(--cw-red);
+  /* 需要读的灰字（收据行、行尾时间、组头、状态行、说明）：在 #F7F7F7 上约 5.0:1、侧栏 #EEEEEE 上约 4.7:1（待用户确认 14） */
+  --cw-pi-text-secondary: #6a6b6d;
+  --cw-pi-status-line-bg: var(--cw-chip-bg);
+  --cw-pi-approval-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.14);
+  --cw-pi-sheet-radius: 16px;
+  --cw-pi-sheet-handle: var(--cw-border-strong);
+  --cw-pi-touch: 44px;
+  --cw-pi-sidebar-w: 256px;
+  --cw-pi-rail-w: 48px;
+  --cw-pi-pane-w: 460px;
+  --cw-pi-chat-max-w: 768px;
+  --cw-pi-topbar-h: 44px;
+  --cw-pi-topbar-h-phone: 52px;
+  --cw-pi-row-h-phone: 52px;
+  /* 推断：连接状态行高度（桌面 32、手机 36）与手机组头高度 */
+  --cw-pi-status-line-h: 32px;
+  --cw-pi-group-h-phone: 36px;
+  /* 推断：单行输入 / 复制框的高度（桌面 32、手机 44 = 点击区下限） */
+  --cw-pi-field-h: 32px;
+  /* 推断：等你回答的问号圈、出错红点 */
+  --cw-pi-marker-error: var(--cw-red);
+  /* 推断：骨架行的浅灰 */
+  --cw-pi-skeleton: var(--cw-chip-bg);
+  /* 推断：手机状态栏 / Home 指示条占位的颜色 */
+  --cw-pi-home-indicator: var(--cw-text);
+  /* 费用警告文字（全产品唯一的橙）：--cw-orange 同色相只压暗（v1.2 D-03，design §4.6）；卡 #FDFDFD 上 5.22、白 5.31、bg 4.96 */
+  --cw-pi-warning: #8a6516;
+  /* 视觉审查第 1 轮（m7）：蓝色数字 / 文字（返回键计数）；问号圈等图标仍用 --cw-pi-attention。#F7F7F7 上 ≥ 4.7:1 */
+  --cw-pi-attention-text: #046da9;
+  /* v1.2（D-09、design §2 D15）：灯箱全屏底，浅色深色相同 */
+  --cw-pi-lightbox-bg: rgba(0, 0, 0, 0.85);
+  /* v1.3（R2-D-03，design §4.6 / §6.5）：灯箱上的次级文字（"2 / 3"）。固定色不跟主题，深色块不重设；
+     合成底上 7.42（浅色页 #252525）/ 9.98（深色页 #030303）。"加载失败""重试"、spinner 直接用 #FFFFFF */
+  --cw-pi-lightbox-fg: #b4b4b8;
+  /* v1.2（D-04、design §4.7）：:focus-visible 外环，offset 2px；深色下 --cw-blue 自动变成 #3A9BD9。
+     只给按钮 / 链接等非文本控件；文本输入改用下面的中性描边（见「文本输入不参与外环」规则）。 */
+  --cw-pi-focus-ring: 2px solid var(--cw-blue);
+  /* v1.4（输入框聚焦修复）：文本输入的聚焦提示 = 自身 / 字段容器的 1px 中性描边，不用蓝环、不用品牌色。
+     浅色 #8A8A8A 在 --cw-surface #FDFDFD 上 3.4:1（非文字 3:1 门槛）；深色值在下面的深色块里重设。 */
+  --cw-pi-field-focus-border: #8a8a8a;
+  /*
+   * P4（PLAN 4.1，修 ui-audit §2.2 的遮罩穿透）：Pi 里的层级只用这五档，部件不再自己写 z 数字（R2/p4-lanes.md §2）。
+   * 弹窗 / 命令面板 / 灯箱都在 modal 档：PiDesktopShell、PiPhonePage 的 overlay 槽，以及可交互 PiDialog portal 出去的那一层；
+   * 应用里没有任何层高于 modal（kit 的菜单、悬停卡 portal 到 body，也是 50，靠打开顺序排在后面）。chrome 只给手机系统层（Home 指示条）。
+   */
+  --cw-pi-z-raised: 10;
+  --cw-pi-z-popover: 30;
+  --cw-pi-z-sheet: 40;
+  --cw-pi-z-modal: 50;
+  --cw-pi-z-chrome: 60;
+
+  /*
+   * Pi 浅色下压深 kit 的几个文字色（色相不变），使需要读的字 ≥ 4.5:1（design §4.6）。
+   * 思考块（v1.2 D-03，撤回 fix-a 的 #707070）：正文 = --cw-pi-text-secondary（bg 4.98），阶段小标题 = --cw-text-2（bg 6.65），标题比正文深一档。
+   * B5 subagent 角色名：#8597D3 / #B48AD6（2.7）→ #4F69BF / #9051C2（#F7F7F7 上 ≥ 4.7）。
+   * B6 链接 / FileChip：#4F78B5（chip 底 #DCE3F0 上 3.5）→ #3F6297（chip 底上 ≥ 4.7、#F7F7F7 上 5.7）。
+   */
+  --cw-thinking-body: var(--cw-pi-text-secondary);
+  --cw-thinking-phase: var(--cw-text-2);
+  --cw-role-explorer: #4f69bf;
+  --cw-role-designer: #9051c2;
+  --cw-link: #3f6297;
+  /*
+   * P3（carryover #9 R2-B-03、#10 R2-B-m1、#22 N1；p3-base 落实，a 线验收）：浅色下要读的代码色、行号、DiffStat 绿提一档到 4.5。
+   * 按 WCAG 公式在实际底色上算（HSL 只降亮度、色相不变）：
+   * - 绿 #4B7E66 → #3D6B55：页签选中底 --cw-chip-bg #E6E6E6 上 3.76 → 4.90，#F7F7F7 上 4.38 → 5.71（DiffStat +N、tray 改动 pill）。
+   * - 语法色（代码行底 #FDFDFD、diff 增 / 删行底 #E4EEE9 / #F7ECF0 上都 ≥ 4.5）：string #7F7FC8 → #5F5FBA（3.07 → 4.62）、
+   *   func #B0613F → #9F5839（3.83 → 4.51）、comment #6E6E6E → #6A6A6A（4.30 → 4.56）、property #6E879C → #576D80（3.16 → 4.53）、
+   *   tag #547D68 → #4D725F（3.93 → 4.55）、jsx-text #9A8763 → #78694D（2.94 → 4.51）；括号内是增行底上的值。
+   *   词级高亮底（#C9DBD1 / #F1D5DD）上这几个值只有 3.7–4.0：只在高亮 span 里再压一档，见下面「2b. 词级高亮」（P3 a 线）。
+   * - 行号 #9F9F9F → #686868：#FDFDFD 上 2.60 → 5.48，终端输出底 #E7E7E8 上 2.14 → 4.51（终端卡的行号改读这个 token，b 线）；
+   *   增行行号 #4E8670 → #447461（增行槽底 #E9EFEB 上 3.63 → 4.60），删行行号 #B0566C → #AA4F66（删行底 4.14 → 4.53）。
+   * 深色块里这些 token 都重设了，不受这里影响；深色另把行号、注释提到 4.5（见深色块）。
+   */
+  --cw-green: #3d6b55;
+  --cw-syntax-string: #5f5fba;
+  --cw-syntax-func: #9f5839;
+  --cw-syntax-comment: #6a6a6a;
+  --cw-syntax-property: #576d80;
+  --cw-syntax-tag: #4d725f;
+  --cw-syntax-jsx-text: #78694d;
+  --cw-diff-lineno: #686868;
+  --cw-diff-lineno-add: #447461;
+  --cw-diff-lineno-del: #aa4f66;
+}
+
+/*
+ * 视觉审查第 1 轮（B5）：对话流里需要读的灰字。kit ToolLine / ReceiptLine / ThinkingBlock、ch2 SubagentRow 的细节段
+ * 写的是 --cw-text-3（#818284，3.6:1）；在 b 的这几个部件容器里把 --cw-text-3 换成 --cw-pi-text-secondary（浅 5.0 / 深同值）。
+ * 命令后缀、快捷键等其他地方的 --cw-text-3 不变（§4.6）。
+ */
+:root:root[data-pi-theme]
+  :is([data-pi-part="receipt"], [data-pi-part="tool-line"], [data-pi-part="thinking"], [data-pi-part="subagent"], [data-pi-part="task-rows"]),
+[data-pi-root]
+  :is([data-pi-part="receipt"], [data-pi-part="tool-line"], [data-pi-part="thinking"], [data-pi-part="subagent"], [data-pi-part="task-rows"]) {
+  --cw-text-3: var(--cw-pi-text-secondary);
+}
+/* P6.4（a 线）：浅色也按主题写 color-scheme（深色在下面的深色块里），表单控件、滚动条和画布底色跟主题走 */
+:root:root[data-pi-theme="light"] {
+  color-scheme: light;
+}
+
+/* ---------- 2. 深色（推断，全套从浅色推导） ---------- */
+:root:root[data-pi-theme="dark"],
+[data-pi-root][data-pi-theme="dark"] {
+  color-scheme: dark;
+  /* 底色与表面 */
+  --cw-bg: #161617;
+  --cw-titlebar-bg: #161617;
+  --cw-sidebar-bg: #1c1c1e;
+  --cw-surface: #222224;
+  --cw-user-bubble: #222224;
+  --cw-surface-pane: #1e1e20;
+  --cw-code-bg: #1e1e20;
+  --cw-title-pill-bg: #2c2c2f;
+  --cw-chip-bg: #2c2c2f;
+  --cw-code-chip-bg: #2c2c2f;
+  --cw-plus-btn-bg: #2c2c2f;
+  --cw-palette-bg: #232325;
+  --cw-kbd-bg: #333336;
+  --cw-palette-row-selected: #333336;
+  --cw-overlay: rgba(0, 0, 0, 0.55);
+  /* 描边与分隔 */
+  --cw-border: #343437;
+  --cw-divider: #2c2c2f;
+  --cw-border-strong: #48484c;
+  --cw-divider-soft: #262628;
+  /* 文字 */
+  --cw-text: #ededef;
+  --cw-text-2: #b4b4b8;
+  --cw-text-3: #8e8e93;
+  --cw-text-4: #66666b;
+  --cw-text-on-primary: #161617;
+  /* 输入框聚焦的中性描边：深色 --cw-surface #222224 上 4.6:1；浅色值见上面的浅色块 */
+  --cw-pi-field-focus-border: #8b8b91;
+  /* v1.2 D-03：思考块只用现有 token（正文 secondary #8E8E93 bg 5.55、阶段 text-2 #B4B4B8 bg 8.75）。
+     这里要重写一次：上面浅色块里的 var() 在本选择器的 --cw-text-2 / --cw-pi-text-secondary 重设下按深色值求值 */
+  --cw-thinking-body: var(--cw-pi-text-secondary);
+  --cw-thinking-phase: var(--cw-text-2);
+  /* 行与菜单 */
+  --cw-row-selected: #2e2e31;
+  --cw-row-hover: #262628;
+  --cw-sidebar-row-hover: #29292c;
+  /* 动作色：黑色锚点反成白底黑字；绿红蓝橙色相不变、提亮 */
+  --cw-primary: #f2f2f2;
+  --cw-primary-fg: #161617;
+  --cw-primary-pending: #6e6e73;
+  --cw-blue: #3a9bd9;
+  --cw-link: #7fa6e0;
+  --cw-link-chip-bg: #22324a;
+  --cw-green: #7dbf9e;
+  --cw-green-solid: #2ea872;
+  --cw-red: #e0899b;
+  --cw-orange: #d9ae57;
+  /* diff */
+  --cw-diff-add-bg: #1c2e25;
+  --cw-diff-del-bg: #33212a;
+  --cw-diff-add-word: #27503b;
+  --cw-diff-del-word: #5a2d3b;
+  --cw-diff-add-bar: #4f8a6b;
+  --cw-diff-del-bar: #a85a6d;
+  --cw-diff-add-gutter-bg: #1f2a24;
+  --cw-diff-unmodified-bg: #262628;
+  /* P3（carryover #10）：深色行号 #6E6E73 → #89898E（--cw-surface #222224 上 3.13 → 4.56，--cw-code-bg #1E1E20 上 3.28 → 4.78）；
+     P3 a 线再提到 #939397：终端输出底（--cw-code-chip-bg #2C2C2F，b 线 #22 让终端行号读这个 token）上 4.00 → 4.55，
+     #222224 上 5.19、#1E1E20 上 5.44（画廊实测） */
+  --cw-diff-lineno: #939397;
+  /* tokens.local.css 里的 diff 补充（推断） */
+  --cw-diff-lineno-add: #6fb08f;
+  --cw-diff-lineno-del: #d07a8e;
+  --cw-diff-hover-marker: #5fa8dc;
+  --cw-diff-unmodified-handle-bg: #2a2a2d;
+  --cw-diff-unmodified-hover-bg: #333336;
+  /* 状态标记 */
+  --cw-status-local: #6fb08f;
+  --cw-status-subagent: #a897cf;
+  --cw-status-unread: #5b95e6;
+  --cw-status-pending: #6e6e73;
+  --cw-status-idle-ring: #48484c;
+  --cw-status-spinner: #8e8e93;
+  --cw-icon-muted: #4a4a4e;
+  --cw-icon-fg: #9a9aa0;
+  --cw-role-explorer: #9aa9e0; /* 推断：同色相提亮 */
+  --cw-role-designer: #c4a0e2; /* 推断 */
+  /* 代码 */
+  --cw-code-chip-fg: #e6e6e8;
+  --cw-syntax-keyword: #e58fa8;
+  --cw-syntax-string: #a9a9f0;
+  --cw-syntax-ident: #8fb8cc;
+  --cw-syntax-property: #9db3c7;
+  --cw-syntax-attr: #a99ce0;
+  --cw-syntax-tag: #8ec2a5;
+  --cw-syntax-func: #e3a07e;
+  /* P3（carryover #10）：深色注释 #8A8A8F → #919195（增行底 #1C2E25 上 4.17 → 4.56） */
+  --cw-syntax-comment: #919195;
+  --cw-syntax-jsx-text: #c9b58c;
+  /* tokens.local.css 补充（推断） */
+  --cw-sidebar-nav-fg: #b4b4b8;
+  --cw-scrollbar-thumb: #3a3a3d;
+  --cw-file-icon-json: #c9a96a;
+  --cw-file-icon-html: #d3977a;
+  --cw-file-icon-ts: #8fa6b0;
+  --cw-file-icon-tsx: #8aa6a2;
+  /* 阴影：外圈换成 0.5px 浅描边，投影透明度 ×4 */
+  --cw-shadow-composer: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 3px rgba(0, 0, 0, 0.16);
+  --cw-shadow-popover: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 6px 18px rgba(0, 0, 0, 0.48);
+  --cw-shadow-menu: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 3px rgba(0, 0, 0, 0.32), 0 4px 12px rgba(0, 0, 0, 0.24);
+  --cw-shadow-palette: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 2px 6px rgba(0, 0, 0, 0.24), 0 12px 32px rgba(0, 0, 0, 0.4);
+  --cw-shadow-float: 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 1px 4px rgba(0, 0, 0, 0.24);
+  /* Pi 变量的深色值 */
+  --cw-pi-text-secondary: #8e8e93;
+  --cw-pi-status-line-bg: #232325;
+  --cw-pi-approval-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 8px 24px rgba(0, 0, 0, 0.6);
+  --cw-pi-sheet-handle: #48484c;
+  --cw-pi-skeleton: #2c2c2f;
+  /* 视觉审查第 1 轮：警告文字 = 深色橙（bg 上 8.7、surface 上 7.7）；蓝色数字 = 深色 --cw-blue（bg 上 5.9） */
+  --cw-pi-warning: #d9ae57;
+  --cw-pi-attention-text: #3a9bd9;
+  /* kit Switch 的圆点（tokens.local.css 默认 #FFFFFF）：深色下略灰的白点（kit-requests pi a4，原先是对 [data-slot=switch-thumb] 的覆盖） */
+  --cw-switch-thumb: #f2f2f2;
+}
+
+/*
+ * ---------- 2b. 词级高亮（P3 a 线，carryover #10 余项） ----------
+ * kit 的词级高亮 span（[data-slot="diff-word"]，底色 --cw-diff-add-word / --cw-diff-del-word）里，语法色在高亮底上不到 4.5
+ * （浅色 #C9DBD1 / #F1D5DD 上 3.7–4.0；深色 #27503B 上 2.91–4.31、#5A2D3B 上注释 3.57）。只在这个 span 里重设没达标的
+ * --cw-syntax-*：HSL 只动亮度、色相不变（浅色压暗、深色提亮），直到两种高亮底上都 ≥ 4.5（增 / 删行底上也都 ≥ 5.4）。
+ * 高亮底色和 span 外的代码颜色都不变。下面注释里的比值两位小数向下取整；算法和每个值：R2/logs/p3/lane-a/token-calc.txt。
+ * 只写 [data-pi-root] 形式：diff 只出现在 PiRoot 里，不进 portal。
+ */
+[data-pi-root]:not([data-pi-theme="dark"]) [data-slot="diff-word"] {
+  /* 增词底 / 删词底：string 3.79 → 4.50 / 4.74，property 3.72 → 4.50，tag 3.73 → 4.54，func 3.69 → 4.51，comment 3.74 → 4.55，jsx-text 3.70 → 4.50 */
+  --cw-syntax-string: #5252b4;
+  --cw-syntax-property: #4d6071;
+  --cw-syntax-tag: #446454;
+  --cw-syntax-func: #8c4d32;
+  --cw-syntax-comment: #5d5d5d;
+  --cw-syntax-jsx-text: #6a5c44;
+}
+[data-pi-root][data-pi-theme="dark"] [data-slot="diff-word"] {
+  /* 增词底 #27503B：keyword 3.84 → 4.50，string 4.18 → 4.54，ident 4.30 → 4.51（number / punct 跟 ident），property 4.22 → 4.51，
+     attr 3.70 → 4.50，func 4.17 → 4.53，comment 2.91 → 4.51（删词底 3.57 → 5.53）；tag 4.53、jsx-text 4.55 本来达标 */
+  --cw-syntax-keyword: #eaa2b7;
+  --cw-syntax-string: #b1b1f1;
+  --cw-syntax-ident: #95bccf;
+  --cw-syntax-property: #a4b9cb;
+  --cw-syntax-attr: #b9afe6;
+  --cw-syntax-func: #e6a98a;
+  --cw-syntax-comment: #b6b6b8;
+}
+
+/* ---------- 3. 手机尺寸（390×844，推断；kit 组件因此自动变成手机尺寸） ---------- */
+:root:root[data-pi-layout="phone"],
+[data-pi-root][data-pi-layout="phone"] {
+  --cw-text-xs: 12px;
+  --cw-text-sm: 13px;
+  --cw-text-md: 15px;
+  --cw-text-base: 15px;
+  --cw-text-lg: 17px;
+  --cw-text-code: 13px;
+  --cw-text-code-block: 13px;
+  --cw-leading-base: 22px;
+  --cw-leading-tight: 20px;
+  --cw-row-h: 52px;
+  --cw-menu-row-h: 48px;
+  --cw-popover-row-h: 48px;
+  --cw-round-btn: 40px;
+  --cw-plus-btn: 32px;
+  --cw-icon-size: 20px;
+  --cw-pi-status-line-h: 36px;
+  --cw-pi-field-h: 44px;
+}
+
+/* ---------- 根节点与 kit 在深色下写死的浅色（推断，逐个覆盖） ---------- */
+[data-pi-root] {
+  -webkit-tap-highlight-color: transparent;
+  font-family: var(--cw-font-sans);
+  color: var(--cw-text);
+}
+/*
+ * v1.2（D-04，design §4.7）：Pi 作用域内统一键盘焦点外环 2px --cw-blue、offset 2px；鼠标点击不出环（:focus-visible）。
+ * 本文件不进 @layer，所以压过 kit / 各区 Tailwind 工具类里的 outline-none、outline-offset-1 等（它们在 utilities 层）。
+ * v1.4（输入框聚焦修复）：外环只留给按钮 / 链接 / 选项等非文本控件；文本输入（input / textarea / select）
+ * 不再使用外环（也顺带清掉浏览器 UA 默认的蓝框），聚焦提示改由各字段自身或字段容器的中性描边 / 明暗变化承担。
+ */
+[data-pi-root] :focus-visible,
+:root:root[data-pi-theme] :focus-visible {
+  outline: var(--cw-pi-focus-ring);
+  outline-offset: 2px;
+}
+
+/* v1.4：文本输入不参与上面的外环；下面的字段规则只做中性描边，不新增颜色层 */
+[data-pi-root] :is(input, textarea, select):focus-visible,
+:root:root[data-pi-theme] :is(input, textarea, select):focus-visible {
+  outline: none;
+}
+
+/* P4（PLAN 4.5）：可交互 PiSheet 的滑入与遮罩淡入（240ms，design §4.7）；静态态和减少动效时都不加这两个动画（usePiMotion） */
+@keyframes pi-sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes pi-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/*
+ * v1.2（D-04、D-09，design §4.7）：减少动效。转场改成直接切换，spinner 停转（静止的半圆），淡出 / sheet 滑入不播，
+ * 贴底滚动不做平滑。只在 Pi 作用域里生效。
+ */
+@media (prefers-reduced-motion: reduce) {
+  [data-pi-root],
+  [data-pi-root] *,
+  [data-pi-root] *::before,
+  [data-pi-root] *::after,
+  :root:root[data-pi-theme] *,
+  :root:root[data-pi-theme] *::before,
+  :root:root[data-pi-theme] *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 会话行上关掉系统长按菜单（design §4.5：列表行长按打开会话菜单；消息正文保留系统文字选择）。Chrome 不认这条，只有 iOS 生效 */
+[data-pi-root] [data-pi-row] {
+  -webkit-touch-callout: none;
+}
+
+/*
+ * ---------- 4. 产品模式（P6.1：PiApp 和开发路由的设备模式 vp=device；画廊舞台不走这里，L1 不变） ----------
+ * PiRoot 拿到 device 时，根节点和 <html> 上有 data-pi-mode="product"。键盘几何由 PiRoot 行内给（--cw-pi-keyboard-h、top / bottom / height）。
+ */
+:root:root[data-pi-mode="product"],
+[data-pi-root][data-pi-mode="product"] {
+  /* 安全区取系统值（design §4.3）；左右只在横屏非 0，下面的内边距用 */
+  --cw-pi-safe-top: env(safe-area-inset-top, 0px);
+  --cw-pi-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --cw-pi-safe-left: env(safe-area-inset-left, 0px);
+  --cw-pi-safe-right: env(safe-area-inset-right, 0px);
+  /* 去掉点按高亮，按下态用浅灰底（design §4.5）；<html> 上也写，portal 到 body 的菜单跟着继承 */
+  -webkit-tap-highlight-color: transparent;
+}
+/* body 不滚、整页不橡皮筋、不误触下拉刷新（design §4.5）：滚动只发生在页面里唯一的滚动区 */
+:root:root[data-pi-mode="product"],
+:root:root[data-pi-mode="product"] body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+/*
+ * 根节点铺满窗口：高 100dvh，不认 dvh 的浏览器（iOS < 15.4）回落 100vh（design §4.5）。键盘开着时 PiRoot 的行内 top / bottom / height 盖过这里。
+ * 回退写成 @supports 两段，不写成同一条规则里的两个 height：构建时 CSS 压缩会把同规则里"被覆盖"的 100vh 删掉（P6 实测 dist 里只剩 100dvh）。
+ */
+[data-pi-root][data-pi-mode="product"] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100vh;
+}
+@supports (height: 100dvh) {
+  [data-pi-root][data-pi-mode="product"] {
+    height: 100dvh;
+  }
+}
+
+/*
+ * 横屏安全区（design §4.3，PLAN 6.1）：顶栏、流、composer、sheet 的左右内边距 = max(16px, env(safe-area-inset-left / right))。
+ * 做法：手机页整体往里让 (安全区 − 16)（--cw-pi-inset-*，竖屏 = 0），页里本来就有 16 内边距的流、dock、账户栏合起来正好 max(16, 安全区)；
+ * sheet 卡片同样让；顶栏图标钮那一侧本来只留 4 / 8，横屏补到 16（合起来 = 安全区）；通知卡左右 = max(16, 安全区)。
+ * 竖屏和桌面浏览器（安全区 0）下全部等于原值。改了这些部件的手机左右内边距时同步这里（R2/p6-lanes.md §2）。
+ */
+[data-pi-root][data-pi-mode="product"][data-pi-layout="phone"] {
+  --cw-pi-inset-left: max(0px, calc(var(--cw-pi-safe-left) - 16px));
+  --cw-pi-inset-right: max(0px, calc(var(--cw-pi-safe-right) - 16px));
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="phone"],
+[data-pi-root][data-pi-mode="product"] [data-pi-sheet-card] {
+  padding-left: var(--cw-pi-inset-left, 0px);
+  padding-right: var(--cw-pi-inset-right, 0px);
+}
+[data-pi-root][data-pi-mode="product"] :is([data-pi-topbar="phone-chat"], [data-pi-topbar="phone-page"]) {
+  padding-left: max(4px, min(var(--cw-pi-safe-left, 0px), 16px));
+  padding-right: max(4px, min(var(--cw-pi-safe-right, 0px), 16px));
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-topbar="phone-list"] {
+  padding-right: max(4px, min(var(--cw-pi-safe-right, 0px), 16px));
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-topbar="phone-search"] {
+  padding-right: max(8px, min(var(--cw-pi-safe-right, 0px), 16px));
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="phone"] > [data-pi-notice-slot] {
+  left: max(16px, var(--cw-pi-safe-left, 0px));
+  right: max(16px, var(--cw-pi-safe-right, 0px));
+}
+
+/*
+ * 平板档 768–1023（design J09、D16，PLAN 6.1）：< 1024 一律走手机版式（PhoneApp）；视口宽 ≥ 768 时对话页的对话列和 dock 限宽 768、水平居中。
+ * 只认 PiPhonePage page="chat"：列表页、推入页、sheet 不限宽。
+ */
+@media (min-width: 768px) {
+  [data-pi-root][data-pi-mode="product"][data-pi-layout="phone"] [data-pi-shell="phone"][data-pi-page="chat"] > [data-pi-dock],
+  [data-pi-root][data-pi-mode="product"][data-pi-layout="phone"] [data-pi-shell="phone"][data-pi-page="chat"] [data-pi-part="transcript"][data-variant="phone"] {
+    width: 100%;
+    max-width: var(--cw-pi-chat-max-w);
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+/*
+ * R5 P1（cursor 大屏留白）：设计基准 1440 的正文版心 = 768px；浏览器窗口/缩放让 CSS 视口变宽后仍是 768 会留下大片空白。
+ * 只对**产品模式 + cursor**逐级放宽（上限 1040 ≈ 100ch 可读宽度）；≤1679 保持 768（P9 对图/几何断言不受影响）。
+ * 对图舞台（stage 模式，无 data-pi-mode="product"）与 claude/codex（自己的 --cw-pi-chat-max-w）都不受影响。
+ */
+@media (min-width: 1680px) {
+  [data-pi-root][data-pi-ui="cursor"][data-pi-mode="product"] {
+    --cw-pi-chat-max-w: 832px;
+  }
+}
+@media (min-width: 1920px) {
+  [data-pi-root][data-pi-ui="cursor"][data-pi-mode="product"] {
+    --cw-pi-chat-max-w: 880px;
+  }
+}
+@media (min-width: 2560px) {
+  [data-pi-root][data-pi-ui="cursor"][data-pi-mode="product"] {
+    --cw-pi-chat-max-w: 960px;
+  }
+}
+@media (min-width: 3200px) {
+  [data-pi-root][data-pi-ui="cursor"][data-pi-mode="product"] {
+    --cw-pi-chat-max-w: 1040px;
+  }
+}

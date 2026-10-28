@@ -1,0 +1,39 @@
+/* 基础样式：系统 UI 字体栈（帧里是 macOS SF Pro，见 tokens.md「字体判定」）、灰阶抗锯齿、页面底色 */
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+  body {
+    margin: 0;
+    font-family: var(--cw-font-sans);
+    font-size: var(--cw-text-base);
+    line-height: var(--cw-leading-base);
+    color: var(--cw-text);
+    background: var(--cw-bg);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: normal;
+  }
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--cw-font-mono);
+  }
+  button {
+    cursor: default;
+  }
+}
+
+/*
+ * R5 P1：产品根用行内 height: 100dvh（PiHeadlessRoot）；不支持 dvh 的旧浏览器会丢弃该声明 → 根高度退化成内容高，
+ * 窗口下方出现空白。这里补 100vh 兜底（只在产品模式、非键盘态生效；键盘态由 headless 行内几何接管）。
+ */
+@supports not (height: 100dvh) {
+  [data-pi-root][data-pi-mode="product"]:not([data-pi-keyboard]) {
+    height: 100vh !important;
+  }
+}
