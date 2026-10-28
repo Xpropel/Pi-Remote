@@ -1,0 +1,85 @@
+/*
+ * kit 级补充 token：官方 tokens（tokens/tokens.css，经 @tokens 引入）里没有、而 kit 需要的值。
+ * 先于官方 tokens 引入：官方以后补上同名变量时自动覆盖这里。
+ * 每条注释写来源帧与方法；取样用 npm run sample（源图像素，s = 1.02 换成 CSS px）。"估计" = 误差较大或未直接量到。
+ * 明细与核对记录见 replica/tokens.md。
+ */
+:root {
+  /* macOS 窗口（#1 poster：窗口 x 33→1766、y 34→1007 源 px = 1700×955 CSS，左上 32.4/33.3 CSS） */
+  --cw-window-radius: 16px; /* 估计：poster 左上角沿边剖面推 15–16 源 px；macOS 连续圆角 */
+  --cw-window-outline: rgba(0, 0, 0, 0.32); /* poster 左缘 x=32 外沿暗线 #485043（壁纸 #546149） */
+  --cw-window-highlight: rgba(255, 255, 255, 0.55); /* poster 顶缘 y=34 #FBF6F0、左缘 x=33 #BDC3B9 的内亮线，估计 */
+  --cw-window-shadow: 0 0 0 0.5px var(--cw-window-outline), 0 22px 56px rgba(0, 0, 0, 0.32), 0 4px 14px rgba(0, 0, 0, 0.18); /* 估计：壁纸暗，投影只在下缘可见 */
+
+  /* 红黄绿窗口钮（#1 poster 钮心 10×10 中值；#4 未激活灰） */
+
+  /* 壁纸（推断：用取样颜色做的渐变近似，不贴源图） */
+  --cw-wallpaper-tl: #dbdacd; /* poster (2,2) 30×30 中值 */
+  --cw-wallpaper-tr: #356a74; /* poster (1770,2) */
+  --cw-wallpaper-bl: #5a6540; /* poster (2,1010) */
+  --cw-wallpaper-br: #092411; /* poster (1770,1012) */
+  --cw-wallpaper-mid: #6d7f6a; /* poster 上下边中点 #75989A / #6D6D4E 的折中，估计 */
+  --cw-wallpaper-render: #e8e5df; /* #6 hunt-og-render 米灰纯色底，估计（渲染口径） */
+
+  /* 对话列细滚动条（#1 poster x 1755–1762 的灰条 #DDDADB，宽 8 源 px） */
+  --cw-scrollbar-thumb: #dddadb;
+  --cw-scrollbar-w: 8px;
+
+  /* 菜单（K1 提出；#17 #18 2x 清晰帧实测，#5 为内距 5 的模糊帧） */
+  --cw-menu-pad: 4px; /* 菜单卡内边距（ch4 spec S.2 建议新增） */
+  --cw-menu-item-radius: 6px; /* 菜单高亮行圆角：#5 #17 #18 实测 6；--cw-radius-row(8) 管侧栏行 */
+
+  /* 侧栏导航行文字（K2 提出）。base 复核：#1 poster 同一取样框的最暗 10%：导航行 New Agent #696969、会话行 #686868，
+     两者同色；按 K2 的 #424242 渲染出来是 #535353（偏深），按 --cw-text-2 渲染是 #616264（接近）→ 取 --cw-text-2 */
+  --cw-sidebar-nav-fg: #57585a;
+
+  /* diff 版式（K4 提出；specs/ch3 §0.4 §1 §3.4，#5 #10 #12–#15 实测） */
+  --cw-diff-code-size: 13px; /* 五帧实测每字 7.68 CSS px = 13px 等宽 */
+  --cw-diff-row-h: 21px; /* diff 行高 */
+  --cw-diff-gutter-w: 45px; /* 行号栏宽（含 2px 行首竖条区） */
+  --cw-diff-lineno-pad: 10px; /* 行号右缘到行号栏右缘 */
+  --cw-diff-code-pad: 13.5px; /* 代码第 0 列到行号栏右缘（流内卡用 12px，组件内覆盖） */
+  --cw-diff-lineno-add: #4e8670; /* add 行行号 */
+  --cw-diff-lineno-del: #b0566c; /* del 行行号 */
+  --cw-diff-hover-marker: #3a86b8; /* #15 第 126 行 hover 的蓝色 "+" */
+  --cw-diff-unmodified-handle-bg: #f1f1f1; /* #14 折叠条把手区 */
+  --cw-diff-unmodified-hover-bg: #e4e4e4; /* 估计：折叠条 hover（推断态） */
+
+  /* 语法色补充（K4 提出；#10 #12 #25 取样） */
+  --cw-syntax-func: #b0613f; /* 函数 / 方法名：enum、optional、matchMedia、filter */
+  --cw-syntax-comment: #6e6e6e; /* 注释（斜体） */
+  --cw-syntax-jsx-text: #9a8763; /* 估计：JSX 文本（specs/ch5） */
+
+  /* 文件类型图标色（K4 提出；#5 #12 #13 #15 文件行） */
+  --cw-file-icon-json: #a88b4f; /* `{}` */
+  --cw-file-icon-html: #b5785a; /* `</>` */
+  --cw-file-icon-ts: #5f7680; /* "TS" */
+  --cw-file-icon-tsx: #5e7774; /* atom */
+
+  /*
+   * 集成步骤（2026-10-24）提升的 kit 级「调节口」：kit 组件读这些变量，默认值 = 改动前的渲染（逐项见 ../kit-changes.md「集成」）。
+   * 多个章节在本地用后代选择器 / 帧级变量改同一处时，以后可以只在 FrameStage 或作用域上设这些变量。
+   * 注意：默认值引用别的 token 的调节口不在 :root 定义（:root 上的 var() 在根节点就算死，FrameStage 上覆盖的
+   * --cw-text-code / --cw-divider 会传不下去）；它们只写在 kit 组件的 var() 兜底里：
+   *   --cw-chip-code-size    CodeChip / FileChip 字号，兜底 --cw-text-code。ch1 #1 #3 #5 12.32、ch3 #10–#15 12.38–12.45、ch5 #25 #27 12.5
+   *   --cw-split-divider     SplitPaneLayout 中间竖线，兜底 --cw-divider。ch5 #25 #27 实测 #dcdcdc（ch5 章节的 pane-divider 变量）
+   *   --cw-prose-ol-gap      AgentProse 有序列表序号右缘 → 文字，兜底 --cw-space-2（#1 #12 = 8；ch5 #23 = 4.8）
+   */
+  --cw-ghost-icon-stroke: 1.5; /* GhostIconButton 图标线宽。ch5 #28 浏览器工具栏 1.75 */
+  --cw-switch-thumb: #ffffff; /* Switch 圆点。原先读 --cw-primary-fg（同为 #FFFFFF）；pi 深色主题反转 --cw-primary-fg 后圆点不再变黑 */
+}
+
+/*
+ * 覆盖官方值（:root:root 特异性更高，不受引入顺序影响）。每条写官方值、实测值与证据；
+ * 集成步骤冻结 tokens 时把这些转告 tokens 维护者。
+ */
+:root:root {
+  /* 官方 v2 #E8E8E8（推算，帧里未单独拍到）→ #21 cloud-walkthrough-pills 的单独 hover 行
+     "Flaky tests root cause"：y=350 横剖 x 46–300 = #DFDFDF（K2 实测，base 复核一致），与选中行同灰 */
+  --cw-sidebar-row-hover: #dfdfdf;
+}
+/*
+ * 未覆盖、留给集成步骤裁定的 token 疑点（官方 tokens.css v2 仍为准，见 verification/base-verification.md）：
+ * --cw-text-code 12px：#1 poster 两枚 chip 的墨迹宽度比 12px SF Mono 宽 4.1% / 3.8%（≈12.5px），
+ *   staff 2x 帧每字 7.34px（≈12.2px）。base 样张在自己的 FrameStage 上局部用 12.5px。
+ */

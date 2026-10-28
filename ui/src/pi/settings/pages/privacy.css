@@ -1,0 +1,26 @@
+/**
+ * 设置 › 数据与隐私 · 页面级样式。
+ * 危险动作只用状态色 token 调暗红灰，不在页面里写死颜色。
+ */
+
+.settings-privacy-danger .settings-row-title {
+  color: color-mix(in srgb, var(--st-error) 62%, var(--st-text-1));
+}
+
+.settings-privacy-danger:disabled {
+  opacity: 0.55;
+}
+
+.settings-privacy-file {
+  display: none;
+}
+
+/* 壳按钮复位的 specificity 高于组件单类；只在本页把开关轨道赢回来。 */
+.settings-privacy .settings-switch {
+  border-radius: 999px;
+  background: var(--st-switch-off);
+}
+
+.settings-privacy .settings-switch.is-on {
+  background: var(--st-switch-on);
+}

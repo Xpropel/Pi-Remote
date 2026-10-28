@@ -1,0 +1,204 @@
+/*
+ * Codex 旧版桌面 UI 设计 token（P2 codex 线；design-spec §2.2 / §2.3 / §2.4）。
+ *
+ * 口径（逐条出处见 design-spec）：
+ * - 中性灰阶取拆包账本 19 档里实际用到的固定值（§0.3-9）：chrome #ececec、侧栏 #f3f3f3、主面/画布 #ffffff、
+ *   浮层 #ffffff；深色 = 窗口 #0d0d0d → 侧栏 #131313 → 主面 #181818 → 对话区 #171717 → 浮层 #282828（一套灰阶双向取色）。
+ * - 描边不用实色：黑 8% / 16% / 发丝 5%（深色换白）；正文不是纯黑 #1a1c1f。
+ * - 蓝强调只出现在审批 chip / 链接 / 聚焦光晕：浅 #2b7fd4、深 #6cb0ee（§6.5 注明它本身 4.13:1，按参考值验收）。
+ * - 几何（§2.3 / §2.4）：标题栏 46、侧栏 274、正文栏最大 768 居中、正文 14/22、上 33/左右 24/下 32、
+ *   右栏 min(667px, 44vw)、行高 30–32、间距基数 4、composer 圆角 25 且距窗口底 16、控件高 28、上下文圆环 46。
+ * - 隔离（brief §契约 5 + arch 线接入说明）：只在 [data-pi-ui="codex"] 作用域；深色用祖先选择器
+ *   :root[data-pi-theme="dark"] [data-pi-ui="codex"]（<html data-pi-theme> 由 PiRoot/首帧写）；不定义 / 不覆盖任何 --cw-*。
+ *
+ * 本文件只放变量；排版与部件样式在 codex.css。
+ */
+
+[data-pi-ui="codex"] {
+  /* ---- 表面（design-spec 表 2-A） ---- */
+  --codex-chrome: #ececec;
+  --codex-sidebar: #f3f3f3;
+  --codex-main: #ffffff;
+  --codex-canvas: #ffffff;
+  --codex-overlay: #ffffff;
+  --codex-table-head: #f3f3f3;
+
+  /* ---- 文字 / 强调（表 2-B） ---- */
+  --codex-text: #1a1c1f;
+  --codex-text-2: #55575a;
+  --codex-text-3: #66686b;
+  /* 蓝色：accent 保留品牌值（填充/描边），文本用更深的 accent-text 满足 AA */
+  --codex-accent: #2b7fd4;
+  --codex-accent-text: #175a9e;
+  --codex-accent-strong: #1f6cbb;
+  --codex-accent-soft: #eaf3fc;
+  --codex-unread: #3a83f7;
+  /* error：error 保留参考色（描边/装饰），文本/填充用满足 AA 的 error-text / error-fill */
+  --codex-error: #ff6764;
+  --codex-error-text: #a3241c;
+  --codex-error-fill: #a3241c;
+
+  /* ---- 引用设计里其余高辨识部件（[X-图7] / [X-图8] / [X-图11]）---- */
+  --codex-bubble-bg: #f3f3f3;
+  --codex-code-bg: #f6f6f6;
+  --codex-send-bg: #111111;
+  --codex-send-fg: #ffffff;
+  --codex-primary-bg: #111111;
+  --codex-primary-fg: #ffffff;
+
+  /* ---- 描边 / 交互（透明黑白，不用实色；表 2-B） ---- */
+  --codex-border: rgba(0, 0, 0, 0.08);
+  --codex-border-strong: rgba(0, 0, 0, 0.16);
+  --codex-hairline: rgba(0, 0, 0, 0.05);
+  --codex-hover: rgba(0, 0, 0, 0.045);
+  --codex-selected: rgba(0, 0, 0, 0.07);
+
+  /* ---- diff（表 2-B；浅色 4.47 / 深色按同一半透明规则） ---- */
+  --codex-diff-add-bg: #e6f4ea;
+  --codex-diff-add-fg: #14692a;
+  --codex-diff-del-bg: #fdecec;
+  --codex-diff-del-fg: #a52a21;
+  --codex-diff-unmod: rgba(0, 0, 0, 0.04);
+
+  /* ---- 状态色（工具成功/失败、设备在线、检查结果、能力可用；与 diff 的增删语义分开） ----
+   * 之前这些状态直接借用 --codex-diff-add-fg / --codex-diff-del-fg：改 diff 配色会误伤状态，
+   * 状态调色也会污染 diff。这里独立命名，值暂时取与旧 diff 相同的色（视觉零回归）。 */
+  --codex-status-ok: #14692a;
+  --codex-status-ok-bg: #e6f4ea;
+  --codex-status-warn: #a52a21;
+  --codex-status-warn-bg: #fdecec;
+  --codex-status-bad: #a52a21;
+
+  /* ---- 字体 / 字重（§2.3） ---- */
+  --codex-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --codex-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --codex-weight-shell: 445;
+  --codex-font-body: 14px;
+  --codex-leading-body: 22px;
+  --codex-font-ui: 13px;
+  --codex-leading-ui: 18px;
+  --codex-font-sm: 12px;
+  --codex-leading-sm: 16px;
+  --codex-font-title: 17px;
+  --codex-leading-title: 24px;
+  --codex-font-page: 22px;
+  --codex-leading-page: 28px;
+  --codex-font-code: 12px;
+  --codex-leading-code: 19px;
+
+  /* ---- 几何（拆包实测原值，§2.3 / §2.4） ---- */
+  --codex-chrome-h: 46px;
+  --codex-sidebar-w: 274px;
+  --codex-thread-max-w: 768px;
+  --codex-thread-pad-top: 33px;
+  --codex-thread-pad-x: 24px;
+  --codex-thread-pad-bottom: 32px;
+  --codex-panel-w: min(667px, 44vw);
+  --codex-row-h: 31px;
+  --codex-gap: 4px;
+  --codex-composer-radius: 25px;
+  --codex-control-h: 28px;
+  --codex-ring-size: 46px;
+  --codex-bottom-gap: 16px;
+  --codex-turn-gap: 34px;
+  --codex-turn-inner-gap: 12px;
+
+  /* ---- 圆角阶（§2.3：4/6/8 小按钮 · 10/12 卡片 · 16 气泡 · 20 大卡 · 25 composer · 999 胶囊） ---- */
+  --codex-radius-xs: 4px;
+  --codex-radius-sm: 6px;
+  --codex-radius-md: 8px;
+  --codex-radius-card: 12px;
+  --codex-radius-pop: 10px;
+  --codex-radius-bubble: 16px;
+  --codex-radius-dialog: 16px;
+  --codex-radius-lg: 20px;
+  --codex-radius-pill: 999px;
+
+  /* ---- 阴影（§2.3：composer 三层 · 卡片 0.5px 描边 + 1px 影） ---- */
+  --codex-shadow-card: 0 0 0 0.5px var(--codex-border), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --codex-shadow-composer: 0 0 0 0.5px var(--codex-border), 0 1px 2px rgba(0, 0, 0, 0.06), 0 20px 40px -12px rgba(0, 0, 0, 0.18);
+  --codex-shadow-pop: 0 0 0 0.5px var(--codex-border), 0 12px 32px rgba(0, 0, 0, 0.14);
+  /* v1.4：输入框聚焦的中性描边（合成到字段底 #F3F3F3 / 主面 #FFFFFF 上 ≈ #868686，3.3:1；替代原来的 3px 蓝光晕） */
+  --codex-field-focus-border: rgba(0, 0, 0, 0.45);
+}
+
+/*
+ * 深色：同一套灰阶反向取色（design-spec 表 2-A / 2-B 深色列 + §0.3-16）。
+ * 祖先选择器：<html data-pi-theme="dark"> 由 PiRoot 镜像；portal 出去的菜单 / 弹窗也能拿到这份变量。
+ */
+:root[data-pi-theme="dark"] [data-pi-ui="codex"] {
+  --codex-chrome: #0d0d0d;
+  --codex-sidebar: #131313;
+  --codex-main: #181818;
+  --codex-canvas: #171717;
+  --codex-overlay: #282828;
+  --codex-table-head: #1f1f1f;
+
+  --codex-text: #ededed;
+  --codex-text-2: #a9abae;
+  --codex-text-3: #9a9b9d;
+  --codex-accent: #6cb0ee;
+  --codex-accent-text: #8cc4f2;
+  --codex-accent-strong: #8cc4f2;
+  --codex-accent-soft: rgba(108, 176, 238, 0.14);
+  --codex-unread: #6cb0ee;
+  --codex-error: #ff6764;
+  --codex-error-text: #ff9f9a;
+  --codex-error-fill: #b3362f;
+
+  --codex-bubble-bg: rgba(255, 255, 255, 0.06);
+  --codex-code-bg: #1f1f1f;
+  --codex-send-bg: #ededed;
+  --codex-send-fg: #0d0d0d;
+  --codex-primary-bg: #ededed;
+  --codex-primary-fg: #0d0d0d;
+
+  --codex-border: rgba(255, 255, 255, 0.08);
+  --codex-border-strong: rgba(255, 255, 255, 0.16);
+  --codex-hairline: rgba(255, 255, 255, 0.05);
+  --codex-hover: rgba(255, 255, 255, 0.06);
+  --codex-selected: rgba(255, 255, 255, 0.09);
+
+  --codex-diff-add-bg: rgba(46, 160, 67, 0.16);
+  --codex-diff-add-fg: #7ec98f;
+  --codex-diff-del-bg: rgba(248, 81, 73, 0.16);
+  --codex-diff-del-fg: #f08a8a;
+  --codex-diff-unmod: rgba(255, 255, 255, 0.04);
+
+  --codex-status-ok: #7ec98f;
+  --codex-status-ok-bg: rgba(46, 160, 67, 0.16);
+  --codex-status-warn: #f08a8a;
+  --codex-status-warn-bg: rgba(248, 81, 73, 0.16);
+  --codex-status-bad: #f08a8a;
+
+  --codex-shadow-card: 0 0 0 0.5px var(--codex-border), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --codex-shadow-composer: 0 0 0 0.5px var(--codex-border), 0 1px 2px rgba(0, 0, 0, 0.4), 0 20px 40px -12px rgba(0, 0, 0, 0.6);
+  --codex-shadow-pop: 0 0 0 0.5px var(--codex-border), 0 12px 32px rgba(0, 0, 0, 0.5);
+  /* v1.4：深色输入框聚焦的中性描边（字段底上约 4:1；替代原来的 3px 蓝光晕） */
+  --codex-field-focus-border: rgba(255, 255, 255, 0.42);
+}
+
+/* ============================================================
+ * 大屏响应式（R7）：内容列随窗口放宽，右栏避免只占 ~17%
+ * 1920 / 2560 / 3200 三档；sidebar 274 与 rail 46 保持设计值不变。
+ * ============================================================ */
+@media (min-width: 1920px) {
+  [data-pi-ui="codex"] {
+    --codex-thread-max-w: 860px;
+    --codex-panel-w: min(860px, 38vw);
+  }
+}
+
+@media (min-width: 2560px) {
+  [data-pi-ui="codex"] {
+    --codex-thread-max-w: 1000px;
+    --codex-panel-w: min(1040px, 36vw);
+  }
+}
+
+@media (min-width: 3200px) {
+  [data-pi-ui="codex"] {
+    --codex-thread-max-w: 1120px;
+    --codex-panel-w: min(1200px, 34vw);
+  }
+}

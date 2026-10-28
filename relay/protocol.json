@@ -1,0 +1,256 @@
+{
+  "proto": 4,
+  "minProto": 3,
+  "caps": {
+    "err.v4": "所有失败都带 code：ack.code / error.code / command_result.code 必填",
+    "msg.cid": "远程消息带客户端 id（cid）：回显、送达、失败按 cid 对号",
+    "device.token": "设备令牌：配对码换 deviceToken，local 通道按设备鉴权",
+    "room.label": "local 通道支持 room_label 轻量改名帧",
+    "room.attention": "注意力恢复通道（R3-1）：relay 按房维护回合摘要 lastTurnEnd{kind:done|error,at}（成败归一与页面外通知编排器同源：agent_settled 落定、看落定前最后助手终态；aborted 不记；新回合活动信号到达即清）；room_list 房间条目带 lastTurnEnd（无未读落定时为 null）；摘要变化时向设备级 viewer 连接广播 room_attention{room,lastTurnEnd|null}（字段白名单：只有 room 与 kind/at，不带任何正文/标题）；任一 viewer 订阅进房即清该房摘要并广播 null（单用户多设备口径：一端看过即全端已读）。UI 侧 RoomTurnTracker 仍是实时边沿引擎，本通道只作刷新/重连恢复种子，与 tracker 既有记录按房合并去重（先到为准）",
+    "prefs.sync": "主题偏好跨设备同步（R4-1）：同步范围只取通用外观五字段 {theme, chrome, font, size, mono}（faces/color 是皮肤内部细节、completionSound/queueSend 是本设备行为，都不入）。帧：prefs_set{subset, baseRev}（viewer→relay）/ prefs_saved{rev, updatedAt}（relay→发送端回执）/ prefs_changed{subset, rev, updatedAt}（relay→同账户其他 viewer 广播，发送端不收）；auth_result 增 prefs{subset, rev, updatedAt} | null 快照字段。冲突口径 LWW：relay 维护 per-account 单调 rev、以到达顺序裁决（不信客户端时钟），发送端 baseRev 落后不拒绝、但必须以回带 rev 对齐本地。relay per-account 存储（内存态 + 小文件落盘，落盘失败降级纯内存态）。未声明 prefs.sync 的 viewer 不收 prefs_changed、auth_result 不带 prefs 字段（只剥新面）",
+    "sync.v3": "local 通道支持 room_registered / sync / snapshot{mode:append} 对齐",
+    "health": "viewer 端口提供 GET /healthz",
+    "dialog.respond": "对话框应答（O2，接管语义）：开关 dialogRemoteAnswer 开 AND 房间有 viewer 在线才接管（任一假落回 O1 透传本机弹窗，fail-open）。帧：dialog_open{…,answerable:true}（接管时带）/ dialog_answer{dialogId,action:allow|submit|deny,value?,note?}（viewer→relay→桥，先答广播：首达 resolve、迟到回 dialog_gone）/ dialog_close{dialogId,outcome,reason:answered|denied|timeout|aborted,note?}（裁决后全端广播收回）/ dialog_gate{hasViewers}（relay→桥：房间 viewer 订阅数 0↔>0 推送，桥重连补发当前值）/ dialog_answer_switch{enabled}（UI→relay→桥：开关下达，桥仅内存持有、重启回默认关，桥重连由 relay 按存值重下达）/ dialog_answer_result{aid,dialogId,ok,code?}（桥→relay→答题 viewer 的回执通道）/ dialog_claim{dialogId}（可选意向提示：仅供他端显示正在作答，不承载应答权，一期未实现流程）。Deny 理由只随帧广播供 UI 呈现，不回传模型（resolve 值域装不下）",
+    "dialog.observe": "对话框观察帧（O1）：dialog_open{dialogId,kind,title,options,message,placeholder,prefill,timeout,startedAt} / dialog_close{dialogId,outcome}；扩展 UI 状态帧 ext_status{statuses,widgets,title,working,tap} 与 ext_notify{message,level}。截断口径见 limits 的 dialog*/extNotify*/widget*/status* 项",
+    "room.dialogs": "房间等待摘要（P9 A）：room_list 的房间条目（含 auth_result.rooms、list_rooms 回包）给声明了本能力的连接多带 waiting[] 与 waitingPrompt；waiting 只含 dialogId/kind/title/startedAt/timeout/answerable（不带 options/message/prefill），离线房间恒为空；waitingPrompt 是旧的单槽 ui_prompt 兜底信号，只在 waiting 为空时有意义；摘要变化时向设备级 viewer 连接广播 room_waiting{room,waiting,waitingPrompt}（每帧全量，不按订阅过滤，与 room_attention 的对象相同）",
+    "session.purge": "删除后清理服务器副本（P9 B）：设备确认删除成功后，relay 清掉该会话的全部副本（名册里的离线房间、正文内存与落盘文件、会话库正文、索引里的旧行只留最小墓碑），并向所有在线 viewer 广播 session_removed{deviceId,ids}（只发给声明了本能力的连接）",
+    "session.files": "设备级会话文件命令（P9 B，attach 声明）：attach 能按 sessionId 在设备的整个会话根目录里执行 delete_session，成功回 data{status:deleted|already_deleted,method:trash|unlink|null}",
+    "fs.browse": "设备文件夹浏览（P9 C，attach 声明）：attach 能执行 list_dirs{path?,showHidden?}，只返回允许根目录内的目录名（不返回文件、不传文件内容），成功回 data{root,path,parent,entries,truncated}",
+    "agent.state": "agent_state 全量快照事件能力位（子智能体胶囊预留：协议/通道先行，当前无生产者）",
+    "usage.activity.v1": "使用活动聚合（P10）：extension 只读本机 pi 会话 jsonl，聚合每日 tokens/messages/sessions、模型分布、活跃/连续天数、峰值（本地时区分天、role=user 口径、不含 cost），经本地通道上报 usage_snapshot{deviceId,requestId,snapshot}；relay 校验并按 account+device 缓存，向 viewer 提供 usage_get{deviceId,requestId,force} → usage_snapshot{available,reason?,snapshot?,receivedAt?,stale?}；快照只含聚合计数（无正文/标题/cwd/金额）。旧端兼容：无此 cap 的 relay 收到 usage_get 回 unknown_type（UI 空态），旧 extension 收到 usage_refresh 忽略/unknown_type（relay 降级 unsupported/timeout），新 relay 不向未声明 cap 的 viewer 主动发 usage 帧"
+  },
+  "errors": {
+    "auth_failed": {
+      "message": "鉴权失败",
+      "retryable": false
+    },
+    "auth_timeout": {
+      "message": "鉴权超时",
+      "retryable": true
+    },
+    "bad_json": {
+      "message": "不是合法的 JSON",
+      "retryable": false
+    },
+    "bad_args": {
+      "message": "参数错误",
+      "retryable": false
+    },
+    "binary_not_allowed": {
+      "message": "只接受 JSON 文本帧",
+      "retryable": false
+    },
+    "payload_too_large": {
+      "message": "单帧太大",
+      "retryable": false
+    },
+    "rate_limited": {
+      "message": "请求太频繁，稍后再试",
+      "retryable": true
+    },
+    "unknown_type": {
+      "message": "不认识的帧类型",
+      "retryable": false
+    },
+    "unknown_command": {
+      "message": "不认识的命令",
+      "retryable": false
+    },
+    "unsupported": {
+      "message": "当前版本不支持这个操作",
+      "retryable": false
+    },
+    "no_room": {
+      "message": "会话不存在",
+      "retryable": false
+    },
+    "room_full": {
+      "message": "该会话观看人数已满",
+      "retryable": true
+    },
+    "room_offline": {
+      "message": "本机 pi 未连接",
+      "retryable": true
+    },
+    "session_switched": {
+      "message": "目标会话已切换，操作未执行",
+      "retryable": false
+    },
+    "busy": {
+      "message": "会话正忙",
+      "retryable": true
+    },
+    "compacting": {
+      "message": "pi 正在压缩上下文",
+      "retryable": true
+    },
+    "no_model": {
+      "message": "pi 未选择模型",
+      "retryable": false
+    },
+    "not_ready": {
+      "message": "本机还没准备好",
+      "retryable": true
+    },
+    "queue_timeout": {
+      "message": "排队超时，命令未执行",
+      "retryable": true
+    },
+    "queue_locked": {
+      "message": "这条消息已注入 pi，不能修改或取消",
+      "retryable": false
+    },
+    "queue_conflict": {
+      "message": "这条待发消息已被其他端修改，请重新加载全文后再编辑",
+      "retryable": true
+    },
+    "dialog_claimed": {
+      "message": "弹窗已被处理，这次应答没有生效",
+      "retryable": false
+    },
+    "dialog_gone": {
+      "message": "弹窗已关闭或等待超时",
+      "retryable": false
+    },
+    "timeout": {
+      "message": "超时",
+      "retryable": true
+    },
+    "not_found": {
+      "message": "找不到目标",
+      "retryable": false
+    },
+    "no_device": {
+      "message": "这台设备从未连接过",
+      "retryable": false
+    },
+    "device_offline": {
+      "message": "设备未连接：先在电脑上打开 attach 窗口",
+      "retryable": true
+    },
+    "device_no_active_session": {
+      "message": "这台设备没有在跑的会话，先启用/新建一个",
+      "retryable": false
+    },
+    "session_not_found": {
+      "message": "这台设备上没有这个会话",
+      "retryable": false
+    },
+    "cwd_not_allowed": {
+      "message": "该目录不在这台设备的允许列表里",
+      "retryable": false
+    },
+    "spawn_failed": {
+      "message": "本机启动失败",
+      "retryable": true
+    },
+    "harness_busy": {
+      "message": "正在启动另一个会话，请稍候",
+      "retryable": true
+    },
+    "pair_invalid": {
+      "message": "配对码无效",
+      "retryable": false
+    },
+    "pair_expired": {
+      "message": "配对码已过期，请重新生成",
+      "retryable": false
+    },
+    "device_revoked": {
+      "message": "这台设备已被撤销，请重新配对",
+      "retryable": false
+    },
+    "device_mismatch": {
+      "message": "设备身份与令牌不符",
+      "retryable": false
+    },
+    "offline": {
+      "message": "连接已断开",
+      "retryable": true
+    },
+    "result_unknown": {
+      "message": "连接中断，命令结果未知，请确认后再操作",
+      "retryable": false
+    },
+    "session_running": {
+      "message": "会话正在运行，不能删除",
+      "retryable": false
+    },
+    "session_outside_root": {
+      "message": "这个会话不在设备的会话目录里，请在 pi 里删除",
+      "retryable": false
+    },
+    "device_update_required": {
+      "message": "这台设备的连接窗口（attach）需要更新",
+      "retryable": false
+    },
+    "fs_outside_root": {
+      "message": "不在允许浏览的范围内",
+      "retryable": false
+    },
+    "fs_not_found": {
+      "message": "文件夹不存在",
+      "retryable": false
+    },
+    "fs_not_dir": {
+      "message": "这不是文件夹",
+      "retryable": false
+    },
+    "fs_denied": {
+      "message": "没有权限读取这个文件夹",
+      "retryable": false
+    },
+    "browse_disabled": {
+      "message": "这台设备没有开启文件夹浏览",
+      "retryable": false
+    },
+    "internal": {
+      "message": "内部错误",
+      "retryable": true
+    },
+    "server_error": {
+      "message": "服务端出错",
+      "retryable": true
+    }
+  },
+  "limits": {
+    "cidMax": 64,
+    "deviceNameMax": 64,
+    "projectsMax": 64,
+    "projectPathMax": 1024,
+    "pairCodeLength": 8,
+    "pairCodeAlphabet": "23456789ABCDEFGHJKLMNPQRSTUVWXYZ",
+    "pairCodeTtlMs": 600000,
+    "deviceTokenBytes": 32,
+    "dialogOptionsMax": 20,
+    "dialogOptionChars": 80,
+    "dialogTextMax": 500,
+    "dialogTitleMax": 120,
+    "dialogSlotsMax": 8,
+    "dialogNoteMax": 500,
+    "dialogAnswerTimeoutMs": 120000,
+    "extNotifyMax": 2000,
+    "widgetLinesMax": 50,
+    "widgetLineChars": 200,
+    "statusTextMax": 200,
+    "prefsSubsetMaxBytes": 2048,
+    "bodySearchQueryMin": 2,
+    "bodySearchQueryMax": 100,
+    "bodySearchFilesMax": 200,
+    "bodySearchBytesMax": 67108864,
+    "bodySearchDeadlineMs": 20000,
+    "bodySearchEntryTextMax": 32768,
+    "bodySearchMatchesPerSession": 50,
+    "bodySearchSnippetsPerSession": 3,
+    "bodySearchSnippetChars": 160,
+    "bodySearchResultsMax": 20,
+    "bodySearchLineMaxBytes": 4194304,
+    "dirListMax": 500,
+    "dirNameMax": 255,
+    "browseRootsMax": 8,
+    "usageDaysMax": 400,
+    "usageModelsMax": 8,
+    "usageSnapshotMaxBytes": 262144,
+    "usageRequestTimeoutMs": 8000
+  }
+}

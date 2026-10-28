@@ -1,0 +1,18 @@
+// Pi 共享原语总出口（a 区拥有；props 清单见任务文件夹 pi/shared-ready.md）。
+// import { PiRoot, PiDesktopShell, PiSidebar, piSessionGroups } from "@/components/pi/shared"
+// 画廊 mock 不在这里（P3.3 起放在开发画廊的 fixtures/gallery 目录，部件目录不 import 它）
+export * from "./types"
+export * from "./format"
+export * from "./adapters"
+export * from "./PiRoot"
+export * from "./frame"
+export * from "./PiMark"
+export * from "./PiShell"
+export * from "./PiSidebar"
+export * from "./PiTopBar"
+export * from "./PiFeedback"
+export * from "./PiOverlay"
+export * from "./PiControls"
+export * from "./PiButton"
+export * from "./PiSpinner"
+export * from "./layers"

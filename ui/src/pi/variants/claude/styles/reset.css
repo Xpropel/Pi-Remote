@@ -1,0 +1,115 @@
+/*
+ * Claude v2 · 作用域内最小 reset（P2-2 scope reset，verify-ui-v2 §2.3 C 档加固）
+ *
+ * 背景：变体视觉完全不依赖 cursor 设计样式（B≈A），但 C 档（只加载变体自有 CSS、禁用 Tailwind preflight/全局基础）
+ * 下会吃浏览器默认值：box-sizing=content-box、h1/p/button 默认 margin/font、Times 字体回退。
+ * 本文件把这些"全局基础"在**变体作用域内**补齐，使变体样式在"按变体加载样式"的宿主里也能自洽。
+ * 契约：每条选择器以 [data-pi-ui="claude"] 开头；不写 :root{ / html{ / body{ / *{ 等全局选择器；
+ * <body> 的默认 margin 在文档级、变体作用域管不到（见 progress 说明：产品入口是 fixed 100dvh，不受影响；
+ * 若未来按变体加载样式，由入口层提供 body reset，变体不越界改全局）。
+ */
+
+[data-pi-ui="claude"] {
+  /* 本文件的局部 token（变体 CSS 守卫要求每个 CSS 文件带 --claude-* 声明） */
+  --claude-reset-font-size: 16px;
+
+  margin: 0;
+  padding: 0;
+  color: var(--claude-text);
+  font-family: var(--claude-font-sans);
+  font-size: var(--claude-text-ui);
+  line-height: var(--claude-leading-ui);
+  font-weight: 400;
+  font-style: normal;
+  text-align: left;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+[data-pi-ui="claude"] *,
+[data-pi-ui="claude"] *::before,
+[data-pi-ui="claude"] *::after {
+  box-sizing: border-box;
+}
+
+[data-pi-ui="claude"] h1,
+[data-pi-ui="claude"] h2,
+[data-pi-ui="claude"] h3,
+[data-pi-ui="claude"] h4,
+[data-pi-ui="claude"] h5,
+[data-pi-ui="claude"] h6,
+[data-pi-ui="claude"] p,
+[data-pi-ui="claude"] ul,
+[data-pi-ui="claude"] ol,
+[data-pi-ui="claude"] li,
+[data-pi-ui="claude"] blockquote,
+[data-pi-ui="claude"] figure,
+[data-pi-ui="claude"] form,
+[data-pi-ui="claude"] fieldset,
+[data-pi-ui="claude"] pre {
+  margin: 0;
+  padding: 0;
+}
+
+[data-pi-ui="claude"] h1,
+[data-pi-ui="claude"] h2,
+[data-pi-ui="claude"] h3,
+[data-pi-ui="claude"] h4,
+[data-pi-ui="claude"] h5,
+[data-pi-ui="claude"] h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+[data-pi-ui="claude"] ul,
+[data-pi-ui="claude"] ol {
+  list-style: none;
+}
+
+[data-pi-ui="claude"] button,
+[data-pi-ui="claude"] input,
+[data-pi-ui="claude"] textarea,
+[data-pi-ui="claude"] select {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+}
+
+[data-pi-ui="claude"] button {
+  cursor: pointer;
+}
+
+[data-pi-ui="claude"] button:disabled {
+  cursor: default;
+}
+
+[data-pi-ui="claude"] textarea {
+  resize: none;
+}
+
+[data-pi-ui="claude"] a {
+  color: inherit;
+  text-decoration: none;
+}
+
+[data-pi-ui="claude"] strong,
+[data-pi-ui="claude"] b {
+  font-weight: 600;
+}
+
+[data-pi-ui="claude"] img,
+[data-pi-ui="claude"] svg {
+  vertical-align: middle;
+}
+
+[data-pi-ui="claude"] table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}

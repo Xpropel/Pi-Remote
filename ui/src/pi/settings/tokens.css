@@ -1,0 +1,221 @@
+/**
+ * 设置页 v2 · 六套颜色令牌。
+ *
+ * 唯一来源：统一左侧边栏定版令牌（ui/src/pi/sidebar/tokens.css；对应设计册 §9/§10/§11，
+ * 即 设计规格 里的统一侧栏定版令牌）。这里只把同一批值映射成语义名 --st-*，
+ * 不另起颜色；切换 style × theme 只换本文件的颜色块，组件与布局不变。
+ *
+ * 作用域：[data-pi-settings] + [data-pi-settings-style] + [data-pi-theme]。
+ * 同时支持「根自带主题属性」和「祖先主题属性」两种挂载方式：根选择器 (0,3,0) 始终
+ * 优先；祖先选择器用 :where() 把主题属性降到 (0,2,0)，并统一按「浅色块在前、深色块在后」
+ * 排列，避免祖先主题（gallery 舞台固定 light）反压设置根刚切换的 data-pi-theme。
+ * Claude 唯一非颜色差异：--st-font-display = 衬线，且只给页标题 / 分组标题使用。
+ */
+
+/* ---------------- 几何与字体（六套共用） ---------------- */
+[data-pi-settings] {
+  --st-rail-w: 260px;
+  --st-nav-h: 30px;
+  --st-nav-icon: 15px;
+  --st-content-w: 692px;
+  --st-content-w-wide: 880px;
+  --st-radius-card: 14px;
+  --st-radius-row: 8px;
+
+  --st-font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --st-font-serif: Georgia, "Times New Roman", "Songti SC", "STSongti-SC-Regular", "SimSun", serif;
+  --st-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans CJK SC", monospace;
+  --st-font-display: var(--st-font-sans);
+
+  /* 由下方 22 个六套色位派生的组件语义；不引入新的基色。 */
+  --st-card-bg: color-mix(in srgb, var(--st-menu-bg) 88%, transparent);
+  --st-field-bg: color-mix(in srgb, var(--st-menu-bg) 78%, transparent);
+  /* A11Y-04：关闭态轨道用不透明中性灰（浅色 54% / 深色 38% 明度混合），对卡底 ≥3:1；
+     开启态轨道见各深色块（深色下与白 thumb ≥3:1）。 */
+  --st-switch-on: var(--st-accent-strong);
+  --st-switch-off: color-mix(in srgb, var(--st-text-1) 54%, var(--st-menu-bg));
+  --st-switch-knob: #ffffff;
+  --st-focus-ring: color-mix(in srgb, var(--st-accent) 55%, transparent);
+  /* A11Y-02：select / 滑杆的键盘焦点环走中性色（不用浏览器蓝 / 品牌蓝），对卡底 ≥3:1。 */
+  --st-field-focus-ring: color-mix(in srgb, var(--st-text-1) 72%, var(--st-menu-bg));
+  /* 非文字强调（滑杆填充 / 手机开启态 thumb）：默认跟强调色；Claude 浅色单独加深到 ≥3:1。 */
+  --st-accent-strong: var(--st-accent);
+  --st-slider-accent: var(--st-accent-strong);
+  /* 徽标文字：等待色压深一档，浅色卡底上 ≥4.5:1（深色下自动变亮）。 */
+  --st-badge-bridge-fg: color-mix(in srgb, var(--st-wait) 80%, var(--st-text-1));
+  --st-badge-bridge-bg: color-mix(in srgb, var(--st-wait) 14%, transparent);
+  --st-badge-reserved-bg: var(--st-tile-bg);
+  --st-card-shadow: 0 1px 3px color-mix(in srgb, var(--st-text-1) 8%, transparent);
+  --st-knob-shadow: 0 1px 2px color-mix(in srgb, var(--st-text-1) 24%, transparent);
+}
+
+/* ---------------- Cursor 浅 ---------------- */
+[data-pi-settings][data-pi-settings-style="cursor"][data-pi-theme="light"],
+:where([data-pi-theme="light"]) [data-pi-settings][data-pi-settings-style="cursor"] {
+  --st-page-bg: #ffffff;
+  --st-rail-bg: rgba(252, 252, 253, 0.72);
+  --st-border: rgba(20, 20, 30, 0.09);
+  --st-text-1: #1d1d21;
+  --st-text-2: #43434b;
+  --st-text-3: #5d5d66;
+  --st-text-4: #62626b;
+  --st-text-5: #5d5d66;
+  --st-icon: #83838d;
+  --st-menu-bg: #ffffff;
+  --st-menu-border: rgba(20, 20, 30, 0.09);
+  --st-selected-bg: rgba(20, 20, 40, 0.05);
+  --st-hover-bg: rgba(20, 20, 40, 0.045);
+  --st-accent: #6d4bc4;
+  --st-accent-soft: rgba(109, 75, 196, 0.12);
+  --st-online: #1f7a44;
+  --st-wait: #a06b00;
+  --st-error: #e5484d;
+  --st-idle: #8a8a93;
+  --st-tile-bg: rgba(0, 0, 0, 0.06);
+  --st-backdrop: blur(28px) saturate(1.3);
+  --st-selected-ring: #6d6d78;
+}
+
+/* ---------------- Cursor 深 ---------------- */
+[data-pi-settings][data-pi-settings-style="cursor"][data-pi-theme="dark"],
+:where([data-pi-theme="dark"]) [data-pi-settings][data-pi-settings-style="cursor"] {
+  --st-page-bg: rgba(20, 20, 23, 0.55);
+  --st-rail-bg: rgba(16, 16, 18, 0.94);
+  --st-border: rgba(255, 255, 255, 0.06);
+  --st-text-1: #ededf0;
+  --st-text-2: #c9c9cf;
+  --st-text-3: #a9a9b1;
+  --st-text-4: #94949c;
+  --st-text-5: #8e8e96;
+  --st-icon: #8e8e96;
+  --st-menu-bg: rgb(30, 30, 34);
+  --st-menu-border: rgba(255, 255, 255, 0.09);
+  --st-selected-bg: rgba(255, 255, 255, 0.07);
+  --st-hover-bg: rgba(255, 255, 255, 0.045);
+  --st-accent: #a78bfa;
+  --st-accent-soft: rgba(167, 139, 250, 0.20);
+  --st-switch-off: color-mix(in srgb, var(--st-text-1) 38%, var(--st-menu-bg));
+  --st-switch-on: color-mix(in srgb, var(--st-accent) 88%, var(--st-menu-bg));
+  --st-online: #3fb96f;
+  --st-wait: #e0a63f;
+  --st-error: #ff6764;
+  --st-idle: #6f6f77;
+  --st-tile-bg: rgba(255, 255, 255, 0.09);
+  --st-backdrop: blur(28px) saturate(1.2);
+  --st-selected-ring: #c9c9d1;
+}
+
+/* ---------------- Claude 浅 ---------------- */
+[data-pi-settings][data-pi-settings-style="claude"][data-pi-theme="light"],
+:where([data-pi-theme="light"]) [data-pi-settings][data-pi-settings-style="claude"] {
+  --st-page-bg: #faf9f5;
+  --st-rail-bg: rgba(249, 249, 247, 0.80);
+  --st-border: rgba(20, 20, 19, 0.10);
+  --st-text-1: #141413;
+  --st-text-2: #3d3c38;
+  --st-text-3: #52514e;
+  --st-text-4: #57544d;
+  --st-text-5: #6f6c66;
+  --st-icon: #8a8781;
+  --st-menu-bg: #fffdf8;
+  --st-menu-border: rgba(20, 20, 19, 0.10);
+  --st-selected-bg: #ffffff;
+  --st-hover-bg: rgba(20, 20, 19, 0.04);
+  --st-accent: #d97757;
+  --st-accent-soft: rgba(217, 119, 87, 0.13);
+  --st-accent-strong: color-mix(in srgb, var(--st-accent) 84%, var(--st-text-1));
+  --st-online: #1f7a44;
+  --st-wait: #a06b00;
+  --st-error: #e5484d;
+  --st-idle: #8a8781;
+  --st-tile-bg: #f3f1ea;
+  --st-backdrop: blur(28px) saturate(1.2);
+  --st-selected-ring: #52514e;
+  --st-font-display: var(--st-font-serif);
+}
+
+/* ---------------- Claude 深 ---------------- */
+[data-pi-settings][data-pi-settings-style="claude"][data-pi-theme="dark"],
+:where([data-pi-theme="dark"]) [data-pi-settings][data-pi-settings-style="claude"] {
+  --st-page-bg: rgba(29, 29, 27, 0.55);
+  --st-rail-bg: rgba(22, 22, 20, 0.94);
+  --st-border: rgba(245, 244, 238, 0.10);
+  --st-text-1: #f5f4ee;
+  --st-text-2: #cfccc2;
+  --st-text-3: #a3a099;
+  --st-text-4: #9a968d;
+  --st-text-5: #8f8b82;
+  --st-icon: #8f8b82;
+  --st-menu-bg: rgb(35, 35, 32);
+  --st-menu-border: rgba(245, 244, 238, 0.10);
+  --st-selected-bg: #232320;
+  --st-hover-bg: rgba(245, 244, 238, 0.045);
+  --st-accent: #cc6b49;
+  --st-accent-soft: rgba(204, 107, 73, 0.18);
+  --st-switch-off: color-mix(in srgb, var(--st-text-1) 38%, var(--st-menu-bg));
+  --st-online: #3fb96f;
+  --st-wait: #e0a63f;
+  --st-error: #ff6764;
+  --st-idle: #6f6b63;
+  --st-tile-bg: rgba(245, 244, 238, 0.08);
+  --st-backdrop: blur(28px) saturate(1.15);
+  --st-selected-ring: #d8d5cc;
+  --st-font-display: var(--st-font-serif);
+}
+
+/* ---------------- Codex 浅（实色，无玻璃） ---------------- */
+[data-pi-settings][data-pi-settings-style="codex"][data-pi-theme="light"],
+:where([data-pi-theme="light"]) [data-pi-settings][data-pi-settings-style="codex"] {
+  --st-page-bg: #ffffff;
+  --st-rail-bg: #f3f3f3;
+  --st-border: rgba(26, 28, 31, 0.10);
+  --st-text-1: #1a1c1f;
+  --st-text-2: #3f4247;
+  --st-text-3: rgba(26, 28, 31, 0.68);
+  --st-text-4: rgba(26, 28, 31, 0.62);
+  --st-text-5: rgba(26, 28, 31, 0.58);
+  --st-icon: #74777d;
+  --st-menu-bg: #ffffff;
+  --st-menu-border: rgba(26, 28, 31, 0.10);
+  --st-selected-bg: rgba(26, 28, 31, 0.075);
+  --st-hover-bg: rgba(26, 28, 31, 0.045);
+  --st-accent: #2b7fd4;
+  --st-accent-soft: rgba(43, 127, 212, 0.12);
+  --st-online: #1f7a44;
+  --st-wait: #a06b00;
+  --st-error: #e5484d;
+  --st-idle: rgba(26, 28, 31, 0.62);
+  --st-tile-bg: rgba(26, 28, 31, 0.07);
+  --st-backdrop: none;
+  --st-selected-ring: #4a4e54;
+}
+
+
+/* ---------------- Codex 深（实色，无玻璃） ---------------- */
+[data-pi-settings][data-pi-settings-style="codex"][data-pi-theme="dark"],
+:where([data-pi-theme="dark"]) [data-pi-settings][data-pi-settings-style="codex"] {
+  --st-page-bg: #131313;
+  --st-rail-bg: #0d0d0d;
+  --st-border: rgba(255, 255, 255, 0.08);
+  --st-text-1: #f2f2f2;
+  --st-text-2: #cdcdcd;
+  --st-text-3: rgba(242, 242, 242, 0.68);
+  --st-text-4: rgba(242, 242, 242, 0.62);
+  --st-text-5: rgba(242, 242, 242, 0.45);
+  --st-icon: #8f8f96;
+  --st-menu-bg: #181818;
+  --st-menu-border: rgba(255, 255, 255, 0.08);
+  --st-selected-bg: rgba(255, 255, 255, 0.08);
+  --st-hover-bg: rgba(255, 255, 255, 0.05);
+  --st-accent: #6cb0ee;
+  --st-accent-soft: rgba(108, 176, 238, 0.18);
+  --st-switch-off: color-mix(in srgb, var(--st-text-1) 38%, var(--st-menu-bg));
+  --st-switch-on: color-mix(in srgb, var(--st-accent) 80%, var(--st-menu-bg));
+  --st-online: #3fb96f;
+  --st-wait: #e0a63f;
+  --st-error: #ff6764;
+  --st-idle: rgba(242, 242, 242, 0.45);
+  --st-tile-bg: rgba(255, 255, 255, 0.08);
+  --st-backdrop: none;
+  --st-selected-ring: #e9e9e9;
+}

@@ -1,0 +1,602 @@
+/*
+ * P10「使用活动」共享组件样式：**完全自包含**（只读 .pi-usage-root 自己的 --pu-* token；
+ * 不依赖 --cw-* / --claude-* / --codex-*，不写全局元素选择器），深色定稿 + 浅色派生。
+ * 视觉混搭：Cursor 深玻璃底盘 / Codex 骨架（宿主提供）/ Claude 衬线数字 / 紫色数据 / 陶土橙仅今天环+峰值。
+ */
+.pi-usage-root {
+  --pu-ink: #ececf1;
+  --pu-ink2: #a8a29e;
+  --pu-ink3: #8f8880; /* 深色辅助文字 AA：spec §1.2 备选（#7d766e 3.61–3.99 → #8f8880 ≈5.07） */
+  --pu-border: rgba(255, 255, 255, 0.075);
+  --pu-card: rgba(255, 255, 255, 0.04);
+  --pu-card-strong: rgba(255, 255, 255, 0.07);
+  --pu-serif: ui-serif, Georgia, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", "Times New Roman", serif;
+  --pu-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --pu-purple-1: #352a5e;
+  --pu-purple-2: #5743a3;
+  --pu-purple-3: #7c5cd6;
+  --pu-purple-4: #a78bfa;
+  --pu-accent: #a78bfa;
+  --pu-accent-deep: #8b74ec;
+  --pu-clay: #d97757;
+  --pu-surface: #141416;
+  --pu-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 10px 30px rgba(0, 0, 0, 0.22);
+  --pu-tip-bg: #ffffff;
+  --pu-tip-ink: #17171a;
+  --pu-r-lg: 16px;
+  --pu-r-md: 14px;
+  --pu-grid-empty: rgba(255, 255, 255, 0.045);
+  color: var(--pu-ink);
+  font-family: var(--pu-sans);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.pi-usage-root[data-theme="light"] {
+  --pu-ink: #1c1c1f;
+  --pu-ink2: #5f5a55;
+  --pu-ink3: #6f6a64;
+  --pu-border: rgba(20, 20, 23, 0.10);
+  --pu-card: rgba(255, 255, 255, 0.78);
+  --pu-card-strong: #ffffff;
+  --pu-purple-1: #e6e0f8;
+  --pu-purple-2: #b7a4ef;
+  --pu-purple-3: #8b74ec;
+  --pu-purple-4: #6a4fd0;
+  --pu-accent: #6a4fd0;
+  --pu-accent-deep: #5741b8;
+  --pu-clay: #c05a37;
+  --pu-surface: #f6f5f4;
+  --pu-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 6px 18px rgba(28, 28, 31, 0.08);
+  --pu-tip-bg: #1c1c1f;
+  --pu-tip-ink: #f4f3f1;
+  --pu-grid-empty: rgba(28, 28, 31, 0.06);
+  color: var(--pu-ink);
+}
+
+.pi-usage-root *,
+.pi-usage-root *::before,
+.pi-usage-root *::after {
+  box-sizing: border-box;
+}
+
+.pi-usage-root h2,
+.pi-usage-root h3,
+.pi-usage-root p {
+  margin: 0;
+}
+
+/* ① 页头：标题 + 两组正交切换 */
+.pi-usage-root .pi-usage-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.pi-usage-root .pi-usage-title {
+  font-family: var(--pu-serif);
+  font-size: 24px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.pi-usage-root .pi-usage-subtitle {
+  margin-top: 3px;
+  color: var(--pu-ink3);
+  font-size: 11.5px;
+}
+
+.pi-usage-root .pi-usage-switches {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pi-usage-root .pi-usage-seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--pu-card);
+  border: 1px solid var(--pu-border);
+}
+
+.pi-usage-root .pi-usage-seg button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pu-ink2);
+  font-family: var(--pu-sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pi-usage-root .pi-usage-seg button[data-active] {
+  background: var(--pu-card-strong);
+  color: var(--pu-ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.pi-usage-root .pi-usage-seg button:focus-visible,
+.pi-usage-root .pi-usage-cell:focus-visible {
+  outline: 2px solid var(--pu-accent);
+  outline-offset: 1px;
+}
+
+/* ② 汇总卡 ×4 */
+.pi-usage-root .pi-usage-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.pi-usage-root .pi-usage-card {
+  border: 1px solid var(--pu-border);
+  border-radius: var(--pu-r-md);
+  background: var(--pu-card);
+  box-shadow: var(--pu-shadow);
+}
+
+.pi-usage-root .pi-usage-stat {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pi-usage-root .pi-usage-stat-label {
+  color: var(--pu-ink2);
+  font-size: 12px;
+}
+
+.pi-usage-root .pi-usage-stat-value {
+  font-family: var(--pu-serif);
+  font-size: 26px;
+  line-height: 32px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.pi-usage-root .pi-usage-stat-sub {
+  color: var(--pu-ink3);
+  font-size: 11.5px;
+}
+
+/* ③ 主图卡 */
+.pi-usage-root .pi-usage-main {
+  padding: 14px 16px 12px;
+  margin-bottom: 14px;
+}
+
+.pi-usage-root .pi-usage-main-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.pi-usage-root .pi-usage-card-title {
+  font-family: var(--pu-serif);
+  font-size: 16.5px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.pi-usage-root .pi-usage-hint {
+  color: var(--pu-ink3);
+  font-size: 11.5px;
+}
+
+/* 热力图 */
+.pi-usage-root .pi-usage-heat-scroll {
+  position: relative;
+  overflow-x: auto;
+  padding: 2px 2px 6px;
+}
+
+.pi-usage-root .pi-usage-heat-grid {
+  display: flex;
+  gap: 3px;
+  min-width: 768px;
+}
+
+.pi-usage-root .pi-usage-heat-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pi-usage-root .pi-usage-cell {
+  display: block;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 2.5px;
+  background: var(--pu-grid-empty);
+  cursor: default;
+}
+
+.pi-usage-root .pi-usage-cell[data-level="1"] { background: var(--pu-purple-1); }
+.pi-usage-root .pi-usage-cell[data-level="2"] { background: var(--pu-purple-2); }
+.pi-usage-root .pi-usage-cell[data-level="3"] { background: var(--pu-purple-3); }
+.pi-usage-root .pi-usage-cell[data-level="4"] { background: var(--pu-purple-4); }
+
+.pi-usage-root .pi-usage-cell[data-today] {
+  border-color: var(--pu-clay);
+  box-shadow: 0 0 0 1px var(--pu-clay);
+}
+
+.pi-usage-root .pi-usage-tip {
+  position: fixed;
+  z-index: 50;
+  max-width: min(260px, calc(100vw - 16px));
+  transform: translate(-100%, -100%) translate(-6px, -6px);
+  min-width: 168px;
+  padding: 8px 10px;
+  border-radius: 11px;
+  background: var(--pu-tip-bg);
+  color: var(--pu-tip-ink);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.pi-usage-root .pi-usage-tip[data-flip] {
+  transform: translate(6px, -100%) translate(0, -6px);
+}
+
+.pi-usage-root .pi-usage-tip-date {
+  font-size: 11.5px;
+  color: #6b6560;
+  margin-bottom: 2px;
+}
+
+.pi-usage-root .pi-usage-tip-values {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pi-usage-root .pi-usage-months {
+  display: flex;
+  gap: 3px;
+  min-width: 768px;
+  margin-top: 6px;
+  color: var(--pu-ink3);
+  font-size: 10.5px;
+  line-height: 13px;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.pi-usage-root .pi-usage-month {
+  flex: 0 0 11px;
+  min-width: 0;
+  overflow: visible;
+}
+
+.pi-usage-root .pi-usage-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 8px;
+  color: var(--pu-ink3);
+  font-size: 11px;
+}
+
+.pi-usage-root .pi-usage-legend-cell {
+  width: 9px;
+  height: 9px;
+  border-radius: 2.5px;
+  background: var(--pu-grid-empty);
+}
+
+.pi-usage-root .pi-usage-legend-cell[data-level="1"] { background: var(--pu-purple-1); }
+.pi-usage-root .pi-usage-legend-cell[data-level="2"] { background: var(--pu-purple-2); }
+.pi-usage-root .pi-usage-legend-cell[data-level="3"] { background: var(--pu-purple-3); }
+.pi-usage-root .pi-usage-legend-cell[data-level="4"] { background: var(--pu-purple-4); }
+
+/* 周柱 / 累计面积 */
+.pi-usage-root .pi-usage-week,
+.pi-usage-root .pi-usage-cum {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pi-usage-root .pi-usage-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  height: 132px;
+  padding-top: 8px;
+}
+
+.pi-usage-root .pi-usage-bar-col {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  height: 100%;
+}
+
+.pi-usage-root .pi-usage-bar {
+  width: 100%;
+  min-height: 3px;
+  border-radius: 4px 4px 2px 2px;
+  background: linear-gradient(180deg, var(--pu-purple-4), var(--pu-purple-2));
+}
+
+.pi-usage-root .pi-usage-bar[data-peak] {
+  background: linear-gradient(180deg, var(--pu-accent), var(--pu-accent-deep));
+}
+
+.pi-usage-root .pi-usage-chart-note {
+  color: var(--pu-ink3);
+  font-size: 11.5px;
+}
+
+.pi-usage-root .pi-usage-area {
+  width: 100%;
+  height: 132px;
+  display: block;
+}
+
+.pi-usage-root .pi-usage-area-fill {
+  fill: color-mix(in srgb, var(--pu-purple-3) 22%, transparent);
+  stroke: none;
+}
+
+.pi-usage-root .pi-usage-area-line {
+  fill: none;
+  stroke: var(--pu-accent);
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ④ 明细 + 模型分布 */
+.pi-usage-root .pi-usage-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.pi-usage-root .pi-usage-detail-grid .pi-usage-card {
+  padding: 12px 14px;
+}
+
+.pi-usage-root .pi-usage-detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-top: 1px solid var(--pu-border);
+  color: var(--pu-ink2);
+  font-size: 12.5px;
+}
+
+.pi-usage-root .pi-usage-detail-row span:last-child {
+  color: var(--pu-ink);
+  text-align: right;
+}
+
+.pi-usage-root .pi-usage-peak {
+  color: var(--pu-clay) !important;
+  font-family: var(--pu-serif);
+  font-weight: 600;
+}
+
+/* 浅色派生（spec v1.1 §1.2）：峰值文字 #b4532f（对比度 4.77），深色仍 #d97757 */
+.pi-usage-root[data-theme="light"] .pi-usage-peak {
+  color: #b4532f !important;
+}
+
+.pi-usage-root .pi-usage-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12.5px;
+}
+
+.pi-usage-root .pi-usage-model-name {
+  flex: 0 0 42%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--pu-ink);
+}
+
+.pi-usage-root .pi-usage-model-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--pu-grid-empty);
+  overflow: hidden;
+}
+
+.pi-usage-root .pi-usage-model-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--pu-purple-3);
+}
+
+.pi-usage-root .pi-usage-model-fill[data-rank="1"] { background: var(--pu-purple-2); }
+.pi-usage-root .pi-usage-model-fill[data-rank="2"] { background: var(--pu-accent-deep); }
+.pi-usage-root .pi-usage-model-fill[data-rank="3"] { background: var(--pu-ink3); }
+
+.pi-usage-root .pi-usage-model-pct {
+  flex: 0 0 34px;
+  text-align: right;
+  color: var(--pu-ink2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ⑤ 空/少数据 + 口径小字 */
+.pi-usage-root .pi-usage-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 0 4px;
+}
+
+.pi-usage-root .pi-usage-empty-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 530px;
+}
+
+.pi-usage-root .pi-usage-empty-line {
+  color: var(--pu-ink3);
+  font-size: 12.5px;
+}
+
+/* 校验失败摘要（UI·usage 中-2）：只展示短句，不上技术细节 */
+.pi-usage-root .pi-usage-error {
+  margin-top: 6px;
+  color: var(--pu-clay);
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-word;
+}
+
+.pi-usage-root .pi-usage-footnote {
+  color: var(--pu-ink3);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+/* 覆盖范围 / 快照时间 / 下限提示（数字口径上下文，弱化但保持可读） */
+.pi-usage-root .pi-usage-coverage {
+  margin: -4px 0 12px;
+  color: var(--pu-ink3);
+  font-size: 11.5px;
+  line-height: 17px;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+/* ⑥ 420 窄屏：汇总卡两列、明细上下堆叠、热力图横向滚动 */
+@media (max-width: 560px) {
+  .pi-usage-root .pi-usage-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pi-usage-root .pi-usage-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pi-usage-root .pi-usage-head {
+    align-items: flex-start;
+  }
+
+  .pi-usage-root .pi-usage-switches {
+    width: 100%;
+  }
+
+  .pi-usage-root .pi-usage-seg button {
+    flex: 1;
+  }
+
+  .pi-usage-root .pi-usage-stat-value {
+    font-size: 22px;
+    line-height: 28px;
+  }
+}
+
+
+/* dev-only 预览页容器（不进生产：仅 devPreview.tsx 使用） */
+.pi-usage-devpage {
+  min-height: 100vh;
+  padding: 28px 24px 40px;
+  background: #0e0e10;
+}
+
+.pi-usage-devpage[data-theme="light"] {
+  background: #f2f1ef;
+}
+
+.pi-usage-devcard {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 22px 24px;
+  border-radius: 18px;
+  background: rgba(28, 28, 31, 0.66);
+}
+
+.pi-usage-devpage[data-theme="light"] .pi-usage-devcard {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+/* spec v1.3：stale 顶部提示 / 降级重试按钮 */
+.pi-usage-root .pi-usage-stale {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  background: var(--pu-card-strong);
+  border: 1px solid var(--pu-border);
+  color: var(--pu-ink2);
+  font-size: 11.5px;
+}
+
+.pi-usage-root .pi-usage-retry {
+  margin-left: 10px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--pu-border);
+  background: var(--pu-card-strong);
+  color: var(--pu-ink);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+
+/* design fixture 对图专用统计行（仅 devPreview 传 displayOverrides 时出现；生产不渲染） */
+.pi-usage-root .pi-usage-fixture-stats {
+  margin: 0 0 6px;
+  color: var(--pu-ink2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* spec v1.4 Q9：定版 hybrid.html @media(max-width:680px) .page-head h1 = 20px；1440 保持 24px/600 */
+@media (max-width: 680px) {
+  .pi-usage-root .pi-usage-title {
+    font-size: 20px;
+    line-height: 26px;
+  }
+}
+
+
+/* spec §3.2：汇总卡小单位（大数字 30/600 + small 14/600 ink2）；label 紫点 */
+.pi-usage-root .pi-usage-stat-unit {
+  margin-left: 3px;
+  color: var(--pu-ink2);
+  font-family: var(--pu-sans);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.pi-usage-root .pi-usage-stat-label::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 999px;
+  background: var(--pu-accent);
+  vertical-align: 1px;
+}

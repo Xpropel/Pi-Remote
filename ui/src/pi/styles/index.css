@@ -1,0 +1,14 @@
+/*
+ * 新界面（index.html、gallery.html）的样式入口（实施计划 D2；旧界面的 src/index.css 已在 P7 B3-0 删除）：
+ * - Tailwind 关掉自动探测（source(none)），只扫下面三个目录：kit、Pi 部件、src/pi；
+ * - 不引 src/index.css、nova、皮肤、shadcn-surface。
+ * 令牌由 src/pi/main.tsx 先引入：tokens.local.css → tokens.css → 本文件（顺序照 replica 的 src/main.tsx）。
+ * tokens.css、tokens.local.css、theme.css、base.css 都是从 replica 原样复制的，不手改。
+ */
+@import "tailwindcss" source(none);
+@import "./theme.css";
+@import "./base.css";
+
+@source "../../components/kit";
+@source "../../components/pi";
+@source "../";

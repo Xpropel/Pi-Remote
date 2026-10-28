@@ -1,0 +1,95 @@
+/**
+ * 设置 › 快捷键 · 页面级样式（只消费 tokens.css 的 --st-*）。
+ * 搜索框 + 行右键位；键帽沿用共享 settings.css 的 .settings-keycap*。
+ */
+
+.settings-shortcut-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  margin-top: 18px;
+  padding: 0 12px;
+  border: 1px solid var(--st-menu-border);
+  border-radius: 10px;
+  background: var(--st-card-bg);
+  box-shadow: var(--st-card-shadow), inset 0 1px 2px color-mix(in srgb, var(--st-text-1) 3%, transparent);
+}
+
+.settings-shortcut-search:focus-within {
+  border-color: var(--st-selected-ring);
+}
+
+.settings-shortcut-search-icon {
+  flex: none;
+  color: var(--st-text-4);
+}
+
+.settings-shortcut-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--st-text-1);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.settings-shortcut-search-input::placeholder {
+  color: var(--st-text-4);
+}
+
+.settings-shortcut-search-input:focus-visible {
+  outline: none;
+}
+
+.settings-shortcut-hint {
+  margin: 9px 2px 0;
+  color: var(--st-text-4);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.settings-shortcut-empty {
+  margin: 14px 2px 0;
+  color: var(--st-text-4);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.settings-shortcuts .settings-group--first .settings-group-label {
+  margin-top: 20px;
+}
+
+.settings-shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+}
+
+.settings-shortcut-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  line-height: 1.35;
+}
+
+.settings-shortcut-keys {
+  gap: 10px;
+  flex: none;
+}
+
+.settings-shortcut-pen {
+  flex: none;
+  color: var(--st-text-4);
+}
+
+.settings-shortcut-conflict {
+  margin: -2px 0 7px;
+  color: var(--st-error);
+  font-size: 11.5px;
+  line-height: 1.4;
+}

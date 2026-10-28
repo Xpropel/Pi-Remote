@@ -1,0 +1,28 @@
+[Unit]
+Description=pi-remote relay (viewer page and local channel)
+After=network.target
+
+[Service]
+Type=simple
+User=pi-remote
+Group=pi-remote
+WorkingDirectory=/opt/pi-remote/app
+ExecStart=/usr/local/bin/node relay/server.js
+Restart=on-failure
+RestartSec=2
+Environment=NODE_ENV=production
+# 索引里有设备名/项目路径/会话标题：默认 0644 会让同机其它用户读到。UMask 统一收紧到 0600/0700。
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/pi-remote/app/data /opt/pi-remote/app/logs
+# token 只放在 /etc/pi-remote.env（权限 600，绝不入库）。
+# 前缀 - 表示这个文件可以暂时不存在。
+# 不要在这里设置 PI_REMOTE_PERSIST_TRANSCRIPTS：不设置 = 默认停写对话正文。
+# 索引在 WorkingDirectory/data/accounts，部署不删除。
+EnvironmentFile=-/etc/pi-remote.env
+
+[Install]
+WantedBy=multi-user.target

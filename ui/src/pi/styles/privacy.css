@@ -1,0 +1,74 @@
+/*
+ * 设置页 v2 · 隐私模式（宿主渲染层脱敏）
+ *
+ * 只由根节点的 data-pi-privacy="on" 触发；真实数据 / aria-label / title 属性都不改。
+ * 侧栏会话标题、摘要、顶部标题模糊；hover / 焦点时临时看清（满足“看一眼再藏起来”）。
+ * 选择器覆盖三套桌面壳与共享移动壳；新增皮肤时把它的标题类名加进下面这组列表。
+ */
+
+[data-pi-privacy="on"] .sb-row-title,
+[data-pi-privacy="on"] .sb-bubble-title,
+[data-pi-privacy="on"] .sb-bubble-line,
+[data-pi-privacy="on"] .claude-row-title,
+[data-pi-privacy="on"] .claude-session-pill-title,
+[data-pi-privacy="on"] .claude-palette-row-title,
+[data-pi-privacy="on"] .claude-chat-recent-name,
+[data-pi-privacy="on"] .cx-row-title,
+[data-pi-privacy="on"] .cx-thread-head-title,
+[data-pi-privacy="on"] .pm-row-title,
+[data-pi-privacy="on"] .pm-row-line2,
+[data-pi-privacy="on"] .pm-drawer-session-title,
+[data-pi-privacy="on"] .pm-search-row-title,
+[data-pi-privacy="on"] .pm-longpress-title,
+[data-pi-privacy="on"] [data-slot="titlebar-title"] > span:first-child,
+[data-pi-privacy="on"] [data-pi-topbar="phone-chat"] .truncate {
+  filter: blur(3.5px);
+  transition: filter 120ms ease;
+}
+
+/* hover / 键盘焦点 / 行内焦点：临时看清（不改变布局，不写回数据）。 */
+[data-pi-privacy="on"] .sb-row-title:hover,
+[data-pi-privacy="on"] .sb-rowwrap:hover .sb-row-title,
+[data-pi-privacy="on"] .sb-row:focus-within .sb-row-title,
+[data-pi-privacy="on"] .sb-bubble-title:hover,
+[data-pi-privacy="on"] .sb-bubble-line:hover,
+[data-pi-privacy="on"] .claude-row-title:hover,
+[data-pi-privacy="on"] .claude-row:focus-within .claude-row-title,
+[data-pi-privacy="on"] .claude-session-pill-title:hover,
+[data-pi-privacy="on"] .claude-palette-row-title:hover,
+[data-pi-privacy="on"] .claude-chat-recent-name:hover,
+[data-pi-privacy="on"] .cx-row-title:hover,
+[data-pi-privacy="on"] .cx-row:focus-within .cx-row-title,
+[data-pi-privacy="on"] .cx-thread-head-title:hover,
+[data-pi-privacy="on"] .pm-row-title:hover,
+[data-pi-privacy="on"] .pm-row-line2:hover,
+[data-pi-privacy="on"] .pm-row-main:hover .pm-row-line2,
+[data-pi-privacy="on"] .pm-drawer-session-title:hover,
+[data-pi-privacy="on"] .pm-search-row-title:hover,
+[data-pi-privacy="on"] .pm-longpress-title:hover,
+[data-pi-privacy="on"] [data-slot="titlebar-title"]:hover > span:first-child,
+[data-pi-privacy="on"] [data-pi-topbar="phone-chat"] .truncate:hover {
+  filter: none;
+}
+
+/* 减少动效：不做过渡，但保留模糊 / 看清两态。 */
+@media (prefers-reduced-motion: reduce) {
+  [data-pi-privacy="on"] .sb-row-title,
+  [data-pi-privacy="on"] .sb-bubble-title,
+  [data-pi-privacy="on"] .sb-bubble-line,
+  [data-pi-privacy="on"] .claude-row-title,
+  [data-pi-privacy="on"] .claude-session-pill-title,
+  [data-pi-privacy="on"] .claude-palette-row-title,
+  [data-pi-privacy="on"] .claude-chat-recent-name,
+  [data-pi-privacy="on"] .cx-row-title,
+  [data-pi-privacy="on"] .cx-thread-head-title,
+  [data-pi-privacy="on"] .pm-row-title,
+  [data-pi-privacy="on"] .pm-row-line2,
+  [data-pi-privacy="on"] .pm-drawer-session-title,
+  [data-pi-privacy="on"] .pm-search-row-title,
+  [data-pi-privacy="on"] .pm-longpress-title,
+  [data-pi-privacy="on"] [data-slot="titlebar-title"] > span:first-child,
+  [data-pi-privacy="on"] [data-pi-topbar="phone-chat"] .truncate {
+    transition: none;
+  }
+}

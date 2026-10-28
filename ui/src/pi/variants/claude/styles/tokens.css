@@ -1,0 +1,141 @@
+/*
+ * Claude v2 · 设计 token（design-spec.md §1.2 / §1.3 / §1.4 逐值抄写；完全自包含，不引用任何 --cw-* / cursor token）。
+ *
+ * 契约（brief §用户新增硬性要求）：变体 CSS 只用 --claude-* 命名空间；每条选择器以 [data-pi-ui="claude"] 开头
+ * （深色用 :root[data-pi-theme="dark"] [data-pi-ui="claude"] 祖先形式或同节点 [data-pi-ui="claude"][data-pi-theme="dark"]）；
+ * 不写 :root{ / html{ / body{ / * 等全局选择器；不出现 --cw-* 字样。
+ */
+
+[data-pi-ui="claude"] {
+  /* ---------- 表面阶梯 S0–S3（§1.2 表 1-A；[C-图11①]） ---------- */
+  --claude-s0: #f9f9f7;
+  --claude-s1: #fcfcfb;
+  --claude-s2: #ffffff;
+  --claude-s3: #ffffff;
+  --claude-popover: #ffffff;
+  --claude-code-bg: #0d0d0c;
+  --claude-code-fg: #d8d5cf;
+  --claude-bubble-bg: #f0f0ef;
+  --claude-accent-soft: #faefeb;
+  --claude-hover: rgba(20, 20, 19, 0.04);
+  --claude-chip-bg: rgba(20, 20, 19, 0.05);
+  --claude-chip-bg-strong: rgba(20, 20, 19, 0.08);
+  --claude-overlay: rgba(20, 20, 19, 0.32);
+  --claude-shade: rgba(20, 20, 19, 0.12);
+
+  /* ---------- 文字 / 陶土 / 描边 / diff（§1.2 表 1-B） ---------- */
+  --claude-text: #141413;
+  --claude-text-2: #656564;
+  --claude-text-3: #666664; /* R4 对比度：11–12px muted 文本在 S0/S1 上 ≥4.5（原 #949493=2.88） */
+  --claude-clay: #d97757;
+  --claude-brand-deep: #8a3f26; /* R4：浅陶土底上的小字文本（#c6613f on #faefeb = 3.59） */
+  --claude-brand: #c6613f;
+  --claude-clay-fg: #141413;
+  --claude-danger: #a8432f;
+  --claude-warning: #8a6516;
+  --claude-border: rgba(20, 20, 19, 0.1);
+  /* v1.4：输入框聚焦的中性描边（合成到 S3 上约 #8A8A89，3.5:1；不用陶土色 / 蓝环） */
+  --claude-field-focus-border: rgba(20, 20, 19, 0.5);
+  --claude-ring: 0 0 0 1px rgba(20, 20, 19, 0.08);
+  --claude-ring-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.9);
+  --claude-hairline: 0.5px;
+  --claude-divider: rgba(20, 20, 19, 0.06);
+  --claude-diff-add-bg: #eef4ef;
+  --claude-diff-add-fg: #2f6b4f;
+  --claude-diff-del-bg: #f8ece8;
+  --claude-diff-del-fg: #a8432f;
+  --claude-diff-unmod-bg: rgba(20, 20, 19, 0.04);
+  --claude-code-inline-bg: rgba(20, 20, 19, 0.05);
+  --claude-success: #2f6b4f;
+
+  /* ---------- 阴影（§1.3：近乎无阴影，靠双环与表面阶梯分层） ---------- */
+  --claude-composer-shadow: 0 4px 20px rgba(0, 0, 0, 0.035), inset 0 0 0 1px rgba(20, 20, 19, 0.06);
+  --claude-composer-shadow-focus: 0 6px 28px rgba(0, 0, 0, 0.06), inset 0 0 0 1px rgba(20, 20, 19, 0.12);
+  --claude-popover-shadow: 0 0 0 1px rgba(20, 20, 19, 0.08), 0 12px 32px rgba(20, 20, 19, 0.12);
+  --claude-approval-shadow: 0 0 0 1px rgba(217, 119, 87, 0.16), 0 10px 30px rgba(20, 20, 19, 0.1);
+  --claude-dialog-shadow: 0 0 0 1px rgba(20, 20, 19, 0.08), 0 24px 64px rgba(20, 20, 19, 0.18);
+  --claude-sheet-shadow: 0 0 0 1px rgba(20, 20, 19, 0.08), 0 -12px 40px rgba(20, 20, 19, 0.16);
+
+  /* ---------- 圆角矩阵（§1.3） ---------- */
+  --claude-r-micro: 2px;
+  --claude-r-key: 4px;
+  --claude-r-chip: 6px;
+  --claude-r-control: 8px;
+  --claude-r-panel: 10px;
+  --claude-r-code: 12px;
+  --claude-r-dialog: 16px;
+  --claude-r-bubble: 18px;
+  --claude-r-composer: 20px;
+  --claude-r-raised: 24px;
+  --claude-r-pill: 999px;
+
+  /* ---------- 字体（§1.3；官方字体不分发，替身栈） ---------- */
+  --claude-font-serif: "Newsreader Variable", Newsreader, "Source Serif 4", "Iowan Old Style", Georgia, "Songti SC", "Noto Serif CJK SC", serif;
+  --claude-font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --claude-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* ---------- 字号 / 行高（§1.3，已按 rem 94% 折算） ---------- */
+  --claude-text-body: 15px;
+  --claude-leading-body: 24px;
+  --claude-text-ui: 13px;
+  --claude-leading-ui: 18px;
+  --claude-text-small: 12px;
+  --claude-leading-small: 16px;
+  --claude-text-section: 17px;
+  --claude-leading-section: 24px;
+  --claude-text-title: 22px;
+  --claude-leading-title: 28px;
+  --claude-text-code: 12px;
+  --claude-leading-code: 19px;
+
+  /* ---------- 几何 / 间距（§1.4） ---------- */
+  --claude-topbar-h: 46px;
+  --claude-topbar-h-phone: 44px;
+  --claude-sidebar-w: 288px;
+  --claude-thread-w: 680px;
+  --claude-rail-w: 320px;
+  --claude-pane-w: 460px;
+  --claude-composer-min-h: 44px;
+  --claude-composer-max-h: 384px;
+  --claude-composer-bottom: 24px;
+  --claude-gutter: 24px;
+  --claude-row-h-compact: 28px;
+  --claude-row-h-comfortable: 36px;
+  --claude-touch: 44px;
+  --claude-account-h: 56px;
+  --claude-space-1: 4px;
+  --claude-space-2: 8px;
+  --claude-space-3: 12px;
+  --claude-space-4: 16px;
+  --claude-space-6: 24px;
+  --claude-space-8: 32px;
+  --claude-rem-scale: 0.941;
+
+  /* ---------- 动效（§1.7 推导：120–160ms 淡入） ---------- */
+  --claude-motion: 140ms;
+  --claude-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* ---------- 层级（自包含：不依赖 cursor 的层级 token） ---------- */
+  --claude-z-sticky: 10;
+  --claude-z-menu: 30;
+  --claude-z-sheet: 40;
+  --claude-z-modal: 50;
+  --claude-z-toast: 60;
+
+  /* ---------- 自包含根的安全区 / 键盘变量（ClaudeRoot 写到根节点上，避免引用 cursor 的 --cw-pi-*） ---------- */
+  --claude-safe-top: 0px;
+  --claude-safe-bottom: 0px;
+  --claude-safe-left: 0px;
+  --claude-safe-right: 0px;
+  --claude-keyboard-h: 0px;
+
+  /* 代码语法色：代码块在浅色主题里也是近纯黑（[C-图9②]），语法色取暖浅色 */
+  --claude-syn-keyword: #e7a58e;
+  --claude-syn-string: #b8b0e0;
+  --claude-syn-func: #e0b48a;
+  --claude-syn-comment: #8f8e88;
+  --claude-syn-property: #a9c3d4;
+  --claude-syn-tag: #a2c0a9;
+  --claude-syn-jsx: #cbbf9f;
+  --claude-syn-ident: #cfd5d9;
+}

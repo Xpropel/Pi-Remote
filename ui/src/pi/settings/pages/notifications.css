@@ -1,0 +1,72 @@
+/**
+ * 设置 › 通知 · 页面级样式（只消费 tokens.css 的 --st-*）。
+ * 提醒条件用整行单选（设计稿 .ropt），其余开关行走共享组件。
+ */
+
+.settings-notify-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  width: 100%;
+  padding: 11px 0;
+  text-align: left;
+  user-select: none;
+}
+
+.settings-notify-radio + .settings-notify-radio {
+  border-top: 1px solid var(--st-border);
+}
+
+.settings-notify-ring {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  flex: none;
+  margin-top: 1px;
+  border: 1.5px solid color-mix(in srgb, var(--st-text-1) 28%, transparent);
+  border-radius: 50%;
+  background: var(--st-field-bg);
+}
+
+.settings-notify-ring::after {
+  width: 8.5px;
+  height: 8.5px;
+  border-radius: 50%;
+  background: var(--st-text-1);
+  content: "";
+  opacity: 0;
+}
+
+.settings-notify-radio.is-on .settings-notify-ring {
+  border-color: var(--st-text-1);
+}
+
+.settings-notify-radio.is-on .settings-notify-ring::after {
+  opacity: 1;
+}
+
+.settings-notify-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-notify-title {
+  display: block;
+  color: var(--st-text-3);
+  font-size: 13.5px;
+  font-weight: 550;
+  line-height: 1.35;
+}
+
+.settings-notify-radio.is-on .settings-notify-title {
+  color: var(--st-text-1);
+}
+
+.settings-notify-desc {
+  display: block;
+  margin-top: 2px;
+  color: var(--st-text-3);
+  font-size: 12px;
+  line-height: 1.45;
+}

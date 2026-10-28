@@ -1,0 +1,401 @@
+/**
+ * 设置 › 外观 · 页面级样式。
+ *
+ * 只消费 tokens.css 的 --st-*；三张界面预览卡是「设计册固定的皮肤微缩图」，
+ * 这 24 个固定色值只属于预览本身（Cursor / Claude / Codex 三套的身份色），
+ * 不参与当前设置页皮肤，也不被其他地方引用。
+ */
+
+.settings-appearance {
+  --ap-accent-violet: #6d4bc4;
+  --ap-accent-blue: #2b7fd4;
+  --ap-accent-clay: #d97757;
+  --ap-accent-green: #3fb970;
+  --ap-accent-graphite: #6e6e76;
+}
+
+.settings-appearance .settings-group-label {
+  margin: 20px 0 10px;
+}
+
+.settings-appearance .settings-appearance-section--first .settings-group-label {
+  margin-top: 18px;
+}
+
+/* ---------------- 界面风格三卡 ---------------- */
+
+.settings-appearance-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 19px;
+  /* 选中勾是 top/right:-8 的溢出徽标；右侧留 8px，让最后一张卡（Codex）的勾正好落在页盒内。
+     只收右内边距，左侧卡仍与页面左缘对齐；三列等比缩 8px，设计稿的 218 → 约 215（页盒不再溢出）。 */
+  padding-inline-end: 8px;
+}
+
+/* 壳的 .settings-root button 复位带 padding / background / border（0,1,1），
+   比组件自身的单类选择器高一级；在页面作用域内把视觉赢回来。 */
+.settings-appearance .settings-appearance-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 150px;
+  padding: 10px;
+  border: 1px solid var(--st-menu-border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--st-menu-bg) 85%, transparent);
+  box-shadow: var(--st-card-shadow);
+  text-align: left;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.settings-appearance .settings-appearance-card:hover {
+  border-color: color-mix(in srgb, var(--st-text-1) 22%, transparent);
+}
+
+.settings-appearance .settings-appearance-card.is-selected {
+  border-color: color-mix(in srgb, var(--st-text-1) 34%, transparent);
+  background: var(--st-menu-bg);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--st-text-1) 10%, transparent);
+}
+
+.settings-appearance .settings-segment {
+  padding: 6px 15px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+.settings-appearance .settings-segment.is-on {
+  background: var(--st-menu-bg);
+}
+
+.settings-appearance .settings-color-dot {
+  border-radius: 50%;
+  background: var(--settings-dot-color);
+}
+
+.settings-appearance .settings-switch {
+  border-radius: 999px;
+  background: var(--st-switch-off);
+}
+
+.settings-appearance .settings-switch.is-on {
+  background: var(--st-switch-on);
+}
+
+.settings-appearance-check {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  z-index: 3;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--st-accent);
+  color: var(--st-switch-knob);
+  box-shadow:
+    0 2px 8px color-mix(in srgb, var(--st-text-1) 25%, transparent),
+    0 0 0 2px var(--st-page-bg);
+}
+
+.settings-appearance-name {
+  display: block;
+  margin-top: 9px;
+  color: var(--st-text-1);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.settings-appearance-name.is-serif {
+  font-family: var(--st-font-serif);
+  letter-spacing: 0.02em;
+}
+
+.settings-appearance-desc {
+  display: block;
+  margin-top: 2px;
+  color: var(--st-text-3);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* 微缩真侧栏：固定 62 / 90，三段配色按设计稿。 */
+.settings-appearance-mini {
+  height: 90px;
+  flex: none;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--st-menu-border);
+  border-radius: 8px;
+}
+
+.settings-appearance-mini-rail {
+  width: 62px;
+  flex: none;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-appearance-mini-main {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-appearance-mini-bar {
+  display: block;
+  height: 4.5px;
+  flex: none;
+  border-radius: 2px;
+}
+
+.settings-appearance-mini-row {
+  height: 13px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+}
+
+.settings-appearance-mini-row .settings-appearance-mini-bar {
+  flex: 1;
+  width: auto;
+}
+
+.settings-appearance-mini-dot {
+  width: 4.5px;
+  height: 4.5px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.settings-appearance-mini-composer {
+  height: 14px;
+  margin-top: auto;
+  border-radius: 7px;
+}
+
+.settings-appearance-mini[data-preview-style="cursor"] {
+  background: #ffffff;
+}
+
+.settings-appearance-mini[data-preview-style="cursor"] .settings-appearance-mini-rail {
+  background: #f3f3f5;
+}
+
+.settings-appearance-mini[data-preview-style="cursor"] .settings-appearance-mini-bar {
+  background: rgba(20, 20, 30, 0.2);
+}
+
+.settings-appearance-mini[data-preview-style="cursor"] .settings-appearance-mini-bar.is-dim {
+  background: rgba(20, 20, 30, 0.11);
+}
+
+.settings-appearance-mini[data-preview-style="cursor"] .settings-appearance-mini-row.is-on {
+  background: rgba(20, 20, 40, 0.05);
+}
+
+.settings-appearance-mini[data-preview-style="cursor"] .settings-appearance-mini-row.is-on .settings-appearance-mini-bar {
+  background: rgba(20, 20, 30, 0.38);
+}
+
+.settings-appearance-mini[data-preview-style="cursor"] .settings-appearance-mini-dot {
+  background: #6d4bc4;
+  box-shadow: 0 0 0 2.5px rgba(109, 75, 196, 0.16);
+}
+
+.settings-appearance-mini[data-preview-style="cursor"] .settings-appearance-mini-bar.is-head {
+  background: rgba(20, 20, 30, 0.3);
+}
+
+.settings-appearance-mini[data-preview-style="cursor"] .settings-appearance-mini-composer {
+  border: 1px solid rgba(20, 20, 30, 0.1);
+  background: rgba(20, 20, 40, 0.03);
+}
+
+.settings-appearance-mini[data-preview-style="claude"] {
+  border-color: rgba(60, 55, 45, 0.1);
+  background: #faf9f5;
+}
+
+.settings-appearance-mini[data-preview-style="claude"] .settings-appearance-mini-rail {
+  background: #f0ede2;
+}
+
+.settings-appearance-mini[data-preview-style="claude"] .settings-appearance-mini-bar {
+  background: rgba(87, 83, 74, 0.32);
+}
+
+.settings-appearance-mini[data-preview-style="claude"] .settings-appearance-mini-bar.is-dim {
+  background: rgba(87, 83, 74, 0.18);
+}
+
+.settings-appearance-mini[data-preview-style="claude"] .settings-appearance-mini-row.is-on {
+  background: rgba(87, 83, 74, 0.09);
+}
+
+.settings-appearance-mini[data-preview-style="claude"] .settings-appearance-mini-row.is-on .settings-appearance-mini-bar {
+  background: rgba(87, 83, 74, 0.45);
+}
+
+.settings-appearance-mini[data-preview-style="claude"] .settings-appearance-mini-dot {
+  background: #d97757;
+}
+
+.settings-appearance-mini[data-preview-style="claude"] .settings-appearance-mini-bar.is-head {
+  background: rgba(87, 83, 74, 0.42);
+}
+
+.settings-appearance-mini[data-preview-style="claude"] .settings-appearance-mini-composer {
+  border: 1px solid rgba(87, 83, 74, 0.16);
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.settings-appearance-mini[data-preview-style="codex"] {
+  border-color: rgba(255, 255, 255, 0.09);
+  background: #0d0d0d;
+}
+
+.settings-appearance-mini[data-preview-style="codex"] .settings-appearance-mini-rail {
+  background: #131313;
+}
+
+.settings-appearance-mini[data-preview-style="codex"] .settings-appearance-mini-main {
+  background: #181818;
+}
+
+.settings-appearance-mini[data-preview-style="codex"] .settings-appearance-mini-bar {
+  background: rgba(255, 255, 255, 0.19);
+}
+
+.settings-appearance-mini[data-preview-style="codex"] .settings-appearance-mini-bar.is-dim {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.settings-appearance-mini[data-preview-style="codex"] .settings-appearance-mini-row.is-on {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.settings-appearance-mini[data-preview-style="codex"] .settings-appearance-mini-row.is-on .settings-appearance-mini-bar {
+  background: rgba(255, 255, 255, 0.36);
+}
+
+.settings-appearance-mini[data-preview-style="codex"] .settings-appearance-mini-dot {
+  background: #6cb0ee;
+}
+
+.settings-appearance-mini[data-preview-style="codex"] .settings-appearance-mini-bar.is-head {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.settings-appearance-mini[data-preview-style="codex"] .settings-appearance-mini-composer {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* ---------------- 强调色 / 字号 / 密度 / 字体 ---------------- */
+
+.settings-appearance-accent {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.settings-appearance-row-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-appearance-row-title {
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  font-weight: 550;
+  line-height: 1.3;
+}
+
+.settings-appearance-row-desc {
+  margin-top: 2px;
+  color: var(--st-text-4);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.settings-appearance-preview {
+  margin: 10px 0 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.settings-appearance-preview-tag {
+  flex: none;
+  color: var(--st-text-4);
+  font-size: 11px;
+}
+
+.settings-appearance-preview-text {
+  color: var(--st-text-2);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.settings-appearance[data-font-size="small"] .settings-appearance-preview-text {
+  font-size: 12.5px;
+}
+
+.settings-appearance[data-font-size="large"] .settings-appearance-preview-text {
+  font-size: 15px;
+}
+
+/* 密度先在本页生效：行高随档位变化；后续宿主接全局时改同一口径。 */
+.settings-appearance[data-density="compact"] .settings-row {
+  min-height: 36px;
+  padding: 5px 0;
+}
+
+.settings-appearance[data-density="relaxed"] .settings-row {
+  min-height: 46px;
+  padding: 9px 0;
+}
+
+.settings-appearance .settings-row {
+  padding: 7px 0;
+}
+
+.settings-appearance[data-reduced-motion="true"] *,
+.settings-appearance[data-reduced-motion="true"] *::before,
+.settings-appearance[data-reduced-motion="true"] *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+.settings-appearance .settings-slider-row {
+  margin-top: 0;
+}
+
+.settings-appearance > .settings-note {
+  margin-top: 16px;
+}
+
+@media (max-width: 820px) {
+  .settings-appearance-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-appearance-card {
+    height: 150px;
+  }
+}

@@ -1,0 +1,1147 @@
+/**
+ * 设置页 v2 · 组件样式。
+ *
+ * 布局 / 字号 / 边框 / 圆角来自设计册第 3、7、9 页（左栏 260、页签 30、图标 15；
+ * 内容列 692 居中、使用活动 880）。颜色一律用 tokens.css 的 --st-*，本文件不出现字面色值。
+ * Claude 的衬线只作用于页标题与分组标题（--st-font-display），其余和五套共用。
+ */
+
+[data-pi-settings],
+[data-pi-settings] *,
+[data-pi-settings] *::before,
+[data-pi-settings] *::after {
+  box-sizing: border-box;
+}
+
+[data-pi-settings] {
+  font-family: var(--st-font-sans);
+  font-size: 13.5px;
+  color: var(--st-text-1);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.settings-root {
+  position: fixed;
+  inset: 0;
+  /* 低于宿主浮层（sheet 40 / modal 50），保证设置内打开的配对、诊断盖在设置之上。 */
+  z-index: 35;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  background: var(--st-page-bg);
+  color: var(--st-text-1);
+  -webkit-backdrop-filter: var(--st-backdrop);
+  backdrop-filter: var(--st-backdrop);
+}
+
+.settings-root button,
+.settings-root input,
+.settings-root select,
+.settings-root textarea {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+}
+
+.settings-root button {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-root button:disabled,
+.settings-root select:disabled,
+.settings-root input:disabled {
+  cursor: default;
+}
+
+.settings-root :focus-visible {
+  outline: 2px solid var(--st-focus-ring);
+  outline-offset: 2px;
+}
+
+/* 设置根只作程序化焦点兜底（内容为空 / 全部 inert 时），大矩形不画环。 */
+[data-pi-settings]:focus-visible {
+  outline: none;
+}
+
+/* A11Y-02：select / 滑杆在 :focus-visible 下必须有自己的可见焦点环。
+ * pi-theme 的文本输入规则实际命中 :root:root[data-pi-theme] :is(input, textarea, select):focus-visible
+ * （(0,4,1)，且晚于本文件加载），只加一个 .class 压不过；这里用设置根自己的三个属性 +
+ * 控件类 + 焦点伪类 (0,5,0) 提高特异性。颜色用中性 --st-field-focus-ring（非浏览器蓝 / 品牌蓝），
+ * 2px outline + offset 2px。 */
+[data-pi-settings][data-pi-settings-style][data-pi-theme] .settings-select:focus-visible,
+[data-pi-settings][data-pi-settings-style][data-pi-theme] .settings-slider:focus-visible {
+  outline: 2px solid var(--st-field-focus-ring);
+  outline-offset: 2px;
+}
+
+.settings-root .settings-icon {
+  display: block;
+  flex: none;
+}
+
+/* ---------------- 左栏 ---------------- */
+
+.settings-rail {
+  width: var(--st-rail-w);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 20px 14px 16px;
+  overflow-y: auto;
+  background: var(--st-rail-bg);
+  border-right: 1px solid var(--st-border);
+  -webkit-backdrop-filter: var(--st-backdrop);
+  backdrop-filter: var(--st-backdrop);
+}
+
+.settings-rail-title {
+  padding: 0 10px;
+  color: var(--st-text-1);
+  font-family: var(--st-font-sans);
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+}
+
+.settings-back {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 28px;
+  margin-top: 5px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+.settings-back:hover {
+  background: var(--st-hover-bg);
+  color: var(--st-text-1);
+}
+
+.settings-back-icon {
+  flex: none;
+  color: var(--st-text-4);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 14px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: var(--st-nav-h);
+  padding: 0 10px;
+  border-radius: var(--st-radius-row);
+  color: var(--st-text-3);
+  font-size: 13.5px;
+  font-weight: 400;
+  line-height: 1;
+  user-select: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.settings-nav-item .settings-icon {
+  width: var(--st-nav-icon);
+  height: var(--st-nav-icon);
+  color: var(--st-icon);
+}
+
+.settings-nav-item:hover {
+  background: var(--st-hover-bg);
+  color: var(--st-text-2);
+}
+
+.settings-nav-item[aria-current="page"] {
+  background: var(--st-selected-bg);
+  color: var(--st-text-1);
+  font-weight: 550;
+}
+
+.settings-nav-item[aria-current="page"] .settings-icon {
+  color: var(--st-text-2);
+}
+
+/* ---------------- 右栏与内容列 ---------------- */
+
+.settings-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px 34px 18px;
+  background: transparent;
+}
+
+.settings-column {
+  width: var(--st-content-w);
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+.settings-column--wide {
+  width: var(--st-content-w-wide);
+}
+
+.settings-page {
+  min-width: 0;
+  /* 844×390 横屏 / 200% 缩放下，供应商接口地址等长 URL 没有空格：
+     只在必须断行时按字符拆开，避免撑宽内容列造成右侧裁切（LAYOUT-01）。 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.settings-page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-page-title {
+  margin: 0;
+  color: var(--st-text-1);
+  font-family: var(--st-font-display);
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: 1.35;
+}
+
+.settings-page-note {
+  margin: 0;
+  color: var(--st-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-group {
+  min-width: 0;
+}
+
+.settings-group-label {
+  margin: 18px 0 8px;
+  color: var(--st-text-4);
+  font-family: var(--st-font-display);
+  font-size: 12.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.settings-group--first .settings-group-label {
+  margin-top: 16px;
+}
+
+.settings-group-description {
+  margin: 8px 2px 0;
+  color: var(--st-text-4);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.settings-card {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 16px;
+  background: var(--st-card-bg);
+  border: 1px solid var(--st-menu-border);
+  border-radius: var(--st-radius-card);
+  box-shadow: var(--st-card-shadow);
+}
+
+.settings-card > * + * {
+  border-top: 1px solid var(--st-border);
+}
+
+/* ---------------- 行 ---------------- */
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 4px 0;
+}
+
+.settings-row--stack {
+  display: block;
+  min-height: 0;
+  padding: 7px 0 8px;
+}
+
+.settings-row--action {
+  border-radius: 6px;
+  color: inherit;
+}
+
+.settings-row--action:hover:not(:disabled) {
+  background: var(--st-hover-bg);
+}
+
+.settings-row--action:disabled {
+  cursor: default;
+}
+
+.settings-row-grow {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.settings-row-title-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.settings-row-description {
+  display: block;
+  max-width: 100%;
+  margin-top: 1px;
+  color: var(--st-text-4);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.settings-row-controls {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.settings-row[data-settings-inert="true"] .settings-row-controls {
+  opacity: 0.55;
+}
+
+.settings-row--action:disabled .settings-chevron {
+  opacity: 0.45;
+}
+
+.settings-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.settings-chevron {
+  flex: none;
+  color: var(--st-text-4);
+}
+
+.settings-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--st-idle);
+}
+
+.settings-dot--online {
+  background: var(--st-online);
+}
+
+.settings-dot--waiting {
+  background: var(--st-wait);
+}
+
+.settings-dot--error {
+  background: var(--st-error);
+}
+
+.settings-dot--offline {
+  background: var(--st-idle);
+}
+
+/* ---------------- 状态徽标 ---------------- */
+
+.settings-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.settings-badge--bridge {
+  color: var(--st-badge-bridge-fg);
+  background: var(--st-badge-bridge-bg);
+  border-color: color-mix(in srgb, var(--st-wait) 22%, transparent);
+}
+
+.settings-badge--reserved {
+  /* 徽标是 10.5px 小字，且坐在 --st-tile-bg 上；用深一档的 text-3 保 ≥4.5:1。 */
+  color: var(--st-text-3);
+  background: var(--st-badge-reserved-bg);
+  border-color: var(--st-border);
+}
+
+/* ---------------- 开关 ---------------- */
+
+/* 壳的 .settings-root button 复位（(0,1,1)）会把组件的 background:none；开关没有
+ * 页面级复位时必须自己提高一级（A11Y-04：六皮肤所有页面的轨道都要有颜色）。 */
+.settings-root .settings-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--st-switch-off);
+  box-shadow: inset 0 0 0 1px var(--st-border);
+  transition: background-color 120ms ease;
+}
+
+.settings-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--st-switch-knob);
+  box-shadow: var(--st-knob-shadow);
+  transition: left 120ms ease;
+}
+
+.settings-root .settings-switch.is-on {
+  background: var(--st-switch-on);
+}
+
+.settings-switch.is-on .settings-switch-thumb {
+  left: 18px;
+}
+
+.settings-switch:disabled {
+  opacity: 0.5;
+}
+
+/* ---------------- 单选 ---------------- */
+
+.settings-radio-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  margin-top: 4px;
+}
+
+.settings-radio {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 28px;
+  margin-top: 2px;
+  padding: 0;
+  color: var(--st-text-3);
+  font-size: 13px;
+  line-height: 1.35;
+  user-select: none;
+}
+
+.settings-radio-ring {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border: 1.5px solid color-mix(in srgb, var(--st-text-1) 28%, transparent);
+  border-radius: 50%;
+  background: var(--st-field-bg);
+}
+
+.settings-radio-ring::after {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--st-text-1);
+  content: "";
+  opacity: 0;
+}
+
+.settings-radio.is-on {
+  color: var(--st-text-1);
+}
+
+.settings-radio.is-on .settings-radio-ring {
+  border-color: var(--st-text-1);
+}
+
+.settings-radio.is-on .settings-radio-ring::after {
+  opacity: 1;
+}
+
+.settings-radio:disabled {
+  opacity: 0.55;
+}
+
+.settings-inline-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  flex: none;
+}
+
+.settings-inline-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.35;
+  user-select: none;
+}
+
+.settings-inline-ring {
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border: 1.5px solid color-mix(in srgb, var(--st-text-1) 28%, transparent);
+  border-radius: 50%;
+  background: var(--st-field-bg);
+}
+
+.settings-inline-ring::after {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--st-text-1);
+  content: "";
+  opacity: 0;
+}
+
+.settings-inline-option.is-on {
+  color: var(--st-text-1);
+}
+
+.settings-inline-option.is-on .settings-inline-ring {
+  border-color: var(--st-text-1);
+}
+
+.settings-inline-option.is-on .settings-inline-ring::after {
+  opacity: 1;
+}
+
+.settings-inline-option:disabled {
+  opacity: 0.55;
+}
+
+/* ---------------- 分段 ---------------- */
+
+.settings-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--st-tile-bg);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--st-text-1) 5%, transparent), inset 0 0 0 1px var(--st-border);
+}
+
+.settings-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 15px;
+  border-radius: 999px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.settings-segment .settings-icon {
+  color: var(--st-icon);
+}
+
+.settings-segment.is-on {
+  color: var(--st-text-1);
+  font-weight: 600;
+  background: var(--st-menu-bg);
+  box-shadow: 0 1px 5px color-mix(in srgb, var(--st-text-1) 13%, transparent), inset 0 0 0 1px var(--st-border);
+}
+
+.settings-segment:disabled {
+  opacity: 0.55;
+}
+
+/* ---------------- 下拉 ---------------- */
+
+.settings-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 280px;
+}
+
+.settings-select {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 100%;
+  padding: 0 20px 0 0;
+  border: 0;
+  outline: 0;
+  color: var(--st-text-3);
+  background: transparent;
+  font-size: 12.5px;
+  line-height: 28px;
+  text-align: right;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.settings-select-chevron {
+  position: absolute;
+  right: 0;
+  color: var(--st-text-4);
+  pointer-events: none;
+}
+
+.settings-select:disabled {
+  opacity: 0.55;
+}
+
+/* ---------------- 滑杆 ---------------- */
+
+.settings-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.settings-slider {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  margin: 0;
+  border-radius: 2px;
+  outline: none;
+  background: linear-gradient(
+    to right,
+    var(--st-slider-accent) 0 var(--settings-slider-fill),
+    var(--st-tile-bg) var(--settings-slider-fill) 100%
+  );
+  cursor: pointer;
+}
+
+.settings-slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--st-switch-knob);
+  box-shadow: var(--st-knob-shadow), inset 0 0 0 1px var(--st-border);
+}
+
+.settings-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--st-switch-knob);
+  box-shadow: var(--st-knob-shadow), inset 0 0 0 1px var(--st-border);
+}
+
+.settings-slider:disabled {
+  opacity: 0.5;
+}
+
+.settings-slider-end {
+  flex: none;
+  color: var(--st-text-4);
+  font-size: 11.5px;
+  line-height: 1;
+}
+
+.settings-slider-value {
+  min-width: 30px;
+  flex: none;
+  color: var(--st-text-2);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ---------------- 颜色点 ---------------- */
+
+.settings-color-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 13px;
+  flex: none;
+}
+
+.settings-color-dot {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: 0;
+  border-radius: 50%;
+  background: var(--settings-dot-color);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-text-1) 12%, transparent), 0 1px 2px color-mix(in srgb, var(--st-text-1) 12%, transparent);
+}
+
+.settings-color-dot.is-on {
+  box-shadow:
+    0 0 0 2px var(--st-page-bg),
+    0 0 0 4px var(--settings-dot-color),
+    inset 0 0 0 1px color-mix(in srgb, var(--st-menu-bg) 25%, transparent);
+}
+
+.settings-color-dot:disabled {
+  opacity: 0.55;
+}
+
+.settings-color-current {
+  min-width: 26px;
+  margin-left: 3px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* ---------------- 键帽 ---------------- */
+
+.settings-keycaps {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.settings-keycap {
+  display: inline-block;
+  min-width: 24px;
+  padding: 5px 7px;
+  border: 1px solid var(--st-menu-border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--st-field-bg);
+  color: var(--st-text-2);
+  font-family: var(--st-font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+  text-align: center;
+  box-shadow: 0 1px 1px color-mix(in srgb, var(--st-text-1) 5%, transparent);
+}
+
+.settings-keycap-capture {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  color: inherit;
+}
+
+.settings-keycap-capture:hover .settings-keycap {
+  border-color: var(--st-selected-ring);
+}
+
+.settings-keycap-capture.is-recording {
+  padding: 0 6px;
+  background: var(--st-accent-soft);
+}
+
+.settings-keycap-recording {
+  color: var(--st-accent);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.settings-keycap-capture:disabled {
+  opacity: 0.55;
+}
+
+/* ---------------- 页脚说明 ---------------- */
+
+.settings-note {
+  margin: 10px 2px 0;
+  color: var(--st-text-4);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.settings-placeholder .settings-card {
+  min-height: 64px;
+}
+
+/* ---------------- 宽屏收口 ---------------- */
+
+@media (max-width: 1100px) {
+  .settings-main {
+    padding-right: 24px;
+    padding-left: 24px;
+  }
+
+  .settings-column,
+  .settings-column--wide {
+    width: 100%;
+    max-width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-nav-item,
+  .settings-switch,
+  .settings-switch-thumb {
+    transition: none;
+  }
+}
+
+/* ---------------- Claude 变体 reset 的显式复位 ----------------
+ * Claude 的 styles/reset.css 用 [data-pi-ui="claude"] h1..h6 / p / select 等作用域选择器
+ * 把设置页组件打回 inherit / 0，且变体 CSS 懒加载后于本文件。下面统一用设置页作用域
+ * [data-pi-settings][data-pi-settings-style="claude"]（高于 reset 的 (0,1,1)）复位到六套共用
+ * 设计值；只影响 Claude，其余皮肤和手机壳（.settings-mobile）不受影响。
+ */
+
+/* reset 把 Claude 变体的 18px 行高留在设置根上；桌面设置页回到统一 21px（13.5 × 1.555，
+ * 与其余皮肤浏览器默认继承值同值），避免小字号元素被 normal 重新按字号计算。 */
+[data-pi-settings][data-pi-settings-style="claude"].settings-root {
+  line-height: 21px;
+}
+
+/* 页标题 / 分组标题：reset 把字号 / 字重置为 inherit；分组间距也归零。 */
+[data-pi-settings][data-pi-settings-style="claude"] .settings-page-title {
+  font-size: 20px;
+  font-weight: 650;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-group-label {
+  margin: 18px 0 8px;
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-group--first .settings-group-label {
+  margin-top: 16px;
+}
+
+/* 页级分组间距（镜像 pages/*.css 的既有值，避免上面的复位覆盖页级节奏）。 */
+[data-pi-settings][data-pi-settings-style="claude"] .settings-appearance .settings-group-label {
+  margin: 20px 0 10px;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-appearance
+  .settings-appearance-section--first
+  .settings-group-label {
+  margin-top: 18px;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-about .settings-group-label {
+  margin: 22px 0 10px;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-shortcuts .settings-group--first .settings-group-label {
+  margin-top: 20px;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-appearance > .settings-note {
+  margin-top: 16px;
+}
+
+/* select：reset 的 padding:0 盖掉右侧 20px chevron 占位。 */
+[data-pi-settings][data-pi-settings-style="claude"] .settings-select {
+  padding: 0 20px 0 0;
+}
+
+/* 滑杆：reset 的 [data-pi-ui="claude"] input { background: transparent } (0,1,1)
+ * 把 Claude 皮肤的滑杆轨道打回透明，只剩 thumb；按设置页值补回渐变（A11Y-04：
+ * 强调段用 --st-slider-accent，Claude 浅色已加深到对卡底 ≥3:1）。 */
+[data-pi-settings][data-pi-settings-style="claude"] .settings-slider {
+  background: linear-gradient(
+    to right,
+    var(--st-slider-accent) 0 var(--settings-slider-fill),
+    var(--st-tile-bg) var(--settings-slider-fill) 100%
+  );
+}
+
+/* 左栏「设置」标题：Claude 设计源用衬线（其余皮肤仍走基础规则的 sans）。 */
+[data-pi-settings][data-pi-settings-style="claude"] .settings-rail-title {
+  font-family: var(--st-font-serif);
+}
+
+/* reset 对 h2/h3 的字号 / 字重归一，除页标题 / 分组标题外的页面标题一并复位。 */
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-state-title,
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-card-title {
+  font-size: 15.5px;
+  font-weight: 650;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-about-licenses-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+/* reset 把 p / ul 的 margin 归零；按页面原值复位注记与列表间距。 */
+[data-pi-settings][data-pi-settings-style="claude"] .settings-group-description {
+  margin: 8px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-note {
+  margin: 10px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-appearance-preview {
+  margin: 10px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-shortcut-hint {
+  margin: 9px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-shortcut-empty {
+  margin: 14px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-shortcut-conflict {
+  margin: -2px 0 7px;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-subtitle {
+  margin: 4px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-stale {
+  margin: 10px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-coverage {
+  margin: 8px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-chart-note {
+  margin: 10px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-model-note {
+  margin: 9px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-footnote {
+  margin: 14px auto 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-empty-body {
+  margin: 5px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-state-body {
+  margin: 6px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-state-error {
+  margin: 8px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-hint {
+  margin: 3px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-quota-sub {
+  margin: 2px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-stat-sub {
+  margin: 4px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-stat-value {
+  margin: 6px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-about-licenses-note {
+  margin: 4px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-about-licenses-list {
+  margin: 8px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="claude"] .settings-about-footnote {
+  margin: 18px 0 0;
+}
+
+/* ---------------- Codex 变体 reset 的显式复位 ----------------
+ * Codex 的 codex.css 用 [data-pi-ui="codex"] h1..h4 / p / ul… { margin: 0 }（(0,1,1)）
+ * 把设置页组件 (0,1,0) 的间距全部打平（分隔感丢失、行距也被 body 的 22px 带偏）。
+ * 与 Claude 段同理，用设置页作用域复位；只影响桌面设置页，手机壳与其余皮肤不受影响。
+ */
+[data-pi-settings][data-pi-settings-style="codex"].settings-root {
+  line-height: 21px;
+}
+
+/* 分组标题：首组 16/8，其余 18/8（页标题字号 / 字重不受 Codex reset 影响，无需复位）。 */
+[data-pi-settings][data-pi-settings-style="codex"] .settings-group-label {
+  margin: 18px 0 8px;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-group--first .settings-group-label {
+  margin-top: 16px;
+}
+
+/* 页级分组间距（镜像 pages/*.css 的既有值，避免上面的复位覆盖页级节奏）。 */
+[data-pi-settings][data-pi-settings-style="codex"] .settings-appearance .settings-group-label {
+  margin: 20px 0 10px;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-appearance
+  .settings-appearance-section--first
+  .settings-group-label {
+  margin-top: 18px;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-about .settings-group-label {
+  margin: 22px 0 10px;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-shortcuts .settings-group--first .settings-group-label {
+  margin-top: 20px;
+}
+
+/* reset 把 p / ul 的 margin 归零；按页面原值复位说明、注记与列表间距。 */
+[data-pi-settings][data-pi-settings-style="codex"] .settings-group-description {
+  margin: 8px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-note {
+  margin: 10px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-appearance > .settings-note {
+  margin-top: 16px;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-appearance-preview {
+  margin: 10px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-shortcut-hint {
+  margin: 9px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-shortcut-empty {
+  margin: 14px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-shortcut-conflict {
+  margin: -2px 0 7px;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-subtitle {
+  margin: 4px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-stale {
+  margin: 10px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-coverage {
+  margin: 8px 2px 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-chart-note {
+  margin: 10px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-model-note {
+  margin: 9px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-footnote {
+  margin: 14px auto 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-empty-body {
+  margin: 5px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-state-body {
+  margin: 6px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-state-error {
+  margin: 8px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-hint {
+  margin: 3px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-quota-sub {
+  margin: 2px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-stat-sub {
+  margin: 4px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-stat-value {
+  margin: 6px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-about-licenses-note {
+  margin: 4px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-about-licenses-list {
+  margin: 8px 0 0;
+}
+
+[data-pi-settings][data-pi-settings-style="codex"] .settings-about-footnote {
+  margin: 18px 0 0;
+}

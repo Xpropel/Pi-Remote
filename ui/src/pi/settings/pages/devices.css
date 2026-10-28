@@ -1,0 +1,154 @@
+/**
+ * 设置 › 设备 · 页面级样式（只消费 tokens.css 的 --st-*）。
+ * 设备行比标准行高（图标 36 + 两行信息），其余卡片 / 行复用共享组件。
+ */
+
+.settings-device-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 0;
+}
+
+.settings-device-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 10px;
+  background: var(--st-tile-bg);
+  color: var(--st-text-2);
+}
+
+.settings-device-meta {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-device-name {
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  font-weight: 550;
+  line-height: 1.3;
+}
+
+.settings-device-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--st-text-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-device-sep {
+  color: var(--st-text-4);
+}
+
+.settings-device-latency {
+  color: var(--st-text-4);
+}
+
+.settings-device-probe {
+  color: var(--st-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-device-probe.is-error {
+  color: var(--st-error);
+}
+
+.settings-device-default {
+  margin-left: 7px;
+  color: var(--st-accent);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.settings-device-default.is-action {
+  color: var(--st-text-4);
+  cursor: default;
+}
+
+.settings-device-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.settings-device-action {
+  color: var(--st-text-3);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.settings-device-action:disabled {
+  color: var(--st-text-4);
+  cursor: default;
+}
+
+.settings-device-action:hover:not(:disabled) {
+  color: var(--st-text-1);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.settings-device-action.is-disabled {
+  color: var(--st-text-4);
+  cursor: default;
+  text-decoration: none;
+}
+
+.settings-device-action.is-danger {
+  color: var(--st-error);
+}
+
+.settings-device-action.is-danger:hover:not(:disabled) {
+  color: var(--st-error);
+  opacity: 0.8;
+}
+
+/* 添加设备行要铺满卡片内宽（负 margin 吃掉卡片 16px 内边距）。
+   外壳的 `.settings-root button`（0,1,1）会重置 margin / padding，单类选择器赢不了；
+   用页面作用域提高优先级，width / margin 一起生效；只把 margin 赢回来而 width 仍
+   用 calc(100% + 32px) 时，行正好铺到卡片边框内缘，不再右溢（VIS-01）。 */
+.settings-devices .settings-device-add {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: calc(100% + 32px);
+  margin: 0 -16px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.settings-device-add:hover {
+  background: var(--st-hover-bg);
+}
+
+.settings-device-add-desc {
+  color: var(--st-text-3);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.settings-device-chevron {
+  flex: none;
+  color: var(--st-text-4);
+}
+
+.settings-device-empty {
+  color: var(--st-text-4);
+  font-size: 11.5px;
+  line-height: 1.45;
+}

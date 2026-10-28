@@ -1,0 +1,1497 @@
+/**
+ * 手机端设置 · 样式（独立系统）。
+ *
+ * 全部规则作用域在 [data-pi-settings-mobile] 下；颜色只消费 tokens.css 的 --st-*，
+ * 六套皮肤（Cursor / Claude / Codex × 深 / 浅）由根属性自动命中，组件与布局不变。
+ * Claude 的衬线只给顶栏标题与分组标题（--st-font-display）。
+ *
+ * 唯一颜色例外（设计册「变体与手机端」）：使用活动的「今天格描边 / 单日峰值」在
+ * Cursor 与 Claude 四套固定陶土色，在 Codex 两套改走 Codex 蓝。这里用 --sm-usage-clay
+ * 收口，不在组件里散写。
+ */
+
+[data-pi-settings-mobile] {
+  --sm-columns: 1;
+  --sm-touch: 44px;
+  --sm-topbar-h: 54px;
+  --sm-pad-x: 16px;
+  --sm-card-gap: 10px;
+  --sm-safe-bottom: 30px;
+  --sm-usage-clay: #d97757;
+
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--st-text-1);
+  font-family: var(--st-font-sans);
+  font-size: 15px;
+  background-color: var(--st-menu-bg);
+  background-image:
+    radial-gradient(120% 55% at 50% -10%, var(--st-accent-soft), transparent 62%),
+    linear-gradient(var(--st-page-bg), var(--st-page-bg));
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+[data-pi-settings-mobile][data-pi-settings-style="codex"] {
+  --sm-usage-clay: #6cb0ee;
+}
+
+[data-pi-settings-mobile] *,
+[data-pi-settings-mobile] *::before,
+[data-pi-settings-mobile] *::after {
+  box-sizing: border-box;
+}
+
+[data-pi-settings-mobile] button,
+[data-pi-settings-mobile] input,
+[data-pi-settings-mobile] select,
+[data-pi-settings-mobile] textarea {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+}
+
+[data-pi-settings-mobile] button {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+[data-pi-settings-mobile] button:disabled {
+  cursor: default;
+}
+
+[data-pi-settings-mobile] :focus-visible {
+  outline: 2px solid var(--st-focus-ring);
+  outline-offset: 2px;
+}
+
+/* A11Y-02：手机 select 的可见焦点环。pi-theme 的文本输入规则是
+ * :root:root[data-pi-theme] :is(input, textarea, select):focus-visible (0,4,1)，
+ * 这里用四个设置根属性 + 控件类 + 焦点伪类 (0,6,0) 压过它。 */
+[data-pi-settings][data-pi-settings-mobile][data-pi-settings-style][data-pi-theme] .sm-select:focus-visible {
+  outline: 2px solid var(--st-field-focus-ring);
+  outline-offset: 2px;
+}
+
+[data-pi-settings-mobile] .settings-icon {
+  display: block;
+  flex: none;
+  color: var(--st-icon);
+}
+
+/* ---------------- 顶栏 ---------------- */
+
+[data-pi-settings-mobile] .sm-topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: calc(var(--sm-topbar-h) + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) 12px 0 6px;
+  border-bottom: 1px solid var(--st-border);
+  background: var(--st-rail-bg);
+  -webkit-backdrop-filter: var(--st-backdrop);
+  backdrop-filter: var(--st-backdrop);
+}
+
+[data-pi-settings-mobile] .sm-back {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--sm-touch);
+  height: var(--sm-touch);
+  border-radius: 10px;
+  color: var(--st-text-1);
+}
+
+[data-pi-settings-mobile] .sm-back:active {
+  background: var(--st-hover-bg);
+}
+
+[data-pi-settings-mobile] .sm-topbar-title {
+  margin: 0;
+  overflow: hidden;
+  color: var(--st-text-1);
+  font-family: var(--st-font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 滚动区 / 页面 ---------------- */
+
+[data-pi-settings-mobile] .sm-main {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(var(--sm-safe-bottom) + env(safe-area-inset-bottom, 0px));
+  scrollbar-width: none;
+}
+
+[data-pi-settings-mobile] .sm-main::-webkit-scrollbar {
+  display: none;
+}
+
+[data-pi-settings-mobile] .sm-page {
+  width: 100%;
+  max-width: none;
+  padding: 6px calc(var(--sm-pad-x) + env(safe-area-inset-right, 0px)) 20px
+    calc(var(--sm-pad-x) + env(safe-area-inset-left, 0px));
+}
+
+@media (min-width: 600px) {
+  [data-pi-settings-mobile] .sm-page {
+    max-width: 560px;
+    margin: 0 auto;
+  }
+}
+
+/* ---------------- 分组 / 卡片 ---------------- */
+
+[data-pi-settings-mobile] .sm-group {
+  margin-top: 20px;
+}
+
+[data-pi-settings-mobile] .sm-page > .sm-group:first-child {
+  margin-top: 8px;
+}
+
+[data-pi-settings-mobile] .sm-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 8px;
+  color: var(--st-text-4);
+  font-family: var(--st-font-display);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+[data-pi-settings-mobile] .sm-group-description {
+  margin: -2px 4px 8px;
+  color: var(--st-text-4);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+[data-pi-settings-mobile] .sm-group-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-card-gap);
+}
+
+[data-pi-settings-mobile] .sm-card {
+  overflow: hidden;
+  border: 1px solid var(--st-menu-border);
+  border-radius: var(--st-radius-card);
+  background: var(--st-card-bg);
+}
+
+[data-pi-settings-mobile] .sm-card > * + * {
+  border-top: 1px solid var(--st-border);
+}
+
+[data-pi-settings-mobile] .sm-group-footnote,
+[data-pi-settings-mobile] .sm-note {
+  margin: 10px 4px 0;
+  color: var(--st-text-4);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+[data-pi-settings-mobile] .sm-note + .sm-note {
+  margin-top: 6px;
+}
+
+[data-pi-settings-mobile] .sm-banner {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--st-menu-border);
+  border-radius: var(--st-radius-card);
+  background: var(--st-card-bg);
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* ---------------- 行 ---------------- */
+
+[data-pi-settings-mobile] .sm-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: var(--sm-touch);
+  padding: 11px 14px;
+}
+
+[data-pi-settings-mobile] .sm-row--action {
+  border-radius: 0;
+}
+
+[data-pi-settings-mobile] .sm-row--action:active {
+  background: var(--st-hover-bg);
+}
+
+[data-pi-settings-mobile] .sm-row-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+[data-pi-settings-mobile] .sm-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--st-text-1);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+[data-pi-settings-mobile] .sm-row-title-text {
+  overflow-wrap: anywhere;
+}
+
+[data-pi-settings-mobile] .sm-row-description {
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+[data-pi-settings-mobile] .sm-row-control {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  max-width: 64%;
+}
+
+[data-pi-settings-mobile] .sm-row[data-settings-inert="true"] .sm-row-control {
+  opacity: 0.72;
+}
+
+[data-pi-settings-mobile] .sm-row-leading {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  color: var(--st-icon);
+}
+
+[data-pi-settings-mobile] .sm-value {
+  max-width: 58vw;
+  overflow-wrap: anywhere;
+  color: var(--st-text-3);
+  font-size: 14px;
+  line-height: 1.35;
+  text-align: right;
+}
+
+[data-pi-settings-mobile] .sm-row--danger .sm-row-title-text {
+  color: var(--st-error);
+}
+
+[data-pi-settings-mobile] .sm-chevron {
+  flex: none;
+  color: var(--st-text-4);
+}
+
+[data-pi-settings-mobile] .sm-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 19px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: var(--st-tile-bg);
+  color: var(--st-text-3);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+[data-pi-settings-mobile] .sm-status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--st-text-3);
+  font-size: 13px;
+}
+
+/* 状态徽标在小屏收紧一档；外观仍由桌面共享原子给。 */
+[data-pi-settings-mobile] .settings-badge {
+  height: 17px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+/* ---------------- 开关 ---------------- */
+
+[data-pi-settings-mobile] .sm-switch {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  width: 52px;
+  height: var(--sm-touch);
+}
+
+[data-pi-settings-mobile] .sm-switch-track {
+  position: relative;
+  display: block;
+  width: 46px;
+  height: 27px;
+  border-radius: 999px;
+  background: var(--st-switch-off);
+  box-shadow: inset 0 0 0 1px var(--st-border);
+  transition: background-color 140ms ease;
+}
+
+[data-pi-settings-mobile] .sm-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  background: var(--st-switch-knob);
+  box-shadow: var(--st-knob-shadow);
+  transition: left 140ms ease, background-color 140ms ease;
+}
+
+[data-pi-settings-mobile] .sm-switch.is-on .sm-switch-track {
+  background: var(--st-accent-soft);
+}
+
+[data-pi-settings-mobile] .sm-switch.is-on .sm-switch-thumb {
+  left: 21px;
+  /* A11Y-04：强调 thumb 在 --st-accent-soft 轨道上 ≥3:1；Claude 浅色用加深一档的强调色。 */
+  background: var(--st-accent-strong);
+}
+
+[data-pi-settings-mobile] .sm-switch:disabled .sm-switch-track {
+  opacity: 0.92;
+}
+
+/* ---------------- 分段控件 ---------------- */
+
+[data-pi-settings-mobile] .sm-segmented {
+  display: flex;
+  width: 100%;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--st-tile-bg);
+}
+
+[data-pi-settings-mobile] .sm-segment {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  /* 触控口径：命中区 ≥44。视觉内胆仍是 38（上下各 3px 透明边框 + 负 margin），
+     44 的盒子伸进 .sm-segmented 的 3px 内边距，控件总高保持 44，不与设计稿错位。 */
+  min-height: var(--sm-touch);
+  margin-block: -3px;
+  padding: 0 8px;
+  overflow: hidden;
+  border: 3px solid transparent;
+  border-radius: 10px;
+  background-clip: padding-box;
+  color: var(--st-text-3);
+  font-size: 13.5px;
+  font-weight: 500;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-pi-settings-mobile] .sm-segment.is-on {
+  background: var(--st-selected-bg);
+  color: var(--st-text-1);
+  font-weight: 600;
+}
+
+[data-pi-settings-mobile] .sm-segmented--compact .sm-segment {
+  /* 紧凑档视觉内胆 32（上下各 6px 透明边框），命中区仍补到 44。 */
+  min-height: var(--sm-touch);
+  margin-block: -3px;
+  border-width: 6px 0;
+  border-radius: 13px;
+  font-size: 13px;
+}
+
+/* ---------------- 字段 / 选项列表 ---------------- */
+
+[data-pi-settings-mobile] .sm-pad {
+  padding: 12px 14px;
+}
+
+[data-pi-settings-mobile] .sm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+[data-pi-settings-mobile] .sm-field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+[data-pi-settings-mobile] .sm-field-control {
+  width: 100%;
+}
+
+[data-pi-settings-mobile] .sm-field-title {
+  color: var(--st-text-1);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+[data-pi-settings-mobile] .sm-field-description {
+  margin: 2px 0 10px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+[data-pi-settings-mobile] .sm-options {
+  display: flex;
+  flex-direction: column;
+}
+
+[data-pi-settings-mobile] .sm-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: var(--sm-touch);
+  padding: 11px 14px;
+  border-radius: 0;
+}
+
+[data-pi-settings-mobile] .sm-option + .sm-option {
+  border-top: 1px solid var(--st-border);
+}
+
+[data-pi-settings-mobile] .sm-option:active:not(:disabled) {
+  background: var(--st-hover-bg);
+}
+
+[data-pi-settings-mobile] .sm-option-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+[data-pi-settings-mobile] .sm-option-title {
+  color: var(--st-text-1);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+[data-pi-settings-mobile] .sm-option-description {
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+[data-pi-settings-mobile] .sm-option-check {
+  flex: none;
+  color: var(--st-accent);
+}
+
+[data-pi-settings-mobile] .sm-option-radio {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid var(--st-text-4);
+  border-radius: 50%;
+}
+
+[data-pi-settings-mobile] .sm-option.is-on .sm-option-radio {
+  border-color: var(--st-accent);
+}
+
+[data-pi-settings-mobile] .sm-option-radio > span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: transparent;
+}
+
+[data-pi-settings-mobile] .sm-option.is-on .sm-option-radio > span {
+  background: var(--st-accent);
+}
+
+/* ---------------- 下拉 ---------------- */
+
+[data-pi-settings-mobile] .sm-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+[data-pi-settings-mobile] .sm-select {
+  max-width: 56vw;
+  min-height: var(--sm-touch);
+  padding: 0 2px 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--st-text-3);
+  font-size: 14px;
+  text-align: right;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+[data-pi-settings-mobile] .sm-select option {
+  background: var(--st-menu-bg);
+  color: var(--st-text-1);
+}
+
+/* ---------------- 统计卡 ---------------- */
+
+[data-pi-settings-mobile] .sm-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+[data-pi-settings-mobile] .sm-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 92px;
+  padding: 12px 14px;
+  border: 1px solid var(--st-menu-border);
+  border-radius: var(--st-radius-card);
+  background: var(--st-card-bg);
+}
+
+[data-pi-settings-mobile] .sm-stat-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.3;
+}
+
+[data-pi-settings-mobile] .sm-stat-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-pi-settings-mobile] .sm-stat-number {
+  color: var(--st-text-1);
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.1;
+}
+
+[data-pi-settings-mobile] .sm-stat-unit {
+  margin-left: 2px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+}
+
+[data-pi-settings-mobile] .sm-stat-aside {
+  color: var(--st-text-4);
+  font-size: 12px;
+}
+
+[data-pi-settings-mobile] .sm-delta {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+[data-pi-settings-mobile] .sm-delta--up {
+  color: var(--st-online);
+}
+
+[data-pi-settings-mobile] .sm-delta--down {
+  color: var(--st-error);
+}
+
+[data-pi-settings-mobile] .sm-delta--flat {
+  color: var(--st-text-4);
+}
+
+/* ---------------- 使用活动 ---------------- */
+
+[data-pi-settings-mobile] .sm-usage-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--st-menu-border);
+  border-radius: var(--st-radius-card);
+  background: var(--st-card-bg);
+}
+
+[data-pi-settings-mobile] .sm-usage-controls > * + * {
+  border-top: 0;
+}
+
+[data-pi-settings-mobile] .sm-heat {
+  padding: 12px 14px 10px;
+}
+
+[data-pi-settings-mobile] .sm-heat-body {
+  display: flex;
+  gap: 3px;
+  height: 86px;
+}
+
+[data-pi-settings-mobile] .sm-heat-week {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+[data-pi-settings-mobile] .sm-heat-cell {
+  flex: 1;
+  min-height: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--st-text-1) 7%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-heat-cell[data-level="1"] {
+  background: color-mix(in srgb, var(--st-accent) 24%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-heat-cell[data-level="2"] {
+  background: color-mix(in srgb, var(--st-accent) 45%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-heat-cell[data-level="3"] {
+  background: color-mix(in srgb, var(--st-accent) 70%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-heat-cell[data-level="4"] {
+  background: var(--st-accent);
+}
+
+[data-pi-settings-mobile] .sm-heat-cell[data-future] {
+  background: color-mix(in srgb, var(--st-text-1) 3%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-heat-cell[data-today] {
+  box-shadow: 0 0 0 1.5px var(--sm-usage-clay);
+}
+
+[data-pi-settings-mobile] .sm-heat-cell[data-hot] {
+  border-radius: 2px;
+}
+
+[data-pi-settings-mobile] .sm-heat-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 9px;
+  color: var(--st-text-4);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+[data-pi-settings-mobile] .sm-heat-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+[data-pi-settings-mobile] .sm-heat-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--st-text-1) 7%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-heat-legend i[data-level="1"] {
+  background: color-mix(in srgb, var(--st-accent) 24%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-heat-legend i[data-level="2"] {
+  background: color-mix(in srgb, var(--st-accent) 45%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-heat-legend i[data-level="3"] {
+  background: color-mix(in srgb, var(--st-accent) 70%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-heat-legend i[data-level="4"] {
+  background: var(--st-accent);
+}
+
+[data-pi-settings-mobile] .sm-heat-note {
+  text-align: right;
+}
+
+[data-pi-settings-mobile] .sm-week-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+[data-pi-settings-mobile] .sm-week-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+[data-pi-settings-mobile] .sm-week-label {
+  flex: none;
+  width: 44px;
+  color: var(--st-text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-pi-settings-mobile] .sm-week-track {
+  flex: 1;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--st-tile-bg);
+}
+
+[data-pi-settings-mobile] .sm-week-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--st-accent);
+}
+
+[data-pi-settings-mobile] .sm-week-value {
+  flex: none;
+  width: 52px;
+  color: var(--st-text-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-pi-settings-mobile] .sm-cumulative {
+  padding: 16px 14px;
+}
+
+[data-pi-settings-mobile] .sm-cumulative-label {
+  color: var(--st-text-4);
+  font-size: 12px;
+}
+
+[data-pi-settings-mobile] .sm-cumulative-value {
+  margin-top: 4px;
+  color: var(--st-text-1);
+  font-size: 30px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+[data-pi-settings-mobile] .sm-cumulative-aside {
+  margin-top: 4px;
+  color: var(--st-text-4);
+  font-size: 12px;
+}
+
+[data-pi-settings-mobile] .sm-models {
+  padding: 12px 14px;
+}
+
+[data-pi-settings-mobile] .sm-models-title {
+  margin-bottom: 10px;
+  color: var(--st-text-4);
+  font-size: 12px;
+}
+
+[data-pi-settings-mobile] .sm-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  font-size: 13px;
+}
+
+[data-pi-settings-mobile] .sm-model-name {
+  flex: none;
+  width: 108px;
+  overflow: hidden;
+  color: var(--st-text-2);
+  font-family: var(--st-font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-pi-settings-mobile] .sm-model-track {
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--st-tile-bg);
+}
+
+[data-pi-settings-mobile] .sm-model-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--st-accent);
+}
+
+[data-pi-settings-mobile] .sm-model-percent {
+  flex: none;
+  width: 36px;
+  color: var(--st-text-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-pi-settings-mobile] .sm-peak {
+  color: var(--sm-usage-clay);
+  font-weight: 600;
+}
+
+/* ---------------- 设备 ---------------- */
+
+[data-pi-settings-mobile] .sm-device {
+  padding: 12px 14px;
+}
+
+[data-pi-settings-mobile] .sm-device-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+[data-pi-settings-mobile] .sm-device-name {
+  overflow: hidden;
+  color: var(--st-text-1);
+  font-size: 15px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-pi-settings-mobile] .sm-device-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 2px;
+  color: var(--st-text-4);
+  font-size: 12.5px;
+}
+
+[data-pi-settings-mobile] .sm-device-probe {
+  color: var(--st-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-pi-settings-mobile] .sm-device-probe.is-error {
+  color: var(--st-error);
+}
+
+[data-pi-settings-mobile] .sm-device-default {
+  color: var(--st-text-4);
+  font-size: 14px;
+}
+
+[data-pi-settings-mobile] .sm-device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin-top: 2px;
+}
+
+[data-pi-settings-mobile] .sm-device-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: var(--sm-touch);
+  color: var(--st-text-2);
+  font-size: 14px;
+}
+
+[data-pi-settings-mobile] .sm-device-action:disabled {
+  color: var(--st-text-3);
+  opacity: 0.55;
+}
+
+[data-pi-settings-mobile] .sm-device-action--danger {
+  margin-left: auto;
+  color: var(--st-error);
+}
+
+/* ---------------- 供应商 ---------------- */
+
+[data-pi-settings-mobile] .sm-provider {
+  padding-bottom: 2px;
+}
+
+[data-pi-settings-mobile] .sm-provider-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 0;
+}
+
+[data-pi-settings-mobile] .sm-provider-name {
+  color: var(--st-text-1);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+[data-pi-settings-mobile] .sm-provider-meta {
+  padding: 4px 14px 8px;
+  color: var(--st-text-4);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+[data-pi-settings-mobile] .sm-provider .sm-row {
+  border-top: 1px solid var(--st-border);
+}
+
+/* ---------------- 首页 ---------------- */
+
+[data-pi-settings-mobile] .sm-index-card .sm-row {
+  min-height: 52px;
+  padding-left: 14px;
+}
+
+[data-pi-settings-mobile] .sm-index-icon {
+  color: var(--st-icon);
+}
+
+/* ---------------- 外观 ---------------- */
+
+[data-pi-settings-mobile] .sm-style-cards {
+  display: flex;
+  gap: 10px;
+}
+
+[data-pi-settings-mobile] .sm-style-card {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding: 9px 9px 10px;
+  border: 1px solid var(--st-menu-border);
+  border-radius: var(--st-radius-card);
+  background: var(--st-card-bg);
+}
+
+[data-pi-settings-mobile] .sm-style-card.is-on {
+  border-color: color-mix(in srgb, var(--st-accent) 55%, transparent);
+  background: var(--st-accent-soft);
+}
+
+[data-pi-settings-mobile] .sm-style-preview {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  height: 40px;
+  margin-bottom: 8px;
+  padding: 8px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--st-tile-bg);
+}
+
+[data-pi-settings-mobile] .sm-style-bar {
+  display: block;
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--st-text-1) 28%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-style-bar--long {
+  width: 68%;
+}
+
+[data-pi-settings-mobile] .sm-style-bar--short {
+  width: 46%;
+}
+
+[data-pi-settings-mobile] .sm-style-dot {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--sm-style-accent);
+}
+
+[data-pi-settings-mobile] .sm-style-name {
+  display: block;
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+[data-pi-settings-mobile] .sm-style-sub {
+  display: block;
+  margin-top: 1px;
+  overflow: hidden;
+  color: var(--st-text-4);
+  font-size: 10.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-pi-settings-mobile] .sm-style-check {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  background: var(--st-accent);
+  color: var(--st-menu-bg);
+}
+
+[data-pi-settings-mobile] .sm-accent-row {
+  padding: 12px 14px;
+}
+
+[data-pi-settings-mobile] .sm-accent-title {
+  color: var(--st-text-1);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+[data-pi-settings-mobile] .sm-accent-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 11px;
+}
+
+[data-pi-settings-mobile] .sm-accent-desc {
+  flex: 1;
+  min-width: 120px;
+  color: var(--st-text-4);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+[data-pi-settings-mobile] .sm-accent-dots {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0;
+}
+
+[data-pi-settings-mobile] .sm-accent-dot {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--sm-dot);
+}
+
+/* 视觉 28，命中区补到 44（触控口径）。 */
+[data-pi-settings-mobile] .sm-accent-dot::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+
+
+[data-pi-settings-mobile] .sm-accent-dot.is-on {
+  box-shadow:
+    0 0 0 2px var(--st-menu-bg),
+    0 0 0 4px var(--sm-dot);
+}
+
+[data-pi-settings-mobile] .sm-preview-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--st-border);
+}
+
+[data-pi-settings-mobile] .sm-preview-label {
+  color: var(--st-text-1);
+  font-size: 15px;
+}
+
+[data-pi-settings-mobile] .sm-preview-text {
+  color: var(--st-text-2);
+  font-size: 14px;
+}
+
+[data-pi-settings-mobile] .sm-preview-text[data-size="small"] {
+  font-size: 12.5px;
+}
+
+[data-pi-settings-mobile] .sm-preview-text[data-size="large"] {
+  font-size: 16px;
+}
+
+/* ---------------- 交互 ---------------- */
+
+[data-pi-settings-mobile] .sm-nav-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-card-gap);
+}
+
+[data-pi-settings-mobile] .sm-nav-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-height: 84px;
+  padding: 12px 14px;
+  border: 1px solid var(--st-menu-border);
+  border-radius: var(--st-radius-card);
+  background: var(--st-card-bg);
+}
+
+[data-pi-settings-mobile] .sm-nav-card.is-on {
+  border-color: color-mix(in srgb, var(--st-accent) 55%, transparent);
+  background: var(--st-accent-soft);
+}
+
+[data-pi-settings-mobile] .sm-nav-preview {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  width: 52px;
+  height: 46px;
+  padding: 6px;
+  overflow: hidden;
+  border-radius: 9px;
+  background: var(--st-tile-bg);
+}
+
+[data-pi-settings-mobile] .sm-nav-preview[data-mode="drawer"] {
+  padding: 0;
+}
+
+[data-pi-settings-mobile] .sm-nav-pv-drawer {
+  width: 16px;
+  height: 100%;
+  background: color-mix(in srgb, var(--st-text-1) 16%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-nav-pv-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 6px;
+}
+
+[data-pi-settings-mobile] .sm-nav-pv-content i {
+  display: block;
+  width: 70%;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--st-text-1) 20%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-nav-preview[data-mode="list"] {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px;
+}
+
+[data-pi-settings-mobile] .sm-nav-pv-row {
+  display: block;
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--st-text-1) 20%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-nav-pv-row--first {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: auto;
+  background: transparent;
+}
+
+[data-pi-settings-mobile] .sm-nav-pv-row--first i {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--st-text-1) 34%, transparent);
+}
+
+[data-pi-settings-mobile] .sm-nav-pv-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--st-accent);
+}
+
+[data-pi-settings-mobile] .sm-nav-card-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+[data-pi-settings-mobile] .sm-nav-card-title {
+  color: var(--st-text-1);
+  font-size: 15.5px;
+  font-weight: 550;
+}
+
+[data-pi-settings-mobile] .sm-nav-card-desc {
+  color: var(--st-text-3);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+[data-pi-settings-mobile] .sm-nav-card-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  background: var(--st-accent);
+  color: var(--st-menu-bg);
+}
+
+/* ---------------- 关于 ---------------- */
+
+[data-pi-settings-mobile] .sm-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 14px;
+}
+
+[data-pi-settings-mobile] .sm-identity-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  flex: none;
+  border-radius: 12px;
+  background: var(--st-accent-soft);
+  color: var(--st-accent);
+  font-family: var(--st-font-mono);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+[data-pi-settings-mobile] .sm-identity-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+[data-pi-settings-mobile] .sm-identity-name {
+  color: var(--st-text-1);
+  font-size: 17px;
+  font-weight: 650;
+}
+
+[data-pi-settings-mobile] .sm-identity-sub {
+  color: var(--st-text-3);
+  font-size: 12.5px;
+}
+
+[data-pi-settings-mobile] .sm-clear-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--sm-touch);
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--st-tile-bg);
+  color: var(--st-text-1);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+[data-pi-settings-mobile] .sm-license {
+  margin-top: 16px;
+  padding: 14px;
+}
+
+[data-pi-settings-mobile] .sm-license-title {
+  color: var(--st-text-1);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+[data-pi-settings-mobile] .sm-license-text {
+  margin: 8px 0 0;
+  color: var(--st-text-3);
+  font-family: var(--st-font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+[data-pi-settings-mobile] .sm-license-close {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--sm-touch);
+  color: var(--st-accent);
+  font-size: 13px;
+}
+
+/* ---------------- 空态 / 危险动作 ---------------- */
+
+[data-pi-settings-mobile] .sm-empty {
+  padding: 18px 14px;
+  text-align: center;
+}
+
+[data-pi-settings-mobile] .sm-empty-title {
+  color: var(--st-text-2);
+  font-size: 14px;
+  font-weight: 550;
+}
+
+[data-pi-settings-mobile] .sm-empty-body {
+  margin-top: 5px;
+  color: var(--st-text-4);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+[data-pi-settings-mobile] .sm-danger-action {
+  color: var(--st-error);
+  font-size: 14px;
+}
+
+[data-pi-settings-mobile] .sm-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+}
+
+/* ---------------- 快捷键（共享键帽的移动尺寸） ---------------- */
+
+[data-pi-settings-mobile] .sm-shortcut-row {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+[data-pi-settings-mobile] .settings-keycaps {
+  gap: 4px;
+}
+
+[data-pi-settings-mobile] .settings-keycap {
+  min-width: 28px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+[data-pi-settings-mobile] .settings-keycap-capture {
+  min-height: var(--sm-touch);
+  padding: 0 2px;
+}
+
+[data-pi-settings-mobile] .settings-keycap-capture.is-recording {
+  padding: 0 8px;
+}
+
+[data-pi-settings-mobile] .settings-keycap-recording {
+  color: var(--st-accent);
+  font-size: 12.5px;
+}
+
+/* ---------------- 动态效果 ---------------- */
+
+[data-pi-settings-mobile][data-sm-reduced-motion="true"] *,
+[data-pi-settings-mobile][data-sm-reduced-motion="true"] *::before,
+[data-pi-settings-mobile][data-sm-reduced-motion="true"] *::after {
+  transition: none !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-pi-settings-mobile] *,
+  [data-pi-settings-mobile] *::before,
+  [data-pi-settings-mobile] *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 字段内的选项列表：与字段标题左对齐，分隔线仍贯通卡片。 */
+[data-pi-settings-mobile] .sm-field-control .sm-option {
+  padding-right: 0;
+  padding-left: 0;
+}
+
+[data-pi-settings-mobile] .sm-field-control .sm-options .sm-option + .sm-option {
+  border-top: 1px solid var(--st-border);
+}
