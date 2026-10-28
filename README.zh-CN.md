@@ -18,12 +18,9 @@ Pi-Remote 通过 pi 官方扩展 API 接入正在运行的 pi 会话，不修改
 > **与 pi 的关系**：Pi-Remote 是为 [pi](https://github.com/earendil-works/pi)（Earendil 的终端编码智能体）开发的配套工具，基于 pi 官方扩展 API 构建，服务对象是 pi 的使用者。它不是 pi 的分支、变体或替代品：pi 本体始终在本机终端中运行，Pi-Remote 只为它增加远程镜像与操作入口。
 
 <p align="center">
-  <img src="assets/readme/design-desktop.png" alt="Pi-Remote 桌面端设计稿" width="100%">
+  <img src="assets/readme/design-single.png" alt="Pi-Remote 界面设计稿" width="100%">
 </p>
-<p align="center">
-  <img src="assets/readme/design-mobile.png" alt="Pi-Remote 移动端设计稿" width="88%">
-</p>
-<p align="center"><sub>界面设计稿：上为桌面端，下为移动端。</sub></p>
+<p align="center"><sub>界面设计稿：左为桌面端，右为移动端。</sub></p>
 
 ## 功能
 

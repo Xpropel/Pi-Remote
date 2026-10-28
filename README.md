@@ -18,12 +18,9 @@ Pi-Remote attaches to a running pi session through pi's official extension API. 
 > **Relationship to pi**: Pi-Remote is a companion tool built for [pi](https://github.com/earendil-works/pi), Earendil's terminal coding agent, on pi's official extension API, for people who use pi. It is not a fork, variant, or replacement of pi: pi itself keeps running in the local terminal, and Pi-Remote only adds a remote mirror and control surface for it.
 
 <p align="center">
-  <img src="assets/readme/design-desktop.png" alt="Pi-Remote desktop design mockup" width="100%">
+  <img src="assets/readme/design-single.png" alt="Pi-Remote UI design mockup" width="100%">
 </p>
-<p align="center">
-  <img src="assets/readme/design-mobile.png" alt="Pi-Remote mobile design mockup" width="88%">
-</p>
-<p align="center"><sub>UI design mockups: desktop above, mobile below.</sub></p>
+<p align="center"><sub>UI design mockup: desktop on the left, mobile on the right.</sub></p>
 
 ## Features
 
