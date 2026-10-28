@@ -34,9 +34,9 @@ Pi-Remote 通过 pi 官方扩展 API 接入正在运行的 pi 会话，不修改
 
 ## 工作原理
 
-```
-本机 pi（扩展） ──7001──▶ relay（服务器） ──7002──▶ 浏览器
-```
+<p align="center">
+  <img src="assets/readme/how-it-works-zh.png" alt="Pi-Remote 工作原理示意图" width="100%">
+</p>
 
 | 组件 | 位置 | 说明 |
 |---|---|---|

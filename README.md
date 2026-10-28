@@ -34,9 +34,9 @@ Pi-Remote attaches to a running pi session through pi's official extension API. 
 
 ## How it works
 
-```
-local pi (extension) ──7001──▶ relay (server) ──7002──▶ browser
-```
+<p align="center">
+  <img src="assets/readme/how-it-works-en.png" alt="How Pi-Remote works" width="100%">
+</p>
 
 | Component | Location | Role |
 |---|---|---|
