@@ -1217,10 +1217,22 @@ test("检查点：构造器异步预热大文件，预热期间事件循环可�
   const ptr = readPointer(dir, "big");
   assert.ok(ptr.off > 0, "预热完成后应补上检查点");
 
-  // 再重启：只读检查点行 + 尾巴，不能碰前缀
+  // 再重启：只读检查点行 + 尾巴，不能碰前缀。分段后 ptr.off 是虚拟偏移（封存段总字节 + 段内
+  // 偏移）：按文件追踪读，断言封存段零读、现役段的读不早于检查点行的物理位置。
+  const sealedBytes = fs.readdirSync(dir)
+    .filter((n) => /^big\.\d{4}\.jsonl$/.test(n))
+    .reduce((n, name) => n + fs.statSync(path.join(dir, name)).size, 0);
+  const ckptLocalOff = ptr.off - sealedBytes;
+  const fdPaths = new Map();
+  const origOpen = fs.openSync;
+  fs.openSync = function (p, ...rest) {
+    const fd = origOpen.call(fs, p, ...rest);
+    fdPaths.set(fd, String(p));
+    return fd;
+  };
   const reads = [];
   fs.readSync = function (fd, buf, off, len, pos) {
-    if (typeof pos === "number") reads.push({ pos, len });
+    if (typeof pos === "number") reads.push({ pos, len, file: fdPaths.get(fd) || "" });
     return orig.call(fs, fd, buf, off, len, pos);
   };
   let s2;
@@ -1233,13 +1245,16 @@ test("检查点：构造器异步预热大文件，预热期间事件循环可�
     tail2 = s2.tailHashes("big");
   } finally {
     fs.readSync = orig;
+    fs.openSync = origOpen;
   }
   const reopenMs = Date.now() - reopenStart;
   const totalBytes = reads.reduce((n, r) => n + r.len, 0);
   assert.equal(info2.seq, count);
   assert.equal(info2.msgCount, count);
   assert.deepEqual(tail2, tail);
-  assert.ok(Math.min(...reads.map((r) => r.pos)) >= ptr.off, "重启不能读检查点之前的字节");
+  assert.ok(!reads.some((r) => /\.\d{4}\.jsonl$/.test(r.file)), "重启不能读封存段（检查点已覆盖前缀）");
+  const activeReads = reads.filter((r) => r.file.endsWith("big.jsonl"));
+  assert.ok(activeReads.length && Math.min(...activeReads.map((r) => r.pos)) >= ckptLocalOff, "重启不能读检查点之前的字节");
   assert.ok(totalBytes < size / 2, `重启只读尾巴（读了 ${totalBytes}/${size} 字节）`);
   assert.ok(reopenMs < 500, `重启打开不能长阻塞（${reopenMs}ms）`);
 
@@ -1303,4 +1318,211 @@ test("rooms：evictIdle 与保留期 map.delete 都清理 resend/快照定时器
   t.mock.timers.tick(5_000);
   assert.deepEqual(firedA, { resend: 0, snap: 0 }, "evictIdle 删除后不能有悬挂定时器回调");
   assert.deepEqual(firedB, { resend: 0, snap: 0 }, "保留期删除后不能有悬挂定时器回调");
+});
+
+/* ---------------- R-4：首次打开走慢读（异步分块索引） ---------------- */
+
+test("R-4：≥16MB 大文件冷打开走异步路径（不调同步扫描），落地后快照完整正确", { timeout: 120000 }, async () => {
+  const dir = tmpDir();
+  const count = 40000;
+  const size = writeBigRoom(dir, count);
+  assert.ok(size >= 16 * 1024 * 1024, `测试文件要 ≥16MB（实际 ${Math.round(size / 1048576)}MB）`);
+  const s = new RoomStore(dir, {
+    persist: true,
+    prewarm: false,
+    ckptMinBytes: 1024 * 1024 * 1024,
+    ckptIntervalBytes: 1024 * 1024 * 1024,
+  });
+  let syncCalls = 0;
+  const origScan = s._scanChunksSync;
+  s._scanChunksSync = (...args) => { syncCalls++; return origScan(...args); };
+
+  // 50ms 心跳探针：同步全量扫 ~18MB 会把间隔拉到数百 ms；异步分块应基本贴合节拍。
+  let maxGap = 0;
+  let last = Date.now();
+  const probe = setInterval(() => {
+    const now = Date.now();
+    if (now - last > maxGap) maxGap = now - last;
+    last = now;
+  }, 50);
+
+  const info0 = s.info("big"); // 触发首次打开
+  assert.equal(s.indexing("big"), true, "大文件首次打开应进入异步索引而不是当场扫完");
+  assert.equal(info0.indexing, true);
+  assert.equal(info0.rev, null, "索引落地前不暴露 rev 锚点");
+  assert.equal(info0.seq, 0, "索引落地前不暴露 seq 锚点");
+  const snap0 = s.snapshot("big", LIMITS);
+  assert.equal(snap0.truncated, true, "索引未落地时快照必须报 truncated（空占位不是完整历史）");
+  assert.equal(snap0.delta, false, "索引未落地时绝不能走增量交付");
+  assert.equal(syncCalls, 0, "触发打开的当下不许走同步扫描");
+
+  await s.whenIndexed("big");
+  clearInterval(probe);
+  assert.equal(s.indexing("big"), false);
+  assert.equal(syncCalls, 0, "大文件路径全程不许调用 _scanChunksSync");
+  assert.ok(maxGap < 250, `异步索引期间 50ms 探针最大间隔应 <250ms（实际 ${maxGap}ms）`);
+
+  const info = s.info("big");
+  assert.equal(info.rev, "rev-big");
+  assert.equal(info.seq, count);
+  assert.equal(info.msgCount, count);
+  assert.equal(info.indexFailed, false);
+  const snap = s.snapshot("big", { limit: 100000, maxBytes: 64 * 1024 * 1024 });
+  assert.equal(snap.truncated, false);
+  assert.equal(snap.seq, count);
+  assert.equal(snap.items.length, count, "落地后全量快照条数必须与文件一致");
+  assert.equal(JSON.parse(snap.items[0]).content[0].text, "z".repeat(400) + "1");
+  assert.ok(JSON.parse(snap.items[snap.items.length - 1]).content[0].text.endsWith(String(count)));
+});
+
+test("R-4：异步索引期间并发写入排队重放，不丢不乱序", { timeout: 60000 }, async () => {
+  const dir = tmpDir();
+  const count = 5000; // ~2.3MB：配合注入的小阈值走异步路径（机制与真实大文件一致）
+  writeBigRoom(dir, count);
+  const s = new RoomStore(dir, {
+    persist: true,
+    prewarm: false,
+    syncScanMaxBytes: 64 * 1024,
+    ckptMinBytes: 1024 * 1024 * 1024,
+    ckptIntervalBytes: 1024 * 1024 * 1024,
+  });
+  assert.equal(s.info("big").indexing, true, "首次打开应进入异步索引");
+  // 以下写入全部发生在索引在飞期间（本段代码同步执行，任务不可能中途落地）：
+  assert.equal(s.record("big", end(user("live-1", 90001))), 0, "索引期间 record 返回 0，seq 落地后才分配");
+  s.record("big", end(asst("live-2", 90002)));
+  s.record("big", { type: "remote_message", text: "live-remote", cid: "cidlive1" });
+  s.record("big", { type: "remote_message", text: "will-fail", cid: "cidfail1" });
+  s.record("big", { type: "remote_message_failed", text: "will-fail", cid: "cidfail1" });
+  s.record("big", toolEnd("call_live"));
+  await s.whenIndexed("big");
+
+  const info = s.info("big");
+  // 文件 count 条 + live-1 + live-2 + 两条 remote = count+4 个 seq（失败回显占 seq 但不交付）
+  assert.equal(info.seq, count + 4);
+  assert.equal(info.msgCount, count + 2, "msgCount 只数 msg（remote 不算）");
+  const snap = s.snapshot("big", { limit: 100000, maxBytes: 64 * 1024 * 1024 });
+  assert.equal(snap.truncated, false);
+  const delivered = texts(snap);
+  assert.equal(delivered.length, count + 3, "失败回显不交付，其余一条不丢");
+  assert.deepEqual(delivered.slice(-3), ["user:live-1", "assistant:live-2", "user(remote):live-remote"],
+    "索引期间到达的事件按到达顺序接在文件历史之后");
+  assert.ok(!delivered.some((t) => t.includes("will-fail")), "索引期间报失败的回显重放后仍被摘掉");
+  assert.deepEqual(s.toolEnds("big").map((m) => m.toolCallId), ["call_live"], "索引期间的 tool end 元数据不丢");
+});
+
+test("R-4：索引期间 seed/append 排队，落地后按真实锚点重放", { timeout: 60000 }, async () => {
+  const dir = tmpDir();
+  const w = new RoomStore(dir, { persist: true, prewarm: false });
+  w.seedOrMerge("s1", [user("m1", 1), asst("m2", 2), user("m3", 3)]);
+  w.flushAll();
+  const anchor = w.info("s1");
+  assert.equal(anchor.msgCount, 3);
+
+  // syncScanMaxBytes: 0 → 任何非空文件首次打开都走异步路径
+  const s = new RoomStore(dir, { persist: true, prewarm: false, syncScanMaxBytes: 0 });
+  assert.equal(s.info("s1").indexing, true);
+  const app = s.appendMessages("s1", { count: anchor.msgCount, hash: anchor.lastHash }, [asst("m4", 4)]);
+  assert.equal(app.ok, true, "索引期间 append 先报 ok（真锚点校验推迟到重放）");
+  assert.equal(app.merged, 0, "索引期间不假报合并条数");
+  const seed = s.seedOrMerge("s1", [user("m1", 1), asst("m2", 2), user("m3", 3), asst("m4", 4)]);
+  assert.equal(seed.seeded, 0);
+  assert.equal(seed.merged, 0);
+  await s.whenIndexed("s1");
+
+  const info = s.info("s1");
+  assert.equal(info.msgCount, 4, "append 重放生效、seed 重放对齐后不重复追加");
+  assert.equal(info.seq, 4);
+  assert.deepEqual(texts(s.snapshot("s1", LIMITS)), ["user:m1", "assistant:m2", "user:m3", "assistant:m4"]);
+});
+
+test("R-4：检查点长尾（>1MB）恢复走异步，语义与同步恢复一致", { timeout: 60000 }, async () => {
+  const dir = tmpDir();
+  const w = new RoomStore(dir, {
+    persist: true,
+    prewarm: false,
+    ckptMinBytes: 1024,
+    ckptIntervalBytes: 1024 * 1024 * 1024, // 只写第一个检查点，之后全是尾巴
+  });
+  const head = [];
+  for (let i = 1; i <= 100; i++) head.push(asst(`head-${i}`, i));
+  w.seedOrMerge("big", head);
+  w.flushAll();
+  const ptr = readPointer(dir, "big");
+  assert.ok(ptr && ptr.off > 0, "应已写出检查点");
+  const tailCount = 15000; // 短消息 ~110B/条 ≈ 1.65MB 尾巴 > 1MB 同步阈值
+  for (let i = 1; i <= tailCount; i++) w.record("big", end(user(`tail-${i}`, 1000 + i)));
+  w.flushAll();
+  const totalSeq = 100 + tailCount;
+  assert.equal(w.info("big").seq, totalSeq);
+
+  const s = new RoomStore(dir, { persist: true, prewarm: false });
+  let syncCalls = 0;
+  const origScan = s._scanChunksSync;
+  s._scanChunksSync = (...args) => { syncCalls++; return origScan(...args); };
+  const info0 = s.info("big");
+  assert.equal(info0.indexing, true, "检查点尾巴超过阈值时首次打开应走异步恢复");
+  assert.equal(syncCalls, 0, "长尾恢复不许走同步尾扫描");
+  await s.whenIndexed("big");
+  assert.equal(syncCalls, 0);
+  const info = s.info("big");
+  assert.equal(info.seq, totalSeq);
+  assert.equal(info.msgCount, totalSeq);
+  assert.equal(info.rev, w.info("big").rev, "rev 与写方一致（检查点世代）");
+  assert.equal(info.indexFailed, false);
+  const room = s.rooms.get("big");
+  assert.ok(room.ckpt && room.ckpt.off === ptr.off, "恢复后仍挂着原检查点（不是全量重扫）");
+  const snap = s.snapshot("big", { limit: 100000, maxBytes: 64 * 1024 * 1024 });
+  assert.equal(snap.truncated, false);
+  assert.equal(snap.items.length, totalSeq);
+  const delivered = texts(snap);
+  assert.equal(delivered[0], "assistant:head-1");
+  assert.equal(delivered[delivered.length - 1], `user:tail-${tailCount}`);
+});
+
+test("R-4：被打开接管的预热索引不再受 PREWARM_TTL 支配", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const dir = tmpDir();
+  writeBigRoom(dir, 800, "big");
+  const s = new RoomStore(dir, {
+    persist: true,
+    prewarm: true,
+    prewarmMinBytes: 1,
+    prewarmMaxRooms: 8,
+    prewarmTtlMs: 25,
+    ckptMinBytes: 1024 * 1024 * 1024,
+    ckptIntervalBytes: 1024 * 1024 * 1024,
+  });
+  await s.prewarmReady();
+  assert.equal(s._prewarmed.size, 1);
+  assert.equal(s.info("big").seq, 800, "首次打开接管预热索引");
+  assert.equal(s._prewarmed.size, 0, "接管后条目离开 _prewarmed（TTL 计时随之清除）");
+  const adopted = s.rooms.get("big");
+  t.mock.timers.tick(60_000); // 远超 TTL
+  assert.equal(s.rooms.get("big"), adopted, "接管后的索引跟随房间缓存纪律，不被 TTL 摘除");
+  assert.equal(s.info("big").seq, 800);
+});
+
+test("R-4：索引期间 reset 取消任务，排队操作随旧世代丢弃、旧历史不复活", { timeout: 60000 }, async () => {
+  const dir = tmpDir();
+  writeBigRoom(dir, 5000, "big");
+  const s = new RoomStore(dir, {
+    persist: true,
+    prewarm: false,
+    syncScanMaxBytes: 64 * 1024,
+    ckptMinBytes: 1024 * 1024 * 1024,
+    ckptIntervalBytes: 1024 * 1024 * 1024,
+  });
+  assert.equal(s.info("big").indexing, true);
+  s.record("big", end(user("old-gen-live", 90001))); // 排队中，属于旧世代
+  assert.equal(s.reset("big"), true);
+  assert.equal(s.indexing("big"), false, "reset 后占位状态立即清除");
+  // 等被取消的任务在分块边界自行收尾
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(s._indexJobs.size, 0);
+  const info = s.info("big");
+  assert.equal(info.seq, 0);
+  assert.equal(info.msgCount, 0);
+  const seed = s.seedOrMerge("big", [user("new-gen", 1)]);
+  assert.equal(seed.seeded, 1);
+  assert.deepEqual(texts(s.snapshot("big", LIMITS)), ["user:new-gen"], "旧世代历史与排队事件都不能复活");
 });

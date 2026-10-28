@@ -213,7 +213,7 @@ test("relay 中-16：viewer 断线后无 key 命令的结果仍会执行 onResul
   const target = "sess-deleted-while-offline";
   relay.store.seedOrMerge(target, [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 }]);
   relay.store.flushAll();
-  const file = path.join(dir, target + ".jsonl");
+  const file = relay.store._file(target);
   assert.equal(fs.existsSync(file), true, "正文文件已落盘");
 
   v.send({

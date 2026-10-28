@@ -818,7 +818,30 @@ class Rooms {
   bindStore(store) {
     this._transcriptStore = store || null;
     if (!this._transcriptStore) return;
+    // 房文件分组定位（store 的目录两级分组/存量迁移靠它定房间的家）。
+    if (typeof store.setLocator === "function") {
+      store.setLocator((id) => this.locateRoom(id));
+    }
     for (const r of this.map.values()) this._stampStore(r);
+  }
+
+  /** store 的房间定位：注册表优先（deviceId/cwd 在 room_register 时已打戳）；
+   *  注册表还没有（进程刚起、存量迁移）时，按设备名册逐台查会话索引兜底。
+   *  都查不到返回 null（store 归 _未分类，数据不丢）。 */
+  locateRoom(id) {
+    const r = this.map.get(id);
+    if (r && (r.deviceId || r.cwd)) return { deviceId: r.deviceId || null, cwd: r.cwd || null };
+    if (this.sessionLookup && typeof this.deviceSnapshot === "function") {
+      let devs = [];
+      try { devs = this.deviceSnapshot(); } catch {}
+      for (const dev of devs) {
+        if (!dev || !dev.id) continue;
+        let session = null;
+        try { session = this.sessionLookup(dev.accountId || DEFAULT_ACCOUNT, dev.id, id); } catch {}
+        if (session) return { deviceId: dev.id, cwd: session.cwd || null };
+      }
+    }
+    return null;
   }
   _stampStore(r) {
     if (r && this._transcriptStore && !r.store) r.store = this._transcriptStore;

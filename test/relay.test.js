@@ -1862,7 +1862,7 @@ test("room_closed 收起待发队列和还在写的气泡；在线会话不收�
   assert.equal(settled.seq, undefined);
   assert.equal(settled.rev, undefined);
   assert.equal(relay.store.info(ROOM).seq, seqBefore);
-  assert.equal(fs.existsSync(path.join(relay.cfg.dataDir, `${ROOM}.jsonl`)), false, "收起的两帧不落 store");
+  assert.equal(fs.existsSync(relay.store._file(ROOM)), false, "收起的两帧不落 store");
 
   const { v: late } = await viewer(relay);
   t.after(() => late.close());
@@ -2464,7 +2464,7 @@ test("agent_state：按房间缓存最后快照，新观众/增量重连补发�
   const clearReplay = await afterClear.type("room_event", (f) => f.event.type === "agent_state");
   assert.deepEqual(clearReplay.event, { type: "agent_state", agents: [], at: 124 });
 
-  const file = path.join(relay.cfg.dataDir, `${ROOM}.jsonl`);
+  const file = relay.store._file(ROOM);
   assert.equal(fs.readFileSync(file, "utf8").includes("agent_state"), false, "子智能体快照不落盘");
 });
 
@@ -2698,7 +2698,7 @@ test("task_list_state：按房间缓存最后状态，新观众/增量重连补�
   const clearReplay = await afterClear.type("room_event", (f) => f.event.type === "task_list_state");
   assert.deepEqual(clearReplay.event, { type: "task_list_state", tasks: [] });
 
-  const file = path.join(relay.cfg.dataDir, `${ROOM}.jsonl`);
+  const file = relay.store._file(ROOM);
   assert.equal(fs.readFileSync(file, "utf8").includes("task_list_state"), false, "清单状态不落盘");
 });
 
@@ -3195,7 +3195,7 @@ async function seedCopies(relay, { sessionId, deviceId, messages = [user("hi", 1
   room.deviceId = deviceId || null;
   relay.store.seedOrMerge(sessionId, messages);
   relay.store.flushAll();
-  const file = path.join(relay.cfg.dataDir, `${sessionId}.jsonl`);
+  const file = relay.store._file(sessionId);
   assert.equal(fs.existsSync(file), true, "正文文件已落盘");
   return file;
 }
