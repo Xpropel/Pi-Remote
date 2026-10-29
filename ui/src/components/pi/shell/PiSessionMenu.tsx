@@ -2,6 +2,7 @@ import { useId, type KeyboardEvent, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { MenuItem, MenuLabel, MenuSeparator, MenuSurface } from "@/components/kit"
 import {
+  Clock,
   Copy,
   CopyPlus,
   Download,
@@ -31,7 +32,7 @@ export interface PiSessionMenuSession {
 }
 
 /** 菜单项（onSelect 收到的值；也写在行的 data-pi-menu-item 上）。copy-cwd 只在顶栏 …（B04）的菜单里有 */
-export type PiSessionMenuAction = "open" | "rename" | "fork" | "clone" | "export" | "tab" | "tree" | "compact" | "copy-cwd" | "copy-id" | "delete"
+export type PiSessionMenuAction = "open" | "rename" | "fork" | "clone" | "export" | "tab" | "tree" | "compact" | "schedule" | "copy-cwd" | "copy-id" | "delete"
 
 /** P5：一项的可用性（pi/model/sessionMenu.ts 的 PiSessionMenuItemState） */
 export type PiSessionMenuItemState = { disabled: boolean; reason?: string }
@@ -57,6 +58,11 @@ export interface PiSessionMenuProps extends Pick<PiOverlayControl, "static"> {
   state?: Partial<Record<PiSessionMenuAction, PiSessionMenuItemState>>
   /** P5（顶栏 …，B04）：多一项"复制工作目录" */
   copyCwd?: boolean
+  /**
+   * 定时消息（设计 D §3.7）：这一房的 armed 排期数。给了才出"定时消息（N）"项
+   * （旧 relay 无 room.schedule 时容器不给，菜单与从前一字不变）；选中走 onSelect("schedule")。
+   */
+  scheduleCount?: number
   className?: string
 }
 
@@ -100,7 +106,7 @@ function onSheetMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
  * 静态态（画廊截图）是 static 模式，位置由屏幕给。可交互（P4.1）：放在 PiMenu 里时 MenuSurface 就是 Radix ContextMenu / DropdownMenu
  * 的 Content（焦点进菜单、↑↓、Enter 选中、Esc / 点外面关闭、焦点回触发元素）；在手机 sheet 里时首个可用项可 Tab 到，↑↓ / Enter / 空格可用。
  */
-export function PiSessionMenu({ variant, session, deleteArmed = false, highlighted, onSelect, state, copyCwd = false, static: staticProp, className }: PiSessionMenuProps) {
+export function PiSessionMenu({ variant, session, deleteArmed = false, highlighted, onSelect, state, copyCwd = false, scheduleCount, static: staticProp, className }: PiSessionMenuProps) {
   const isStatic = usePiStatic(staticProp)
   const context = usePiMenuSurface()
   const reasonBase = useId()
@@ -123,6 +129,7 @@ export function PiSessionMenu({ variant, session, deleteArmed = false, highlight
     [
       { key: "tree", icon: <ListTree />, label: "会话树…" },
       { key: "compact", icon: <FoldVertical />, label: "压缩上下文…", disabled: !!ops },
+      ...(scheduleCount !== undefined ? [{ key: "schedule" as const, icon: <Clock />, label: `定时消息（${scheduleCount}）` }] : []),
     ],
     [
       ...(copyCwd ? [{ key: "copy-cwd" as const, icon: <Folder />, label: "复制工作目录" }] : []),

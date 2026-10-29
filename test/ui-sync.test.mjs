@@ -1830,8 +1830,10 @@ test("注意力恢复通道接线（R3-1）：名册双点喂种子、room_atten
 
   // 两处名册归约（auth_result + room_list）都在边沿记账之后紧接着消费同一份名册的 relay 摘要
   assert.equal((relay.match(/roomTurnSeedsOf\(msg\.rooms\)/g) || []).length, 2, "auth 与 room_list 都喂名册种子")
-  // 种子入口共三处：两处名册 + room_attention 帧一处；不许再有第四处自造合并
-  assert.equal((relay.match(/seedRoomTurnEnds\(/g) || []).length, 3, "种子合并入口恰三处")
+  // 种子合并只走 seedRoomTurnEnds 这一个入口函数（不许自造合并）：调用点六处——
+  // 两处名册 + room_attention 帧一处 + 收件箱账本三处（D-§1：auth/room_list 的 inbox
+  // 快照 + inbox_update 增量，账本 turn 条目同为「只补空缺」的种子，与名册摘要同源同规则）
+  assert.equal((relay.match(/seedRoomTurnEnds\(/g) || []).length, 6, "种子合并入口函数唯一，调用点恰六处")
   // room_attention 与 room_offline 同级：必须在房间过滤 return 之前处理（说的正是别房）
   const attentionAt = relay.indexOf('type === "room_attention"')
   const filterAt = relay.indexOf("if (msg.room && msg.room !== roomRef.current) return")

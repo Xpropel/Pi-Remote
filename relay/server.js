@@ -36,6 +36,8 @@ const { PAIR_FAIL_WINDOW_MS, requestSource } = require("./pairing");
 const { commandTimeoutMs, pruneDedupe } = require("./commands");
 const { normalizePlatform, normPath, cwdAllowed, cleanProjects, buildDeviceList } = require("./devices");
 const { cancelResend, Rooms, shrinkImagesDeep } = require("./rooms");
+const { InboxStore } = require("./inbox");
+const { ScheduleStore, ScheduleEngine } = require("./schedule");
 const { startLocalServer } = require("./local");
 const { startViewerServer } = require("./viewer");
 const { UsageBroker } = require("./usage");
@@ -217,6 +219,24 @@ function startRelay(overrides = {}) {
       persist: !!cfg.persistTranscripts,
     });
     rooms.bindStore(store);
+    // 收件箱账本（设计 D §1）：与 prefs 同根落盘（accounts 目录下 per-account inbox.json），
+    // 只存元数据；prime 主账号让重启后的第一份 room_list 就带上恢复的未读条目。
+    const inboxStore = new InboxStore(cfg.accountsDir);
+    inboxStore.prime(normalizeAccount(cfg.accountId));
+    rooms.bindInbox(inboxStore);
+    // 定时排期（设计 D §3）：排期表与账本同根落盘（per-account schedules.json）；计时器
+    // 是全局职责——primeAll 把所有账号的存量排期都读回来，重启后 armed 排期全部恢复
+    // 算账，不等对应账号先有房间活动。引擎在两个通道监听就绪后再 start（见 ready）。
+    const scheduleStore = new ScheduleStore(cfg.accountsDir);
+    scheduleStore.primeAll();
+    const scheduleEngine = new ScheduleEngine({
+      store: scheduleStore,
+      inbox: inboxStore,
+      tickMs: cfg.scheduleTickMs,
+      graceMs: cfg.scheduleOnceGraceMs,
+      startGraceMs: cfg.scheduleStartGraceMs,
+    });
+    rooms.bindSchedule(scheduleEngine);
     // pairCodes：码 → {accountId, name, expiresAt}，只在内存；二维码链接（pair_request）申请的条目
     // 多带 pending:{ws, device, deviceToken?}，绑定申请连接、连接断开即删码；pairFailures：来源 → 它最近配对失败的时间戳
     const ctx = { index, devices, pairCodes: new Map(), pairFailures: new Map(), startedAt: Date.now(), usage: null };
@@ -235,6 +255,7 @@ function startRelay(overrides = {}) {
       /** 启动失败时把已经起来的一半收干净（监听、心跳、定时器、缓存），不留悬挂资源。 */
       const cleanup = () => {
         if (evictTimer) clearInterval(evictTimer);
+        try { scheduleEngine.stop(); } catch {}
         try { usageBroker.dispose(); } catch {}
         try { for (const r of rooms.map.values()) cancelResend(r); } catch {}
         try { for (const q of rooms.viewerQueries.values()) clearTimeout(q.timer); } catch {}
@@ -294,16 +315,21 @@ function startRelay(overrides = {}) {
           if (a || b) log("内存淘汰：房间", a, "个，存储热缓存", b, "个");
         }, Math.min(cfg.storeIdleEvictMs, 10 * 60 * 1000));
         evictTimer.unref();
+        // 排期引擎在监听就绪后才起 tick：启动算账（含过期处理）与投递都以通道可用为前提。
+        scheduleEngine.start();
         resolve({
           cfg,
           rooms,
           store,
+          inbox: inboxStore,
+          schedule: scheduleEngine,
           localPort,
           viewerPort,
           index,
           devices,
           close() {
             clearInterval(evictTimer);
+            scheduleEngine.stop();
             if (localWss._keepalive) clearInterval(localWss._keepalive);
             if (viewer.wss._keepalive) clearInterval(viewer.wss._keepalive);
             for (const r of rooms.map.values()) cancelResend(r);

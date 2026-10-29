@@ -33,10 +33,11 @@ export function CommandPaletteContainer(props: PiContainerProps) {
       uiPrompt: relay.uiPrompt,
       turnEnd: relay.turnEnd,
       roomTurnEnds: relay.roomTurnEnds,
+      inbox: relay.inbox,
       selectedDevice: relay.selectedDevice,
     })
     return paletteSessionsOf({ devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, attention, currentRoomId: relay.roomId })
-  }, [open, relay.roomId, relay.rooms, relay.dialogs, relay.uiPrompt, relay.turnEnd, relay.roomTurnEnds, relay.selectedDevice, relay.devices, relay.sessionsByDevice])
+  }, [open, relay.roomId, relay.rooms, relay.dialogs, relay.uiPrompt, relay.turnEnd, relay.roomTurnEnds, relay.inbox, relay.selectedDevice, relay.devices, relay.sessionsByDevice])
   if (!open) return null
   const reason = paletteOfflineReasonOf({
     authed: relay.authed,

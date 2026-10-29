@@ -26,6 +26,9 @@ const AUTH_FAIL_SOURCES_MAX = 1000;
 /** O2 应答回执等待上限：桥正常都即时回 dialog_answer_result；超过这个数按 timeout 结案，不让答题端干挂。 */
 const DIALOG_ANSWER_RESULT_TIMEOUT_MS = 15000;
 
+/** G2 审批门档位（与桥侧 APPROVAL_GATE_TIERS 同值）：relay 只转发合法档位，非法值不带（桥保持当前值）。 */
+const APPROVAL_GATE_TIERS = ["high-risk", "all-non-readonly", "list"];
+
 const ADMIN_REQUIRED = "admin_required";
 const ADMIN_REQUIRED_TEXT = "需要管理员令牌";
 
@@ -625,6 +628,11 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
               const rec = prefsStore.get(viewerAccount());
               authResult.prefs = rec ? { subset: rec.subset, rev: rec.rev, updatedAt: rec.updatedAt } : null;
             }
+            // 收件箱账本快照（设计 D §1，新面按 cap 剥离）：声明了 room.inbox 才带 inbox 字段；
+            // 未声明的旧端 auth_result 里根本没有这个字段，既有面一律不动。
+            if (hasCap(ws, "room.inbox")) {
+              authResult.inbox = rooms.inboxSnapshot();
+            }
             send(ws, authResult, cfg);
             replaySessionArchives(ws, devices, cfg);
             log("viewer 已认证（当前房间", rooms.list().length, "个）", helloText(s));
@@ -643,9 +651,75 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             ctx.usage.handleGet(ws, msg, viewerAccount());
             break;
           }
-          case "list_rooms":
-            send(ws, { type: "room_list", devices: rooms.deviceSnapshot(), rooms: rooms.listFor(ws) }, cfg);
+          case "list_rooms": {
+            const listFrame = { type: "room_list", devices: rooms.deviceSnapshot(), rooms: rooms.listFor(ws) };
+            // 收件箱账本快照（设计 D §1）：与 auth_result 同口径，按 cap 附带，未声明不带字段。
+            if (hasCap(ws, "room.inbox")) listFrame.inbox = rooms.inboxSnapshot();
+            send(ws, listFrame, cfg);
             break;
+          }
+          case "inbox_dismiss": {
+            // 收件箱手动清除（设计 D §1）：relay 本地命令，不转发桥；只清 done/error，
+            // waiting 拒清在账本层裁决（防假清零）。结果经 inbox_update 广播对齐各端（含发送端），
+            // 本命令不单独回执（与 dialog_answer_switch 的无回执下达同姿势）。
+            if (!hasCap(ws, "room.inbox")) {
+              send(ws, errorFrame("unsupported", "此端未声明 room.inbox 能力", { id: msg.id ? String(msg.id) : null }), cfg);
+              return;
+            }
+            rooms.dismissInbox(typeof msg.key === "string" ? msg.key : "");
+            break;
+          }
+          case "schedule_create": {
+            // 定时/心跳排期（设计 D §3）：relay 本地命令，绝不转发桥——计时器归 relay，
+            // 到点由 relay 经既有命令通道下发 prompt。与 prompt 同一鉴权面（本连接已
+            // 通过 viewer 鉴权）。校验/上限在引擎裁决；成功回执带新条目，清单变化另经
+            // schedule_update 广播对齐各端。
+            const origId = msg.id ? String(msg.id) : null;
+            if (!hasCap(ws, "room.schedule")) {
+              send(ws, errorFrame("unsupported", "此端未声明 room.schedule 能力", { id: origId }), cfg);
+              return;
+            }
+            const roomId = typeof msg.roomId === "string" ? msg.roomId : "";
+            const room = rooms.peek(roomId);
+            if (!room) {
+              send(ws, ackFrame(origId, false, { room: roomId || undefined, error: "会话不存在", code: "no_room" }), cfg);
+              return;
+            }
+            const res = rooms.createSchedule(viewerAccount(), { ...msg, roomId: room.id });
+            if (!res.entry) {
+              send(ws, ackFrame(origId, false, { room: room.id, error: res.error, code: res.code }), cfg);
+              return;
+            }
+            send(ws, ackFrame(origId, true, { room: room.id, data: res.entry }), cfg);
+            break;
+          }
+          case "schedule_cancel": {
+            // 取消一条 armed 排期（终态条目取消无意义，回 no_schedule）。排期 id 走
+            // scheduleId 字段：帧的 id 是回执对号位，不能占用。
+            const origId = msg.id ? String(msg.id) : null;
+            if (!hasCap(ws, "room.schedule")) {
+              send(ws, errorFrame("unsupported", "此端未声明 room.schedule 能力", { id: origId }), cfg);
+              return;
+            }
+            const entry = rooms.cancelSchedule(viewerAccount(), typeof msg.scheduleId === "string" ? msg.scheduleId : "");
+            if (!entry) {
+              send(ws, ackFrame(origId, false, { error: "定时消息不存在或已结束", code: "not_found" }), cfg);
+              return;
+            }
+            send(ws, ackFrame(origId, true, { room: entry.roomId, data: entry }), cfg);
+            break;
+          }
+          case "schedule_list": {
+            // 单房排期清单直查：与 room_list 条目内 schedules / schedule_update 同一数据源。
+            const origId = msg.id ? String(msg.id) : null;
+            if (!hasCap(ws, "room.schedule")) {
+              send(ws, errorFrame("unsupported", "此端未声明 room.schedule 能力", { id: origId }), cfg);
+              return;
+            }
+            const roomId = typeof msg.roomId === "string" ? msg.roomId : "";
+            send(ws, ackFrame(origId, true, { room: roomId || undefined, data: { schedules: rooms.scheduleList(viewerAccount(), roomId) } }), cfg);
+            break;
+          }
           case "get_sessions": {
             const origId = msg.id ? String(msg.id) : null;
             const deviceId = typeof msg.deviceId === "string" ? msg.deviceId.trim() : "";
@@ -938,6 +1012,33 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             const enabled = msg.enabled === true;
             room.dialogRemoteAnswer = enabled;
             if (room.local) send(room.local, { type: "dialog_answer_switch", room: room.id, enabled }, cfg);
+            send(ws, ackFrame(origId, true, { room: room.id }), cfg);
+            break;
+          }
+          case "ask_user_switch": {
+            // G1 开关下达（与 dialog_answer_switch 同路同纪律）：relay 存当前值，桥重连按存值重下达
+            const room = rooms.touch(rooms.peek(String(msg.room || "")));
+            const origId = msg.id ? String(msg.id) : null;
+            if (!room) { send(ws, ackFrame(origId, false, { error: "会话不存在", code: "no_room" }), cfg); return; }
+            const enabled = msg.enabled === true;
+            room.askUserEnabled = enabled;
+            if (room.local) send(room.local, { type: "ask_user_switch", room: room.id, enabled }, cfg);
+            send(ws, ackFrame(origId, true, { room: room.id }), cfg);
+            break;
+          }
+          case "approval_gate_switch": {
+            // G2 开关下达（同上）：存整份配置（enabled + 合法 tier + 名单），重下达时原样发回；
+            // tier/tools 不合法就不带——桥侧只在合法时采纳，缺省即保持桥当前值
+            const room = rooms.touch(rooms.peek(String(msg.room || "")));
+            const origId = msg.id ? String(msg.id) : null;
+            if (!room) { send(ws, ackFrame(origId, false, { error: "会话不存在", code: "no_room" }), cfg); return; }
+            const stored = { enabled: msg.enabled === true };
+            if (APPROVAL_GATE_TIERS.includes(msg.tier)) stored.tier = msg.tier;
+            if (Array.isArray(msg.tools)) {
+              stored.tools = msg.tools.filter((t) => typeof t === "string" && t && t.length <= 128).slice(0, 64);
+            }
+            room.approvalGateSwitch = stored;
+            if (room.local) send(room.local, { type: "approval_gate_switch", room: room.id, ...stored }, cfg);
             send(ws, ackFrame(origId, true, { room: room.id }), cfg);
             break;
           }

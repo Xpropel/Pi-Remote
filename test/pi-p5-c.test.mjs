@@ -354,12 +354,20 @@ describe("设置 / 显示选项：偏好读写口径（三项读旧键、两边�
       busyDelivery: "follow_up",
       sendNow: "after_tool",
       dialogRemote: true,
+      askUser: false,
+      approvalGate: false,
+      approvalGateTier: "high-risk",
       sound: true,
       deviceFilter: "d-mbp",
       grouping: "device",
     })
     assert.equal(settingsPrefsOf(DEFAULT_PI_PREFS, {}, "auto").deviceFilter, "all")
     assert.equal(settingsPrefsOf(DEFAULT_PI_PREFS, {}, "auto").busyDelivery, "steer")
+    // G1/G2 开关同 dialogRemote 口径：旧键给了就读旧键（useRelay 下达现读旧键），没给才落新偏好
+    const g = settingsPrefsOf({ ...DEFAULT_PI_PREFS, askUserEnabled: false, approvalGateTier: "list" }, { askUserEnabled: true, approvalGateEnabled: true }, "auto")
+    assert.equal(g.askUser, true, "旧键 askUserEnabled 优先于新偏好")
+    assert.equal(g.approvalGate, true)
+    assert.equal(g.approvalGateTier, "list", "旧键没给档位 → 落新偏好")
   })
   test("写：提示音 / 网页回答 = 新偏好 + 旧键；立即发送只写旧键；投递 = 偏好 + sendMode；全部设备 = null；字号没有落点", () => {
     assert.deepEqual(settingsWritesOf({ sound: true }), [
@@ -374,6 +382,17 @@ describe("设置 / 显示选项：偏好读写口径（三项读旧键、两边�
     assert.deepEqual(settingsWritesOf({ deviceFilter: "all" }), [{ kind: "pref", key: "deviceFilter", value: null }])
     assert.deepEqual(settingsWritesOf({ fontSize: "large" }), [])
     assert.deepEqual(settingsWritesOf({ dialogRemote: false }).map((w) => w.kind), ["pref", "legacy"])
+    // G1/G2 开关同网页回答口径：新偏好 + 旧键两边一起写
+    assert.deepEqual(settingsWritesOf({ askUser: true }), [
+      { kind: "pref", key: "askUserEnabled", value: true },
+      { kind: "legacy", patch: { askUserEnabled: true } },
+    ])
+    assert.deepEqual(settingsWritesOf({ approvalGate: true, approvalGateTier: "list" }), [
+      { kind: "pref", key: "approvalGateEnabled", value: true },
+      { kind: "legacy", patch: { approvalGateEnabled: true } },
+      { kind: "pref", key: "approvalGateTier", value: "list" },
+      { kind: "legacy", patch: { approvalGateTier: "list" } },
+    ])
   })
 })
 
@@ -459,6 +478,19 @@ describe("旧键 pi_remote_style 的三项（model/legacyStyle.ts；P7 B4 前对
     assert.equal(JSON.parse(merged).theme, "forest", "别的字段原样保留")
     assert.equal(JSON.parse(merged).chrome, "current")
     assert.equal(legacyStyleOf(legacyStyleWrite(null, { completionSound: true })).completionSound, true)
+  })
+  test("G1/G2 开关住同一个旧键：askGatePrefsOf 单独读、legacyStyleWrite 合并写入且不伤旧三项", async () => {
+    const { ASK_GATE_DEFAULTS, askGatePrefsOf, legacyStyleOf, legacyStyleWrite } = await import("../ui/src/pi/model/legacyStyle.ts")
+    assert.deepEqual({ ...ASK_GATE_DEFAULTS }, { askUserEnabled: false, approvalGateEnabled: false, approvalGateTier: "high-risk" })
+    for (const raw of [null, "{", "[]", JSON.stringify({ askUserEnabled: "yes", approvalGateTier: "bogus" })]) {
+      assert.deepEqual(askGatePrefsOf(raw), { ...ASK_GATE_DEFAULTS }, String(raw))
+    }
+    const full = JSON.stringify({ completionSound: true, askUserEnabled: true, approvalGateEnabled: true, approvalGateTier: "all-non-readonly" })
+    assert.deepEqual(askGatePrefsOf(full), { askUserEnabled: true, approvalGateEnabled: true, approvalGateTier: "all-non-readonly" })
+    const merged = legacyStyleWrite(full, { approvalGateTier: "list" })
+    assert.deepEqual(askGatePrefsOf(merged), { askUserEnabled: true, approvalGateEnabled: true, approvalGateTier: "list" })
+    assert.equal(legacyStyleOf(merged).completionSound, true, "写 G1/G2 不伤旧三项")
+    assert.deepEqual(askGatePrefsOf(legacyStyleWrite(merged, { completionSound: false })), { askUserEnabled: true, approvalGateEnabled: true, approvalGateTier: "list" }, "写旧三项不伤 G1/G2 字段（原 JSON 其余字段保留）")
   })
 })
 /* ---------------- P5 第 2 轮（R2/reviews/p5.json） ---------------- */

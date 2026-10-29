@@ -60,6 +60,9 @@ export function settingsPrefsFor(p: Pick<PiContainerProps, "ui" | "relay">): PiS
     // v2 独立性：不直接读写旧键 pi_remote_style（浏览器存储），"排队消息立即发送"的旧键档位不再提供开关
     sendNow: "interrupt",
     dialogRemote: p.ui.prefs.dialogRemoteAnswer,
+    askUser: p.ui.prefs.askUserEnabled,
+    approvalGate: p.ui.prefs.approvalGateEnabled,
+    approvalGateTier: p.ui.prefs.approvalGateTier,
     sound: p.ui.prefs.completionSound,
     deviceFilter: p.ui.prefs.deviceFilter ?? "all",
     grouping: p.ui.prefs.grouping,

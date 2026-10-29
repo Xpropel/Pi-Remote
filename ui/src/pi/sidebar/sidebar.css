@@ -162,6 +162,18 @@
 }
 .sb-root .sb-plainrow:hover { background: var(--sb-hover-bg, transparent); }
 .sb-root .sb-archive-glyph { font-size: 12px; }
+/* 待答行角标（设计 D §1）：计数只出宿主给的 inboxCount（attention 单一出口），组件不自算 */
+.sb-root .sb-plainrow-badge {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--sb-hover-bg, rgba(127, 127, 127, 0.18));
+  color: var(--sb-t1, currentColor);
+  font-size: 11.5px;
+  line-height: 18px;
+  text-align: center;
+}
 .sb-root .sb-grouphead {
   display: flex;
   align-items: center;
@@ -263,6 +275,7 @@
 [data-pi-sidebar] .sb-bubble-title { margin: 0 0 3px; color: var(--sb-ink1, currentColor); font-size: 13px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 [data-pi-sidebar] .sb-bubble-line { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--sb-icon, currentColor); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 [data-pi-sidebar] .sb-bubble-sub { margin: 3px 0 0 19px; color: var(--sb-t3, currentColor); font-size: 11px; }
+[data-pi-sidebar] .sb-bubble-status { margin: 7px 0 0; color: var(--sb-t2, currentColor); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sb-root .sb-identity { flex: none; padding: 6px 12px 8px; }
 .sb-root .sb-identity-row { display: flex; align-items: center; gap: 9px; height: 36px; padding: 0 2px; }
 .sb-root .sb-identity-tile { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: none; border-radius: 999px; background: var(--sb-identity-bg, transparent); color: var(--sb-identity-fg, currentColor); }

@@ -69,6 +69,12 @@ export interface CPrefs {
   sendNow: "interrupt" | "after_tool"
   /** 网页回答电脑上的确认框 */
   dialogRemote: boolean
+  /** G1：允许智能体用 ask_user 工具提问（默认关） */
+  askUser: boolean
+  /** G2：工具执行审批门（默认关） */
+  approvalGate: boolean
+  /** G2 审批档位（默认只问高危） */
+  approvalGateTier: "high-risk" | "all-non-readonly" | "list"
   /** 完成提示音（默认关） */
   sound: boolean
   /** 列表：设备筛选与分组 */

@@ -66,9 +66,12 @@ const PROTOCOL = {
     "prefs.sync": "主题偏好跨设备同步（R4-1）：同步范围只取通用外观五字段 {theme, chrome, font, size, mono}（faces/color 是皮肤内部细节、completionSound/queueSend 是本设备行为，都不入）。帧：prefs_set{subset, baseRev}（viewer→relay）/ prefs_saved{rev, updatedAt}（relay→发送端回执）/ prefs_changed{subset, rev, updatedAt}（relay→同账户其他 viewer 广播，发送端不收）；auth_result 增 prefs{subset, rev, updatedAt} | null 快照字段。冲突口径 LWW：relay 维护 per-account 单调 rev、以到达顺序裁决（不信客户端时钟），发送端 baseRev 落后不拒绝、但必须以回带 rev 对齐本地。relay per-account 存储（内存态 + 小文件落盘，落盘失败降级纯内存态）。未声明 prefs.sync 的 viewer 不收 prefs_changed、auth_result 不带 prefs 字段（只剥新面）",
     "sync.v3": "local 通道支持 room_registered / sync / snapshot{mode:append} 对齐",
     "health": "viewer 端口提供 GET /healthz",
-    "dialog.respond": "对话框应答（O2，接管语义）：开关 dialogRemoteAnswer 开 AND 房间有 viewer 在线才接管（任一假落回 O1 透传本机弹窗，fail-open）。帧：dialog_open{…,answerable:true}（接管时带）/ dialog_answer{dialogId,action:allow|submit|deny,value?,note?}（viewer→relay→桥，先答广播：首达 resolve、迟到回 dialog_gone）/ dialog_close{dialogId,outcome,reason:answered|denied|timeout|aborted,note?}（裁决后全端广播收回）/ dialog_gate{hasViewers}（relay→桥：房间 viewer 订阅数 0↔>0 推送，桥重连补发当前值）/ dialog_answer_switch{enabled}（UI→relay→桥：开关下达，桥仅内存持有、重启回默认关，桥重连由 relay 按存值重下达）/ dialog_answer_result{aid,dialogId,ok,code?}（桥→relay→答题 viewer 的回执通道）/ dialog_claim{dialogId}（可选意向提示：仅供他端显示正在作答，不承载应答权，一期未实现流程）。Deny 理由只随帧广播供 UI 呈现，不回传模型（resolve 值域装不下）",
+    "dialog.respond": "对话框应答（O2，接管语义）：开关 dialogRemoteAnswer 开 AND 房间有 viewer 在线才接管（任一假落回 O1 透传本机弹窗，fail-open）。帧：dialog_open{…,answerable:true}（接管时带）/ dialog_answer{dialogId,action:allow|submit|deny,value?,note?}（viewer→relay→桥，先答广播：首达 resolve、迟到回 dialog_gone）/ dialog_close{dialogId,outcome,reason:answered|denied|timeout|aborted,note?}（裁决后全端广播收回）/ dialog_gate{hasViewers}（relay→桥：房间 viewer 订阅数 0↔>0 推送，桥重连补发当前值）/ dialog_answer_switch{enabled}（UI→relay→桥：开关下达，桥仅内存持有、重启回默认关，桥重连由 relay 按存值重下达）/ dialog_answer_result{aid,dialogId,ok,code?}（桥→relay→答题 viewer 的回执通道）/ dialog_claim{dialogId}（可选意向提示：仅供他端显示正在作答，不承载应答权，一期未实现流程）。Deny 理由只随帧广播供 UI 呈现，不回传模型（resolve 值域装不下）同路开关帧（UI→relay→桥：relay 存当前值，桥重连时按存值重下达，桥仅内存持有、重启回默认）：ask_user_switch{enabled}（G1 ask_user 工具开关）/ approval_gate_switch{enabled,tier?,tools?}（G2 工具执行审批门：tier ∈ high-risk|all-non-readonly|list，tools 为名单制工具名数组，桥只在字段合法时采纳）。",
     "dialog.observe": "对话框观察帧（O1）：dialog_open{dialogId,kind,title,options,message,placeholder,prefill,timeout,startedAt} / dialog_close{dialogId,outcome}；扩展 UI 状态帧 ext_status{statuses,widgets,title,working,tap} 与 ext_notify{message,level}。截断口径见 limits 的 dialog*/extNotify*/widget*/status* 项",
+    "room.activity": "房间最近事件摘要（设计 D §2.3）：relay 在 local 事件出口旁按房维护 lastEvent{type,toolName?,at}（只记白名单事件类型 turn_start/agent_start/message_update/tool_execution_start/compaction_start，toolName 只取工具名元数据，不带任何正文/参数；回合落定 agent_settled 即清）；room_list 房间条目给声明了本能力的连接多带 lastEvent（无事件时为 null），未声明的旧端由 roomsViewFor 剥掉；不新开广播帧，lastEvent 搭 room_list 顺风车（随 busy/名册变化广播刷新）。UI 侧据它生成 busy 中的状态短语（正在执行命令/正在回复等），与 lastTurnEnd（room.attention）分工：lastEvent 管运行中、lastTurnEnd 管落定未读",
     "room.dialogs": "房间等待摘要（P9 A）：room_list 的房间条目（含 auth_result.rooms、list_rooms 回包）给声明了本能力的连接多带 waiting[] 与 waitingPrompt；waiting 只含 dialogId/kind/title/startedAt/timeout/answerable（不带 options/message/prefill），离线房间恒为空；waitingPrompt 是旧的单槽 ui_prompt 兜底信号，只在 waiting 为空时有意义；摘要变化时向设备级 viewer 连接广播 room_waiting{room,waiting,waitingPrompt}（每帧全量，不按订阅过滤，与 room_attention 的对象相同）",
+    "room.inbox": "全局待答收件箱账本（设计 D §1）：relay 维护 per-account 账本（只存元数据：key/roomId/deviceId/kind/subkind/dialogKind/title≤120/answerable/at，绝不存 options/message/prefill 等正文；落盘 data/accounts/<safeKey>/inbox.json，跨 relay 重启恢复未读）；来源三路 = dialog 生命周期 / ui_prompt 兜底（仅无 dialog 条目时）/ 回合落定（lastTurnEnd 同源）；帧：auth_result 与 room_list 给声明了本能力的连接附带 inbox: InboxEntry[]（pending 全量快照），账本变化时向设备级 viewer 连接广播 inbox_update{upserts, removed}（与 room_waiting 同批听众，不按订阅过滤），inbox_dismiss{key}（viewer→relay 本地命令）只清 done/error 条目、waiting 拒清；未声明的端一律不收新字段/新帧（既有面零变化）。恢复期 waiting 条目未被房间补发确认即转 gone(stale)，turn 未读跨重启不丢",
+    "room.schedule": "定时/心跳排期（设计 D §3）：排期表归 relay（per-account 落盘 data/accounts/<safeKey>/schedules.json，tmp+fsync+rename、0600；relay 重启恢复全部 armed 并按 nextAt 算账，一次 tick 5 秒粗粒度扫描）；帧：schedule_create{roomId,text,segment:steer|follow_up,kind:once|every,at?|intervalMs?,maxFires?,expireAt?} / schedule_cancel{scheduleId} / schedule_list{roomId}（三者均为 viewer→relay 本地命令、经 ack 回执，绝不转发桥；scheduleId 单独成字段，不占帧 id 回执位），room_list 房间条目给声明了本能力的连接多带 schedules: ScheduleEntry[]（armed 全量 + retired/failed 保留 24h 内），变化时广播 schedule_update{room,schedules}（单房全量替换，与 room_waiting 同批听众纪律）；ScheduleEntry={id:sch_<随机>,accountId,roomId,deviceId,text,segment,kind,at?/intervalMs?,nextAt,firedCount,maxFires?,expireAt,state:armed|retired|failed,retireReason?:canceled|session_ended|expired|max_fires|missed|delivery_failed,createdAt,stateAt,lastFiredAt?,lastError?}；到点投递 = 经既有命令通道下发普通 prompt{text,streamingBehavior:steer|followUp,cid:sch_<id>_<拍号>}（恒带段位、只入队不打断；队列条目带 cid 故排队卡可标注来源拍号）；停止条件逐条：手动取消/会话结束（clearSessionState 与房间淘汰触发退休）/投递失败（命令回执失败、remote_message_failed 按 cid 对号、队列满 busy——once、every 都停并以 sched:<id> 写收件箱账本 error 条目）/maxFires/expireAt（缺省创建+24h，静默退休不进账本）；离线口径：once 顺延宽限 15 分钟（自原 at）内补投、超限作废（missed+账本提示），every 跳过错过的拍、房间恢复后 nextAt=恢复时刻+interval 重新起算；every 按计划节律推进 nextAt=max(now,上一拍)+intervalMs 不追赶；一期只支持纯文本（带 images 的创建以 bad_args 拒绝）；上限见 limits 的 schedule* 项",
     "session.purge": "删除后清理服务器副本（P9 B）：设备确认删除成功后，relay 清掉该会话的全部副本（名册里的离线房间、正文内存与落盘文件、会话库正文、索引里的旧行只留最小墓碑），并向所有在线 viewer 广播 session_removed{deviceId,ids}（只发给声明了本能力的连接）",
     "session.files": "设备级会话文件命令（P9 B，attach 声明）：attach 能按 sessionId 在设备的整个会话根目录里执行 delete_session，成功回 data{status:deleted|already_deleted,method:trash|unlink|null}",
     "fs.browse": "设备文件夹浏览（P9 C，attach 声明）：attach 能执行 list_dirs{path?,showHidden?}，只返回允许根目录内的目录名（不返回文件、不传文件内容），成功回 data{root,path,parent,entries,truncated}",
@@ -290,6 +293,14 @@ const PROTOCOL = {
     "widgetLineChars": 200,
     "statusTextMax": 200,
     "prefsSubsetMaxBytes": 2048,
+    "scheduleMinIntervalMs": 60000,
+    "scheduleTickMs": 5000,
+    "scheduleOnceGraceMs": 900000,
+    "scheduleDefaultExpireMs": 86400000,
+    "scheduleRoomArmedMax": 10,
+    "scheduleAccountArmedMax": 30,
+    "scheduleTextMaxBytes": 1048576,
+    "scheduleRetainMs": 86400000,
     "bodySearchQueryMin": 2,
     "bodySearchQueryMax": 100,
     "bodySearchFilesMax": 200,
@@ -900,6 +911,127 @@ function buildDialogOpen(kind: string, args: any[], dialogId: string, startedAt:
     if (prefill !== undefined) ev.prefill = prefill;
   }
   return ev;
+}
+
+/* ---------------- G1 ask_user 工具 / G2 工具审批门（design-ask-cards.md §3/§4） ----------------
+ * 两者都是 dialog 的「生产者」：只调 ctx.ui 四种原生 dialog，全部流量走既有 tap 管道
+ * （O1 观察 / O2 接管 / fail-open），本节不新增任何帧、不改协议。
+ * 开关口径：默认全关，状态只存桥内存（与 dialogRemoteAnswer 同纪律，重启回默认），
+ * 经 ask_user_switch / approval_gate_switch 帧下达（发送方在 relay/UI 侧另行接入）；
+ * 另有环境变量 PI_REMOTE_ASK_USER=1 / PI_REMOTE_APPROVAL_GATE=1 可作本机 opt-in。
+ * 审批门是本节唯一的 fail-closed 点：需要问而问不到（超时/取消/拒绝/无 UI）一律 block，
+ * 那是审批语义本身（§7），其余路径维持 fail-open 红线。 */
+
+export const ASK_USER_TOOL_NAME = "ask_user";
+export const ASK_FREE_TEXT_SENTINEL = "其他（自己输入）…";
+export const ASK_UNANSWERED_TEXT = "用户未作答（取消或超时）。请自行做出合理假设继续，并在回复中声明该假设。";
+export const APPROVAL_CHOICE_ONCE = "允许一次";
+export const APPROVAL_CHOICE_SESSION = "本会话都允许";
+export const APPROVAL_CHOICE_DENY = "拒绝";
+export const APPROVAL_GATE_TIERS = ["high-risk", "all-non-readonly", "list"];
+
+/** ask_user 的参数 schema（手写 JSON Schema，与本文件零依赖口径一致；pi 按 TypeBox 结构校验）。 */
+export const ASK_USER_PARAMETERS: any = {
+  type: "object",
+  properties: {
+    question: { type: "string", description: "要问用户的问题（一句话，建议 ≤120 字，会原样显示为对话框标题）" },
+    options: { type: "array", items: { type: "string" }, description: "可选项（2-20 项，每项 ≤80 字）。给出 options 即单选提问；不给则为自由文本提问" },
+    recommended: { type: "number", description: "推荐项下标（0 起）。只加「（推荐）」标记，不预选" },
+    allowFreeText: { type: "boolean", description: "单选时是否在末尾加「其他（自己输入）…」供用户自己输入（默认 true）" },
+    kind: { type: "string", enum: ["confirm"], description: "传 \"confirm\" 时为二元确认提问（忽略 options），detail 作为确认说明" },
+    detail: { type: "string", description: "confirm 提问的说明文本" },
+    placeholder: { type: "string", description: "自由文本输入框的占位提示" },
+    timeoutSec: { type: "number", description: "等待作答的超时秒数（10-600）。复杂问题可给更长；缺省走 120 秒兜底" },
+  },
+  required: ["question"],
+};
+
+/** timeoutSec → dialog 的 opts.timeout（毫秒）：钳制 10-600 秒，非法/缺省回 undefined（走协议兜底）。 */
+export function askTimeoutMs(timeoutSec: any): number | undefined {
+  if (typeof timeoutSec !== "number" || !Number.isFinite(timeoutSec)) return undefined;
+  return Math.min(600, Math.max(10, Math.round(timeoutSec))) * 1000;
+}
+
+/** options 校验（§3.1）：超限直接拒绝让模型改问法，不静默截断——截断选项会改变语义。 */
+export function validateAskOptions(options: any): { ok: true; options: string[] } | { ok: false; error: string } {
+  const max = PROTOCOL.limits.dialogOptionsMax;
+  const chars = PROTOCOL.limits.dialogOptionChars;
+  if (!Array.isArray(options)) return { ok: false, error: "ask_user 的 options 必须是字符串数组。请重新提问。" };
+  if (options.length < 2) return { ok: false, error: `ask_user 的 options 至少需要 2 项（当前 ${options.length} 项）。请补足选项，或改用自由文本提问（不传 options）。` };
+  if (options.length > max) return { ok: false, error: `ask_user 的 options 最多 ${max} 项（当前 ${options.length} 项）。请精简选项后重新提问。` };
+  const out: string[] = [];
+  for (const o of options) {
+    if (typeof o !== "string" || !o) return { ok: false, error: "ask_user 的 options 必须是非空字符串数组。请重新提问。" };
+    if (o.length > chars) return { ok: false, error: `ask_user 的选项「${o.slice(0, 20)}…」超过 ${chars} 字上限。请缩短选项文案后重新提问。` };
+    out.push(o);
+  }
+  return { ok: true, options: out };
+}
+
+/** 展示用选项组装：推荐项加「（推荐）」标记（只标记不预选，§3.1）；末尾按需加哨兵自由项。
+ *  标记后总长不许超 dialogOptionChars——超了先截正文再加标记，否则远程帧截断会让
+ *  应答值与原始选项对不上（dialogAnswerValue 按原文校验）。选项已满 dialogOptionsMax 时
+ *  不再加哨兵（帧里放不下，远程端看不见）。 */
+export function prepareAskOptions(options: string[], recommended: number, allowFreeText: boolean): { display: string[]; recAt: number; sentinelAt: number } {
+  const max = PROTOCOL.limits.dialogOptionsMax;
+  const chars = PROTOCOL.limits.dialogOptionChars;
+  const display = options.slice();
+  let recAt = -1;
+  if (Number.isInteger(recommended) && recommended >= 0 && recommended < display.length) {
+    recAt = recommended;
+    const marker = "（推荐）";
+    const base = display[recAt];
+    display[recAt] = (base.length + marker.length > chars ? base.slice(0, Math.max(0, chars - marker.length)) : base) + marker;
+  }
+  let sentinelAt = -1;
+  if (allowFreeText && display.length < max && !display.includes(ASK_FREE_TEXT_SENTINEL)) {
+    display.push(ASK_FREE_TEXT_SENTINEL);
+    sentinelAt = display.length - 1;
+  }
+  return { display, recAt, sentinelAt };
+}
+
+function askResultOk(answer: string, kind: string): any {
+  return { content: [{ type: "text", text: `用户回答：${answer}` }], details: { answer, cancelled: false, kind } };
+}
+
+function askResultUnanswered(reason?: string): any {
+  const details: any = { cancelled: true };
+  if (reason) details.reason = reason;
+  return { content: [{ type: "text", text: ASK_UNANSWERED_TEXT }], details };
+}
+
+function askResultError(message: string): any {
+  return { content: [{ type: "text", text: message }], details: { cancelled: false, error: true }, isError: true };
+}
+
+/** 审批门策略判定（§4.2 三档）：返回 true = 需要弹窗确认。
+ *  high-risk（建议默认）：destructive 问；readOnly 放行；hints 缺失/未知按「非只读、可能破坏」问。
+ *  all-non-readonly：非 readOnly 一律问。list：名单命中才问，hints 不参与。 */
+export function approvalGateDecision(tier: string, toolName: string, annotations: any, list: string[]): boolean {
+  if (tier === "list") return Array.isArray(list) && list.includes(toolName);
+  const readOnly = !!annotations && annotations.readOnlyHint === true;
+  const destructive = !!annotations && annotations.destructiveHint === true;
+  if (tier === "all-non-readonly") return !readOnly;
+  if (destructive) return true;
+  if (readOnly) return false;
+  return true;
+}
+
+/** 审批卡入参摘要（§4.3，只供人看、不回模型）：bash 取命令首行，write/edit 取路径，其余 JSON 截断。 */
+export function approvalSummary(toolName: string, input: any): string {
+  const max = PROTOCOL.limits.dialogTextMax;
+  try {
+    const inp = input && typeof input === "object" ? input : {};
+    if ((toolName === "bash" || toolName === "powershell") && typeof inp.command === "string") {
+      return inp.command.split(/\r?\n/)[0].slice(0, max);
+    }
+    if ((toolName === "write" || toolName === "edit") && typeof inp.path === "string") {
+      return inp.path.slice(0, max);
+    }
+    const s = JSON.stringify(input ?? {});
+    return (typeof s === "string" ? s : "").slice(0, max);
+  } catch { return ""; }
 }
 
 /** dialog 方法的 wrap：O2 接管判定 → 命中则桥持 promise 等远程裁决；否则 O1 观察路径
@@ -2914,6 +3046,19 @@ class Bridge {
    * 门控 = 开关开 AND relay 推送的 viewer 在线状态（dialog_gate 帧）为真，两条同真才接管。 */
   dialogAnswerEnabled = false;
   dialogGateHasViewers = false;
+  /* ---------------- G1/G2 生产者状态（开关仅内存、默认关，口径见文件 G1/G2 节） ----------------
+   * 环境变量只决定初始值：PI_REMOTE_ASK_USER=1 / PI_REMOTE_APPROVAL_GATE=1（+ _TIER / _TOOLS）。 */
+  askUserEnabled = process.env.PI_REMOTE_ASK_USER === "1";
+  /** registerTool 抛错（如同名冲突由宿主拒绝）后置真：ask 永远保持未激活 */
+  askUserRegisterFailed = false;
+  _askConflictLogged = false;
+  approvalGateEnabled = process.env.PI_REMOTE_APPROVAL_GATE === "1";
+  approvalGateTier: string = (APPROVAL_GATE_TIERS as readonly string[]).includes(process.env.PI_REMOTE_APPROVAL_GATE_TIER || "")
+    ? (process.env.PI_REMOTE_APPROVAL_GATE_TIER as string)
+    : "high-risk";
+  approvalGateList: string[] = (process.env.PI_REMOTE_APPROVAL_GATE_TOOLS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  /** 「本会话都允许」的工具名集合（仅内存，随会话切换清空、不落盘，§4.3） */
+  approvalSessionAllow = new Set<string>();
   /** 接管持留的 dialog：dialogId → HeldDialog（含排队中的）。同一时刻只一个 active。 */
   dialogHeld = new Map<string, any>();
   dialogHeldQueue: string[] = [];
@@ -3985,6 +4130,153 @@ class Bridge {
     }
   }
 
+  /* ---------------- G1 ask_user：开关 / 激活 / 执行 ---------------- */
+
+  /** 是否有「别家」同名 ask_user 工具已注册（pi-ask 等）：有则按二选一口径 ours 保持未激活（§3.4）。
+   *  只能凭 sourceInfo.path 判定：路径缺失时无法证明是别家，按自家处理（不误伤）。 */
+  foreignAskUserPresent(): boolean {
+    try {
+      const all = this.pi && typeof this.pi.getAllTools === "function" ? this.pi.getAllTools() : [];
+      if (!Array.isArray(all)) return false;
+      return all.some((t: any) => {
+        if (!t || t.name !== ASK_USER_TOOL_NAME) return false;
+        const p = t.sourceInfo && typeof t.sourceInfo.path === "string" ? t.sourceInfo.path : "";
+        return p !== "" && !p.includes("pi-remote-sync");
+      });
+    } catch { return false; }
+  }
+
+  /** 按当前意图（开关 AND 无冲突 AND 注册成功）把 ask_user 同步进/出 active set。幂等，处处兜底。 */
+  syncAskUserActivation() {
+    const pi = this.pi;
+    if (!pi || typeof pi.getActiveTools !== "function" || typeof pi.setActiveTools !== "function") return;
+    let active: string[] = [];
+    try { active = pi.getActiveTools() || []; } catch { return; }
+    if (!Array.isArray(active)) return;
+    const has = active.includes(ASK_USER_TOOL_NAME);
+    const remove = () => { try { pi.setActiveTools(active.filter((t: string) => t !== ASK_USER_TOOL_NAME)); } catch {} };
+    if (!this.askUserEnabled || this.askUserRegisterFailed) {
+      if (has) remove();
+      return;
+    }
+    if (this.foreignAskUserPresent()) {
+      if (!this._askConflictLogged) {
+        this._askConflictLogged = true;
+        log("检测到其他扩展已注册同名 ask_user 工具：按二选一口径，本扩展的 ask_user 保持未激活（如需改用本扩展的，请先停用对方）");
+      }
+      if (has) remove();
+      return;
+    }
+    if (!has) {
+      try { pi.setActiveTools([...active, ASK_USER_TOOL_NAME]); } catch (e: any) { log("激活 ask_user 失败:", e?.message); }
+    }
+  }
+
+  /** ask_user 开关下达（ask_user_switch 帧）：仅内存，重启回默认（env 初始值）。 */
+  setAskUserEnabled(enabled: boolean) {
+    const on = enabled === true;
+    if (on !== this.askUserEnabled) {
+      this.askUserEnabled = on;
+      log("ask_user 工具:", on ? "开" : "关");
+    }
+    this.syncAskUserActivation();
+  }
+
+  /** ask_user 工具本体（§3.2/§3.3）：只用 ctx.ui 原生 dialog 拼装，全程走 tap 管道；
+   *  取消/超时/异常一律规范化为「未作答」结果，绝不抛错（抛错会让模型误判工具故障而重试）。 */
+  async executeAskUser(params: any, ctx: any, signal?: any): Promise<any> {
+    const p = params && typeof params === "object" ? params : {};
+    const question = typeof p.question === "string" ? p.question.trim() : "";
+    if (!question) return askResultError("ask_user 需要非空的 question 参数。请重新提问。");
+    if (!ctx || ctx.hasUI === false || !ctx.ui) return askResultUnanswered("no_ui");
+    const ui = ctx.ui;
+    const title = question.slice(0, PROTOCOL.limits.dialogTitleMax);
+    const opts: any = {};
+    const timeout = askTimeoutMs(p.timeoutSec);
+    if (timeout) opts.timeout = timeout;
+    if (signal) opts.signal = signal;
+    try {
+      if (p.kind === "confirm") {
+        const ok = await ui.confirm(title, typeof p.detail === "string" ? p.detail : "", opts);
+        return askResultOk(ok ? "是" : "否", "confirm");
+      }
+      if (Array.isArray(p.options) && p.options.length) {
+        const v = validateAskOptions(p.options);
+        if (!v.ok) return askResultError(v.error);
+        const { display, recAt, sentinelAt } = prepareAskOptions(v.options, typeof p.recommended === "number" ? p.recommended : -1, p.allowFreeText !== false);
+        const picked = await ui.select(title, display, opts);
+        if (picked === undefined) return askResultUnanswered();
+        if (sentinelAt >= 0 && picked === display[sentinelAt]) {
+          // 哨兵自由项：紧接二段 input；二段取消/空白 = 整问取消，不再发第三段
+          const text = await ui.input(title, typeof p.placeholder === "string" ? p.placeholder : undefined, opts);
+          if (typeof text !== "string" || !text.trim()) return askResultUnanswered();
+          return askResultOk(text, "select+input");
+        }
+        // 推荐项被选中时把答案还原成选项原文（去掉「（推荐）」标记）
+        return askResultOk(recAt >= 0 && picked === display[recAt] ? v.options[recAt] : picked, "select");
+      }
+      const text = await ui.input(title, typeof p.placeholder === "string" ? p.placeholder : undefined, opts);
+      if (typeof text !== "string" || !text.trim()) return askResultUnanswered();
+      return askResultOk(text, "input");
+    } catch (e: any) {
+      log("ask_user dialog 异常（按未作答处理）:", e?.message);
+      return askResultUnanswered();
+    }
+  }
+
+  /* ---------------- G2 工具审批门：开关 / 裁决 ---------------- */
+
+  /** 审批门开关下达（approval_gate_switch 帧）：仅内存；tier/tools 只在合法时更新。 */
+  setApprovalGate(cfg: any) {
+    if (!cfg || typeof cfg !== "object") return;
+    let changed = false;
+    if (typeof cfg.enabled === "boolean" && cfg.enabled !== this.approvalGateEnabled) {
+      this.approvalGateEnabled = cfg.enabled;
+      changed = true;
+    }
+    if (typeof cfg.tier === "string" && (APPROVAL_GATE_TIERS as readonly string[]).includes(cfg.tier) && cfg.tier !== this.approvalGateTier) {
+      this.approvalGateTier = cfg.tier;
+      changed = true;
+    }
+    if (Array.isArray(cfg.tools)) {
+      this.approvalGateList = cfg.tools.filter((t: any) => typeof t === "string" && !!t);
+      changed = true;
+    }
+    if (changed) log("工具审批门:", this.approvalGateEnabled ? `开（策略 ${this.approvalGateTier}）` : "关");
+  }
+
+  /** tool_call 审批裁决（§4）：放行回 undefined，拦截回 { block:true, reason }。
+   *  本方法不吞异常——弹窗/宿主异常向上抛，由 pi 按 fail-safe block 处理（审批语义）。
+   *  ask_user 自身豁免：它是向用户提问的工具，再套一层审批只会把提问变成审批题。 */
+  async checkToolCallApproval(event: any, ctx: any): Promise<any> {
+    if (!this.approvalGateEnabled) return undefined;
+    const toolName = event && typeof event.toolName === "string" ? event.toolName : "";
+    if (!toolName || toolName === ASK_USER_TOOL_NAME) return undefined;
+    if (this.approvalSessionAllow.has(toolName)) return undefined;
+    let annotations: any = undefined;
+    try {
+      const all = this.pi && typeof this.pi.getAllTools === "function" ? this.pi.getAllTools() : [];
+      const info = Array.isArray(all) ? all.find((t: any) => t && t.name === toolName) : null;
+      annotations = info ? info.annotations : undefined;
+    } catch {}
+    if (!approvalGateDecision(this.approvalGateTier, toolName, annotations, this.approvalGateList)) return undefined;
+    if (!ctx || ctx.hasUI === false || !ctx.ui || typeof ctx.ui.select !== "function") {
+      // 需要问而无界面可问：fail-closed（§7 审批语义），不许静默放行
+      log("审批门：无 UI 可确认，拦截工具调用:", toolName);
+      return { block: true, reason: "Pi-Remote 审批门已开启，但当前没有可确认的界面，该工具调用被拦截。" };
+    }
+    const summary = approvalSummary(toolName, event.input);
+    const title = dialogText(`允许执行 ${toolName}？${summary ? " " + summary : ""}`, PROTOCOL.limits.dialogTitleMax) as string;
+    const picked = await ctx.ui.select(title, [APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY]);
+    if (picked === APPROVAL_CHOICE_ONCE) return undefined;
+    if (picked === APPROVAL_CHOICE_SESSION) {
+      this.approvalSessionAllow.add(toolName);
+      return undefined;
+    }
+    // 「拒绝」与超时/取消（select 回 undefined）同口径：fail-closed
+    return { block: true, reason: "用户拒绝了该工具调用" };
+  }
+
   /** fail-open 落回本机：把一个持留 dialog 交还原方法在本机弹出。
    *  点亮过的先补发一条观察形态 dialog_open（去掉 answerable，卡面转只读）；排队中的从未
    *  点亮，不发 open——但两者都在此登记进 localOpenDialogs 并补进在开表，落定统一走
@@ -4256,6 +4548,8 @@ class Bridge {
         // 远程待发缓冲不跨会话：旧房间的 pending 记失败并广播，新会话从空队列开始。
         if (this.roomId) this.resetRemoteQueueForSession("目标会话已切换，待发消息未注入", "session_switched", this.roomId);
         this._lastUsagePayload = "";
+        // 审批门的「本会话都允许」只活在本会话内，换会话即清（§4.3）
+        this.approvalSessionAllow.clear();
       }
       this.roomId = String(id);
       this.cwd = sm?.cwd || ctx?.cwd || null;
@@ -4268,6 +4562,8 @@ class Bridge {
       try { this.noteSessionBound(changed, previousId); } catch (err: any) { log("清单上报调度失败:", err?.message); }
       // dialog tap 在 session_start 后装（宿主此时已 setUIContext）：观察层，本机零感知
       try { this.installDialogTap(); } catch (err: any) { log("dialog tap 安装调度失败:", err?.message); }
+      // ask_user 的 active set 是会话级的：新会话按桥内存里的开关意图重放一次（含同名冲突复查）
+      try { this.syncAskUserActivation(); } catch {}
     } catch (e: any) {
       // sessionManager getter 在 runtime 失效时直接抛（assertActive）
       log("绑定会话失败（runtime 可能已失效，已忽略）:", e?.message);
@@ -4869,6 +5165,16 @@ class Bridge {
           try { this.releaseAllHeldDialogs("local"); } catch {}
         }
       }
+      return;
+    }
+    if (msg.type === "ask_user_switch") {
+      // G1 开关下达（与 dialog_answer_switch 同路同纪律）：仅内存持有，重启回默认
+      this.setAskUserEnabled(msg.enabled === true);
+      return;
+    }
+    if (msg.type === "approval_gate_switch") {
+      // G2 开关下达：enabled 必带；tier（high-risk|all-non-readonly|list）与 tools（名单制）可选
+      this.setApprovalGate({ enabled: msg.enabled === true, tier: msg.tier, tools: msg.tools });
       return;
     }
     if (msg.type === "dialog_answer") {
@@ -7807,6 +8113,35 @@ export default function (pi: any) {
     log("注册 pi-remote 命令失败:", e?.message);
   }
 
+  // G1：ask_user 工具（design-ask-cards.md §3）。model-only 曝光（官方 ask 类口径），
+  // 注册但默认不激活（defaultActive:false）：开关打开且无同名冲突时才进 active set（§3.1/§3.4）。
+  try {
+    pi.registerTool({
+      name: ASK_USER_TOOL_NAME,
+      label: "向用户提问",
+      description: "向用户提出一个需要拍板的问题并等待回答。仅在确实需要用户决定时使用，不要用它闲聊，也不要问能自行查明的事。支持单选（options，末尾可带「其他（自己输入）…」）、自由文本、二元确认（kind:\"confirm\"）；不支持多选，需要多选时拆成多个问题逐个问。用户取消或超时会返回「未作答」结果，此时请自行做出合理假设继续，并在回复中声明该假设。",
+      promptSnippet: "Ask the user a question (ask_user) when a decision only they can make is needed",
+      exposure: "model-only",
+      defaultActive: false,
+      parameters: ASK_USER_PARAMETERS,
+      execute: async (_toolCallId: string, params: any, signal: any, _onUpdate: any, ctx: any) => bridge.executeAskUser(params, ctx, signal),
+    });
+  } catch (e: any) {
+    bridge.askUserRegisterFailed = true;
+    log("注册 ask_user 工具失败:", e?.message);
+  }
+
+  // G2：工具审批门（§4）。默认关；开启后按 annotations hints 策略在工具执行前弹窗确认，
+  // 拒绝/超时/无 UI 一律 fail-closed block。handler 不吞异常（pi 对 handler 抛错按 fail-safe block）。
+  try {
+    pi.on("tool_call", async (event: any, ctx: any) => {
+      if (ctx) bridge.ctx = ctx;
+      return await bridge.checkToolCallApproval(event, ctx);
+    });
+  } catch (e: any) {
+    log("注册 tool_call 审批门失败:", e?.message);
+  }
+
   for (const name of FORWARD_EVENTS) {
     try {
       pi.on(name, (event: any, ctx: any) => {
@@ -8326,5 +8661,5 @@ function usageEmptySnapshot(options: any = {}): any {
   });
 }
 
-export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS };
+export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, approvalGateDecision, approvalSummary };
 

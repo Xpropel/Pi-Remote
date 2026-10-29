@@ -5,6 +5,8 @@ const { DEFAULT_ACCOUNT } = require("./index");
 const { log } = require("./util");
 const { send, broadcast, hasCap, snapshotBodyFrom, snapshotFrame } = require("./wire");
 const { UNREGISTERED_DEVICE, roomListForDevice } = require("./devices");
+const { armWaiter, settleEntry, finishWaiter, commandTimeoutMs } = require("./commands");
+const { scheduleCid, wireOf: scheduleWireOf } = require("./schedule");
 
 function cancelResend(room) {
   if (!room) return;
@@ -649,15 +651,44 @@ function pushDialogGate(room, cfg, force) {
 const TURN_ACTIVITY_TYPES = new Set(["agent_start", "turn_start", "message_start", "before_agent_start"]);
 // 助手消息的中间态 stopReason（与 notify.js 同口径）：在场不算终态
 const NON_TERMINAL_STOP_REASONS = new Set(["toolUse", "pending", "deferred"]);
+// 最近事件摘要（设计 D §2.3，cap room.activity）：只记这组白名单事件类型，
+// tool_execution_start 只取 toolName 工具名元数据——不带任何正文/参数。
+const LAST_EVENT_TYPES = new Set(["turn_start", "agent_start", "message_update", "tool_execution_start", "compaction_start"]);
 
 /**
  * 在 local 事件出口旁喂一帧宿主事件，维护 room.lastTurnEnd。
  * 返回 true = 摘要变了（新落定 / 被新活动清掉），调用方据此广播 room_attention。
  * 同一回合重复 settled 只记一次（turnSettled 守卫，新活动才重置）。
+ * 同址顺带维护 room.lastEvent（最近事件摘要）：白名单事件到达即刷新，
+ * 回合落定（agent_settled）即清——busy 结束后状态行走 lastTurnEnd 分支。
+ * lastEvent 只活在内存里（与 lastTurnEnd 同级），不落盘、不新开广播帧，
+ * 搭 room_list 顺风车下发（list 条目 + roomsViewFor 按 cap 裁剪）。
  */
 function observeRoomTurnEvent(room, event, now = Date.now()) {
   if (!room || !event || typeof event !== "object") return false;
   const type = typeof event.type === "string" ? event.type : "";
+  // 收件箱账本（§1.3 原因映射）：dialog_close 在 local 的处理顺序里先经对账消项（记 resolved），
+  // 准确 reason 到本出口才可见——在此回填墓碑：answered/denied → answered、timeout → timeout。
+  if (type === "dialog_close" && typeof event.dialogId === "string" && room._inboxRef) {
+    const r = typeof event.reason === "string" ? event.reason : "";
+    const reason = r === "answered" || r === "denied" ? "answered" : (r === "timeout" || event.outcome === "timeout" ? "timeout" : null);
+    if (reason) room._inboxRef.store.amendTombReason(room._inboxRef.accountId, `dialog:${event.dialogId}`, reason);
+  }
+  // 定时排期（设计 D §3.4）：扩展队列注入失败的 remote_message_failed 带 cid——排期
+  // 引擎据 cid 对号把对应排期判失败停机（送达确认的第三种失败来源）。普通远程消息的
+  // cid 不合排期格式，引擎侧直接忽略。
+  if (type === "remote_message_failed" && typeof event.cid === "string" && room._scheduleRef) {
+    try {
+      room._scheduleRef.engine.noteRemoteFailed(event.cid, typeof event.error === "string" ? event.error : "");
+    } catch {}
+  }
+  if (LAST_EVENT_TYPES.has(type)) {
+    const le = { type, at: now };
+    if (type === "tool_execution_start" && typeof event.toolName === "string" && event.toolName) {
+      le.toolName = event.toolName.slice(0, 64);
+    }
+    room.lastEvent = le;
+  }
   if (TURN_ACTIVITY_TYPES.has(type)) {
     room.turnOutcome = null;
     room.turnSettled = false;
@@ -680,6 +711,7 @@ function observeRoomTurnEvent(room, event, now = Date.now()) {
   if (type === "agent_settled") {
     if (room.turnSettled) return false;
     room.turnSettled = true;
+    room.lastEvent = null; // 回合落定：最近事件摘要清掉，状态行转走 lastTurnEnd 分支
     const outcome = room.turnOutcome;
     room.turnOutcome = null;
     if (outcome === "aborted") return false; // 用户主动打断：不记（与 UI 追踪器同口径）
@@ -689,11 +721,19 @@ function observeRoomTurnEvent(room, event, now = Date.now()) {
   return false;
 }
 
-/** 进房即已读（R3-1 定版，relay 落实）：清掉该房摘要。返回 true = 原本有摘要、已清。 */
+/** 进房即已读（R3-1 定版，relay 落实）：清掉该房摘要。返回 true = 原本有摘要、已清。
+ *  收件箱账本同步清同房 turn 条目（§1.3「进房清」扩到账本）：账本里有、摘要已不在的
+ *  恢复期残留也算清掉——返回 true 让调用方照常补广播 room_attention{null} 对齐各端。 */
 function clearRoomTurnEnd(room) {
-  if (!room || !room.lastTurnEnd) return false;
-  room.lastTurnEnd = null;
-  return true;
+  if (!room) return false;
+  let had = false;
+  if (room.lastTurnEnd) {
+    room.lastTurnEnd = null;
+    had = true;
+  }
+  const ref = room._inboxRef;
+  if (ref && ref.store && ref.store.clearRoomTurns(ref.accountId, room.id) > 0) had = true;
+  return had;
 }
 
 /** room_attention 帧：字段白名单只有 room 与 lastTurnEnd{kind,at}|null，不带任何正文/标题。
@@ -704,6 +744,7 @@ function clearRoomTurnEnd(room) {
  *  （见 roomsViewFor），既有面（在线/忙闲/标题）一律不剥。 */
 function broadcastRoomAttention(rooms, room, cfg) {
   if (!rooms || !room) return;
+  if (typeof rooms.syncInboxTurn === "function") rooms.syncInboxTurn(room); // 收件箱账本来源三：落定/清除先与账本对账，再广播（同帧口径一致）
   broadcast([...rooms.viewers].filter((v) => hasCap(v, "room.attention")), {
     type: "room_attention",
     room: room.id,
@@ -736,7 +777,9 @@ function waitingOf(room, canAnswer) {
  *  每帧是房间的全量摘要；听众与 room_attention 同一批（rooms.viewers 全体，不按订阅过滤），
  *  只发给握手声明了 room.dialogs 的连接。 */
 function broadcastRoomWaiting(rooms, room, cfg) {
-  if (!rooms || !room || room._waitingScheduled) return;
+  if (!rooms || !room) return;
+  if (typeof rooms.syncInboxDialogs === "function") rooms.syncInboxDialogs(room); // 收件箱账本来源一/二：槽位调用点每次变化后必经此地，同步对账不依赖广播合并
+  if (room._waitingScheduled) return;
   room._waitingScheduled = true;
   setImmediate(() => {
     room._waitingScheduled = false;
@@ -750,9 +793,10 @@ function broadcastRoomWaiting(rooms, room, cfg) {
 /* ---------------- 按连接能力组合裁剪 room_list 条目（P9 A） ----------------
  * 原先 stripRoomAttention / listFor / broadcastRoomList 各写一份"按 cap 去字段"，
  * 现在合成一处：没有 room.attention 去 lastTurnEnd；没有 room.dialogs 去 waiting/waitingPrompt；
- * 没有 dialog.respond 去 waiting[].answerable。三个 cap 的组合最多 8 种，
+ * 没有 dialog.respond 去 waiting[].answerable；没有 room.activity 去 lastEvent（设计 D §2.3 追加）。
+ * 四个 cap 的组合最多 16 种，
  * broadcastRoomList 按组合分组，每组只算一份副本（设备窗口连接不声明 cap，走最干净那份）。 */
-const ROOM_LIST_CAPS = ["room.attention", "room.dialogs", "dialog.respond"];
+const ROOM_LIST_CAPS = ["room.attention", "room.dialogs", "dialog.respond", "room.activity", "room.schedule"];
 
 function roomListCapKey(ws) {
   let key = 0;
@@ -766,12 +810,22 @@ function roomsViewFor(ws, list) {
   const keepAttention = !!(key & 1);
   const keepDialogs = !!(key & 2);
   const keepAnswerable = !!(key & 4);
+  const keepActivity = !!(key & 8);
+  const keepSchedule = !!(key & 16);
   return (list || []).map((r) => {
     if (!r) return r;
     let out = r;
     if (!keepAttention && Object.prototype.hasOwnProperty.call(out, "lastTurnEnd")) {
       out = { ...out };
       delete out.lastTurnEnd;
+    }
+    if (!keepActivity && Object.prototype.hasOwnProperty.call(out, "lastEvent")) {
+      if (out === r) out = { ...r };
+      delete out.lastEvent;
+    }
+    if (!keepSchedule && Object.prototype.hasOwnProperty.call(out, "schedules")) {
+      if (out === r) out = { ...r };
+      delete out.schedules;
     }
     if (!keepDialogs && (Object.prototype.hasOwnProperty.call(out, "waiting") || Object.prototype.hasOwnProperty.call(out, "waitingPrompt"))) {
       if (out === r) out = { ...r };
@@ -813,6 +867,14 @@ class Rooms {
     this.deviceSnapshot = () => [];
     // 进程实例 id：去重表只活在本进程内存里，viewer 断线重连后只有 boot 相同才能安全重发有副作用的命令
     this.boot = crypto.randomBytes(6).toString("hex");
+    // 收件箱账本（设计 D §1）：server 装配时 bindInbox 注入 InboxStore；未注入时全部账本动作静默跳过。
+    this.inbox = null;
+    this._inboxFlushScheduled = false;
+    // 定时排期（设计 D §3）：server 装配时 bindSchedule 注入 ScheduleEngine；未注入时排期面静默跳过。
+    this.schedule = null;
+    this._scheduleFlushScheduled = false;
+    this._inboxGrace = new Map(); // roomId -> timer：恢复期 waiting 条目的补发对账宽限
+    this.inboxGraceMs = Number.isFinite(cfg.inboxResyncGraceMs) && cfg.inboxResyncGraceMs >= 0 ? cfg.inboxResyncGraceMs : 15000;
   }
   /** 会话存储。进行中工具补发用它看快照里有没有 toolResult。已挂上的房间不覆盖。 */
   bindStore(store) {
@@ -823,6 +885,253 @@ class Rooms {
       store.setLocator((id) => this.locateRoom(id));
     }
     for (const r of this.map.values()) this._stampStore(r);
+  }
+
+  /* ---------------- 收件箱账本（设计 D §1） ----------------
+   * 账本（relay/inbox.js）是「别的房间在等你」这条线的 relay 侧唯一事实源：只存元数据。
+   * 三路来源在此对账：dialog/prompt 活槽（syncInboxDialogs，挂 broadcastRoomWaiting 入口）、
+   * 回合落定（syncInboxTurn，挂 broadcastRoomAttention 入口）、dialog_close 原因回填
+   * （observeRoomTurnEvent 经 room._inboxRef 补墓碑原因——close 事件到达时对账已先行）。 */
+
+  /** 账本装配：与 bindStore 同位由 server 调；顺手给存量房间打上 _inboxRef。 */
+  bindInbox(store) {
+    this.inbox = store || null;
+    if (!this.inbox) return;
+    for (const r of this.map.values()) this._stampInboxRef(r);
+  }
+  _stampInboxRef(room) {
+    if (this.inbox && room) room._inboxRef = { store: this.inbox, accountId: room.accountId || DEFAULT_ACCOUNT };
+  }
+  _inboxAccount(room) {
+    return (room && room.accountId) || DEFAULT_ACCOUNT;
+  }
+  /** 账本 pending 快照（上行白名单形状）：viewer 的 auth_result / list_rooms 附带面取这里。 */
+  inboxSnapshot() {
+    return this.inbox ? this.inbox.snapshot() : [];
+  }
+  /** inbox_dismiss 命令面：只清 done/error（waiting 拒清在 store 内裁决），清成后增量广播对齐各端。 */
+  dismissInbox(key) {
+    if (!this.inbox || typeof key !== "string" || !key) return false;
+    const gone = this.inbox.dismiss(key);
+    if (gone) this._flushInbox();
+    return !!gone;
+  }
+  /** 增量广播：与 room_waiting 同批听众（设备级连接全体，不按房间订阅过滤），只发声明 room.inbox 的连接；
+   *  同 tick 多次变更合并一帧（store 的 drain 语义保证 upserts/removed 不打架）。 */
+  _flushInbox() {
+    if (!this.inbox || this._inboxFlushScheduled) return;
+    this._inboxFlushScheduled = true;
+    setImmediate(() => {
+      this._inboxFlushScheduled = false;
+      if (!this.inbox) return;
+      const changes = this.inbox.drainChanges();
+      if (!changes) return;
+      for (const v of this.viewers) {
+        if (!hasCap(v, "room.inbox")) continue;
+        send(v, { type: "inbox_update", upserts: changes.upserts, removed: changes.removed }, this.cfg);
+      }
+    });
+  }
+  /** 来源一/二对账：以房间活槽为准。dialog 槽在 → upsert waiting/dialog；ui_prompt 只在无 dialog
+   *  槽时兜底（与 attention.ts 同款去重纪律，下沉到账本层）；活槽里没有的 waiting 条目消项
+   *  （reason 先记 resolved，dialog_close 的准确原因随后由 observeRoomTurnEvent 回填墓碑）。
+   *  恢复期未确认条目（重启落盘恢复的 waiting）豁免消项：等补发确认或宽限清扫判 stale（§1.4）。 */
+  syncInboxDialogs(room) {
+    if (!this.inbox || !room) return;
+    const store = this.inbox;
+    const accountId = this._inboxAccount(room);
+    this._stampInboxRef(room);
+    const live = new Set();
+    if (room.online) {
+      const slots = Object.values(room.dialogs || {}).filter((s) => s && typeof s.dialogId === "string" && s.dialogId);
+      let canAnswer = false;
+      for (const v of this.viewers) if (hasCap(v, "dialog.respond")) { canAnswer = true; break; }
+      for (const s of slots) {
+        const key = `dialog:${s.dialogId}`;
+        live.add(key);
+        store.upsert({
+          key, accountId, roomId: room.id, deviceId: room.deviceId || null,
+          kind: "waiting", subkind: "dialog",
+          dialogKind: typeof s.kind === "string" ? s.kind : undefined,
+          title: s.title || undefined,
+          answerable: canAnswer && s.answerable === true,
+          at: s.startedAt || Date.now(),
+        });
+      }
+      const p = room.uiPrompt;
+      if (p && !slots.length) {
+        const key = `prompt:${room.id}:${p.at || 0}`;
+        live.add(key);
+        store.upsert({
+          key, accountId, roomId: room.id, deviceId: room.deviceId || null,
+          kind: "waiting", subkind: "prompt",
+          dialogKind: typeof p.kind === "string" ? p.kind : undefined,
+          title: p.title || undefined,
+          at: p.at || Date.now(),
+        });
+      }
+    }
+    for (const e of store.roomEntries(accountId, room.id)) {
+      if (e.kind !== "waiting" || live.has(e.key) || e._restored) continue;
+      store.remove(accountId, e.key, "resolved");
+    }
+    if (room.online) {
+      if (store.restoredWaitingKeys(accountId, room.id).size) this._armInboxGrace(room);
+    } else {
+      this._disarmInboxGrace(room.id);
+    }
+    this._flushInbox();
+  }
+  /** 来源三对账：以 room.lastTurnEnd 为准——有落定则整房替换成最新一条 turn 条目，无则清同房 turn 条目。 */
+  syncInboxTurn(room) {
+    if (!this.inbox || !room) return;
+    this._stampInboxRef(room);
+    const accountId = this._inboxAccount(room);
+    const end = room.lastTurnEnd;
+    if (end && (end.kind === "done" || end.kind === "error") && Number.isFinite(end.at)) {
+      this.inbox.replaceRoomTurn({
+        key: `turn:${room.id}:${end.at}`, accountId, roomId: room.id, deviceId: room.deviceId || null,
+        kind: end.kind, subkind: "turn", at: end.at,
+      });
+    } else if (!end) {
+      this.inbox.clearRoomTurns(accountId, room.id);
+    }
+    this._flushInbox();
+  }
+  _armInboxGrace(room) {
+    if (this._inboxGrace.has(room.id)) return;
+    const timer = setTimeout(() => {
+      this._inboxGrace.delete(room.id);
+      this._sweepInboxRoom(room.id);
+    }, this.inboxGraceMs);
+    if (typeof timer.unref === "function") timer.unref();
+    this._inboxGrace.set(room.id, timer);
+  }
+  _disarmInboxGrace(roomId) {
+    const timer = this._inboxGrace.get(roomId);
+    if (timer) {
+      clearTimeout(timer);
+      this._inboxGrace.delete(roomId);
+    }
+  }
+  /** 宽限到期/房间淘汰：补发始终没确认的恢复期 waiting 批量转 stale（§1.4 的近似触发点——
+   *  协议没有显式「补发完成」帧，可观测等价物 = 重连后的 dialog 补发涌入 + 本宽限窗）。 */
+  _sweepInboxRoom(roomId) {
+    if (!this.inbox) return;
+    if (this.inbox.sweepRestored(roomId)) this._flushInbox();
+  }
+
+  /* ---------------- 定时排期（设计 D §3） ----------------
+   * 计时器与排期表在 relay/schedule.js（ScheduleStore + ScheduleEngine）；rooms 只做
+   * 装配三件事：给引擎注入房间宿主（peekRoom/deliver）、给房间打 _scheduleRef 供事件
+   * 钩子对号、把排期清单搭 room_list 下发并在变化时广播 schedule_update。
+   * 投递不新造路径：到点经既有 commandWaiters 命令通道下发一条普通 prompt 命令
+   * （恒带 streamingBehavior，忙时进扩展自管队列，永不打断当前回合）。 */
+
+  /** 排期装配：与 bindInbox 同位由 server 调；引擎宿主在此注入，存量房间顺手打戳。 */
+  bindSchedule(engine) {
+    this.schedule = engine || null;
+    if (!this.schedule) return;
+    this.schedule.bindHost({
+      peekRoom: (roomId) => this.peek(roomId),
+      deliver: (room, entry, fireNo, done) => this.dispatchSchedulePrompt(room, entry, fireNo, done),
+      flushInbox: () => this._flushInbox(),
+      onDirty: () => this._flushSchedule(),
+    });
+    for (const r of this.map.values()) this._stampScheduleRef(r);
+  }
+  _stampScheduleRef(room) {
+    if (this.schedule && room) room._scheduleRef = { engine: this.schedule };
+  }
+  /** 某房的排期清单（上行白名单形状，armed + 保留期内终态）；未装配时为空。 */
+  schedulesOf(room) {
+    if (!this.schedule || !room) return [];
+    return this.schedule.store.listRoom(room.accountId || DEFAULT_ACCOUNT, room.id);
+  }
+  /** schedule_create 命令面：引擎裁决（校验/上限），成功后广播对齐各端。 */
+  createSchedule(accountId, raw) {
+    if (!this.schedule) return { code: "unsupported", error: "此中继未启用定时消息" };
+    const res = this.schedule.create(accountId, raw);
+    if (res.entry) return { entry: scheduleWireOf(res.entry) };
+    return res;
+  }
+  /** schedule_cancel 命令面。 */
+  cancelSchedule(accountId, id) {
+    if (!this.schedule) return null;
+    const entry = this.schedule.cancel(accountId, id);
+    return entry ? scheduleWireOf(entry) : null;
+  }
+  /** schedule_list 命令面：与 room_list 内的 schedules 同一数据源。 */
+  scheduleList(accountId, roomId) {
+    if (!this.schedule) return [];
+    return this.schedule.store.listRoom(accountId, roomId);
+  }
+  /** 变化广播：store 的脏房间 drain 出来后逐房全量替换下发（同 room_waiting 的听众
+   *  纪律——设备级连接全体，不按房间订阅过滤），只发声明 room.schedule 的连接。 */
+  _flushSchedule() {
+    if (!this.schedule || this._scheduleFlushScheduled) return;
+    this._scheduleFlushScheduled = true;
+    setImmediate(() => {
+      this._scheduleFlushScheduled = false;
+      if (!this.schedule) return;
+      const dirty = this.schedule.store.drainDirtyRooms();
+      for (const key of dirty) {
+        const sep = key.indexOf("|");
+        const accountId = key.slice(0, sep);
+        const roomId = key.slice(sep + 1);
+        const schedules = this.schedule.store.listRoom(accountId, roomId);
+        for (const v of this.viewers) {
+          if (!hasCap(v, "room.schedule")) continue;
+          send(v, { type: "schedule_update", room: roomId, schedules }, this.cfg);
+        }
+      }
+    });
+  }
+  /**
+   * 到点投递：把排期消息当普通 prompt 命令经 commandWaiters 下发给房间的 local。
+   * 等待者是「无连接」占位（ws:null）——回执不回给任何 viewer，只经 onResult/onSettle
+   * 结案给引擎：onResult 先于 settle 触发（local.js 的 command_result 顺序），故结果
+   * 优先；只有超时/断线走到 onSettle，一律按投递未确认判失败。send 本身失败（通道
+   * 刚断）立刻摘等待者按失败结案，不等 15 秒命令超时。
+   */
+  dispatchSchedulePrompt(room, entry, fireNo, done) {
+    const local = room && room.local;
+    if (!local || local.readyState !== 1) {
+      done({ ok: false, error: "本机未连接，消息无法送达" });
+      return;
+    }
+    const args = {
+      text: entry.text,
+      streamingBehavior: entry.segment === "follow_up" ? "followUp" : "steer",
+      cid: scheduleCid(entry, fireNo),
+    };
+    const timeoutMs = commandTimeoutMs("prompt", args, this.cfg.harnessStartTimeoutMs);
+    const wireId = "w_" + crypto.randomBytes(8).toString("hex");
+    let finished = false;
+    const finish = (outcome) => {
+      if (finished) return;
+      finished = true;
+      done(outcome);
+    };
+    const cmdEntry = {
+      wireId, room, command: "prompt", local, timeoutMs,
+      waiters: [], done: false, result: null, at: Date.now(), key: null,
+      onResult: (result) => finish(result && result.ok
+        ? { ok: true }
+        : { ok: false, error: (result && typeof result.error === "string" && result.error) || "本机执行失败" }),
+      onSettle: () => finish({ ok: false, error: "投递未确认（本机未回执或连接已断开）" }),
+    };
+    const w = { ws: null, origId: null, timer: null };
+    cmdEntry.waiters.push(w);
+    armWaiter(this, cmdEntry, w, this.cfg);
+    this.commandWaiters.set(wireId, cmdEntry);
+    const sent = send(local, { type: "command", id: wireId, command: "prompt", args, timeoutMs, room: room.id }, this.cfg);
+    if (!sent) {
+      finishWaiter(w);
+      cmdEntry.waiters = [];
+      this.commandWaiters.delete(wireId);
+      settleEntry(cmdEntry); // 触发 onSettle → finish 按投递未确认判失败收尾
+    }
   }
 
   /** store 的房间定位：注册表优先（deviceId/cwd 在 room_register 时已打戳）；
@@ -851,6 +1160,8 @@ class Rooms {
     if (r) {
       r.lastActivity = Date.now();
       this._stampStore(r);
+      if (this.inbox && !r._inboxRef) this._stampInboxRef(r);
+      if (this.schedule && !r._scheduleRef) this._stampScheduleRef(r);
       return r;
     }
     r = {
@@ -880,8 +1191,12 @@ class Rooms {
       lastTurnEnd: null,
       turnOutcome: null,
       turnSettled: false,
+      // 最近事件摘要（设计 D §2.3）：{type, toolName?, at}，无事件/已落定时为 null
+      lastEvent: null,
     };
     this._stampStore(r);
+    this._stampInboxRef(r);
+    this._stampScheduleRef(r);
     this.map.set(id, r);
     return r;
   }
@@ -971,9 +1286,13 @@ class Rooms {
         lastActivity: r.lastActivity || 0,
         // 注意力恢复通道（R3-1）：订阅/重连时 UI 靠它把别房落定记录种回追踪器；只带 kind/at
         lastTurnEnd: r.lastTurnEnd ? { kind: r.lastTurnEnd.kind, at: r.lastTurnEnd.at } : null,
+        // 最近事件摘要（设计 D §2.3）：只带 type/toolName/at 元数据；由 roomsViewFor 按 room.activity cap 裁剪
+        lastEvent: r.lastEvent ? { ...r.lastEvent } : null,
         // 等待摘要（P9 A）：列表侧按"能应答"算（answerable 只在 connections 有 dialog.respond 时下发，
         // 由 roomsViewFor 按连接 cap 再裁剪）；离线房间恒为 []/null
         ...waitingOf(r, true),
+        // 定时排期清单（设计 D §3.7）：armed 全量 + 保留期内终态；由 roomsViewFor 按 room.schedule cap 裁剪
+        schedules: this.schedulesOf(r),
       });
     }
     return out.sort((a, b) => Number(b.online) - Number(a.online) || a.id.localeCompare(b.id));
@@ -992,7 +1311,7 @@ class Rooms {
       let devices = [];
       try { devices = this.deviceSnapshot(); } catch (e) { log("设备列表异常:", e.message); }
       const rooms = this.list();
-      // P9 A 分流：按「能力组合」分组（room.attention / room.dialogs / dialog.respond 三位，最多 8 组），
+      // P9 A 分流：按「能力组合」分组（room.attention / room.dialogs / dialog.respond / room.activity 四位，最多 16 组），
       // 每组只算一份副本（roomsViewFor），组内共用；没有声明任何 cap 的连接拿剥得最干净的那份。
       const views = new Map(); // capKey -> 清单副本
       const viewFor = (ws) => {
@@ -1004,19 +1323,28 @@ class Rooms {
         }
         return view;
       };
-      const groups = new Map(); // capKey -> { view, conns }
+      const groups = new Map(); // capKey(+inbox 位) -> { view, inbox, conns }
+      let inboxSnap = null; // 账本快照懒算一次：只有声明 room.inbox 的组才附带（§1.5 cap 门控）
       for (const v of this.viewers) {
-        const key = roomListCapKey(v);
+        const withInbox = hasCap(v, "room.inbox");
+        // inbox 位用 32：roomListCapKey 已占满低 5 位（room.schedule 是第 5 位 = 16），
+        // 原先的 16 位与排期 cap 位相撞，必须上移一位。
+        const key = roomListCapKey(v) | (withInbox ? 32 : 0);
         let g = groups.get(key);
         if (!g) {
-          g = { view: viewFor(v), conns: [] };
+          g = { view: viewFor(v), inbox: withInbox, conns: [] };
           groups.set(key, g);
         }
         g.conns.push(v);
       }
       for (const g of groups.values()) {
         if (!g.conns.length) continue;
-        broadcast(g.conns, JSON.stringify({ type: "room_list", devices, rooms: g.view }), this.cfg);
+        const frame = { type: "room_list", devices, rooms: g.view };
+        if (g.inbox) {
+          if (!inboxSnap) inboxSnap = this.inboxSnapshot();
+          frame.inbox = inboxSnap;
+        }
+        broadcast(g.conns, JSON.stringify(frame), this.cfg);
       }
       if (typeof this.deviceConns === "function") {
         // 设备窗口只需要判断"本机哪些房间在线"：只发它自己的设备和房间，
@@ -1033,12 +1361,20 @@ class Rooms {
   evictIdle() {
     const cutoff = Date.now() - this.cfg.roomIdleEvictMs;
     let n = 0;
+    let swept = 0;
     for (const [id, r] of this.map) {
       if (r.online || r.local || r.viewers.size || r.lastActivity > cutoff) continue;
       // RoomMap.delete 与 close 路径一致：取消 resend 兜底 / 快照 TTL 定时器
       this.map.delete(id);
       n++;
+      // 房间从内存消失 = 再也不会有补发来确认：它名下恢复期 waiting 条目一并判 stale（§1.4），
+      // 免得收件箱永远挂着回不来的房间的陈年等待。
+      this._disarmInboxGrace(id);
+      if (this.inbox) swept += this.inbox.sweepRestored(id);
+      // 名下 armed 排期一并退休（session_ended）：房间已消失，排期无处投递（§3.5）。
+      if (this.schedule) this.schedule.retireRoom(id);
     }
+    if (swept) this._flushInbox();
     return n;
   }
 }
@@ -1130,6 +1466,11 @@ function ownRoom(ws, msg) {
  *  不动 label/cwd/epoch/instance 等房间身份字段，也不动已有消息存储。 */
 function clearSessionState(room) {
   if (!room) return false;
+  // 定时排期（设计 D §3）：会话结束/换代 → 该房 armed 排期全部退休（session_ended，
+  // 引擎同步写账本 error 提示）——排期绑的是这段对话的上下文，旧排期不跨会话复活。
+  if (room._scheduleRef && typeof room._scheduleRef.engine.retireRoom === "function") {
+    try { room._scheduleRef.engine.retireRoom(room.id); } catch {}
+  }
   const hadTurnEnd = !!room.lastTurnEnd;
   room.queue = null;
   room.compaction = null;
@@ -1146,6 +1487,7 @@ function clearSessionState(room) {
   room.lastTurnEnd = null;
   room.turnOutcome = null;
   room.turnSettled = false;
+  room.lastEvent = null;
   return hadTurnEnd;
 }
 

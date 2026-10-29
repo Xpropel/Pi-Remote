@@ -236,7 +236,7 @@ describe("c 区交互层契约（源码）", () => {
   test("N10：设置页开关的点击区撑满整行；行本身不加 relative（圆角卡里定位的行会改文字栅格化，L1 有差）", () => {
     const page = code(read(`${C}/PiSettingsPage.tsx`))
     assert.match(page, /after:absolute after:top-1\/2 after:-right-4 after:-left-\[600px\]/)
-    assert.equal((page.match(/className=\{switchFillRow\(variant\)\}/g) ?? []).length, 2)
+    assert.equal((page.match(/className=\{switchFillRow\(variant\)\}/g) ?? []).length, 4)
     assert.match(page, /toggle && "cursor-pointer select-none"/)
     assert.doesNotMatch(page, /toggle && "relative/)
   })

@@ -48,6 +48,8 @@ export const PI_UI_IDS = {
   /** 改名 / 删除确认（a：SessionMenuContainer）。c 的命令面板可以开 */
   rename: "a:rename",
   delete: "a:delete",
+  /** 定时消息列表弹层（a：SessionMenuContainer，设计 D §3.7 房级管理）。会话菜单的"定时消息（N）"开它 */
+  schedules: "a:schedules",
   /** 设备与配对（a：PairingContainer）。c 的设置页、设备菜单里的"配对新设备…"开它 */
   pairing: "a:pairing",
   /** 任务面板（b：TaskPanelContainer）。c 的 tray "任务 n/m"：桌面 act.openMenu（dock 的 panel 槽），手机 act.openSheet */

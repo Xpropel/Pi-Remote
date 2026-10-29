@@ -40,6 +40,7 @@ import { errorCode } from "@/relay/devices"
 import { clearDraftImages, onDraftPersistFailure, readDraftImages, saveDraftImages } from "@/relay/drafts"
 import { pageLinkView } from "@/relay/presence"
 import { canMutateRemoteQueueItem } from "@/relay/remoteQueue"
+import type { ScheduleCreateInput } from "@/relay/schedule"
 import { ApprovalContainer } from "./ApprovalContainer"
 import { importImageFiles } from "./cImages"
 import {
@@ -320,7 +321,20 @@ function useQueue(relay: Relay) {
   }
   return {
     ...data,
-    count: relay.remoteQueue.items.filter((i) => i.status === "pending").length + relay.queue.steering.length + relay.queue.followUp.length + relay.outbox.length,
+    // 定时段（D-§3）：当前房排期清单 + 创建/取消；armed 条数计入面板计数——只剩
+    // 定时项时排队面板也要打得开（两处渲染点都以 count > 0 为门）。
+    schedules: relay.schedules,
+    onScheduleCancel: (id: string) => {
+      void relay.cancelSchedule(id).catch(fail)
+    },
+    onScheduleCreate: (input: ScheduleCreateInput) => relay.createSchedule(input),
+    scheduleSegment: (relay.sendMode === "follow_up" ? "follow_up" : "steer") as "steer" | "follow_up",
+    count:
+      relay.remoteQueue.items.filter((i) => i.status === "pending").length +
+      relay.queue.steering.length +
+      relay.queue.followUp.length +
+      relay.outbox.length +
+      relay.schedules.filter((s) => s.state === "armed").length,
     editing: editing ? { id: editing.id, text: editing.text, phase: editing.phase, conflict: editing.conflict, note: editing.note } : null,
     onEditChange: (text: string) => editing && patch(editing.id, { text, note: editing.conflict ? editing.note : null }),
     onEditSave: () => save(),
@@ -676,6 +690,10 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
         onEditSave={queue.onEditSave}
         onEditCancel={queue.onEditCancel}
         onEditResolve={queue.onEditResolve}
+        schedules={queue.schedules}
+        onScheduleCancel={queue.onScheduleCancel}
+        onScheduleCreate={queue.onScheduleCreate}
+        scheduleSegment={queue.scheduleSegment}
       />
     ) : undefined
 
@@ -940,6 +958,10 @@ export function ComposerSheets(p: PiContainerProps) {
           onEditSave={queue.onEditSave}
           onEditCancel={queue.onEditCancel}
           onEditResolve={queue.onEditResolve}
+          schedules={queue.schedules}
+          onScheduleCancel={queue.onScheduleCancel}
+          onScheduleCreate={queue.onScheduleCreate}
+          scheduleSegment={queue.scheduleSegment}
         />
       </PiSheet>
     )

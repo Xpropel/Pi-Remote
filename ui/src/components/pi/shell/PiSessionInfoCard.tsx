@@ -1,7 +1,7 @@
 import type { ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { InlineLink, MenuSurface } from "@/components/kit"
-import { Box, CircleDollarSign, Folder, GitBranch, Hash } from "@/components/kit/icons"
+import { Activity, Box, CircleDollarSign, Folder, GitBranch, Hash } from "@/components/kit/icons"
 import { PiContextRing, PiPlatformIcon, piPercent, piShortId, piTokens, type PiDevice, type PiUsageState } from "@/components/pi/shared"
 import { cacheHitOf } from "@/pi/model/sessionInfo"
 
@@ -17,6 +17,8 @@ export interface PiSessionInfoCardProps {
   model?: string | null
   usage: PiUsageState
   sessionId: string
+  /** 一行实时状态全句（设计 D §2.2 的 roomStatusLine 输出；容器按当前房间算）。不传/空 = 状态行不出现 */
+  statusLine?: string | null
   /** P5：点"用量明细"（开用量弹窗，c 线 PI_UI_IDS.usage）。不传 = 静态链接 */
   onUsage?: () => void
   className?: string
@@ -46,12 +48,14 @@ function cacheHit(usage: PiUsageState): number | null {
  * 比 Cursor 的悬停卡多设备、费用、会话 id 三行。桌面 = 标题悬停卡（宽 320）；手机 = sheet 里的同样各行（行高 44）。
  * 数据缺失的行整行不出现（§1.9）。
  */
-export function PiSessionInfoCard({ variant, title, device, branch, cwd, model, usage, sessionId, onUsage, className }: PiSessionInfoCardProps) {
+export function PiSessionInfoCard({ variant, title, device, branch, cwd, model, usage, sessionId, statusLine, onUsage, className }: PiSessionInfoCardProps) {
   const phone = variant === "phone"
   const iconSize = phone ? 18 : 14
   const { c, trusted } = contextOf(usage)
   const hit = cacheHit(usage)
   const rows: Row[] = []
+  // 设计 D §2.2：信息卡与侧栏共用同一句状态行（roomStatusLine），放首行（"现在怎么样"最先看）
+  if (statusLine) rows.push({ key: "status", icon: <Activity size={iconSize} strokeWidth={1.5} />, text: statusLine })
   if (device) {
     rows.push({
       key: "device",

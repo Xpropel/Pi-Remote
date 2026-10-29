@@ -103,6 +103,9 @@ function rowOf(session: PiSidebarSession, device: PiSidebarDevice, attention: re
   if (item?.kind === "waiting") {
     row.trailingText = waitingTrailingText(item.answerable)
     row.trailingTone = "attention"
+  } else if (item?.kind === "error") {
+    // 设计 D §2.4 第二层：waiting 之外，error 行的行尾时间位也让位给状态词；完整时间进悬停气泡
+    row.trailingText = "出错了"
   }
   if (session.updatedAt > 0) row.at = session.updatedAt
   if (!device.online) row.dimmed = true
@@ -124,6 +127,9 @@ function attentionRowsOf(attention: readonly AttentionItem[], devices: readonly 
     if (item.kind === "waiting") {
       row.trailingText = waitingTrailingText(item.answerable)
       row.trailingTone = "attention"
+    } else if (item.kind === "error") {
+      // 设计 D §2.4 第二层：error 行的行尾时间位让位给状态词；完整时间进悬停气泡
+      row.trailingText = "出错了"
     }
     if (item.at > 0) row.at = item.at
     if (item.deviceId) row.deviceId = item.deviceId

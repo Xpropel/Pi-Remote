@@ -1,4 +1,6 @@
 /** 设备名册 / 会话清单的纯逻辑（不依赖 React）。契约见 DOC/50 与 DOC/40。 */
+// test/*.test.mjs 用 node 直接跑 .ts 源文件，相对导入必须带扩展名
+import { cleanSessionTitleText } from "./titleText.ts"
 
 export const UNREGISTERED_DEVICE_ID = "未登记设备"
 
@@ -98,6 +100,13 @@ export type RoomWaiting = {
 /** room.dialogs（P9 A）旧的单槽 ui_prompt 兜底摘要：只在 waiting 为空时有意义。 */
 export type RoomWaitingPrompt = { kind: string; title: string; at: number }
 
+/**
+ * room.activity（设计 D §2.3）房间最近事件摘要：relay 只记白名单事件类型与
+ * toolName 工具名元数据（不带任何正文/参数）；回合落定后 relay 清空（null）。
+ * 旧 relay 不下发（字段缺失）；UI 据它生成 busy 中的状态短语。
+ */
+export type RoomLastEvent = { type: string; toolName?: string; at: number }
+
 /** room_list 房间条目里等待摘要的上限（协议 limits.dialogSlotsMax = 8）。 */
 export const ROOM_WAITING_MAX = 8
 
@@ -120,6 +129,8 @@ export type RoomInfo = {
   waiting?: RoomWaiting[]
   /** P9 A：旧的单槽 ui_prompt 兜底（旧 relay 不带；离线房间恒为 null） */
   waitingPrompt?: RoomWaitingPrompt | null
+  /** 设计 D §2.3：最近事件摘要（旧 relay 不带；无事件/已落定时为 null） */
+  lastEvent?: RoomLastEvent | null
 }
 
 export type Device = {
@@ -650,6 +661,7 @@ function parseRoom(raw: unknown): RoomInfo {
   const rec = isRecord(raw) ? raw : {}
   const waiting = parseRoomWaiting(rec.waiting)
   const waitingPrompt = parseRoomWaitingPrompt(rec.waitingPrompt)
+  const lastEvent = parseRoomLastEvent(rec.lastEvent)
   return {
     id: typeof rec.id === "string" ? rec.id : "",
     label: typeof rec.label === "string" ? rec.label : null,
@@ -664,7 +676,20 @@ function parseRoom(raw: unknown): RoomInfo {
     deviceId: typeof rec.deviceId === "string" && rec.deviceId ? rec.deviceId : undefined,
     ...(waiting !== undefined ? { waiting } : {}),
     ...(waitingPrompt !== undefined ? { waitingPrompt } : {}),
+    ...(lastEvent !== undefined ? { lastEvent } : {}),
   }
+}
+
+/** room.activity（设计 D §2.3）：lastEvent 的类型校验；字段不出现 = 旧 relay，返回 undefined。形状不合法记 null（无事件），不猜。 */
+function parseRoomLastEvent(raw: unknown): RoomLastEvent | null | undefined {
+  if (raw === undefined) return undefined
+  if (!isRecord(raw)) return null
+  const type = typeof raw.type === "string" ? raw.type : ""
+  if (!type) return null
+  const at = typeof raw.at === "number" && Number.isFinite(raw.at) ? raw.at : 0
+  const out: RoomLastEvent = { type, at }
+  if (typeof raw.toolName === "string" && raw.toolName) out.toolName = raw.toolName
+  return out
 }
 
 /**
@@ -782,7 +807,7 @@ function parseSession(raw: unknown): SessionEntry | null {
 function sessionRow(session: SessionEntry, openable: boolean): ListedSession {
   return {
     id: session.id,
-    title: session.name || session.firstMessage || (session.cwd ? baseName(session.cwd) : session.id.slice(0, 8)),
+    title: session.name || cleanSessionTitleText(session.firstMessage) || (session.cwd ? baseName(session.cwd) : session.id.slice(0, 8)),
     firstMessage: session.firstMessage || undefined,
     path: session.path || undefined,
     cwd: session.cwd,
@@ -803,9 +828,10 @@ function roomRow(room: RoomInfo, openable: boolean, session?: SessionEntry | nul
     title:
       (customLabel ? room.label : null) ||
       session?.name ||
-      session?.firstMessage ||
+      // 首条消息作标题要过清洗规则（设计 D §2.1）；清洗后为空顺延下一档
+      cleanSessionTitleText(session?.firstMessage) ||
       room.name ||
-      room.firstMessage ||
+      cleanSessionTitleText(room.firstMessage) ||
       room.label ||
       (room.cwd ? folder : room.id.slice(0, 8)),
     firstMessage: session?.firstMessage || room.firstMessage || undefined,

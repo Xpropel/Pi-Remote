@@ -114,10 +114,12 @@ test("P9 A：等你回答的行尾文字（waiting →「等你回答」；answe
   const notAnswerable = ATTENTION.map((a) => (a.key === "dialog:1" ? { ...a, answerable: false } : a))
   const answerableRow = rows(notAnswerable).groups[0].rows.find((r) => r.id === "p3")
   assert.equal(answerableRow.trailingText, "等你在电脑上回答")
-  // 不是 waiting 的行尾文案不受影响（出错未读那行不写 trailingText）
+  // 设计 D §2.4 第二层（后于 P9 A 定版）：error 行的行尾时间位也让位给状态词「出错了」，完整时间进悬停气泡
   const n1 = rows(notAnswerable).groups.flatMap((g) => g.rows).find((r) => r.id === "n1")
   assert.equal(n1.marker, "error")
-  assert.equal(n1.trailingText, undefined)
+  assert.equal(n1.trailingText, "出错了")
+  const n1Attention = rows(notAnswerable).attentionRows.find((r) => r.id === "n1")
+  assert.equal(n1Attention.trailingText, "出错了", "需要处理组的 error 行同口径")
 })
 
 test("sidebarGroups device：expanded 的组全部展开", () => {
@@ -570,9 +572,10 @@ test("migratePiPrefs：空存储给默认值（默认投递插入当前回合、
 
 test("migratePiPrefs：新键逐字段校验（含 grouping），不合法回落默认、多余字段丢掉", () => {
   const p = migratePiPrefs(JSON.stringify({ v: 1, theme: "dark", density: "compact", grouping: "flat", deviceFilter: "d-mbp", delivery: "follow_up", completionSound: true, junk: 1 }))
-  assert.deepEqual(p, { v: 1, ui: "cursor", uiPlatformTab: "all", deviceByPlatform: {}, theme: "dark", density: "compact", grouping: "flat", deviceFilter: "d-mbp", delivery: "follow_up", completionSound: true, dialogRemoteAnswer: false, sidebarWidth: 272, sidebarCollapsed: false, mobileNav: "list", sidebarPersistentSearch: false })
-  const bad = migratePiPrefs({ theme: "claude", grouping: "tree", deviceFilter: "", completionSound: "yes" })
+  assert.deepEqual(p, { v: 1, ui: "cursor", uiPlatformTab: "all", deviceByPlatform: {}, theme: "dark", density: "compact", grouping: "flat", deviceFilter: "d-mbp", delivery: "follow_up", completionSound: true, dialogRemoteAnswer: false, askUserEnabled: false, approvalGateEnabled: false, approvalGateTier: "high-risk", sidebarWidth: 272, sidebarCollapsed: false, mobileNav: "list", sidebarPersistentSearch: false })
+  const bad = migratePiPrefs({ theme: "claude", grouping: "tree", deviceFilter: "", completionSound: "yes", askUserEnabled: "yes", approvalGateTier: "bogus" })
   assert.deepEqual([bad.theme, bad.grouping, bad.deviceFilter, bad.completionSound], ["system", "device", null, false])
+  assert.deepEqual([bad.askUserEnabled, bad.approvalGateEnabled, bad.approvalGateTier], [false, false, "high-risk"], "G1/G2 字段同口径校验：坏值回落默认")
   assert.deepEqual(migratePiPrefs("{broken"), DEFAULT_PI_PREFS)
 })
 

@@ -21,6 +21,8 @@ import {
 } from "../ui/src/relay/attention.ts"
 import { attentionDotOf } from "../ui/src/relay/presence.ts"
 import { parseRooms } from "../ui/src/relay/devices.ts"
+import { dialogStatusPhrase, roomEventPhrase, roomStatusLine } from "../ui/src/relay/roomStatus.ts"
+import { cleanSessionTitleText, truncateCodePoints, SESSION_TITLE_MAX } from "../ui/src/relay/titleText.ts"
 
 function room(id, extra = {}) {
   return {
@@ -522,4 +524,120 @@ test("P9 A：room_list 的 waiting/waitingPrompt 校验（最多 8 条、dialogI
   assert.equal(legacy.waitingPrompt, undefined)
   const [badPrompt] = parseRooms([{ id: "room-e", waitingPrompt: "oops" }])
   assert.equal(badPrompt.waitingPrompt, null)
+})
+
+/* ---------- 设计 D §2.2：一行状态行 roomStatusLine（文案表逐行） ---------- */
+
+const SL_NOW = 1_700_000_000_000
+const MIN = 60_000
+const HOUR = 3_600_000
+const DAY = 86_400_000
+
+test("状态行·离线：带活动时间拼相对时间；没有活动时间只写已结束；离线压过残留 waiting", () => {
+  assert.deepEqual(roomStatusLine({ online: false, busy: false, lastActivity: SL_NOW - 5 * MIN }, SL_NOW), { text: "已结束 · 5 分钟前", tone: "offline" })
+  assert.deepEqual(roomStatusLine({ online: false, busy: false, lastActivity: 0 }, SL_NOW), { text: "已结束", tone: "offline" })
+  assert.deepEqual(
+    roomStatusLine({ online: false, busy: false, lastActivity: SL_NOW - MIN, waiting: [{ kind: "confirm", startedAt: SL_NOW - MIN }] }, SL_NOW),
+    { text: "已结束 · 1 分钟前", tone: "offline" },
+  )
+})
+
+test("状态行·waiting：多条取最早一条，文案按 kind 分（与 attention 同表）", () => {
+  assert.deepEqual(
+    roomStatusLine({ online: true, busy: true, waiting: [{ kind: "input", startedAt: SL_NOW - MIN }, { kind: "confirm", startedAt: SL_NOW - 5 * MIN }] }, SL_NOW),
+    { text: "等你确认 · 5 分钟前", tone: "waiting" },
+    "busy 中的 waiting 仍先行；最早 = confirm",
+  )
+  assert.equal(roomStatusLine({ online: true, busy: false, waiting: [{ kind: "select", startedAt: SL_NOW - 2 * MIN }] }, SL_NOW).text, "等你选择 · 2 分钟前")
+  assert.equal(roomStatusLine({ online: true, busy: false, waiting: [{ kind: "input", startedAt: SL_NOW - 45_000 }] }, SL_NOW).text, "等你输入 · 刚刚")
+  assert.equal(roomStatusLine({ online: true, busy: false, waiting: [{ kind: "editor", startedAt: SL_NOW - 45_000 }] }, SL_NOW).text, "等你输入 · 刚刚")
+  assert.equal(roomStatusLine({ online: true, busy: false, waiting: [{ kind: "mystery", startedAt: SL_NOW - 45_000 }] }, SL_NOW).text, "等你回复 · 刚刚")
+  assert.equal(dialogStatusPhrase("confirm"), "等你确认")
+})
+
+test("状态行·waitingPrompt 兜底：只有旧单槽信号时走等你处理", () => {
+  assert.deepEqual(
+    roomStatusLine({ online: true, busy: false, waiting: [], waitingPrompt: { kind: "confirm", title: "标题不进状态行", at: SL_NOW - MIN } }, SL_NOW),
+    { text: "等你处理 · 1 分钟前", tone: "waiting" },
+  )
+})
+
+test("状态行·busy 事件短语映射：只用事件类型与工具名元数据", () => {
+  const busy = (lastEvent) => roomStatusLine({ online: true, busy: true, lastEvent }, SL_NOW)
+  assert.deepEqual(busy({ type: "tool_execution_start", toolName: "bash", at: SL_NOW }), { text: "运行中 · 正在执行命令", tone: "running" })
+  assert.equal(busy({ type: "tool_execution_start", toolName: "read", at: SL_NOW }).text, "运行中 · 正在读写文件")
+  assert.equal(busy({ type: "tool_execution_start", toolName: "edit", at: SL_NOW }).text, "运行中 · 正在读写文件")
+  assert.equal(busy({ type: "tool_execution_start", toolName: "write", at: SL_NOW }).text, "运行中 · 正在读写文件")
+  assert.equal(busy({ type: "tool_execution_start", toolName: "grep", at: SL_NOW }).text, "运行中 · 正在使用 grep")
+  assert.equal(busy({ type: "message_update", at: SL_NOW }).text, "运行中 · 正在回复")
+  assert.equal(busy({ type: "turn_start", at: SL_NOW }).text, "运行中 · 正在思考")
+  assert.equal(busy({ type: "agent_start", at: SL_NOW }).text, "运行中 · 正在思考")
+  assert.equal(busy({ type: "compaction_start", at: SL_NOW }).text, "运行中 · 正在压缩上下文")
+  assert.equal(roomEventPhrase(null), null)
+  assert.equal(roomEventPhrase({ type: "message_end", at: SL_NOW }), null, "未知类型不编短语")
+  assert.equal(roomEventPhrase({ type: "tool_execution_start", at: SL_NOW }), null, "缺工具名不编短语")
+})
+
+test("状态行·busy 无 lastEvent（旧 relay）回落：有回合开始时刻拼时间，没有就只有运行中；busy 压过未读落定", () => {
+  assert.deepEqual(roomStatusLine({ online: true, busy: true, lastEvent: null, turnStartedAt: SL_NOW - 2 * MIN }, SL_NOW), { text: "运行中 · 2 分钟前", tone: "running" })
+  assert.deepEqual(roomStatusLine({ online: true, busy: true, lastEvent: null }, SL_NOW), { text: "运行中", tone: "running" })
+  assert.deepEqual(
+    roomStatusLine({ online: true, busy: true, lastEvent: { type: "message_update", at: SL_NOW }, lastTurnEnd: { kind: "error", at: SL_NOW - MIN } }, SL_NOW),
+    { text: "运行中 · 正在回复", tone: "running" },
+  )
+})
+
+test("状态行·未读落定与空闲：error 先于 done；相对时间全档位", () => {
+  assert.deepEqual(roomStatusLine({ online: true, busy: false, lastTurnEnd: { kind: "error", at: SL_NOW - 3 * HOUR } }, SL_NOW), { text: "出错了 · 3 小时前", tone: "error" })
+  assert.deepEqual(roomStatusLine({ online: true, busy: false, lastTurnEnd: { kind: "done", at: SL_NOW - 2 * DAY } }, SL_NOW), { text: "已完成 · 2 天前", tone: "done" })
+  const old = SL_NOW - 30 * DAY
+  const d = new Date(old)
+  // 绝对日期沿 UI 统一的 relativeTime 现行格式「M 月 D 日」（带空格；设计 D §2.2 字面为 M月d日，实现以全 UI 既有口径为准）
+  assert.equal(roomStatusLine({ online: true, busy: false, lastTurnEnd: { kind: "done", at: old } }, SL_NOW).text, `已完成 · ${d.getMonth() + 1} 月 ${d.getDate()} 日`)
+  assert.deepEqual(roomStatusLine({ online: true, busy: false, lastActivity: SL_NOW - 45_000 }, SL_NOW), { text: "空闲 · 刚刚", tone: "idle" })
+  assert.deepEqual(roomStatusLine({ online: true, busy: false, lastActivity: 0 }, SL_NOW), { text: "空闲", tone: "idle" })
+})
+
+test("parseRooms·lastEvent：形状校验与旧 relay 缺字段口径（room.activity)", () => {
+  const [withEv] = parseRooms([{ id: "r1", online: true, lastEvent: { type: "tool_execution_start", toolName: "bash", at: 123 } }])
+  assert.deepEqual(withEv.lastEvent, { type: "tool_execution_start", toolName: "bash", at: 123 })
+  const [legacyRoom] = parseRooms([{ id: "r2", online: true }])
+  assert.equal(legacyRoom.lastEvent, undefined, "旧 relay 不带字段：保持 undefined")
+  const [bad] = parseRooms([{ id: "r3", online: true, lastEvent: "oops" }])
+  assert.equal(bad.lastEvent, null, "形状不合法记 null，不猜")
+  const [noTool] = parseRooms([{ id: "r4", online: true, lastEvent: { type: "message_update", toolName: 42, at: 7 } }])
+  assert.deepEqual(noTool.lastEvent, { type: "message_update", at: 7 }, "toolName 非字符串直接丢弃")
+})
+
+/* ---------- 设计 D §2.1：标题清洗规则 ---------- */
+
+test("标题清洗：多行折叠、空白归一、控制字符删除、斜杠命令保留", () => {
+  assert.equal(cleanSessionTitleText("第一行\n第二行\r\n  第三行"), "第一行 第二行 第三行")
+  assert.equal(cleanSessionTitleText("ab"), "ab")
+  assert.equal(cleanSessionTitleText("标题"), "标题")
+  assert.equal(cleanSessionTitleText("/review 这段代码\n顺带看测试"), "/review 这段代码 顺带看测试")
+  assert.equal(cleanSessionTitleText("  前后空白  "), "前后空白")
+  assert.equal(cleanSessionTitleText(""), "")
+  assert.equal(cleanSessionTitleText(null), "")
+  assert.equal(cleanSessionTitleText("  \n\t "), "", "纯空白（纯图片消息的文本位）清洗后为空，调用方顺延下一档标题")
+})
+
+test("标题截断：80 字按 Unicode 码点，绝不切坏代理对", () => {
+  assert.equal(SESSION_TITLE_MAX, 80)
+  const long = "字".repeat(100)
+  const cut = cleanSessionTitleText(long)
+  assert.equal([...cut].length, 80)
+  const withEmoji = "a".repeat(79) + "\u{1F600}\u{1F600}"
+  const cut2 = truncateCodePoints(withEmoji, 80)
+  assert.equal([...cut2].length, 80, "79 个 a + 1 个 emoji = 80 码点")
+  assert.ok(cut2.endsWith("\u{1F600}"), "emoji 完整保留，没有半个代理对")
+  assert.equal(cut2.length, 81, "UTF-16 长度 79 + 2 = 81，证明按码点而非 UTF-16 截")
+  assert.equal(truncateCodePoints("短", 80), "短")
+})
+
+test("标题派生：attentionRoomTitle 的首条消息过清洗；清洗后为空顺延到目录名", () => {
+  const base = { id: "room-t", label: null, name: null, cwd: "/work/proj", online: true, busy: false, viewers: 0, lastActivity: 0, deviceId: "dev-1" }
+  assert.equal(attentionRoomTitle({ ...base, firstMessage: "帮我看看\n这个报错" }), "帮我看看 这个报错")
+  assert.equal(attentionRoomTitle({ ...base, firstMessage: "  \n " }), "proj", "首条消息无文本（纯图片）→ 顺延目录名")
+  assert.equal(attentionRoomTitle({ ...base, name: "会话名", firstMessage: "首条消息" }), "会话名", "pi 会话名仍优先于首条消息")
 })

@@ -62,6 +62,8 @@ export function piAttentionRows(attention: PiAttentionItem[], now: number, devic
       time: a.at ? piRelativeTime(a.at, now) : undefined,
       timeLabel: a.at ? piAgo(a.at, now) : undefined,
       deviceId: a.deviceId ?? undefined,
+      // 设计 D §2.4 第二层：error 行的行尾时间位让位给状态词（行组件优先 trailingText）；完整时间在 time/timeLabel 里保留
+      ...(a.kind === "error" ? { trailingText: "出错了" } : {}),
     }
   })
 }

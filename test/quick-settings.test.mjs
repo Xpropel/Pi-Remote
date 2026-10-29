@@ -15,6 +15,12 @@ test("应答开关不新造下达通道：下达仍归 useRelay 既有 effect", 
   assert.match(useRelayTs, /dialog_answer_switch/)
   assert.match(useRelayTs, /legacyStyle\.dialogRemoteAnswer/, "P7 B4：开关值改读 useLegacyStyle（同一个旧键）")
 })
+test("G1/G2 开关与应答开关同路：useRelay 既有 effect 下达，值读旧键 askGatePrefs", () => {
+  assert.match(useRelayTs, /ask_user_switch/)
+  assert.match(useRelayTs, /approval_gate_switch/)
+  assert.match(useRelayTs, /useAskGatePrefs/, "开关值读旧键的 G1/G2 读者（与 dialogRemoteAnswer 同一个旧键、同一个事件）")
+  assert.match(useRelayTs, /askGate\.approvalGateTier/, "审批档位随开关帧一起下达")
+})
 test("顶栏不挂快捷设置入口（P7 B2f 改查新界面 PiTopBar）：顶栏没有设置 / 快捷设置按钮", () => {
   const piTopBar = source("../ui/src/components/pi/shared/PiTopBar.tsx")
   assert.doesNotMatch(piTopBar, /QuickSettings|快捷设置|aria-label="设置"/)

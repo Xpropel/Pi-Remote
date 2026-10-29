@@ -14,6 +14,7 @@ import { DialogsContainer } from "./DialogsContainer"
 import { DisplayOptionsSheet } from "./DisplayOptionsContainer"
 import { LinkStatusContainer } from "./LinkStatusContainer"
 import { NewSessionContainer } from "./NewSessionContainer"
+import { InboxContainer } from "./InboxContainer"
 import { NoticeContainer } from "./NoticeContainer"
 import { PairingContainer } from "./PairingContainer"
 import { PaneContainer } from "./PaneContainer"
@@ -164,6 +165,7 @@ function PhoneShell({ nav, theme, ...app }: PiAppProps & { nav?: Omit<PiPhoneNav
     nav?.page ?? phonePageOf({ boot, view: ui.view, pane: ui.pane, phonePage: ui.phonePage, search: ui.search, roomId: relay.roomId })
   if (page === "new") return <NewSessionContainer {...p} />
   if (page === "settings") return <SettingsRoute p={p} theme={theme} />
+  if (page === "inbox") return <InboxContainer {...p} />
   if (page === "pane") return <PaneContainer {...p} />
   const sheets = (
     <>

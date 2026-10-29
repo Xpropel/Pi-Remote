@@ -5,8 +5,9 @@
  * - attentionWithOfflineDevices（G2）：attentionItemsOf 只对选中设备出"设备未连接"；这里给每台非选中的离线设备各补一条，
  *   排序口径同 relay/attention.ts（等你回答 → 出错 → 设备未连接 → 完成未读，同级按时刻、再按 key）。attention.ts 本身不改。
  */
-import { attentionItemsOf, type AttentionItem, type AttentionKind, type AttentionSnapshot } from "../../relay/attention.ts"
+import { attentionItemsOf, type AttentionItem, type AttentionKind, type AttentionSnapshot, type AttentionTurnEnd } from "../../relay/attention.ts"
 import { mergeDeviceSessions, UNREGISTERED_DEVICE_ID, type Device, type ListedSession, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
+import { roomStatusLine, type RoomStatusLine } from "../../relay/roomStatus.ts"
 import { sortShellDevices } from "../../shell/deviceStripModel.ts"
 
 /** 侧栏用的会话行：ListedSession + 所在设备 */
@@ -77,6 +78,8 @@ export type PiSidebarSourceInput = {
   uiPrompt: AttentionSnapshot["uiPrompt"]
   turnEnd: AttentionSnapshot["turnEnd"]
   roomTurnEnds: AttentionSnapshot["roomTurnEnds"]
+  /** 收件箱账本切片（D-§1）：可选——给了 attention 就走账本面，没给（旧装配）回落摘要面 */
+  inbox?: AttentionSnapshot["inbox"]
   selectedDevice: AttentionSnapshot["selectedDevice"]
 }
 
@@ -101,6 +104,7 @@ export function sidebarDataOf(r: PiSidebarSourceInput): PiSidebarData {
       uiPrompt: r.uiPrompt,
       turnEnd: r.turnEnd,
       roomTurnEnds: r.roomTurnEnds,
+      inbox: r.inbox,
       selectedDevice: r.selectedDevice,
     }),
     devices,
@@ -129,4 +133,32 @@ export function openSessionRow(relay: PiOpenSessionRelay, row: PiDeviceListedSes
     else relay.selectListedSession(row)
   }
   onOpened()
+}
+
+/**
+ * 一行状态的输入装配（设计 D §2.2/§2.4）：桌面侧栏与移动列表共用——
+ * 房间事实（online/busy/waiting/waitingPrompt/lastEvent）优先取 RoomInfo，
+ * 没有房间（仅清单会话）时回落 ListedSession 的 online/busy/updatedAt；
+ * 未读落定取别房追踪器的 AttentionTurnEnd（在场房间追踪器里没有，自然为 null=已读）。
+ * 纯函数 roomStatusLine 本体在 relay/roomStatus.ts，这里只做字段拼装。
+ */
+export function sessionStatusLineOf(input: {
+  room?: RoomInfo | null
+  session?: Pick<ListedSession, "online" | "busy" | "updatedAt"> | null
+  turnEnd?: AttentionTurnEnd | null
+  now: number
+}): RoomStatusLine {
+  const { room, session, turnEnd, now } = input
+  return roomStatusLine(
+    {
+      online: room ? room.online : (session?.online ?? false),
+      busy: room ? room.busy : (session?.busy ?? false),
+      waiting: room?.waiting ?? null,
+      waitingPrompt: room?.waitingPrompt ?? null,
+      lastTurnEnd: turnEnd ? { kind: turnEnd.error ? "error" : "done", at: turnEnd.at } : null,
+      lastEvent: room?.lastEvent ?? null,
+      lastActivity: room?.lastActivity ?? session?.updatedAt ?? 0,
+    },
+    now,
+  )
 }

@@ -27,6 +27,8 @@
  */
 // test/*.test.mjs 用 node 直接跑 .ts 源文件，相对导入必须带扩展名
 import { baseName, roomDeviceId, type Device, type RoomInfo } from "./devices.ts"
+import { cleanSessionTitleText } from "./titleText.ts"
+import type { InboxEntry } from "./inbox.ts"
 
 /** 未决 dialog 的最小形状（与 PromptWaiting 的 DialogCard 结构兼容，只取聚合用到的字段）。 */
 export type AttentionDialog = {
@@ -57,6 +59,13 @@ export type AttentionSnapshot = {
   turnEnd: AttentionTurnEnd | null
   /** 别房回合结束记录（relay.roomTurnEnds，per-room 边沿追踪的落定结果）；只对非当前房间成条 */
   roomTurnEnds?: readonly AttentionTurnEnd[]
+  /**
+   * 收件箱账本切片（设计 D §1，relay.inbox）：给了就以账本为别房 waiting 的唯一来源
+   * （取代 1b 的 room.waiting 摘要拼装）；turn 条目不在这里成条——它们经 useRelay 的
+   * inboxTurnSeedsOf 种回 RoomTurnTracker 后走第 3 段同一出口，保证计数恒等。
+   * 缺省（旧 relay / 未声明 room.inbox）时 1b 走原摘要路径，行为与账本落地前一致。
+   */
+  inbox?: readonly InboxEntry[]
   /** 选中设备（relay.selectedDevice）；未连接时成一条设备待处理 */
   selectedDevice: Pick<Device, "id" | "name" | "online"> | null
 }
@@ -95,7 +104,9 @@ export function attentionRoomTitle(room: RoomInfo | null | undefined): string {
   const folder = room.cwd ? baseName(room.cwd) : ""
   if (room.label && room.label !== folder && room.label !== room.id) return room.label
   if (room.name) return room.name
-  if (room.firstMessage) return room.firstMessage
+  // 首条消息作标题要过清洗规则（设计 D §2.1：折叠/去控制字符/80 码点截）；清洗后为空顺延下一档
+  const first = cleanSessionTitleText(room.firstMessage)
+  if (first) return first
   if (room.label) return room.label
   if (room.cwd) return baseName(room.cwd)
   return room.id.slice(0, 8)
@@ -155,11 +166,49 @@ export function attentionItemsOf(snapshot: AttentionSnapshot): AttentionItem[] {
     })
   }
 
-  // 1b) 其它房间的未决 dialog（P9 A，relay 的 room.dialogs 摘要）。当前房间只用实时的
-  //     dialogs，避免同一件事被实时面和摘要面各记一次（与第 2 步 uiPrompt 去重同一条纪律）。
-  //     离线房间的 waiting 恒空（relay 保证），这里再挡一道。
+  // 1b) 其它房间的未决 dialog。当前房间只用实时的 dialogs，避免同一件事被实时面和
+  //     摘要/账本面各记一次（与第 2 步 uiPrompt 去重同一条纪律）。
+  //     设计 D §1 起：快照带 inbox 切片时，别房 waiting 只从账本取（账本是 relay 侧唯一
+  //     事实源，跨刷新/重启都在）；当前房的账本条目跳过（实时 dialogs 已成条，硬规则）。
+  //     无切片（旧 relay）回落 P9 A 的 room.waiting 摘要拼装，行为与账本落地前一致。
   const seen = new Set(items.map((item) => item.key))
-  for (const room of snapshot.rooms) {
+  if (snapshot.inbox !== undefined) {
+    for (const entry of snapshot.inbox) {
+      if (entry.kind !== "waiting" || entry.roomId === snapshot.currentRoomId) continue
+      const room = roomsById.get(entry.roomId)
+      const deviceId = entry.deviceId ?? (room ? roomDeviceId(room) : null)
+      if (entry.subkind === "dialog" || entry.subkind === "ask") {
+        if (seen.has(entry.key)) continue
+        seen.add(entry.key)
+        items.push({
+          key: entry.key,
+          kind: "waiting",
+          roomId: entry.roomId,
+          deviceId,
+          dialogId: entry.subkind === "dialog" ? entry.key.slice("dialog:".length) : null,
+          title: attentionRoomTitle(room),
+          detail: entry.title || dialogWaitingText(entry.dialogKind ?? ""),
+          at: entry.at,
+          answerable: entry.answerable === true,
+        })
+      } else if (entry.subkind === "prompt") {
+        const key = `prompt:${entry.roomId}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        items.push({
+          key,
+          kind: "waiting",
+          roomId: entry.roomId,
+          deviceId,
+          dialogId: null,
+          title: attentionRoomTitle(room),
+          detail: entry.title || "有弹窗等你处理",
+          at: entry.at,
+          answerable: false,
+        })
+      }
+    }
+  } else for (const room of snapshot.rooms) {
     if (!room.online || room.id === snapshot.currentRoomId) continue
     const deviceId = roomDeviceId(room)
     for (const waiting of room.waiting ?? []) {

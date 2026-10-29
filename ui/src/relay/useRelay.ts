@@ -11,6 +11,7 @@ import {
   type DeletedSessionsStorage,
 } from "./deletedSessions"
 import { composerFactsOf } from "./composerFacts"
+import { cleanSessionTitleText } from "./titleText"
 import { archiveView, rememberSessionArchive, touchSessionArchive, type ArchiveSession } from "./sessionArchive"
 import {
   archiveKeysOf,
@@ -104,7 +105,9 @@ import {
   type RoomTurnEvent,
   type RoomTurnTracker,
 } from "@/relay/attention"
-import { useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
+import { applyInboxUpdate, inboxTurnSeedsOf, parseInboxEntries, type InboxEntry } from "@/relay/inbox"
+import { parseScheduleEntries, scheduleMapOfRooms, type ScheduleCreateInput, type ScheduleEntry } from "@/relay/schedule"
+import { useAskGatePrefs, useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
 import {
   TERMINAL_UPDATE_FLUSH_MS,
   TOOL_END_META_MAX,
@@ -309,7 +312,9 @@ export function roomTitle(room: RoomInfo | null) {
   const folder = room.cwd ? cwdLabel(room.cwd) : ""
   if (room.label && room.label !== folder && room.label !== room.id) return room.label
   if (room.name) return room.name
-  if (room.firstMessage) return room.firstMessage
+  // 首条消息作标题要过清洗规则（设计 D §2.1：折叠/去控制字符/80 码点截）；清洗后为空顺延下一档
+  const first = cleanSessionTitleText(room.firstMessage)
+  if (first) return first
   if (room.label) return room.label
   if (room.cwd) return cwdLabel(room.cwd)
   return room.id.slice(0, 8)
@@ -505,6 +510,22 @@ export function useRelay() {
   /** 别房回合结束记录（B-1）：turnEnd 只由当前房产生，别房的落定靠 RoomTurnTracker
    *  在帧被房间过滤丢弃之前从各房 busy 边沿与别房事件帧记账（见 attention.ts）。 */
   const [roomTurnEnds, setRoomTurnEnds] = useState<TurnEnd[]>([])
+  /** 收件箱账本本地副本（设计 D §1）：auth/room_list 快照整替、inbox_update 增量并入；
+   *  旧 relay 无此面恒为空数组，attention 归约据「切片在不在」决定别房 waiting 的来源。 */
+  const [inbox, setInbox] = useState<InboxEntry[]>([])
+  const inboxRef = useRef<InboxEntry[]>([])
+  /** 定时排期本地副本（设计 D §3）：按房间分桶——room_list 条目内的 schedules 快照
+   *  整替、schedule_update 单房全量替换；旧 relay 无此面恒为空。 */
+  const [schedulesByRoom, setSchedulesByRoom] = useState<Record<string, ScheduleEntry[]>>({})
+  const schedulesRef = useRef<Record<string, ScheduleEntry[]>>({})
+  /** 名册快照并入排期副本：没有任何一房带 schedules 字段（旧 relay）时不动副本。 */
+  const applySchedulesSnapshot = (rawRooms: unknown): boolean => {
+    const { map, seen } = scheduleMapOfRooms(rawRooms)
+    if (!seen) return false
+    schedulesRef.current = map
+    setSchedulesByRoom(map)
+    return true
+  }
   const roomTurnTrackerRef = useRef<RoomTurnTracker>(emptyRoomTurnTracker())
   /** 追踪器提交：引用没变（无边沿）就不触发状态更新，流式高频帧下保持安静。 */
   const commitRoomTurnTracker = (next: RoomTurnTracker) => {
@@ -1849,6 +1870,22 @@ export function useRelay() {
           commitRoomTurnTracker(
             seedRoomTurnEnds(trackRoomListEdges(roomTurnTrackerRef.current, list, roomRef.current), roomTurnSeedsOf(msg.rooms), roomRef.current),
           )
+          // 收件箱账本快照（D-§1）：带 inbox 字段就整替本地副本，turn 条目顺路作种子补追踪器空缺；
+          // 旧 relay 无字段 → 清空副本（attention 回落 room.waiting 摘要面）。
+          if (Array.isArray(msg.inbox)) {
+            const entries = parseInboxEntries(msg.inbox)
+            inboxRef.current = entries
+            setInbox(entries)
+            commitRoomTurnTracker(seedRoomTurnEnds(roomTurnTrackerRef.current, inboxTurnSeedsOf(entries), roomRef.current))
+          } else {
+            inboxRef.current = []
+            setInbox([])
+          }
+          // 定时排期快照（D-§3）：新连接整替排期副本；旧 relay 无字段 → 清空（面板不出定时段）。
+          if (!applySchedulesSnapshot(msg.rooms)) {
+            schedulesRef.current = {}
+            setSchedulesByRoom({})
+          }
           applyRoster(list, msg.devices)
           // 观众自己重连时设备可能一直在线，offline→online 的刷新不会触发；
           // 这里补一次（节流），否则手机后台一段时间后看不到 Mac 上新产生的会话
@@ -1895,6 +1932,10 @@ export function useRelay() {
           setDialogs([])
           setExtStatus(null)
           setTurnEnd(null)
+          inboxRef.current = []
+          setInbox([])
+          schedulesRef.current = {}
+          setSchedulesByRoom({})
           ws.close()
         }
         return
@@ -1910,6 +1951,16 @@ export function useRelay() {
         commitRoomTurnTracker(
           seedRoomTurnEnds(trackRoomListEdges(roomTurnTrackerRef.current, list, roomRef.current), roomTurnSeedsOf(msg.rooms), roomRef.current),
         )
+        // 收件箱账本快照（D-§1）：广播 room_list 给声明端附带 inbox 全量快照——整替本地
+        // 副本（增量帧丢一帧也能靠下一次名册广播自愈）；无字段（旧 relay）不动副本。
+        if (Array.isArray(msg.inbox)) {
+          const entries = parseInboxEntries(msg.inbox)
+          inboxRef.current = entries
+          setInbox(entries)
+          commitRoomTurnTracker(seedRoomTurnEnds(roomTurnTrackerRef.current, inboxTurnSeedsOf(entries), roomRef.current))
+        }
+        // 定时排期快照（D-§3）：名册广播里每房的 schedules 整替对应桶（增量帧丢帧靠它自愈）。
+        applySchedulesSnapshot(msg.rooms)
         applyRoster(list, msg.devices)
         const started = takePendingRooms(list)
         if (started.length) {
@@ -2167,6 +2218,43 @@ export function useRelay() {
         )
         roomsRef.current = next
         setRooms(next)
+        return
+      }
+      // 收件箱账本增量（D-§1）：与 room_attention 一样是全局信号，必须在房间过滤之前处理。
+      // upserts 并入本地副本并把 turn 条目作种子补追踪器；removed 的 turn 条目按 key 里的
+      // 时刻与追踪器记录比对——不新于记录才 forget（别端清掉的是同一份落定；本地若已有
+      // 更新的实时边沿记录，不能被旧清账误伤）。
+      if (type === "inbox_update") {
+        const upserts = parseInboxEntries(msg.upserts)
+        const removed = Array.isArray(msg.removed) ? msg.removed.filter((k): k is string => typeof k === "string") : []
+        const next = applyInboxUpdate(inboxRef.current, upserts, removed)
+        if (next !== inboxRef.current) {
+          inboxRef.current = next as InboxEntry[]
+          setInbox(next as InboxEntry[])
+        }
+        if (upserts.length) {
+          commitRoomTurnTracker(seedRoomTurnEnds(roomTurnTrackerRef.current, inboxTurnSeedsOf(upserts), roomRef.current))
+        }
+        for (const key of removed) {
+          if (!key.startsWith("turn:")) continue
+          const cut = key.lastIndexOf(":")
+          const at = cut > 0 ? Number(key.slice(cut + 1)) : NaN
+          const roomId = cut > 0 ? key.slice("turn:".length, cut) : ""
+          if (!roomId || !Number.isFinite(at)) continue
+          const prev = roomTurnTrackerRef.current.ends.get(roomId)
+          if (prev && prev.at <= at) commitRoomTurnTracker(forgetRoomTurnEnd(roomTurnTrackerRef.current, roomId))
+        }
+        return
+      }
+      // 定时排期增量（D-§3）：单房全量替换该房的排期桶；与 inbox_update 一样是全局
+      // 信号，必须在房间过滤之前处理（别房排期到点/失败也要同步进副本）。
+      if (type === "schedule_update") {
+        const roomId = typeof msg.room === "string" ? msg.room : ""
+        if (roomId) {
+          const next = { ...schedulesRef.current, [roomId]: parseScheduleEntries(msg.schedules) }
+          schedulesRef.current = next
+          setSchedulesByRoom(next)
+        }
         return
       }
       // room_offline 要在房间过滤之前处理：别的房间下线也得更新侧栏里的在线标记
@@ -2564,11 +2652,50 @@ export function useRelay() {
     }
   }, [authed, roomId, legacyStyle.dialogRemoteAnswer])
 
+  /* ---- G1/G2 开关下达（与 dialog_answer_switch 同路同纪律：值变化即发，relay 存值、桥重连重下达） ---- */
+  const askGate = useAskGatePrefs()
+  const askUserSwitchSentRef = useRef("")
+  useEffect(() => {
+    if (!authed || !roomId) {
+      askUserSwitchSentRef.current = ""
+      return
+    }
+    const key = roomId + "|ask|" + String(askGate.askUserEnabled)
+    if (askUserSwitchSentRef.current === key) return
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    askUserSwitchSentRef.current = key
+    try {
+      ws.send(JSON.stringify({ type: "ask_user_switch", room: roomId, enabled: askGate.askUserEnabled }))
+    } catch {
+      askUserSwitchSentRef.current = ""
+    }
+  }, [authed, roomId, askGate.askUserEnabled])
 
-  /** 发送一份远程答案（先答广播：桥以第一个到达者为准）。结果三态供卡片 phase 用。 */
-  const sendDialogAnswer = useCallback(
-    (dialogId: string, answer: DialogAnswer): Promise<DialogAnswerResult> => {
-      const room = roomRef.current
+  const approvalGateSwitchSentRef = useRef("")
+  useEffect(() => {
+    if (!authed || !roomId) {
+      approvalGateSwitchSentRef.current = ""
+      return
+    }
+    const key = roomId + "|gate|" + String(askGate.approvalGateEnabled) + "|" + askGate.approvalGateTier
+    if (approvalGateSwitchSentRef.current === key) return
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    approvalGateSwitchSentRef.current = key
+    try {
+      ws.send(JSON.stringify({ type: "approval_gate_switch", room: roomId, enabled: askGate.approvalGateEnabled, tier: askGate.approvalGateTier }))
+    } catch {
+      approvalGateSwitchSentRef.current = ""
+    }
+  }, [authed, roomId, askGate.approvalGateEnabled, askGate.approvalGateTier])
+
+
+  /** 发送一份远程答案（先答广播：桥以第一个到达者为准）。结果三态供卡片 phase 用。
+   *  To 版显式带目标房间：收件箱里对别房 confirm 条目原地应答走它（D-§1.5），
+   *  不带房间的 sendDialogAnswer 仍是当前房语义、既有调用方不变。 */
+  const sendDialogAnswerTo = useCallback(
+    (room: string, dialogId: string, answer: DialogAnswer): Promise<DialogAnswerResult> => {
       if (!room) return Promise.resolve("error")
       const frame: Record<string, unknown> = { type: "dialog_answer", room, dialogId, action: answer.action }
       if (typeof answer.value === "string") frame.value = answer.value
@@ -2586,6 +2713,42 @@ export function useRelay() {
       )
     },
     [pushNotice, sendQuery],
+  )
+
+  /** 当前房语义的应答（既有调用方走这里）。 */
+  const sendDialogAnswer = useCallback(
+    (dialogId: string, answer: DialogAnswer): Promise<DialogAnswerResult> => sendDialogAnswerTo(roomRef.current, dialogId, answer),
+    [sendDialogAnswerTo],
+  )
+
+  /** 收件箱手动清除（D-§1）：只对 done/error 有效，waiting 由 relay 账本层拒清；
+   *  结果经 inbox_update 广播回各端对齐（含本端），本地不抢先改副本。 */
+  const dismissInbox = useCallback((key: string) => {
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN || !key) return
+    try {
+      ws.send(JSON.stringify({ type: "inbox_dismiss", key }))
+    } catch {}
+  }, [])
+
+  /** 定时排期创建（D-§3）：绑当前房；走 sendQuery 等回执——校验/上限错误要原样抛给
+   *  创建表单显示。成功后清单经 schedule_update 广播对齐，本地不抢先改副本。 */
+  const createSchedule = useCallback(
+    (input: ScheduleCreateInput): Promise<ScheduleEntry | null> => {
+      const room = roomRef.current
+      if (!room) return Promise.reject(new RelayError("no_room", "还没有打开的会话"))
+      return sendQuery({ type: "schedule_create", roomId: room, ...input }).then((msg) => {
+        const entries = parseScheduleEntries([msg.data])
+        return entries[0] ?? null
+      })
+    },
+    [sendQuery],
+  )
+
+  /** 定时排期取消（D-§3）：结果同样经 schedule_update 对齐；回执失败抛给调用方提示。 */
+  const cancelSchedule = useCallback(
+    (scheduleId: string): Promise<void> => sendQuery({ type: "schedule_cancel", scheduleId }).then(() => undefined),
+    [sendQuery],
   )
 
   const dismissDialogReceipt = useCallback((dialogId: string) => {
@@ -4240,6 +4403,16 @@ export function useRelay() {
     dialogReceipts,
     dismissDialogReceipt,
     sendDialogAnswer,
+    /** 指定房间的应答（收件箱原地答别房条目用，D-§1）。 */
+    sendDialogAnswerTo,
+    /** 收件箱账本本地副本（D-§1，只含元数据）与手动清除（仅 done/error）。 */
+    inbox,
+    dismissInbox,
+    /** 定时排期（D-§3）：当前房清单 / 全量分桶副本 / 创建与取消（relay 本地命令）。 */
+    schedules: roomId ? (schedulesByRoom[roomId] ?? []) : [],
+    schedulesByRoom,
+    createSchedule,
+    cancelSchedule,
     extStatus,
     activity,
     notice,

@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from "react"
+import { useState, type ComponentProps, type ReactNode } from "react"
 import { MenuSurface } from "@/components/kit"
 import { PiButton } from "@/components/pi/shared"
 import { usePiStatic } from "@/components/pi/shared/layers"
@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils"
 import { agoText, DELIVERY_LABEL, hostMessageText } from "./options"
 import type { CHostMessage } from "./types"
 import type { PiRemoteQueueItem, PiRemoteQueueState } from "@/components/pi/shared/types"
+import { scheduleSourceLabel, scheduleStatusLine, type ScheduleCreateInput, type ScheduleEntry } from "@/relay/schedule"
 import { C_ERROR, C_SECONDARY, rowText, TOUCH_44, type CVariant } from "./styles"
 
 export interface PiQueuePanelProps extends Omit<ComponentProps<"div">, "children"> {
@@ -43,6 +44,17 @@ export interface PiQueuePanelProps extends Omit<ComponentProps<"div">, "children
    * 这里不再画行内的那一排。手机 sheet 用；桌面浮层不传
    */
   editFooter?: boolean
+  /**
+   * 定时排期（设计 D §3.7）：当前房的排期清单（armed + 保留期内终态），与 pending
+   * 排队卡同一列成段。不给 = 不出定时段（画廊屏 / 旧 relay）。
+   */
+  schedules?: ScheduleEntry[]
+  /** 可交互：取消一条 armed 排期（排期不可原地编辑，改 = 取消重建） */
+  onScheduleCancel?: (id: string) => void
+  /** 可交互：新建排期；段位由 scheduleSegment 带入（跟随当前发送行为选择） */
+  onScheduleCreate?: (input: ScheduleCreateInput) => Promise<unknown>
+  /** 新建排期的段位：跟随 composer 当前的发送行为（steer / follow_up） */
+  scheduleSegment?: "steer" | "follow_up"
 }
 
 export type PiQueueAction = "send-now" | "edit" | "cancel"
@@ -90,6 +102,180 @@ export const OUTBOX_UNKNOWN_TEXT = "可能已送达，先看会话"
 /** 来源文案：web → 网页；其余照原值（推断：relay 只下发 source 字符串） */
 function sourceLabel(source: string): string {
   return source === "web" ? "网页" : source
+}
+
+/** datetime-local 输入框的本地时刻串（YYYY-MM-DDTHH:mm） */
+function toLocalInputValue(at: number): string {
+  const d = new Date(at)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+const SCHEDULE_INTERVAL_CHIPS = [5, 10, 20, 30, 60]
+
+/**
+ * 新建定时表单（设计 D §3.7）：一次/每隔两式；每隔式带额度提示（每次触发都是真实
+ * 发送）；段位不在这里选——跟随 composer 当前发送行为，表单里只读展示。
+ * 高级项（触发上限 / 总到期）默认收起一行输入，留空 = 不限 / 24 小时。
+ */
+function ScheduleCreateForm({
+  variant,
+  segment,
+  onCreate,
+  onClose,
+}: {
+  variant: CVariant
+  segment: "steer" | "follow_up"
+  onCreate: (input: ScheduleCreateInput) => Promise<unknown>
+  onClose: () => void
+}) {
+  const phone = variant === "phone"
+  const t = rowText(variant)
+  const [text, setText] = useState("")
+  const [kind, setKind] = useState<"once" | "every">("once")
+  const [when, setWhen] = useState(() => toLocalInputValue(Date.now() + 10 * 60 * 1000))
+  const [minutes, setMinutes] = useState(20)
+  const [customMinutes, setCustomMinutes] = useState("")
+  const [maxFires, setMaxFires] = useState("")
+  const [expireHours, setExpireHours] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const chipCls = (active: boolean) =>
+    cn(
+      "rounded-full border border-solid px-2.5 py-1",
+      active ? "border-(--cw-text) text-(--cw-text) font-(--cw-weight-medium)" : "border-(--cw-border) text-(--cw-text-2)",
+      phone && "py-1.5",
+    )
+  const inputCls = cn(
+    "rounded-[8px] border border-solid border-(--cw-border) bg-(--cw-surface) px-2.5 py-1.5 text-(--cw-text) outline-none focus-visible:border-(--cw-pi-field-focus-border)",
+    phone ? "text-[16px] leading-[22px]" : t.main,
+  )
+  const submit = () => {
+    if (saving) return
+    const body = text.trim()
+    if (!body) {
+      setError("先写要定时发送的内容")
+      return
+    }
+    const input: ScheduleCreateInput = { text: body, segment, kind }
+    if (kind === "once") {
+      const at = new Date(when).getTime()
+      if (!Number.isFinite(at) || at <= Date.now()) {
+        setError("目标时刻要选在未来")
+        return
+      }
+      input.at = at
+    } else {
+      const m = customMinutes.trim() ? Number(customMinutes) : minutes
+      if (!Number.isFinite(m) || m < 1) {
+        setError("间隔至少 1 分钟")
+        return
+      }
+      input.intervalMs = Math.round(m) * 60000
+    }
+    if (maxFires.trim()) {
+      const n = Number(maxFires)
+      if (!Number.isSafeInteger(n) || n < 1) {
+        setError("触发上限要是正整数")
+        return
+      }
+      input.maxFires = n
+    }
+    if (expireHours.trim()) {
+      const h = Number(expireHours)
+      if (!Number.isFinite(h) || h <= 0) {
+        setError("到期小时数要大于 0")
+        return
+      }
+      input.expireAt = Date.now() + h * 60 * 60 * 1000
+    }
+    setSaving(true)
+    setError(null)
+    onCreate(input).then(
+      () => onClose(),
+      (e: unknown) => {
+        setSaving(false)
+        setError(e instanceof Error && e.message ? e.message : "创建失败，请重试")
+      },
+    )
+  }
+  return (
+    <div data-slot="pi-schedule-form" className="flex min-w-0 flex-col gap-2 py-2">
+      <textarea
+        data-cw-id="pi-schedule-text"
+        aria-label="定时发送的内容"
+        rows={phone ? 3 : 2}
+        value={text}
+        maxLength={100000}
+        placeholder="到时要发送的消息"
+        onChange={(event) => setText(event.currentTarget.value)}
+        className={cn("w-full resize-none", inputCls)}
+      />
+      <div className={cn("flex flex-wrap items-center gap-1.5", t.sub)}>
+        <button type="button" className={chipCls(kind === "once")} onClick={() => setKind("once")}>
+          一次
+        </button>
+        <button type="button" className={chipCls(kind === "every")} onClick={() => setKind("every")}>
+          每隔一段时间
+        </button>
+        <span className={cn("ml-auto", C_SECONDARY)}>{segment === "follow_up" ? "回合结束后发送" : "插入当前回合"}</span>
+      </div>
+      {kind === "once" ? (
+        <input type="datetime-local" aria-label="目标时刻" value={when} onChange={(event) => setWhen(event.currentTarget.value)} className={cn("w-full", inputCls)} />
+      ) : (
+        <>
+          <div className={cn("flex flex-wrap items-center gap-1.5", t.sub)}>
+            {SCHEDULE_INTERVAL_CHIPS.map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={chipCls(!customMinutes.trim() && minutes === m)}
+                onClick={() => {
+                  setMinutes(m)
+                  setCustomMinutes("")
+                }}
+              >
+                {m} 分钟
+              </button>
+            ))}
+            <input
+              aria-label="自定义间隔（分钟）"
+              inputMode="numeric"
+              placeholder="自定义分钟"
+              value={customMinutes}
+              onChange={(event) => setCustomMinutes(event.currentTarget.value)}
+              className={cn("w-[104px]", inputCls)}
+            />
+          </div>
+          <span className={cn(t.sub, C_SECONDARY)}>每次触发都是一次真实发送，会消耗模型额度。</span>
+        </>
+      )}
+      <div className={cn("flex items-center gap-2", t.sub)}>
+        <label className="flex items-center gap-1.5">
+          <span className={C_SECONDARY}>最多触发</span>
+          <input aria-label="最多触发次数" inputMode="numeric" placeholder="不限" value={maxFires} onChange={(event) => setMaxFires(event.currentTarget.value)} className={cn("w-[64px]", inputCls)} />
+        </label>
+        <label className="flex items-center gap-1.5">
+          <span className={C_SECONDARY}>到期（小时）</span>
+          <input aria-label="到期小时数" inputMode="numeric" placeholder="24" value={expireHours} onChange={(event) => setExpireHours(event.currentTarget.value)} className={cn("w-[64px]", inputCls)} />
+        </label>
+      </div>
+      {error && (
+        <span role="alert" className={cn(t.sub, C_ERROR)}>
+          {error}
+        </span>
+      )}
+      <div className={cn("flex justify-end", phone ? "gap-3" : "gap-1.5", t.sub)}>
+        <TextButton variant={variant} strong disabled={saving} onClick={saving ? undefined : submit}>
+          {saving ? "创建中…" : "创建定时"}
+        </TextButton>
+        <span aria-hidden className="text-(--cw-text-4)">·</span>
+        <TextButton variant={variant} disabled={saving} onClick={saving ? undefined : onClose}>
+          收起
+        </TextButton>
+      </div>
+    </div>
+  )
 }
 
 function TextButton({
@@ -187,6 +373,10 @@ export function PiQueuePanel({
   onEditCancel,
   onEditResolve,
   editFooter,
+  schedules,
+  onScheduleCancel,
+  onScheduleCreate,
+  scheduleSegment,
   className,
   ...rest
 }: PiQueuePanelProps) {
@@ -195,7 +385,10 @@ export function PiQueuePanel({
   const t = rowText(variant)
   const actionsOf = (id: string) => (isStatic || !onAction ? undefined : (action: PiQueueAction) => onAction(id, action))
   const outboxItems = outbox?.items ?? []
-  const pending = remote.items.filter((i) => i.status === "pending").length + host.steering.length + host.followUp.length + outboxItems.length
+  const scheduleItems = schedules ?? []
+  const armedSchedules = scheduleItems.filter((s) => s.state === "armed").length
+  const [scheduleFormOpen, setScheduleFormOpen] = useState(false)
+  const pending = remote.items.filter((i) => i.status === "pending").length + host.steering.length + host.followUp.length + outboxItems.length + armedSchedules
   const outboxRow = (item: PiQueueOutboxItem, index: number) => {
     const failed = item.status === "failed"
     const on = isStatic || !onOutboxAction ? undefined : (action: "cancel" | "retry") => onOutboxAction(item.cid, action)
@@ -235,7 +428,8 @@ export function PiQueuePanel({
         </div>
       )
     }
-    const meta = `${DELIVERY_LABEL[item.segment]} · ${sourceLabel(item.source)} · ${agoText(item.at, now)}`
+    // 定时投递的条目带 sch_<id>_<拍号> 的 cid：来源标注换成「来自定时 · 第 N 次」（§3.7）
+    const meta = `${DELIVERY_LABEL[item.segment]} · ${scheduleSourceLabel(item.cid) ?? sourceLabel(item.source)} · ${agoText(item.at, now)}`
     if (!isStatic && editing?.id === item.id) {
       const busy = editing.phase !== "ready"
       const dot = <span aria-hidden className="text-(--cw-text-4)">·</span>
@@ -355,6 +549,53 @@ export function PiQueuePanel({
             ))}
           </div>
           <div className={cn("border-t border-solid border-(--cw-divider-soft) pt-2", t.sub, C_SECONDARY)}>要改或撤回，请回到电脑终端</div>
+        </>
+      )}
+      {/* 定时段（D-§3.7）：与排队卡同一列；armed 可取消（不可原地编辑，改 = 取消重建），终态只报结局 */}
+      {schedules !== undefined && (scheduleItems.length > 0 || (!isStatic && onScheduleCreate)) && (
+        <>
+          <div
+            className={cn(
+              outboxItems.length > 0 || remote.items.length > 0 || hostRows.length > 0 ? "mt-2 border-t border-solid border-(--cw-divider) pt-3" : "pt-2",
+              t.sub,
+              C_SECONDARY,
+            )}
+          >
+            定时
+          </div>
+          <div className="flex flex-col divide-y divide-(--cw-divider-soft)">
+            {scheduleItems.map((s) => (
+              <div key={s.id} data-slot="pi-schedule-row" data-state={s.state} className="flex min-w-0 flex-col gap-0.5 py-2">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className={cn("min-w-0 flex-1 truncate text-(--cw-text)", t.main)}>{s.text}</span>
+                  {!phone && s.state === "armed" && !isStatic && onScheduleCancel && (
+                    <TextButton variant={variant} label={`取消定时：${s.text}`} onClick={() => onScheduleCancel(s.id)}>
+                      取消
+                    </TextButton>
+                  )}
+                </div>
+                <span className={cn(t.sub, s.state === "failed" ? C_ERROR : C_SECONDARY)}>{scheduleStatusLine(s, now)}</span>
+                {phone && s.state === "armed" && !isStatic && onScheduleCancel && (
+                  <div className={cn("flex justify-end pt-1", t.sub)}>
+                    <TextButton variant={variant} label={`取消定时：${s.text}`} onClick={() => onScheduleCancel(s.id)}>
+                      取消
+                    </TextButton>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          {!isStatic &&
+            onScheduleCreate &&
+            (scheduleFormOpen ? (
+              <ScheduleCreateForm variant={variant} segment={scheduleSegment ?? "steer"} onCreate={onScheduleCreate} onClose={() => setScheduleFormOpen(false)} />
+            ) : (
+              <div className={cn("pt-1", t.sub)}>
+                <TextButton variant={variant} strong onClick={() => setScheduleFormOpen(true)}>
+                  ＋ 定时发送…
+                </TextButton>
+              </div>
+            ))}
         </>
       )}
     </>

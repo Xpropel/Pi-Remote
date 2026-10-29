@@ -24,7 +24,7 @@ import {
   type PiSidebarSession,
 } from "@/pi/sidebar"
 import { useNow } from "@/pi/hooks/useNow"
-import { sidebarDataOf, openSessionRow } from "@/pi/model/sidebarSource"
+import { sessionStatusLineOf, sidebarDataOf, openSessionRow } from "@/pi/model/sidebarSource"
 import { sidebarGroups } from "@/pi/model/sidebarGroups"
 import { PI_UI_IDS, type PiContainerProps } from "./types"
 
@@ -53,6 +53,7 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
       uiPrompt: relay.uiPrompt,
       turnEnd: relay.turnEnd,
       roomTurnEnds: relay.roomTurnEnds,
+      inbox: relay.inbox,
       selectedDevice: relay.selectedDevice,
     })
     const devices: PiSidebarDevice[] = sidebarDeviceRows(
@@ -60,6 +61,9 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
       relay.selectedDeviceId ?? null,
     )
     const sessionIds = new Map(base.sessions.map((s) => [s.id, s]))
+    // 设计 D §2.2：一行实时状态（roomStatusLine）的输入面——房间事实按 id 索引、未读落定按 roomId 索引
+    const roomById = new Map(relay.rooms.map((r) => [r.id, r]))
+    const turnEndByRoom = new Map(relay.roomTurnEnds.map((t) => [t.roomId, t]))
     const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: ui.prefs.grouping, expanded: ui.expanded })
     const groups: PiSidebarGroup[] = legacy.groups.map((group) => {
       const cwd = group.cwd ?? ""
@@ -68,12 +72,16 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
         const session = sessionIds.get(row.id)
         const devId = row.deviceId ?? deviceId
         const key = sidebarSessionKeyOf(devId, row.id)
+        // 状态行随本容器的 30 秒 tick（useNow）与名册广播一起重算（设计 D §2.2 不加新计时器）
+        const status = sessionStatusLineOf({ room: roomById.get(row.id), session, turnEnd: turnEndByRoom.get(row.id), now })
         return {
           key, id: row.id, title: row.title,
           status: sidebarStatusOf({ running: row.marker === "running", waiting: row.marker === "waiting", error: row.marker === "error" }),
           eventAt: row.at,
           timeLabel: row.trailingText ?? relativeTimeLabel(now, row.at),
           summary: row.subtitle ?? "",
+          // 悬停气泡加行用状态全句（设计 D §2.4 第三层）
+          statusLine: status.text,
           cwd: session?.cwd ?? cwd,
           deviceName: base.devices.find((d) => d.id === devId)?.name ?? "",
           selected: relay.roomId === row.id,
@@ -97,6 +105,9 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
       width: clampSidebarWidth(ui.prefs.sidebarWidth),
       collapsed: ui.prefs.sidebarCollapsed,
       search: { open: ui.search != null, query: ui.search ?? "" },
+      // 待答角标（设计 D §1）：只数 attention 清单里的 waiting+error+done——与账本 pending
+      // 数恒等，计数唯一出口仍是 attentionItemsOf，设备掉线条不入此数。
+      inboxCount: base.attention.filter((item) => item.kind === "waiting" || item.kind === "error" || item.kind === "done").length,
       now,
     }
   }, [relay, ui.prefs.grouping, ui.prefs.sidebarWidth, ui.prefs.sidebarCollapsed, ui.expanded, ui.search, scopeState, now, deviceMenuOpen, account, deviceId])
@@ -105,7 +116,7 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
     const id = key.includes("::") ? key.split("::").slice(1).join("::") : key
     const base = sidebarDataOf({
       devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, roomId: relay.roomId,
-      dialogs: relay.dialogs, uiPrompt: relay.uiPrompt, turnEnd: relay.turnEnd, roomTurnEnds: relay.roomTurnEnds, selectedDevice: relay.selectedDevice,
+      dialogs: relay.dialogs, uiPrompt: relay.uiPrompt, turnEnd: relay.turnEnd, roomTurnEnds: relay.roomTurnEnds, inbox: relay.inbox, selectedDevice: relay.selectedDevice,
     })
     const session = base.sessions.find((s) => s.id === id)
     if (session) openSessionRow(relay, session, act.openSession)
@@ -124,6 +135,7 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
     closeSearch: () => act.setSearch(null),
     setSearchQuery: (query) => act.setSearch(query),
     openSettings: act.openSettings,
+    openInbox: act.openInbox,
     resize: (width) => act.setPref("sidebarWidth", clampSidebarWidth(width)),
     toggleCollapse: () => act.setPref("sidebarCollapsed", !ui.prefs.sidebarCollapsed),
     back: () => act.openSession(),

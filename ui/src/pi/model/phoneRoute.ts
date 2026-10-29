@@ -8,8 +8,8 @@
  */
 import type { MobileRoute } from "../../mobile/model.ts"
 
-/** 手机上的页面：列表页、对话页，以及三种推入页 */
-export type PiPhonePageKey = "list" | "chat" | "new" | "settings" | "pane"
+/** 手机上的页面：列表页、对话页，以及推入页（新会话/设置/收件箱/右 pane） */
+export type PiPhonePageKey = "list" | "chat" | "new" | "settings" | "pane" | "inbox"
 /** 推入页下面那一页 */
 export type PiPhoneBase = "list" | "chat"
 /** 历史栈里的弹层 */
@@ -20,7 +20,7 @@ export type PiPhoneBoot = "connecting" | "no-devices" | "all-offline" | "ready"
 
 export interface PiPhonePageInput {
   boot: PiPhoneBoot
-  view: "session" | "new" | "settings"
+  view: "session" | "new" | "settings" | "inbox"
   pane: string | null
   phonePage: "list" | "chat"
   search: string | null
@@ -39,14 +39,15 @@ export interface PiPhonePageInput {
 export function phonePageOf(i: PiPhonePageInput): PiPhonePageKey {
   if (i.view === "new") return "new"
   if (i.view === "settings") return "settings"
+  if (i.view === "inbox") return "inbox"
   if (i.boot !== "connecting" && !i.opening && i.pane && i.roomId && i.phonePage === "chat") return "pane"
   if (i.opening) return "chat"
   if (i.boot === "connecting" || i.boot === "no-devices" || !i.roomId || i.phonePage === "list" || i.search != null) return "list"
   return "chat"
 }
 
-export function isPhonePushPage(page: PiPhonePageKey): page is "new" | "settings" | "pane" {
-  return page === "new" || page === "settings" || page === "pane"
+export function isPhonePushPage(page: PiPhonePageKey): page is "new" | "settings" | "pane" | "inbox" {
+  return page === "new" || page === "settings" || page === "pane" || page === "inbox"
 }
 
 /** 页面深度：转场方向按它定（变深 = 推入，变浅 = 返回） */

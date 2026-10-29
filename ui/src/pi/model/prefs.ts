@@ -22,6 +22,9 @@ export const PI_PREFS_VERSION = 1
 
 export type PiThemePref = "system" | "light" | "dark"
 export type PiDeliveryPref = "steer" | "follow_up"
+/** G2 审批门档位（与桥侧 APPROVAL_GATE_TIERS、relay 转发白名单同值） */
+export type PiApprovalGateTier = "high-risk" | "all-non-readonly" | "list"
+export const PI_APPROVAL_GATE_TIERS: readonly PiApprovalGateTier[] = ["high-risk", "all-non-readonly", "list"]
 
 export type PiPrefs = {
   v: typeof PI_PREFS_VERSION
@@ -45,6 +48,12 @@ export type PiPrefs = {
   completionSound: boolean
   /** 对话框远程应答（O2），默认关 */
   dialogRemoteAnswer: boolean
+  /** G1 ask_user 工具开关（经 ask_user_switch 下达桥），默认关 */
+  askUserEnabled: boolean
+  /** G2 工具执行审批门开关（经 approval_gate_switch 下达桥），默认关 */
+  approvalGateEnabled: boolean
+  /** G2 审批门档位（与桥侧 APPROVAL_GATE_TIERS 同值），默认只问高危 */
+  approvalGateTier: PiApprovalGateTier
   /** P11 侧栏宽度（px，220–360；设备本地，不同步；默认 272） */
   sidebarWidth: number
   /** P11 侧栏折叠态（56px 图标列；设备本地，不同步；默认展开） */
@@ -67,6 +76,9 @@ export const DEFAULT_PI_PREFS: PiPrefs = {
   delivery: "steer",
   completionSound: false,
   dialogRemoteAnswer: false,
+  askUserEnabled: false,
+  approvalGateEnabled: false,
+  approvalGateTier: "high-risk",
   sidebarWidth: 272,
   sidebarCollapsed: false,
   mobileNav: PI_MOBILE_NAV_DEFAULT,
@@ -137,6 +149,9 @@ export function migratePiPrefs(stored: unknown, legacy?: unknown, legacyTheme?: 
       delivery: pick(cur.delivery, ["steer", "follow_up"], DEFAULT_PI_PREFS.delivery),
       completionSound: bool(cur.completionSound, DEFAULT_PI_PREFS.completionSound),
       dialogRemoteAnswer: bool(cur.dialogRemoteAnswer, DEFAULT_PI_PREFS.dialogRemoteAnswer),
+      askUserEnabled: bool(cur.askUserEnabled, DEFAULT_PI_PREFS.askUserEnabled),
+      approvalGateEnabled: bool(cur.approvalGateEnabled, DEFAULT_PI_PREFS.approvalGateEnabled),
+      approvalGateTier: pick(cur.approvalGateTier, PI_APPROVAL_GATE_TIERS, DEFAULT_PI_PREFS.approvalGateTier),
       sidebarWidth: clampSidebarWidth(cur.sidebarWidth),
       sidebarCollapsed: bool(cur.sidebarCollapsed, DEFAULT_PI_PREFS.sidebarCollapsed),
       mobileNav: pick(cur.mobileNav, PI_MOBILE_NAV_MODES, DEFAULT_PI_PREFS.mobileNav),
@@ -151,6 +166,9 @@ export function migratePiPrefs(stored: unknown, legacy?: unknown, legacyTheme?: 
     theme: piThemePrefOf(null, legacyTheme),
     completionSound: bool(old?.completionSound, DEFAULT_PI_PREFS.completionSound),
     dialogRemoteAnswer: bool(old?.dialogRemoteAnswer, DEFAULT_PI_PREFS.dialogRemoteAnswer),
+    askUserEnabled: bool(old?.askUserEnabled, DEFAULT_PI_PREFS.askUserEnabled),
+    approvalGateEnabled: bool(old?.approvalGateEnabled, DEFAULT_PI_PREFS.approvalGateEnabled),
+    approvalGateTier: pick(old?.approvalGateTier, PI_APPROVAL_GATE_TIERS, DEFAULT_PI_PREFS.approvalGateTier),
   }
 }
 

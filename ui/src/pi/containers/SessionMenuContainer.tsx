@@ -1,10 +1,12 @@
 import { useMemo } from "react"
 import { AAnchored, PiDeleteDialog, PiRenameDialog, PiSessionMenu, type PiSessionMenuAction, type PiSessionMenuSession } from "@/components/pi/shell"
-import { PiSheet, piBaseName, usePiStatic, type PiReturnFocus } from "@/components/pi/shared"
+import { PiButton, PiDialog, PiSheet, piBaseName, usePiStatic, type PiReturnFocus } from "@/components/pi/shared"
+import { cn } from "@/lib/utils"
 import { mobileRouteUrl } from "@/mobile/model"
 import { sessionDeleteErrorText, sessionDeleteRouteOf, sessionMenuOf, type PiSessionDeleteRoute, type PiSessionMenuModel } from "@/pi/model/sessionMenu"
 import { openSessionRow, sidebarDataOf, type PiDeviceListedSession, type PiSidebarData } from "@/pi/model/sidebarSource"
 import { deviceErrorText, type Device } from "@/relay/devices"
+import { scheduleStatusLine } from "@/relay/schedule"
 import { closePiDialog, openPiDialog, PI_UI_IDS, piDialogOf, piLayoutOf, type PiContainerProps } from "./types"
 
 /** 手机长按 / 对话页顶栏 … 的会话菜单 sheet（ui.sheet）；桌面静态态（#/live 对图）摆右键菜单（ui.menu）。arg = 会话 id */
@@ -17,6 +19,8 @@ interface MenuTarget {
   session: PiSessionMenuSession
   /** 删除路由（P9 B）：目标正在运行 / 发设备（session.purge + session.files）/ 发同目录在线房间 / 都不可用带原因 */
   deleteRoute: PiSessionDeleteRoute
+  /** 定时消息（D-§3.7）：这一房 armed 排期数；relay 未声明 room.schedule 时为 undefined（菜单不出此项） */
+  scheduleCount?: number
 }
 
 /** 菜单作用的那一行 → PiSessionMenu 的 session / state（规则在 model/sessionMenu.ts，照 chat/sessionMenu.tsx） */
@@ -40,11 +44,16 @@ function targetOf(p: PiContainerProps, data: PiSidebarData, rowId: string | unde
     onSelectedDevice: row.deviceId === relay.selectedDeviceId,
     deleteRoute,
   })
+  // 定时消息计数（D-§3.7）：排期副本按房间分桶（relay.schedulesByRoom），只数 armed
+  const scheduleCount = relay.serverCaps.includes("room.schedule")
+    ? (relay.schedulesByRoom[row.id] ?? []).filter((s) => s.state === "armed").length
+    : undefined
   return {
     row,
     device,
     model,
     deleteRoute,
+    scheduleCount,
     session: {
       title: row.title,
       messageCount: row.messageCount,
@@ -124,6 +133,10 @@ function runAction(p: PiContainerProps, t: MenuTarget, action: PiSessionMenuActi
       // 深链 ?device=&session=（同旧手机界面 mobile/model.ts）；新入口按深链打开会话归 P6.2
       window.open(mobileRouteUrl(location.pathname, location.search, location.hash, { screen: "conversation", sessionId: row.id, deviceId: row.deviceId }), "_blank", "noopener")
       return
+    case "schedule":
+      // 定时消息（D-§3.7 房级管理）：开这一房的排期列表弹层（与排队面板定时段同一数据源）
+      openPiDialog(p, { id: PI_UI_IDS.schedules, arg: row.id })
+      return
     case "copy-id":
       copyText(p, row.id, "已复制会话 ID")
       return
@@ -133,13 +146,71 @@ function runAction(p: PiContainerProps, t: MenuTarget, action: PiSessionMenuActi
   }
 }
 
+/**
+ * 定时消息列表弹层（设计 D §3.7 房级管理）：这一房的排期全量（与排队面板定时段、
+ * room_list 的 schedules 同一数据源 relay.schedulesByRoom），armed 可取消；
+ * 新建不在这里——创建绑当前打开的会话，入口在 composer 排队面板的定时段。
+ */
+function ScheduleListDialog(props: PiContainerProps & { t: MenuTarget; onClose: () => void }) {
+  const { relay, variant } = props
+  const t = props.t
+  const list = relay.schedulesByRoom[t.row.id] ?? []
+  const now = Date.now()
+  const phone = variant === "phone"
+  return (
+    <PiDialog
+      title="定时消息"
+      viewport={piLayoutOf(variant)}
+      width={480}
+      onOpenChange={(open) => {
+        if (!open) props.onClose()
+      }}
+      returnFocus={returnTo(t.row.id)}
+      footer={
+        <PiButton kind="outline" variant={phone ? "phone" : "desktop"} className={phone ? "flex-1" : undefined} onClick={props.onClose}>
+          关闭
+        </PiButton>
+      }
+    >
+      {list.length === 0 ? (
+        <p className="mt-0 mb-0 text-(length:--cw-text-md) leading-[20px] text-(--cw-pi-text-secondary)">
+          这个会话还没有定时消息。打开这个会话，在排队面板里可以新建。
+        </p>
+      ) : (
+        <div className="flex flex-col divide-y divide-(--cw-divider-soft)">
+          {list.map((s) => (
+            <div key={s.id} className="flex min-w-0 flex-col gap-0.5 py-2">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="min-w-0 flex-1 truncate text-(length:--cw-text-md) text-(--cw-text)">{s.text}</span>
+                {s.state === "armed" && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-[4px] px-0.5 text-(length:--cw-text-sm) text-(--cw-text-2) hover:underline"
+                    aria-label={`取消定时：${s.text}`}
+                    onClick={() => {
+                      void relay.cancelSchedule(s.id).catch(() => relay.pushNotice({ level: "error", title: "取消定时失败，请重试" }))
+                    }}
+                  >
+                    取消
+                  </button>
+                )}
+              </div>
+              <span className={cn("text-(length:--cw-text-sm)", s.state === "failed" ? "text-(--cw-pi-error)" : "text-(--cw-pi-text-secondary)")}>{scheduleStatusLine(s, now)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </PiDialog>
+  )
+}
+
 /** 桌面：一行的会话菜单内容（PiSidebar 的 rowMenu：右键 = context、行尾 … = dropdown）；也是顶栏 … 的内容（copyCwd） */
 export function SessionRowMenu(props: PiContainerProps & { rowId: string; copyCwd?: boolean }) {
   const { rowId, copyCwd, ...p } = props
   const data = useMenuData(p)
   const t = targetOf(p, data, rowId)
   if (!t) return null
-  return <PiSessionMenu variant="desktop" session={t.session} state={t.model.items} copyCwd={copyCwd} onSelect={(action) => runAction(p, t, action)} />
+  return <PiSessionMenu variant="desktop" session={t.session} state={t.model.items} copyCwd={copyCwd} scheduleCount={t.scheduleCount} onSelect={(action) => runAction(p, t, action)} />
 }
 
 /**
@@ -158,6 +229,11 @@ export function SessionMenuContainer(props: PiContainerProps) {
   const dialog = piDialogOf(props)
   const close = () => closePiDialog(props)
 
+  if (dialog?.id === PI_UI_IDS.schedules) {
+    const t = targetOf(props, data, dialog.arg)
+    if (!t) return null
+    return <ScheduleListDialog key={t.row.id} {...props} t={t} onClose={close} />
+  }
   if (dialog?.id === PI_UI_IDS.rename) {
     const t = targetOf(props, data, dialog.arg)
     if (!t) return null
@@ -239,7 +315,7 @@ export function SessionMenuContainer(props: PiContainerProps) {
           if (!open) act.closeSheet()
         }}
       >
-        <PiSessionMenu variant="phone" session={t.session} state={t.model.items} onSelect={(action) => runAction(props, t, action)} />
+        <PiSessionMenu variant="phone" session={t.session} state={t.model.items} scheduleCount={t.scheduleCount} onSelect={(action) => runAction(props, t, action)} />
       </PiSheet>
     )
   }
@@ -250,7 +326,7 @@ export function SessionMenuContainer(props: PiContainerProps) {
     if (!t) return null
     return (
       <AAnchored selector={`[data-pi-row="${t.row.id}"][data-context-target]`} place={(r) => ({ left: r.left + 128, top: r.top + 17 })}>
-        <PiSessionMenu static variant="desktop" session={t.session} state={t.model.items} />
+        <PiSessionMenu static variant="desktop" session={t.session} state={t.model.items} scheduleCount={t.scheduleCount} />
       </AAnchored>
     )
   }

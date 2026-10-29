@@ -1606,3 +1606,254 @@ test("排队超时语义不变：轮到执行时已过截止的命令不执行�
   assert.deepEqual(calls, ["slow"], "过截止的命令不能被执行")
   b.clearTimers()
 })
+
+/* ---------------- G1 ask_user 工具（design-ask-cards.md §3） ---------------- */
+
+function askUi(behavior = {}) {
+  const calls = []
+  const ui = {
+    select: async (title, options, opts) => { calls.push(["select", title, options, opts]); return behavior.select ? behavior.select(options) : options[0] },
+    confirm: async (title, message, opts) => { calls.push(["confirm", title, message, opts]); return behavior.confirm ? behavior.confirm() : true },
+    input: async (title, placeholder, opts) => { calls.push(["input", title, placeholder, opts]); return behavior.input ? behavior.input() : "自由文本" },
+  }
+  return { ui, calls }
+}
+
+test("G1 ask：select 基本映射 + 哨兵项在列，选中即答案", async () => {
+  const b = new ext.Bridge()
+  const { ui, calls } = askUi({ select: (options) => options[1] })
+  const r = await b.executeAskUser({ question: "选哪个？", options: ["甲", "乙"] }, { hasUI: true, ui })
+  assert.equal(calls[0][0], "select")
+  assert.equal(calls[0][1], "选哪个？")
+  assert.deepEqual(calls[0][2], ["甲", "乙", ext.ASK_FREE_TEXT_SENTINEL], "默认带哨兵自由项")
+  assert.equal(r.content[0].text, "用户回答：乙")
+  assert.deepEqual(r.details, { answer: "乙", cancelled: false, kind: "select" })
+})
+
+test("G1 ask：推荐项只加标记不预选，选中后答案还原原文", async () => {
+  const b = new ext.Bridge()
+  const { ui, calls } = askUi({ select: (options) => options[1] })
+  const r = await b.executeAskUser({ question: "q", options: ["甲", "乙"], recommended: 1, allowFreeText: false }, { hasUI: true, ui })
+  assert.deepEqual(calls[0][2], ["甲", "乙（推荐）"])
+  assert.equal(r.details.answer, "乙", "回给模型的答案不带标记")
+})
+
+test("G1 ask：哨兵二段——选中哨兵紧接 input，二段文本为答案；二段取消整问取消", async () => {
+  const b = new ext.Bridge()
+  const ok = askUi({ select: (options) => options.at(-1), input: () => "我的答案" })
+  const r1 = await b.executeAskUser({ question: "q", options: ["甲", "乙"] }, { hasUI: true, ui: ok.ui })
+  assert.deepEqual(ok.calls.map((c) => c[0]), ["select", "input"], "两段顺序 select→input")
+  assert.equal(r1.details.answer, "我的答案")
+  assert.equal(r1.details.kind, "select+input")
+
+  const cancel = askUi({ select: (options) => options.at(-1), input: () => undefined })
+  const r2 = await b.executeAskUser({ question: "q", options: ["甲", "乙"] }, { hasUI: true, ui: cancel.ui })
+  assert.equal(r2.details.cancelled, true)
+  assert.equal(r2.content[0].text, ext.ASK_UNANSWERED_TEXT)
+})
+
+test("G1 ask：自由文本 input；取消/空白规范化为未作答且不抛错", async () => {
+  const b = new ext.Bridge()
+  const t = askUi({ input: () => "一句话" })
+  const r1 = await b.executeAskUser({ question: "说点什么" }, { hasUI: true, ui: t.ui })
+  assert.equal(r1.details.answer, "一句话")
+  assert.equal(r1.details.kind, "input")
+  for (const ret of [undefined, "", "   "]) {
+    const c = askUi({ input: () => ret })
+    const r = await b.executeAskUser({ question: "q" }, { hasUI: true, ui: c.ui })
+    assert.equal(r.details.cancelled, true, `input 回 ${JSON.stringify(ret)} 应判未作答`)
+    assert.equal(r.content[0].text, ext.ASK_UNANSWERED_TEXT)
+  }
+  // select 超时/取消（undefined）同样规范化
+  const s = askUi({ select: () => undefined })
+  const r2 = await b.executeAskUser({ question: "q", options: ["甲", "乙"] }, { hasUI: true, ui: s.ui })
+  assert.equal(r2.details.cancelled, true)
+})
+
+test("G1 ask：confirm 二元型——true/false 映射是/否，false 不是取消", async () => {
+  const b = new ext.Bridge()
+  const y = askUi({ confirm: () => true })
+  const r1 = await b.executeAskUser({ question: "继续吗？", kind: "confirm", detail: "会删文件" }, { hasUI: true, ui: y.ui })
+  assert.equal(y.calls[0][0], "confirm")
+  assert.equal(y.calls[0][2], "会删文件")
+  assert.equal(r1.details.answer, "是")
+  const n = askUi({ confirm: () => false })
+  const r2 = await b.executeAskUser({ question: "继续吗？", kind: "confirm" }, { hasUI: true, ui: n.ui })
+  assert.equal(r2.details.answer, "否")
+  assert.equal(r2.details.cancelled, false)
+})
+
+test("G1 ask：无 UI 立即回未作答（no_ui），不调任何 dialog", async () => {
+  const b = new ext.Bridge()
+  const boom = { select: async () => { throw new Error("不应被调用") }, confirm: async () => { throw new Error("不应被调用") }, input: async () => { throw new Error("不应被调用") } }
+  const r = await b.executeAskUser({ question: "q", options: ["甲", "乙"] }, { hasUI: false, ui: boom })
+  assert.equal(r.details.cancelled, true)
+  assert.equal(r.details.reason, "no_ui")
+})
+
+test("G1 ask：options 超限拒绝且不调 dialog；question 空拒绝；dialog 抛错收口未作答", async () => {
+  const b = new ext.Bridge()
+  const { ui, calls } = askUi()
+  const many = await b.executeAskUser({ question: "q", options: Array.from({ length: 21 }, (_, i) => "项" + i) }, { hasUI: true, ui })
+  assert.equal(many.isError, true)
+  const long = await b.executeAskUser({ question: "q", options: ["好", "x".repeat(81)] }, { hasUI: true, ui })
+  assert.equal(long.isError, true)
+  const one = await b.executeAskUser({ question: "q", options: ["只有一个"] }, { hasUI: true, ui })
+  assert.equal(one.isError, true)
+  const empty = await b.executeAskUser({ question: "  " }, { hasUI: true, ui })
+  assert.equal(empty.isError, true)
+  assert.equal(calls.length, 0, "校验失败一律不调 dialog")
+  const throwing = { select: async () => { throw new Error("ui 炸了") }, confirm: async () => true, input: async () => "x" }
+  const r = await b.executeAskUser({ question: "q", options: ["甲", "乙"] }, { hasUI: true, ui: throwing })
+  assert.equal(r.details.cancelled, true, "dialog 异常按未作答收口，不向上抛")
+})
+
+test("G1 ask：timeoutSec 钳制 10-600 秒映射 opts.timeout", async () => {
+  const b = new ext.Bridge()
+  const seen = []
+  const ui = { select: async (t, o, opts) => { seen.push(opts && opts.timeout); return o[0] }, confirm: async () => true, input: async () => "x" }
+  await b.executeAskUser({ question: "q", options: ["甲", "乙"], timeoutSec: 5 }, { hasUI: true, ui })
+  await b.executeAskUser({ question: "q", options: ["甲", "乙"], timeoutSec: 9999 }, { hasUI: true, ui })
+  await b.executeAskUser({ question: "q", options: ["甲", "乙"] }, { hasUI: true, ui })
+  assert.deepEqual(seen, [10000, 600000, undefined])
+})
+
+test("G1 ask：经 tap 管道发出 dialog_open/close（O1 集成）", async () => {
+  const { b, ui, frames } = tapBridge()
+  b.installDialogTap()
+  const r = await b.executeAskUser({ question: "选一个", options: ["甲", "乙"], allowFreeText: false }, { hasUI: true, ui })
+  assert.equal(r.details.answer, "甲")
+  const open = frames.find((f) => f.type === "dialog_open")
+  assert.ok(open, "dialog_open 已发")
+  assert.equal(open.kind, "select")
+  assert.ok(frames.some((f) => f.type === "dialog_close" && f.dialogId === open.dialogId), "dialog_close 成对")
+})
+
+test("G1 ask：同名冲突——别家 ask_user 在场时 ours 保持未激活；自家在场正常激活", async () => {
+  const b = new ext.Bridge()
+  let activeTools = []
+  b.pi = {
+    getAllTools: () => [{ name: "ask_user", sourceInfo: { path: "/somewhere/pi-ask/dist/index.js" } }],
+    getActiveTools: () => activeTools,
+    setActiveTools: (t) => { activeTools = t },
+  }
+  assert.equal(b.foreignAskUserPresent(), true)
+  b.setAskUserEnabled(true)
+  assert.deepEqual(activeTools, [], "冲突时不许把 ours 塞进 active set")
+
+  const b2 = new ext.Bridge()
+  let active2 = ["bash"]
+  b2.pi = {
+    getAllTools: () => [{ name: "ask_user", sourceInfo: { path: "/home/u/.pi/agent/extensions/pi-remote-sync.ts" } }],
+    getActiveTools: () => active2,
+    setActiveTools: (t) => { active2 = t },
+  }
+  assert.equal(b2.foreignAskUserPresent(), false)
+  b2.setAskUserEnabled(true)
+  assert.deepEqual(active2, ["bash", "ask_user"])
+  b2.setAskUserEnabled(false)
+  assert.deepEqual(active2, ["bash"], "关开关同步移出 active set")
+})
+
+/* ---------------- G2 工具审批门（design-ask-cards.md §4） ---------------- */
+
+test("G2 审批：策略纯函数三档矩阵", () => {
+  const D = ext.approvalGateDecision
+  // high-risk（默认档）
+  assert.equal(D("high-risk", "bash", { destructiveHint: true }, []), true)
+  assert.equal(D("high-risk", "read", { readOnlyHint: true }, []), false)
+  assert.equal(D("high-risk", "bash", {}, []), true, "hints 缺失按未知问")
+  assert.equal(D("high-risk", "bash", undefined, []), true)
+  assert.equal(D("high-risk", "bash", { readOnlyHint: true, destructiveHint: true }, []), true, "双 hint 矛盾时保守问")
+  // all-non-readonly
+  assert.equal(D("all-non-readonly", "read", { readOnlyHint: true }, []), false)
+  assert.equal(D("all-non-readonly", "write", { readOnlyHint: false }, []), true)
+  assert.equal(D("all-non-readonly", "bash", undefined, []), true)
+  // list：名单命中才问，hints 不参与
+  assert.equal(D("list", "bash", { readOnlyHint: true }, ["bash"]), true)
+  assert.equal(D("list", "write", { destructiveHint: true }, ["bash"]), false)
+})
+
+test("G2 审批：摘要纯函数——bash 首行 / write 路径 / 其余 JSON 截断", () => {
+  assert.equal(ext.approvalSummary("bash", { command: "rm -rf build\nnpm run build" }), "rm -rf build")
+  assert.equal(ext.approvalSummary("write", { path: "/tmp/a.txt", content: "x" }), "/tmp/a.txt")
+  assert.equal(ext.approvalSummary("edit", { path: "/tmp/b.txt" }), "/tmp/b.txt")
+  const s = ext.approvalSummary("grep", { pattern: "x".repeat(900) })
+  assert.ok(s.length <= ext.PROTOCOL.limits.dialogTextMax)
+})
+
+function gateBridge(toolInfos, selectBehavior) {
+  const b = new ext.Bridge()
+  b.approvalGateEnabled = true
+  b.pi = { getAllTools: () => toolInfos }
+  const calls = []
+  const ui = {
+    select: async (title, options, opts) => { calls.push([title, options]); return selectBehavior ? selectBehavior(options) : options[0] },
+    confirm: async () => true,
+    input: async () => "x",
+  }
+  return { b, ui, calls }
+}
+const DESTRUCTIVE_BASH = [{ name: "bash", annotations: { destructiveHint: true } }, { name: "read", annotations: { readOnlyHint: true } }]
+const bashEvent = { type: "tool_call", toolName: "bash", input: { command: "rm -rf build" } }
+
+test("G2 审批：默认关——高危调用零行为变化（不问、不拦）", async () => {
+  const b = new ext.Bridge()
+  assert.equal(b.approvalGateEnabled, false, "默认关")
+  b.pi = { getAllTools: () => DESTRUCTIVE_BASH }
+  const { ui, calls } = askUi()
+  assert.equal(await b.checkToolCallApproval(bashEvent, { hasUI: true, ui }), undefined)
+  assert.equal(calls.length, 0)
+})
+
+test("G2 审批：开启后——允许一次放行 / 拒绝 block / 超时未答 fail-closed", async () => {
+  const once = gateBridge(DESTRUCTIVE_BASH, () => ext.APPROVAL_CHOICE_ONCE)
+  assert.equal(await once.b.checkToolCallApproval(bashEvent, { hasUI: true, ui: once.ui }), undefined)
+  assert.match(once.calls[0][0], /bash/, "卡面标题带工具名")
+  assert.match(once.calls[0][0], /rm -rf build/, "卡面标题带入参摘要")
+  assert.deepEqual(once.calls[0][1], [ext.APPROVAL_CHOICE_ONCE, ext.APPROVAL_CHOICE_SESSION, ext.APPROVAL_CHOICE_DENY], "三档选项")
+
+  const deny = gateBridge(DESTRUCTIVE_BASH, () => ext.APPROVAL_CHOICE_DENY)
+  const blocked = await deny.b.checkToolCallApproval(bashEvent, { hasUI: true, ui: deny.ui })
+  assert.equal(blocked.block, true)
+  assert.match(blocked.reason, /拒绝/)
+
+  const silent = gateBridge(DESTRUCTIVE_BASH, () => undefined)
+  const timedOut = await silent.b.checkToolCallApproval(bashEvent, { hasUI: true, ui: silent.ui })
+  assert.equal(timedOut.block, true, "超时/取消 = fail-closed")
+})
+
+test("G2 审批：本会话都允许——同工具不再问，换工具仍问；只读工具不问", async () => {
+  const g = gateBridge(DESTRUCTIVE_BASH, () => ext.APPROVAL_CHOICE_SESSION)
+  assert.equal(await g.b.checkToolCallApproval(bashEvent, { hasUI: true, ui: g.ui }), undefined)
+  assert.equal(await g.b.checkToolCallApproval(bashEvent, { hasUI: true, ui: g.ui }), undefined)
+  assert.equal(g.calls.length, 1, "第二次同工具免问")
+  assert.equal(await g.b.checkToolCallApproval({ type: "tool_call", toolName: "read", input: { path: "/x" } }, { hasUI: true, ui: g.ui }), undefined)
+  assert.equal(g.calls.length, 1, "readOnly 工具不问")
+})
+
+test("G2 审批：ask_user 自身豁免；无 UI 时 fail-closed；名单制只问名单内", async () => {
+  const g = gateBridge([{ name: "ask_user", annotations: {} }, ...DESTRUCTIVE_BASH], () => ext.APPROVAL_CHOICE_ONCE)
+  assert.equal(await g.b.checkToolCallApproval({ type: "tool_call", toolName: "ask_user", input: {} }, { hasUI: true, ui: g.ui }), undefined)
+  assert.equal(g.calls.length, 0, "ask_user 不套审批")
+
+  const noUi = await g.b.checkToolCallApproval(bashEvent, { hasUI: false, ui: g.ui })
+  assert.equal(noUi.block, true)
+  assert.match(noUi.reason, /没有可确认的界面/)
+
+  const list = gateBridge(DESTRUCTIVE_BASH, () => ext.APPROVAL_CHOICE_DENY)
+  list.b.approvalGateTier = "list"
+  list.b.approvalGateList = ["bash"]
+  assert.equal((await list.b.checkToolCallApproval(bashEvent, { hasUI: true, ui: list.ui })).block, true, "名单内要问（此处答拒绝）")
+  assert.equal(await list.b.checkToolCallApproval({ type: "tool_call", toolName: "read", input: {} }, { hasUI: true, ui: list.ui }), undefined, "名单外不问")
+})
+
+test("G2 审批：换会话清「本会话都允许」白名单", async () => {
+  const b = new ext.Bridge()
+  b.roomId = "sess-1"
+  b.approvalSessionAllow.add("bash")
+  b.pi = { getSessionName: () => null, getActiveTools: () => [], setActiveTools: () => {} }
+  b.bindSession({ sessionManager: { sessionId: "sess-2", sessionFile: null, cwd: "/tmp", getSessionName: () => null }, hasUI: false, cwd: "/tmp" })
+  assert.equal(b.approvalSessionAllow.size, 0)
+  b.clearTimers()
+})

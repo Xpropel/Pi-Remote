@@ -13,8 +13,8 @@ import type { PiUiVariant } from "@/pi/variants/types"
  * 契约由 p5-base 定（R2/p5-lanes.md §2）：各线只读、只调 act；要加字段或动作写 lane-requests。
  */
 
-/** 主区视图：会话 / 新建会话 / 设置 */
-export type PiView = "session" | "new" | "settings"
+/** 主区视图：会话 / 新建会话 / 设置 / 收件箱（设计 D §1 的全局待答清单） */
+export type PiView = "session" | "new" | "settings" | "inbox"
 
 /** 右 pane（桌面）/ 推入页（手机）当前的视图 */
 export type PiPaneView = "changes" | "terminal" | "file"
@@ -63,6 +63,8 @@ export interface PiUiActions {
   newSession(): void
   /** 设置（⌘,） */
   openSettings(): void
+  /** 收件箱（设计 D §1：侧栏「待答」行进入） */
+  openInbox(): void
   setView(view: PiView): void
   /** ⌘B */
   toggleSidebar(): void
@@ -214,6 +216,7 @@ export function usePiUiState(options: { seed?: PiUiSeed; persist?: boolean } = {
       openSession: () => patch(() => ({ view: "session", phonePage: "chat" })),
       newSession: () => patch(() => ({ view: "new", pane: null, phonePage: "chat", search: null })),
       openSettings: () => patch(() => ({ view: "settings", pane: null })),
+      openInbox: () => patch(() => ({ view: "inbox", pane: null })),
       setView: (view) => patch(() => ({ view })),
       // P13：共享侧栏（cursor / claude / codex / 手机）的折叠读 prefs.sidebarCollapsed；
       // 旧 ui.sidebar 继续保留（#/play 舞台用），两边一起翻，⌘B 才真的看得见效果。

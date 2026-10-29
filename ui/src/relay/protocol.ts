@@ -13,15 +13,24 @@ export const PROTO = 4
  *  room.dialogs：P9 A 房间等待摘要——UI 消费 room_list 条目的 waiting/waitingPrompt
  *  与 room_waiting 帧（每帧全量替换），relay 按此 cap 分流，未声明的旧端拿到的名册
  *  条目和以前一样；
+ *  room.activity：设计 D §2.3 房间最近事件摘要——UI 消费 room_list 条目的
+ *  lastEvent{type,toolName?,at} 生成 busy 中的状态短语，relay 按此 cap 分流，
+ *  未声明的旧端拿到的名册条目和以前一样（无 lastEvent 时状态行回落"运行中"）；
  *  session.purge：P9 B 删除后清理服务器副本——设备确认删除成功后 relay 清副本并广播
  *  session_removed，网页不用刷新就摘掉那一行；
  *  prefs.sync：R4-1 主题偏好跨设备同步——UI 上行 prefs_set、消费 auth 快照的
  *  prefs 字段与 prefs_changed/prefs_saved 帧，relay 按此 cap 分流，未声明的旧端
- *  不带快照字段、不收广播）。
+ *  不带快照字段、不收广播；
+ *  room.inbox：设计 D §1 全局待答收件箱账本——UI 消费 auth/room_list 附带的 inbox
+ *  快照与 inbox_update 增量帧、上行 inbox_dismiss，relay 按此 cap 分流，未声明的
+ *  旧端不带快照字段、不收增量帧；
+ *  room.schedule：设计 D §3 定时/心跳排期——UI 消费 room_list 条目内的 schedules
+ *  与 schedule_update 单房全量替换帧、上行 schedule_create/cancel/list（relay 本地
+ *  命令），relay 按此 cap 分流，未声明的旧端名册条目无 schedules 字段、不收广播）。
  *  声明必须与落地同轮（第 2 轮审查 A-6）：UI 实际在用应答面却不声明，
  *  relay 一旦落 cap 门控就会把自己的应答面剥掉。
  *  room.label / sync.v3 / session.files / fs.browse 是 local / 设备通道的能力，网页不声明。 */
-export const VIEWER_CAPS = ["err.v4", "msg.cid", "device.token", "dialog.respond", "room.attention", "room.dialogs", "session.purge", "prefs.sync"] as const
+export const VIEWER_CAPS = ["err.v4", "msg.cid", "device.token", "dialog.respond", "room.attention", "room.dialogs", "room.activity", "session.purge", "prefs.sync", "room.inbox", "room.schedule"] as const
 
 export const CLIENT_VERSION = "4.0.0"
 
@@ -32,8 +41,11 @@ export type Cap =
   | "dialog.respond"
   | "room.attention"
   | "room.dialogs"
+  | "room.activity"
   | "session.purge"
   | "prefs.sync"
+  | "room.inbox"
+  | "room.schedule"
   | "room.label"
   | "sync.v3"
   | "health"

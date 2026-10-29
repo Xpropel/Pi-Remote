@@ -28,6 +28,13 @@ export function SidebarSections({
           <span className="sb-archive-glyph" aria-hidden>▣</span>
           <span>归档</span>
         </button>
+        {typeof data.inboxCount === "number" && actions.openInbox ? (
+          <button type="button" className="sb-plainrow" onClick={() => actions.openInbox?.()}>
+            <span className="sb-archive-glyph" aria-hidden>✉</span>
+            <span>待答</span>
+            {data.inboxCount > 0 ? <span className="sb-plainrow-badge">{data.inboxCount}</span> : null}
+          </button>
+        ) : null}
       </div>
       {data.localPages && data.localPages.length > 0 ? (
         <div className="sb-localpages" data-p11-surface="P11-SIDE-05">

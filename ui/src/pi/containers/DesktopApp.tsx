@@ -12,6 +12,7 @@ import { useDeviceOfflineExtras } from "./DeviceOfflineContainer"
 import { DialogsContainer } from "./DialogsContainer"
 import { LinkStatusContainer } from "./LinkStatusContainer"
 import { NewSessionContainer } from "./NewSessionContainer"
+import { InboxContainer } from "./InboxContainer"
 import { NoticeContainer } from "./NoticeContainer"
 import { PairingContainer } from "./PairingContainer"
 import { PaneContainer } from "./PaneContainer"
@@ -62,6 +63,8 @@ export function DesktopApp(props: PiAppProps & { theme?: PiTheme }) {
   const main =
     !session && ui.view === "new" ? (
       <NewSessionContainer {...p} />
+    ) : !session && ui.view === "inbox" ? (
+      <InboxContainer {...p} />
     ) : !session && ui.view === "settings" ? (
       <SettingsRoute p={p} theme={theme} />
     ) : boot === "connecting" || (session && !ready) ? (

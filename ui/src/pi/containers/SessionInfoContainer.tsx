@@ -5,7 +5,9 @@ import { PiSessionInfoCard } from "@/components/pi/shell"
 import { PiButton, PiIconButton, PiMenu, PiSheet, PiTopBar, usePiStatic } from "@/components/pi/shared"
 import { gitBranchOf, gitBranchText, sessionModelLine, type PiGitBranch } from "@/pi/model/sessionInfo"
 import { otherAttentionCount, sidebarDataOf } from "@/pi/model/sidebarSource"
+import { useNow } from "@/pi/hooks/useNow"
 import { attentionRoomTitle } from "@/relay/attention"
+import { roomStatusLine } from "@/relay/roomStatus"
 import { A_SESSION_MENU, SessionRowMenu } from "./SessionMenuContainer"
 import { openPiDialog, PI_UI_IDS, type PiContainerProps } from "./types"
 
@@ -59,6 +61,24 @@ function useSessionHead(p: PiContainerProps) {
 /** 会话信息卡（桌面悬停卡 / 手机 sheet 里的各行） */
 function InfoCard({ p, head, branch, variant }: { p: PiContainerProps; head: ReturnType<typeof useSessionHead>; branch: PiGitBranch | null; variant: "desktop" | "phone" }) {
   const { relay } = p
+  // 设计 D §2.2：信息卡的状态行与侧栏共用 roomStatusLine；在场房间按"已读"口径不传 lastTurnEnd。
+  // 30 秒 tick 只在卡片打开时活着（组件随浮层挂载），不给全局加计时器。
+  const now = useNow(30_000)
+  const room = head.room
+  const statusLine = room
+    ? roomStatusLine(
+        {
+          online: room.online,
+          busy: room.busy,
+          waiting: room.waiting ?? null,
+          waitingPrompt: room.waitingPrompt ?? null,
+          lastTurnEnd: null,
+          lastEvent: room.lastEvent ?? null,
+          lastActivity: room.lastActivity,
+        },
+        now,
+      ).text
+    : null
   return (
     <PiSessionInfoCard
       variant={variant}
@@ -70,6 +90,7 @@ function InfoCard({ p, head, branch, variant }: { p: PiContainerProps; head: Ret
       usage={relay.usage ?? {}}
       // relay 里房间 id 就是会话 id
       sessionId={relay.roomId}
+      statusLine={statusLine}
       onUsage={() => openPiDialog(p, { id: PI_UI_IDS.usage })}
     />
   )

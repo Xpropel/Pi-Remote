@@ -399,13 +399,14 @@ function useAttentionState(relay: Relay): { waiting: number; waitingKeys: readon
       uiPrompt: relay.uiPrompt,
       turnEnd: relay.turnEnd,
       roomTurnEnds: relay.roomTurnEnds,
+      inbox: relay.inbox,
       selectedDevice: relay.selectedDevice,
     })
     return {
       waiting: attentionWaitingCountOf(items),
       waitingKeys: items.filter((item) => item.kind === "waiting").map((item) => item.key),
     }
-  }, [relay.roomId, relay.rooms, relay.dialogs, relay.uiPrompt, relay.turnEnd, relay.roomTurnEnds, relay.selectedDevice])
+  }, [relay.roomId, relay.rooms, relay.dialogs, relay.uiPrompt, relay.turnEnd, relay.roomTurnEnds, relay.inbox, relay.selectedDevice])
 }
 
 /* ------------------------------------------------------------------ */

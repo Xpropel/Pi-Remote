@@ -7,13 +7,14 @@
  *   style/prefs.ts 的缓存和本页别的读者跟着刷新（同 saveStyle）。
  * test/pi-p5-c.test.mjs 拿 style/prefs.ts 的 loadStyle / defaultStyle 逐项对照。纯函数，node --test 直接加载。
  */
-import type { PiLegacyStylePrefs } from "./settingsView.ts"
+import type { PiApprovalGateTier, PiLegacyStylePrefs } from "./settingsView.ts"
 
 export const LEGACY_STYLE_KEY = "pi_remote_style"
 /** style/prefs.ts 的 saveStyle 派发的同一个事件 */
 export const LEGACY_STYLE_EVENT = "pi-style"
 
-export type PiLegacyStyle = Required<PiLegacyStylePrefs>
+/** 旧三项的生效值形状（钉死三项：pi-p5-c 逐项对照；G1/G2 开关不并入这里，见下面 askGatePrefsOf） */
+export type PiLegacyStyle = { completionSound: boolean; dialogRemoteAnswer: boolean; queueSend: "steer" | "interrupt" }
 
 /** = style/prefs.ts 的 defaultStyle 里这三项 */
 export const LEGACY_STYLE_DEFAULTS: Readonly<PiLegacyStyle> = Object.freeze({ completionSound: false, dialogRemoteAnswer: false, queueSend: "interrupt" })
@@ -45,5 +46,25 @@ export function legacyStyleWrite(raw: string | null | undefined, patch: PiLegacy
   if (patch.completionSound !== undefined) next.completionSound = patch.completionSound
   if (patch.dialogRemoteAnswer !== undefined) next.dialogRemoteAnswer = patch.dialogRemoteAnswer
   if (patch.queueSend !== undefined) next.queueSend = patch.queueSend
+  if (patch.askUserEnabled !== undefined) next.askUserEnabled = patch.askUserEnabled
+  if (patch.approvalGateEnabled !== undefined) next.approvalGateEnabled = patch.approvalGateEnabled
+  if (patch.approvalGateTier !== undefined) next.approvalGateTier = patch.approvalGateTier
   return JSON.stringify(next)
+}
+
+/** G1/G2 开关在旧键里的生效值（useRelay 下达 ask_user_switch / approval_gate_switch 现读这里，与 dialogRemoteAnswer 同路）。
+ *  不并入 legacyStyleOf：那三项的形状有逐项对照测试钉死，这里单独一个读者，互不影响。 */
+export type PiAskGatePrefs = { askUserEnabled: boolean; approvalGateEnabled: boolean; approvalGateTier: PiApprovalGateTier }
+
+export const ASK_GATE_DEFAULTS: Readonly<PiAskGatePrefs> = Object.freeze({ askUserEnabled: false, approvalGateEnabled: false, approvalGateTier: "high-risk" })
+
+/** 旧键的原始字符串 → G1/G2 三项的生效值（校验口径同 legacyStyleOf：不是布尔 / 不是合法档位的值落默认） */
+export function askGatePrefsOf(raw: string | null | undefined): PiAskGatePrefs {
+  const p = parsed(raw)
+  if (!p) return { ...ASK_GATE_DEFAULTS }
+  return {
+    askUserEnabled: typeof p.askUserEnabled === "boolean" ? p.askUserEnabled : ASK_GATE_DEFAULTS.askUserEnabled,
+    approvalGateEnabled: typeof p.approvalGateEnabled === "boolean" ? p.approvalGateEnabled : ASK_GATE_DEFAULTS.approvalGateEnabled,
+    approvalGateTier: p.approvalGateTier === "high-risk" || p.approvalGateTier === "all-non-readonly" || p.approvalGateTier === "list" ? p.approvalGateTier : ASK_GATE_DEFAULTS.approvalGateTier,
+  }
 }

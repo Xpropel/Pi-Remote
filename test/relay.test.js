@@ -2999,6 +2999,54 @@ test("O2 开关下达：relay 存当前值，桥重连时自动重下达（+ 门
   assert.equal(reSwitch.enabled, true, "桥重连自动重下达，不用等人再拨一次开关");
 });
 
+test("G1/G2 开关下达：relay 存当前值（审批门存整份配置），桥重连时自动重下达", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const first = await local(relay);
+  const { v } = await viewer(relay);
+  t.after(() => v.close());
+  v.send({ type: "subscribe", room: ROOM });
+  await v.type("snapshot");
+
+  v.send({ type: "ask_user_switch", id: "ask1", room: ROOM, enabled: true });
+  const ack1 = await v.type("ack", (f) => f.id === "ask1");
+  assert.equal(ack1.ok, true);
+  const fwdAsk = await first.c.type("ask_user_switch");
+  assert.equal(fwdAsk.enabled, true, "在线桥即时收到 G1 下达");
+
+  v.send({ type: "approval_gate_switch", id: "gate1", room: ROOM, enabled: true, tier: "list", tools: ["bash", 42, ""] });
+  const ack2 = await v.type("ack", (f) => f.id === "gate1");
+  assert.equal(ack2.ok, true);
+  const fwdGate = await first.c.type("approval_gate_switch");
+  assert.equal(fwdGate.enabled, true);
+  assert.equal(fwdGate.tier, "list");
+  assert.deepEqual(fwdGate.tools, ["bash"], "名单只留合法字符串");
+
+  // 非法 tier 不下达（桥保持当前档位），存值也随之更新
+  v.send({ type: "approval_gate_switch", id: "gate2", room: ROOM, enabled: false, tier: "bogus" });
+  await v.type("ack", (f) => f.id === "gate2");
+  const fwdGate2 = await first.c.type("approval_gate_switch");
+  assert.equal(fwdGate2.enabled, false);
+  assert.equal(fwdGate2.tier, undefined, "非法 tier 被 relay 摘掉，不下达");
+
+  // 房间不存在：与 dialog_answer_switch 同口径回 no_room
+  v.send({ type: "ask_user_switch", id: "askX", room: "no-such-room", enabled: true });
+  const ackX = await v.type("ack", (f) => f.id === "askX");
+  assert.equal(ackX.ok, false);
+  assert.equal(ackX.code, "no_room");
+
+  // 桥断线重连：relay 按存值自动重下达两帧
+  first.c.close();
+  await v.type("room_offline");
+  const second = await local(relay);
+  t.after(() => second.c.close());
+  const reAsk = await second.c.type("ask_user_switch");
+  assert.equal(reAsk.enabled, true, "G1 桥重连自动重下达");
+  const reGate = await second.c.type("approval_gate_switch");
+  assert.equal(reGate.enabled, false, "G2 按最后存值重下达");
+  assert.equal(reGate.tier, undefined);
+});
+
 test("O2 回执兜底：桥在答案转发后断开 → 等回执的 viewer 立刻收到 dialog_gone", async (t) => {
   const relay = await boot();
   t.after(() => relay.close());

@@ -119,6 +119,8 @@ export interface PiSidebarSession {
   timeLabel: string
   /** 会话事件流一句人话（移动列表第二行/气泡副行用）；无事件时必须为空，不编造 */
   summary?: string
+  /** 一行实时状态全句（设计 D §2.2 的 roomStatusLine 输出；悬停气泡加行用）。缺省 = 宿主没接状态面，气泡不加行 */
+  statusLine?: string
   cwd: string
   /** 仓库全名（如 your-org/Pi-Remote）；未知留空 */
   repo?: string
@@ -183,6 +185,9 @@ export interface PiSidebarData {
   /** 设备菜单是否展开（受控，宿主/组件状态） */
   deviceMenuOpen?: boolean
   groups: PiSidebarGroup[]
+  /** 收件箱入口（设计 D §1）：待答行角标数 = attention 清单的 waiting+error+done 之和
+   *  （与账本 pending 数恒等，计数只出 attention 单一出口）；缺省 = 不渲染待答行。 */
+  inboxCount?: number
   /** Codex 扩展位：本地页入口（可为空） */
   localPages?: PiSidebarLocalPage[]
   newSessionLabel?: string
@@ -223,6 +228,8 @@ export interface PiSidebarActions {
   selectLocalPage?: (pageId: string) => void
   /** 归档视图（本地归档列表；可选） */
   openArchiveView?: () => void
+  /** 收件箱视图（设计 D §1：全局待答清单；可选） */
+  openInbox?: () => void
 }
 
 /** 扩展位（Codex 标题栏 tab / RunLocation / 变体自定义入口）；共享核只给挂载点。 */

@@ -54,6 +54,8 @@ export function SidebarHoverCard({
       <p className="sb-bubble-line"><BranchIcon size={12} />{session.repo || "—"}</p>
       <p className="sb-bubble-line"><FolderTinyIcon size={12} />{session.cwd || "—"}</p>
       <p className="sb-bubble-sub">{[session.deviceName, "本地"].filter(Boolean).join(" · ")}</p>
+      {/* 设计 D §2.4 第三层：气泡加一行状态全句（roomStatusLine 输出，宿主按会话填；没填就不加行，零布局冲突） */}
+      {session.statusLine ? <p className="sb-bubble-status">{session.statusLine}</p> : null}
     </div>,
     container,
   )

@@ -1131,6 +1131,13 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             if (typeof room.dialogRemoteAnswer === "boolean") {
               send(ws, { type: "dialog_answer_switch", room: room.id, enabled: room.dialogRemoteAnswer }, cfg);
             }
+            // G1/G2 开关补发（同 dialog_answer_switch 纪律）：从未下达过就不发，桥侧缺省即默认
+            if (typeof room.askUserEnabled === "boolean") {
+              send(ws, { type: "ask_user_switch", room: room.id, enabled: room.askUserEnabled }, cfg);
+            }
+            if (room.approvalGateSwitch) {
+              send(ws, { type: "approval_gate_switch", room: room.id, ...room.approvalGateSwitch }, cfg);
+            }
             rooms.broadcastRoomList();
             break;
           }

@@ -228,7 +228,7 @@ export function PiSettingsSections({
   const segW = phone ? "w-full" : "w-[228px]"
   const change = isStatic ? undefined : onPrefsChange
   const act = isStatic || !onAction ? undefined : (action: PiSettingsAction) => () => onAction(action)
-  const toggle = (key: "dialogRemote" | "sound") =>
+  const toggle = (key: "dialogRemote" | "sound" | "askUser" | "approvalGate") =>
     change ? { checked: prefs[key], onCheckedChange: (v: boolean) => change({ [key]: v }) } : { defaultChecked: prefs[key] }
   const busySelector = (
     <TextSelector
@@ -373,6 +373,55 @@ export function PiSettingsSections({
               className={switchFillRow(variant)}
             />
           }
+        />
+        <Row
+          variant={variant}
+          label="允许智能体向我提问"
+          hint="开启后，智能体可以用 ask_user 工具发来选择题或填空，在网页上作答；关掉后它不会问你"
+          toggle
+          control={
+            <Switch
+              tone="blue"
+              size={phone ? "lg" : "sm"}
+              {...toggle("askUser")}
+              aria-label="允许智能体向我提问"
+              className={switchFillRow(variant)}
+            />
+          }
+        />
+        <Row
+          variant={variant}
+          label="工具执行审批门"
+          hint="开启后，智能体执行工具前先弹窗等你批准；与上面的确认框应答是两个独立开关"
+          toggle
+          control={
+            <Switch
+              tone="blue"
+              size={phone ? "lg" : "sm"}
+              {...toggle("approvalGate")}
+              aria-label="工具执行审批门"
+              className={switchFillRow(variant)}
+            />
+          }
+        />
+        <Row variant={variant} label="审批门问哪些工具" hint="名单制时，名单在电脑端桥的配置里维护" />
+        <RadioRow
+          variant={variant}
+          label="只问高危操作"
+          checked={prefs.approvalGateTier === "high-risk"}
+          onSelect={change && (() => change({ approvalGateTier: "high-risk" }))}
+        />
+        <RadioRow
+          variant={variant}
+          label="所有非只读操作都问"
+          checked={prefs.approvalGateTier === "all-non-readonly"}
+          onSelect={change && (() => change({ approvalGateTier: "all-non-readonly" }))}
+        />
+        <RadioRow
+          variant={variant}
+          label="只问名单里的工具"
+          checked={prefs.approvalGateTier === "list"}
+          onSelect={change && (() => change({ approvalGateTier: "list" }))}
         />
       </Group>
       <Group

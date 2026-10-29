@@ -338,3 +338,49 @@ test("设备窗口连接拿到的 room_list 没有新字段（什么 cap 都没�
   assert.equal(Object.prototype.hasOwnProperty.call(entry, "lastTurnEnd"), false, "设备窗口走最干净那份视图");
   assert.deepEqual(list.devices.map((d) => d.id), [DEV], "设备窗口只拿自己的设备");
 });
+
+/* ---------- 设计 D §2.3：房间最近事件摘要 lastEvent（cap room.activity） ---------- */
+
+const { observeRoomTurnEvent, roomsViewFor, clearSessionState } = require("../relay/rooms.js");
+
+test("lastEvent：白名单事件刷新摘要，只取 toolName 元数据（不带 args/正文）", () => {
+  const room = { lastTurnEnd: null, turnOutcome: null, turnSettled: false, lastEvent: null };
+  observeRoomTurnEvent(room, { type: "turn_start" }, 1000);
+  assert.deepEqual(room.lastEvent, { type: "turn_start", at: 1000 });
+  observeRoomTurnEvent(room, { type: "tool_execution_start", toolName: "bash", args: { command: "rm -rf /" }, partialResult: "正文" }, 2000);
+  assert.deepEqual(room.lastEvent, { type: "tool_execution_start", toolName: "bash", at: 2000 }, "只有类型/工具名/时刻，args 与正文绝不入摘要");
+  observeRoomTurnEvent(room, { type: "message_update", delta: "正文增量" }, 3000);
+  assert.deepEqual(room.lastEvent, { type: "message_update", at: 3000 });
+  observeRoomTurnEvent(room, { type: "tool_execution_update", toolName: "bash" }, 4000);
+  assert.deepEqual(room.lastEvent, { type: "message_update", at: 3000 }, "非白名单事件不刷新");
+  observeRoomTurnEvent(room, { type: "compaction_start" }, 5000);
+  assert.deepEqual(room.lastEvent, { type: "compaction_start", at: 5000 });
+});
+
+test("lastEvent：回合落定（agent_settled）与会话状态清理时清空", () => {
+  const room = { lastTurnEnd: null, turnOutcome: null, turnSettled: false, lastEvent: null };
+  observeRoomTurnEvent(room, { type: "message_update" }, 1000);
+  assert.ok(room.lastEvent);
+  observeRoomTurnEvent(room, { type: "agent_settled" }, 2000);
+  assert.equal(room.lastEvent, null, "落定即清，状态行转走 lastTurnEnd 分支");
+  assert.deepEqual(room.lastTurnEnd, { kind: "done", at: 2000 }, "落定摘要照常维护");
+  observeRoomTurnEvent(room, { type: "message_update" }, 3000);
+  assert.ok(room.lastEvent);
+  clearSessionState(room);
+  assert.equal(room.lastEvent, null, "clearSessionState 一并清 lastEvent");
+});
+
+test("roomsViewFor：room.activity 未声明时剥 lastEvent，声明时保留（其余字段不动）", () => {
+  const entry = { id: "r1", lastEvent: { type: "message_update", at: 9 }, lastTurnEnd: { kind: "done", at: 8 }, waiting: [], waitingPrompt: null };
+  const legacy = { _state: { caps: new Set(["room.attention", "room.dialogs", "dialog.respond"]) } };
+  const [stripped] = roomsViewFor(legacy, [entry]);
+  assert.ok(!("lastEvent" in stripped), "旧端（无 room.activity）条目里没有 lastEvent");
+  assert.deepEqual(stripped.lastTurnEnd, { kind: "done", at: 8 });
+  assert.ok("lastEvent" in entry, "裁剪不改原条目");
+  const modern = { _state: { caps: new Set(["room.attention", "room.dialogs", "dialog.respond", "room.activity"]) } };
+  const [kept] = roomsViewFor(modern, [entry]);
+  assert.deepEqual(kept.lastEvent, { type: "message_update", at: 9 });
+  const bare = { _state: { caps: new Set() } };
+  const [cleanest] = roomsViewFor(bare, [entry]);
+  assert.ok(!("lastEvent" in cleanest) && !("lastTurnEnd" in cleanest) && !("waiting" in cleanest), "零 cap 连接拿最干净的条目");
+});

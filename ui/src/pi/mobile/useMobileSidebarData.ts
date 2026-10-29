@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { sidebarDataOf } from "@/pi/model/sidebarSource"
+import { sessionStatusLineOf, sidebarDataOf } from "@/pi/model/sidebarSource"
 import { sidebarGroups } from "@/pi/model/sidebarGroups"
 import type { VariantAppProps } from "@/pi/variants/types"
 import {
@@ -107,6 +107,9 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
     )
     const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: p.ui.prefs.grouping, expanded: p.ui.expanded })
     const sessionOf = new Map(base.sessions.map((session) => [session.id, session]))
+    // 设计 D §2.2：一行实时状态（roomStatusLine）的输入面——房间事实按 id 索引、未读落定按 roomId 索引
+    const roomById = new Map(relay.rooms.map((r) => [r.id, r]))
+    const turnEndByRoom = new Map(relay.roomTurnEnds.map((t) => [t.roomId, t]))
     const groups: PiSidebarGroup[] = (legacy.groups as unknown as GroupBuild[]).map((group: GroupBuild) => {
       const cwd = group.cwd ?? ""
       const folderCollapsed = scopeState.folders[group.key] !== false
@@ -114,6 +117,8 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
         const listed = sessionOf.get(row.id)
         const dev = base.devices.find((d) => d.id === (row.deviceId ?? deviceId))
         const key = sidebarSessionKeyOf(row.deviceId ?? deviceId, row.id)
+        // 状态行随本容器的 30 秒 tick（useNow）与名册广播一起重算（设计 D §2.2 不加新计时器）
+        const status = sessionStatusLineOf({ room: roomById.get(row.id), session: listed, turnEnd: turnEndByRoom.get(row.id), now })
         return {
           key,
           id: row.id,
@@ -121,7 +126,10 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
           status: markerStatus(row.marker),
           eventAt: row.at,
           timeLabel: row.trailingText ?? relativeTimeLabel(now, row.at),
-          summary: row.subtitle ?? "",
+          // 设计 D §2.4 第四层：两行制第二行承载状态全句（waiting/running/error/done/offline）；
+          // 空闲态让位给原来的副标题（路径/设备），不拿"空闲"挤掉信息——状态优先只对有信息量的态生效
+          summary: status.tone === "idle" ? (row.subtitle ?? "") : status.text,
+          statusLine: status.text,
           cwd: listed?.cwd ?? cwd,
           deviceName: dev?.name ?? "",
           selected: relay.roomId === row.id,
