@@ -145,6 +145,69 @@ function keyUpdatePayload(deviceId, newSignPub, newBoxPub) {
   return Buffer.concat([Buffer.from("pi-remote-keyupdate-v1", "utf8"), Buffer.from(String(deviceId), "utf8"), Buffer.from(String(newSignPub), "utf8"), Buffer.from(String(newBoxPub), "utf8")]);
 }
 
+/* ---------------- Viewer identity keys (crypto Phase 2, design §3.2/§3.3/§7) ----------------
+ * A viewer's signing key (VIK) and box key (VBK) are BOTH P-256, unlike devices whose
+ * signing key is Ed25519. WebCrypto signs with ECDSA P-256 / SHA-256 and emits the
+ * signature in IEEE P1363 form (r || s), so verification must use dsaEncoding
+ * "ieee-p1363". The auth payload reuses authPayload() with the viewerId in place of
+ * the deviceId — the domain string stays "pi-remote-auth-v1". */
+
+/** P-256 signature verification (viewer VIK): any malformed input returns false, never throws. */
+function verifyP256(signPub, payload, sigB64) {
+  const key = p256PubKey(signPub);
+  const sig = b64buf(sigB64);
+  if (!key || !sig || sig.length > PROTOCOL.limits.signatureMaxBytes) return false;
+  try {
+    return crypto.verify("sha256", payload, { key, dsaEncoding: "ieee-p1363" }, sig);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Viewer registration key whitelist: {signPub, boxPub} must both parse as P-256 spki
+ * public keys. Both are bounded by boxPubKeyBytes (128) — the signPubKeyBytes limit (44)
+ * is the Ed25519 spki length and does NOT apply to viewer keys.
+ */
+function cleanViewerPubKeys(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const signPub = typeof raw.signPub === "string" ? raw.signPub : "";
+  const boxPub = typeof raw.boxPub === "string" ? raw.boxPub : "";
+  if (!p256PubKey(signPub) || !p256PubKey(boxPub)) return null;
+  return { signPub, boxPub };
+}
+
+/** Canonical JSON for admin signatures: object keys sorted recursively, array order
+ *  preserved, no whitespace. Deterministic for any JSON-parsed frame, so the relay and
+ *  the web end derive byte-identical payloads from the same logical frame. */
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  const parts = [];
+  for (const k of Object.keys(value).sort()) parts.push(JSON.stringify(k) + ":" + canonicalJson(value[k]));
+  return "{" + parts.join(",") + "}";
+}
+
+/**
+ * adminSig payload (design §7; the canonicalization is fixed here and documented in
+ * protocol/v4.json under crypto.auth): utf8("pi-remote-admin-v1") || utf8(frame.type) ||
+ * utf8(canonicalJson(frame without the adminSig / adminToken / type fields)).
+ * The signature itself is ECDSA P-256 / SHA-256, IEEE P1363, base64 — see verifyP256.
+ */
+function adminPayload(frame) {
+  const src = frame && typeof frame === "object" ? frame : {};
+  const rest = {};
+  for (const k of Object.keys(src)) {
+    if (k === "adminSig" || k === "adminToken" || k === "type") continue;
+    rest[k] = src[k];
+  }
+  return Buffer.concat([
+    Buffer.from("pi-remote-admin-v1", "utf8"),
+    Buffer.from(String(src.type || ""), "utf8"),
+    Buffer.from(canonicalJson(rest), "utf8"),
+  ]);
+}
+
 /** 用户输入的配对码：不分大小写，忽略空格和短横线；长度或字符不对返回空串 */
 function normalizePairCode(v) {
   if (typeof v !== "string") return "";
@@ -222,4 +285,4 @@ function checkDeviceToken(index, devices, cfg, deviceId, token) {
   return { ok: true, accountId };
 }
 
-module.exports = { PAIR_FAIL_WINDOW_MS, PAIR_FAIL_MAX, PAIR_FAIL_SOURCES_MAX, PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, b64buf, ed25519PubKey, p256PubKey, verifyEd25519, cleanPubKeys, cleanPairKeys, popPayload, authPayload, keyUpdatePayload, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken };
+module.exports = { PAIR_FAIL_WINDOW_MS, PAIR_FAIL_MAX, PAIR_FAIL_SOURCES_MAX, PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, b64buf, ed25519PubKey, p256PubKey, verifyEd25519, verifyP256, cleanPubKeys, cleanPairKeys, cleanViewerPubKeys, popPayload, authPayload, keyUpdatePayload, adminPayload, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken };

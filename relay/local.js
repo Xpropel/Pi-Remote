@@ -12,6 +12,7 @@ const { PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCod
 const { REMOTE_MESSAGE_EVENTS, finishWaiter, settleEntry } = require("./commands");
 const { MAX_DEVICE_NAME, normalizePlatform, cleanProjects, blankDevice, boundAccount } = require("./devices");
 const { cancelResend, restartResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, broadcastRoomAttention, broadcastRoomWaiting } = require("./rooms");
+const { ackTrackerOf, isAckFp } = require("./acktrack");
 const { createNotifier } = require("./notify");
 const { storeSessionArchive, broadcastSessionArchive } = require("./sessionArchive");
 const { purgeSessions } = require("./purge");
@@ -706,10 +707,20 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
    */
   const routeContentKeyGrant = (accountId, toKeyFp, frame) => {
     const hit = keyEndpoints(accountId).find((e) => e.keyFp === toKeyFp);
-    if (!hit) return false;
-    return send(hit.ws, frame, cfg);
+    if (hit) return send(hit.ws, frame, cfg);
+    // Phase 2: keyed viewers are first-class grant targets too. The viewer channel
+    // registers its live endpoints on ctx; fall through to them when no local end
+    // holds the target fingerprint.
+    if (typeof ctx.viewerKeyEndpoints === "function") {
+      const vhit = ctx.viewerKeyEndpoints(accountId).find((e) => e.keyFp === toKeyFp);
+      if (vhit) return send(vhit.ws, frame, cfg);
+    }
+    return false;
   };
   ctx.routeContentKeyGrant = routeContentKeyGrant;
+  // The viewer channel needs the local endpoint list to broadcast content_key_request
+  // frames from viewers to the account's keyed devices.
+  ctx.localKeyEndpoints = keyEndpoints;
 
   /** content_key_grant 帧的透传清洗：只认 {to, nonce, ct} 三个字符串字段并按 limits 钉尺寸；
    *  blob 本体对 relay 不透明——只量字节，不解内容。不合规返回 null。
@@ -1033,6 +1044,9 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             s.boundDeviceId = pend.deviceId;
             s.accountId = pend.accountId;
             const res = { type: "auth_result", ok: true, proto: PROTOCOL.proto, caps: RELAY_CAPS, boot: rooms.boot, auth: "key", deviceId: pend.deviceId };
+            // §7: key-authed connections learn the account's currently agreed ackFp
+            // (null while unknown or diverged) so the end can reconcile its own copy.
+            res.ackFp = ackTrackerOf(ctx).knownAckFp(pend.accountId);
             if (cfg.serverName) res.serverName = cfg.serverName;
             send(ws, res, cfg);
             log("local 已认证 key", pend.deviceId, helloText(s));
@@ -1712,6 +1726,13 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
               if (e.ws === ws) continue;
               if (send(e.ws, frame, cfg)) delivered++;
             }
+            // Phase 2: keyed viewers are request targets as well — a viewer holding
+            // the ACK can answer a device's delivery request.
+            if (typeof ctx.viewerKeyEndpoints === "function") {
+              for (const e of ctx.viewerKeyEndpoints(accountId)) {
+                if (send(e.ws, frame, cfg)) delivered++;
+              }
+            }
             if (!delivered) {
               send(ws, errorFrame("offline", "本账号当前没有其他在线的持钥端，内容钥交付要等持钥设备上线后再请求"), cfg);
             }
@@ -1740,6 +1761,19 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             if (!routeContentKeyGrant(accountId, grant.to, frame)) {
               send(ws, errorFrame("offline", "目标设备不在线，内容钥未能送达（relay 不缓存交付，请待其上线后重发）"), cfg);
             }
+            break;
+          }
+          case "ack_report": {
+            // ackFp reconciliation (design §3.5 / §7): only key-authed ends hold an ACK
+            // copy, so only they may report. The relay keeps fingerprints only (never
+            // the key); on divergence every reporting end of the account is warned.
+            if (s.auth !== "key" || !s.boundDeviceId) return;
+            if (!isAckFp(msg.ackFp)) {
+              send(ws, errorFrame("bad_args", "ackFp 必须是 16 位小写十六进制指纹"), cfg);
+              return;
+            }
+            const accountId = s.accountId || boundAccount(index, devices, s.boundDeviceId, cfg.accountId);
+            ackTrackerOf(ctx).report(accountId, "device:" + s.boundDeviceId, msg.ackFp, (frame) => send(ws, frame, cfg));
             break;
           }
           case "key_update": {
@@ -1797,6 +1831,11 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
     });
 
     ws.on("close", () => {
+      // A disconnected keyed end no longer counts in ackFp reconciliation.
+      const cs = ws._state;
+      if (cs && cs.authed && cs.auth === "key" && cs.boundDeviceId) {
+        try { ackTrackerOf(ctx).forget(cs.accountId || "", "device:" + cs.boundDeviceId); } catch {}
+      }
       // 二维码待链接码随出示连接生死：连接一断，pending 条目立即作废（手机再扫只会得到 pair_invalid）
       dropPairPending(ws);
       const room = ws._room;

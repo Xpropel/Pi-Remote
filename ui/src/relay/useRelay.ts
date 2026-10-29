@@ -138,8 +138,16 @@ import {
   type LazySend,
 } from "./lazySession"
 import { headerMeta } from "./presence"
-import { V3_SERVER, authFrame, deviceRevokeFrame, hasCap, isCid, newCid, pairApproveFrame, pairCreateFrame, pairLookupFrame, serverInfo, type ServerInfo } from "./protocol"
+import { V3_SERVER, ackReportFrame, authFrame, authResponseFrame, contentKeyGrantFrame, contentKeyRequestFrame, deviceRevokeFrame, hasCap, isCid, newCid, pairApproveFrame, pairCreateFrame, pairLookupFrame, serverInfo, viewerAuthFrame, type ServerInfo } from "./protocol"
 import { parsePairLookup, type PairLookupInfo } from "./pairLink"
+import {
+  EMPTY_VIEWER_IDENTITY_STATE,
+  getDefaultViewerIdentityCore,
+  setViewerIdentityTransport,
+  viewerIdentity as viewerIdentityFacade,
+  type ViewerIdentityCore,
+  type ViewerIdentityState,
+} from "./viewerIdentity"
 import { mobileNavFromPrefsSubset } from "@/pi/model/prefs"
 import type { PiMobileNavMode } from "@/pi/mobile/types"
 import { emptyRemoteQueue, parseRemoteQueueItem, parseRemoteQueueState, type RemoteQueueState } from "./remoteQueue"
@@ -415,6 +423,32 @@ export function useRelay() {
     if (next) safeStore.set(ADMIN_TOKEN_STORAGE_KEY, next)
     else safeStore.remove(ADMIN_TOKEN_STORAGE_KEY)
   }, [])
+  // Viewer identity (crypto Phase 2): the core lives in relay/viewerIdentity.ts
+  // (keys in IndexedDB); this hook only mirrors its snapshot into React state
+  // and wires it to the socket. Identity is additive: without a registered
+  // identity every code path below behaves exactly as the token-only client.
+  const [viewerIdentity, setViewerIdentity] = useState<ViewerIdentityState>(EMPTY_VIEWER_IDENTITY_STATE)
+  /** The shared identity core instance (same one the settings facade uses). */
+  const identityCoreRef = useRef<ViewerIdentityCore | null>(null)
+  const identityReadyRef = useRef<Promise<ViewerIdentityCore | null> | null>(null)
+  /** Auth mode of the current connection attempt, chosen in onopen. The
+   *  auth_result failure branch reads it: a failed KEY attempt must never
+   *  fall back to token auth, and must not wipe the stored viewer token. */
+  const authModeRef = useRef<"key" | "token">("token")
+  /** Fingerprint whose key auth the relay has rejected. While it matches the
+   *  current identity, connect() refuses to dial: no silent retry loop and
+   *  no silent downgrade. Cleared by retryViewerIdentityAuth / re-enable. */
+  const keyAuthBlockedFpRef = useRef<string | null>(null)
+  /** Connection generation that already did its post-auth ACK step
+   *  (ack_report or content_key_request): at most once per connection,
+   *  mirroring the device bridge. */
+  const ackSettledGenRef = useRef(0)
+  /** Pending list_viewers waiters, keyed by the request id the relay echoes
+   *  back on the viewer_list frame. */
+  const viewerListWaitersRef = useRef(new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number }>())
+  /** Last pair_lookup result per code, so approvePairLink can compute the
+   *  contentKeyGrant for a keyed pairing (needs the device box key). */
+  const pairLookupStashRef = useRef<{ code: string; info: PairLookupInfo } | null>(null)
   const [authed, setAuthed] = useState(false)
   const [status, setStatus] = useState("未连接")
   /** 这个 token 连上过：之后断开算"重连"，界面出断线横幅而不是首次连接的加载条 */
@@ -831,6 +865,11 @@ export function useRelay() {
   const wsRef = useRef<WebSocket | null>(null)
   const serverRef = useRef<ServerInfo>(V3_SERVER)
   const tokenRef = useRef(token)
+  /** Mirror of the admin token for socket-side closures (identity transport). */
+  const adminTokenRef = useRef(adminToken)
+  useEffect(() => {
+    adminTokenRef.current = adminToken
+  }, [adminToken])
   const roomRef = useRef(roomId)
   /** 最后看过的房间：attach 到期/断线清空当前房间后，设备恢复在线时用它自动重开 */
   const lastRoomRef = useRef("")
@@ -843,6 +882,60 @@ export function useRelay() {
   const stopRef = useRef(false)
   const genRef = useRef(0)
   const [channel] = useState(() => new CommandChannel())
+  /** Re-read the identity core snapshot into React state after any mutation. */
+  const syncIdentityState = useCallback(() => {
+    const core = identityCoreRef.current
+    setViewerIdentity(core ? core.snapshot() : EMPTY_VIEWER_IDENTITY_STATE)
+  }, [])
+  /** Load the shared identity core once; resolves null when unavailable. */
+  const ensureIdentityReady = useCallback((): Promise<ViewerIdentityCore | null> => {
+    if (!identityReadyRef.current) {
+      identityReadyRef.current = getDefaultViewerIdentityCore().then((core) => {
+        identityCoreRef.current = core
+        syncIdentityState()
+        return core
+      })
+    }
+    return identityReadyRef.current
+  }, [syncIdentityState])
+  useEffect(() => {
+    void ensureIdentityReady()
+  }, [ensureIdentityReady])
+  // Identity transport: the settings facade (relay/viewerIdentity.ts) reaches
+  // the relay through these closures. Management frames that carry no
+  // adminSig get the current adminToken attached here; the token field is
+  // excluded from the adminSig canonical form, so attaching it after signing
+  // cannot invalidate a signature.
+  useEffect(() => {
+    setViewerIdentityTransport({
+      sendAdminCommand: (frame) => {
+        const signed = typeof frame.adminSig === "string" && frame.adminSig ? frame : { ...frame, adminToken: adminTokenRef.current }
+        return channel.raw(signed, "没有收到回应，结果未知，请稍后核对")
+      },
+      requestViewerList: (frame) =>
+        new Promise((resolve, reject) => {
+          const ws = wsRef.current
+          if (!ws || ws.readyState !== WebSocket.OPEN || !authedRef.current) {
+            reject(new Error("尚未连接中转服务，无法读取观看端名册"))
+            return
+          }
+          const id = `vl_${newCid()}`
+          const timer = window.setTimeout(() => {
+            viewerListWaitersRef.current.delete(id)
+            reject(new Error("读取观看端名册超时，请重试"))
+          }, 10000)
+          viewerListWaitersRef.current.set(id, { resolve, reject, timer })
+          try {
+            ws.send(JSON.stringify({ ...frame, id }))
+          } catch {
+            window.clearTimeout(timer)
+            viewerListWaitersRef.current.delete(id)
+            reject(new Error("连接已断开，无法读取观看端名册"))
+          }
+        }),
+    })
+    return () => setViewerIdentityTransport(null)
+  }, [channel])
   /** 当前房间镜像的同步位置：重连只要增量、重复帧丢弃、缺口补齐都靠它 */
   const syncRef = useRef<SyncState>(emptySync())
   const resyncAtRef = useRef(0)
@@ -1721,6 +1814,17 @@ export function useRelay() {
    * （主题在 pi_remote_pi_prefs，plan §6.5），style/prefs.ts 已删，所以不再上行 prefs_set、不再应用 auth 快照与 prefs_changed。
    * relay 侧（relay/prefs.js、cap、帧校验）不动；握手照旧声明 prefs.sync（VIEWER_CAPS 不改，协议不变），收到的帧直接忽略。 */
   const connect = useCallback(() => {
+    // Key auth was rejected for the identity's current key: do not dial at
+    // all (no retry loop, no silent downgrade to token auth). The failure is
+    // already surfaced in authError / viewerIdentity.lastError; the user
+    // resolves it from settings (retry, re-register, or forget identity).
+    const blockedCore = identityCoreRef.current
+    if (blockedCore && keyAuthBlockedFpRef.current && blockedCore.snapshot().keyFp === keyAuthBlockedFpRef.current) {
+      setTrying(false)
+      setRetryAt(null)
+      setStatus("未连接")
+      return
+    }
     if (reconnectRef.current) {
       window.clearTimeout(reconnectRef.current)
       reconnectRef.current = null
@@ -1753,8 +1857,31 @@ export function useRelay() {
       // 打开后立刻被关/鉴权失败若也清零，会退化成约 1 秒一轮的无界重试（UI·relay 中-1）。
       lastRxRef.current = Date.now()
       setStatus("鉴权中")
-      // v4 握手：旧 relay 会忽略 proto/caps/client，照常按 token 鉴权
-      ws.send(JSON.stringify(authFrame(tokenRef.current)))
+      // Viewer identity (crypto Phase 2): a registered identity authenticates
+      // by challenge-response instead of the shared token. The choice is made
+      // once per attempt, here; a key attempt that fails never re-enters this
+      // socket as a token attempt (see the auth_result failure branch).
+      void (async () => {
+        const core = await ensureIdentityReady()
+        if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return
+        const attempt = core?.beginKeyAuth() ?? null
+        if (attempt) {
+          authModeRef.current = "key"
+          try {
+            ws.send(JSON.stringify(viewerAuthFrame(attempt)))
+          } catch {
+            /* the close path handles a dead socket */
+          }
+          return
+        }
+        authModeRef.current = "token"
+        // v4 握手：旧 relay 会忽略 proto/caps/client，照常按 token 鉴权
+        try {
+          ws.send(JSON.stringify(authFrame(tokenRef.current)))
+        } catch {
+          /* the close path handles a dead socket */
+        }
+      })()
       // 断线期间攒下的补齐请求不在这里发：认证还没结果，而且 auth_result 里会按 since 重订阅，
       // 这里再发一次就是同一房间订阅两遍（两份快照）。留到 auth_result 里按需补。
     }
@@ -1849,6 +1976,45 @@ export function useRelay() {
           const info = serverInfo(msg)
           serverRef.current = info
           setServer(info)
+          // Viewer identity post-auth (crypto Phase 2, design 3.2/3.5): once
+          // per key-authed connection -- learn the account binding when the
+          // relay states it, then either report our ACK fingerprint for the
+          // relay-side reconciliation or, holding no ACK, ask the account's
+          // keyed ends for a wrapped delivery.
+          if (authModeRef.current === "key") {
+            const core = identityCoreRef.current
+            if (core) {
+              core.clearKeyAuthAttempt()
+              if (typeof msg.accountId === "string" && msg.accountId) void core.bindAccount(msg.accountId)
+              if (ackSettledGenRef.current !== gen) {
+                ackSettledGenRef.current = gen
+                const mine = core.ackFpFor(core.accountId())
+                if (mine) {
+                  try {
+                    ws.send(JSON.stringify(ackReportFrame(mine)))
+                  } catch {
+                    /* the close path handles a dead socket */
+                  }
+                  const agreed = typeof msg.ackFp === "string" ? msg.ackFp : null
+                  if (agreed && agreed !== mine) {
+                    core.noteKeyMismatch([mine, agreed])
+                    setNotice({ text: "内容钥指纹对不上：本机持有的 ACK 与账号里其他端不一致，历史可能来自另一把钥。", tone: "warn" })
+                  } else if (agreed === mine) {
+                    // Consensus reached on our fingerprint: any earlier
+                    // divergence warning no longer applies.
+                    core.noteKeyMismatch(null)
+                  }
+                } else {
+                  try {
+                    ws.send(JSON.stringify(contentKeyRequestFrame()))
+                  } catch {
+                    /* the close path handles a dead socket */
+                  }
+                }
+              }
+              syncIdentityState()
+            }
+          }
           // P11 prefs-sync 快照：只有新 relay 且声明 prefs.sync 时带 prefs 字段；旧 relay 没有 → 保持本地默认
           const prefsMsg = (msg as Record<string, unknown>).prefs as { subset?: unknown } | null | undefined
           if (prefsMsg && typeof prefsMsg === "object") {
@@ -1918,6 +2084,31 @@ export function useRelay() {
           // 上面已经重订阅（带 since 自愈）就不再补；没重订阅但断线期间记下了缺口，才补一次
           if (pendingResync && !resubscribed && roomRef.current) sendResync(pendingResync.since, pendingResync.room)
         } else {
+          // Key-auth rejection (crypto Phase 2): the identity is revoked,
+          // mismatched, or the signature failed. Never fall back to token
+          // auth for this identity and never wipe the stored viewer token --
+          // surface the failure and block automatic retries with this key.
+          if (authModeRef.current === "key") {
+            authedRef.current = false
+            setAuthed(false)
+            const core = identityCoreRef.current
+            if (core) {
+              core.noteAuthFailure(typeof msg.code === "string" ? msg.code : "auth_failed")
+              core.clearKeyAuthAttempt()
+              keyAuthBlockedFpRef.current = core.snapshot().keyFp
+              syncIdentityState()
+            }
+            setAuthError(String(msg.error || "观看端密钥登录被拒绝"))
+            setStatus("未连接")
+            setRetryCount(0)
+            setTrying(false)
+            setUiPrompt(null)
+            setDialogs([])
+            setExtStatus(null)
+            setTurnEnd(null)
+            ws.close()
+            return
+          }
           authedRef.current = false
           setAuthed(false)
           setEverConnected(false)
@@ -1937,6 +2128,112 @@ export function useRelay() {
           schedulesRef.current = {}
           setSchedulesByRoom({})
           ws.close()
+        }
+        return
+      }
+      // Viewer key auth, second move (crypto Phase 2): sign the relay nonce
+      // with the VIK and answer. A local signing failure closes the attempt;
+      // this socket never re-enters as a token attempt.
+      if (type === "auth_challenge") {
+        if (authModeRef.current === "key" && !authedRef.current) {
+          const core = identityCoreRef.current
+          const nonce = typeof msg.nonce === "string" ? msg.nonce : ""
+          void (async () => {
+            const sig = core ? await core.answerChallenge(nonce) : null
+            if (wsRef.current !== ws) return
+            if (sig) {
+              try {
+                ws.send(JSON.stringify(authResponseFrame(sig)))
+              } catch {
+                /* the close path handles a dead socket */
+              }
+              return
+            }
+            if (core) {
+              core.noteAuthFailure("auth_failed")
+              keyAuthBlockedFpRef.current = core.snapshot().keyFp
+              syncIdentityState()
+            }
+            setAuthError("观看端密钥签名失败，已停止本次密钥登录（不会改用令牌回退）")
+            try {
+              ws.close()
+            } catch {
+              /* already closed */
+            }
+          })()
+        }
+        return
+      }
+      // ACK delivery addressed to this viewer (crypto Phase 2, design 3.2):
+      // the relay stamped from/fromBoxPub from the granter's roster row.
+      // Unwrap with the VBK and store; a bad grant is dropped, never applied.
+      if (type === "content_key_grant") {
+        const core = identityCoreRef.current
+        if (core && authedRef.current) {
+          const blob =
+            msg.blob && typeof msg.blob === "object" && !Array.isArray(msg.blob)
+              ? (msg.blob as { nonce?: unknown; ct?: unknown })
+              : { nonce: msg.nonce, ct: msg.ct }
+          const grant = {
+            to: typeof msg.to === "string" ? msg.to : undefined,
+            from: typeof msg.from === "string" ? msg.from : "",
+            fromBoxPub:
+              typeof msg.fromBoxPub === "string"
+                ? msg.fromBoxPub
+                : typeof (msg as Record<string, unknown>).boxPub === "string"
+                  ? ((msg as Record<string, unknown>).boxPub as string)
+                  : "",
+            accountId: typeof msg.accountId === "string" ? msg.accountId : undefined,
+            blob,
+          }
+          void core.acceptAckGrant(grant).then((accepted) => {
+            syncIdentityState()
+            if (!accepted) return
+            setNotice({ text: "已收到账号内容钥（ACK）：本机现在持有内容钥。", tone: "warn" })
+            // Report the new fingerprint so the relay reconciliation can converge.
+            const fp = core.ackFpFor(core.accountId())
+            if (fp && wsRef.current === ws) {
+              try {
+                ws.send(JSON.stringify(ackReportFrame(fp)))
+              } catch {
+                /* the close path handles a dead socket */
+              }
+            }
+          })
+        }
+        return
+      }
+      // Another keyed end asks for the ACK (crypto Phase 2, design 3.2):
+      // answer with a grant wrapped to the requester's box key when this
+      // viewer holds the ACK. The relay stamped from/fromBoxPub already.
+      if (type === "content_key_request") {
+        const core = identityCoreRef.current
+        if (core && authedRef.current) {
+          const fromFp = typeof msg.from === "string" ? msg.from : ""
+          const fromBoxPub = typeof msg.fromBoxPub === "string" ? msg.fromBoxPub : ""
+          const account = typeof msg.accountId === "string" && msg.accountId ? msg.accountId : core.accountId()
+          if (fromFp && fromBoxPub && fromFp !== core.snapshot().keyFp) {
+            void core.wrapAckGrant(account, fromFp, fromBoxPub).then((blob) => {
+              if (blob && wsRef.current === ws) {
+                try {
+                  ws.send(JSON.stringify(contentKeyGrantFrame({ to: fromFp, accountId: account, blob })))
+                } catch {
+                  /* the close path handles a dead socket */
+                }
+              }
+            })
+          }
+        }
+        return
+      }
+      // Viewer roster reply (crypto Phase 2): routed by the echoed request
+      // id to the transport waiter that list_viewers is blocked on.
+      if (type === "viewer_list") {
+        const waiter = typeof msg.id === "string" ? viewerListWaitersRef.current.get(msg.id) : undefined
+        if (waiter) {
+          viewerListWaitersRef.current.delete(msg.id as string)
+          window.clearTimeout(waiter.timer)
+          waiter.resolve(Array.isArray(msg.viewers) ? msg.viewers : [])
         }
         return
       }
@@ -2172,6 +2469,18 @@ export function useRelay() {
           const pick = roomsRef.current.find((room) => room.online)
           if (pick) subscribeRef.current(pick.id, true)
           setNotice({ text: "这个会话已经不存在，已切换到其他会话。", tone: "warn" })
+          return
+        }
+        // ACK fingerprint divergence (crypto Phase 2, design 3.5): the relay
+        // warns every reporting end while the account's ends disagree. The
+        // frame lists the conflicting fingerprints; the ACK itself is never
+        // part of it. Not an id-bearing command error -- handle it here
+        // instead of letting it fall through to the generic notice.
+        if (code === "key_mismatch") {
+          const fps = Array.isArray(msg.ackFps) ? msg.ackFps.filter((fp): fp is string => typeof fp === "string") : []
+          identityCoreRef.current?.noteKeyMismatch(fps.length > 1 ? fps : null)
+          syncIdentityState()
+          setNotice({ text: "内容钥指纹对不上：账号里各端持有的 ACK 不一致，请核对各端的备份与导入。", tone: "warn" })
           return
         }
         setNotice({ text: String(msg.message || msg.code || "出错了"), tone: "bad" })
@@ -4277,18 +4586,66 @@ export function useRelay() {
    */
   const lookupPairLink = useCallback(async (code: string): Promise<PairLookupInfo> => {
     const data = await channel.raw(pairLookupFrame(code), "没有收到回应，请重试")
-    return parsePairLookup(data)
+    const info = parsePairLookup(data)
+    // Stash for approvePairLink: a keyed pairing's contentKeyGrant needs the
+    // pending device's box key and fingerprint from this lookup reply.
+    pairLookupStashRef.current = { code, info }
+    return info
   }, [channel])
 
   /**
    * 二维码设备链接第二步：管理员确认后 relay 才核销码、签发设备令牌，并沿待链接连接下发给 pi 运行端落盘。
    * 与 pair_create 同门：必须带管理员令牌（本地没存够长直接 admin_required，不发帧）。
+   * Crypto Phase 2: when the lookup was a keyed pairing and this viewer holds
+   * the ACK, a locally computed contentKeyGrant (the ACK wrapped to the new
+   * device's box key) rides along for the relay to pass through untouched.
+   * When any precondition is missing the frame is unchanged, and the device
+   * can still fetch the ACK later via content_key_request.
    */
   const approvePairLink = useCallback(async (code: string, adminToken: string) => {
     const secret = adminToken.trim()
     if (!adminTokenReady(secret)) throw new RelayError("admin_required", ADMIN_TOKEN_COPY.required)
-    await channel.raw(pairApproveFrame(code, secret), "没有收到回应，链接结果未知，请到设备列表确认")
-  }, [channel])
+    let grant: { to: string; nonce: string; ct: string } | undefined
+    const core = identityCoreRef.current ?? (await ensureIdentityReady())
+    const stash = pairLookupStashRef.current
+    if (core && stash && stash.code === code && stash.info.keyFp && stash.info.boxPub) {
+      grant = (await core.wrapAckGrant(core.accountId(), stash.info.keyFp, stash.info.boxPub)) ?? undefined
+    }
+    await channel.raw(pairApproveFrame(code, secret, grant), "没有收到回应，链接结果未知，请到设备列表确认")
+  }, [channel, ensureIdentityReady])
+
+  /**
+   * Viewer identity enable (crypto Phase 2, settings surface): generate the
+   * keys and register them via the facade (which uses the transport installed
+   * above), then reconnect so this session switches from token auth to key
+   * auth and the ACK delivery machinery can engage.
+   */
+  const enableViewerIdentity = useCallback(async () => {
+    const state = await viewerIdentityFacade.enable()
+    keyAuthBlockedFpRef.current = null
+    syncIdentityState()
+    reconnect(true)
+    return state
+  }, [reconnect, syncIdentityState])
+
+  /**
+   * Forget the local viewer identity (keys + ACK copies wiped). The roster
+   * row on the relay is a separate concern (revoke from the roster UI);
+   * reconnecting drops this session back to plain token auth.
+   */
+  const disableViewerIdentity = useCallback(async () => {
+    const core = identityCoreRef.current ?? (await ensureIdentityReady())
+    await core?.forget()
+    keyAuthBlockedFpRef.current = null
+    syncIdentityState()
+    reconnect(true)
+  }, [ensureIdentityReady, reconnect, syncIdentityState])
+
+  /** Clear a key-auth rejection block and try key auth again. */
+  const retryViewerIdentityAuth = useCallback(() => {
+    keyAuthBlockedFpRef.current = null
+    reconnect(true)
+  }, [reconnect])
 
   const selectedDevice = devices.find((device) => device.id === selectedDeviceId) ?? null
   const listedSessions = useMemo(
@@ -4518,6 +4875,25 @@ export function useRelay() {
     revokeDevice,
     lookupPairLink,
     approvePairLink,
+    /** Viewer identity (crypto Phase 2): state snapshot for the settings surface. */
+    viewerIdentity,
+    /** Generate + register this browser's identity keys, then reconnect into key auth. */
+    enableViewerIdentity,
+    /** Wipe the local identity (keys + ACK copies) and drop back to token auth. */
+    disableViewerIdentity,
+    /** Clear a key-auth rejection and retry key auth. */
+    retryViewerIdentityAuth,
+    /** Raw ACK bytes for the passphrase-backup flow only (viewerIdentity.ts owns the rules). */
+    exportViewerAck: () => viewerIdentityFacade.exportAck(),
+    /** Store an ACK recovered from a passphrase backup. */
+    importViewerAck: async (ack: Uint8Array) => {
+      await viewerIdentityFacade.importAck(ack)
+      syncIdentityState()
+    },
+    /** Authorized-viewer roster via the identity admin channel. */
+    listViewers: () => viewerIdentityFacade.listViewers(),
+    /** Revoke one viewer via the identity admin channel. */
+    revokeViewer: (targetViewerId: string) => viewerIdentityFacade.revokeViewer(targetViewerId),
   }
 }
 

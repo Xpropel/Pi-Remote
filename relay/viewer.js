@@ -7,12 +7,13 @@ const { WebSocketServer } = require("ws");
 const { cleanCid } = require("./store");
 const { DEFAULT_ACCOUNT } = require("./index");
 const PROTOCOL = require("./protocol.json");
-const { safeEqual, log, keyFingerprint } = require("./util");
+const { safeEqual, safeId, log, keyFingerprint } = require("./util");
 const { ROOT, DEFAULT_CONFIG, normalizeAccount, positiveInt, warnAdminTokenSeparation } = require("./config");
 const { RELAY_CAPS, hasCap, parseHello, helloVersionError, helloText, errorFrame, send, broadcast, ackFrame, snapshotBodyFrom, snapshotFrame } = require("./wire");
 const { PrefsStore, cleanPrefsSubset } = require("./prefs");
 const { attachCommon, keepalive } = require("./conn");
-const { PAIR_CODES_MAX, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, pairSourceBlocked, notePairFailure, requestSource } = require("./pairing");
+const { PAIR_CODES_MAX, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, pairSourceBlocked, notePairFailure, requestSource, b64buf, authPayload, p256PubKey, verifyP256, cleanViewerPubKeys, adminPayload } = require("./pairing");
+const { ackTrackerOf, isAckFp } = require("./acktrack");
 const { commandTimeoutMs, MESSAGE_COMMANDS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, pruneDedupe, dedupeKeyOf } = require("./commands");
 const { MAX_DEVICE_NAME, UNREGISTERED_DEVICE, normPath, cwdAllowed, underRoots, boundAccount } = require("./devices");
 const { replaySessionArchives } = require("./sessionArchive");
@@ -42,14 +43,9 @@ function adminAuthorized(cfg, msg) {
   return !!supplied && safeEqual(supplied, cfg.adminToken);
 }
 
-/** 未通过管理员校验时回 ack 并记一行不含令牌的日志；调用方据此提前 return，绝不继续产生副作用。 */
-function rejectAdmin(ws, msg, cfg) {
-  if (adminAuthorized(cfg, msg)) return false;
-  const origId = msg.id ? String(msg.id) : null;
-  log("管理员命令被拒（adminToken 未配置或不匹配）:", msg.type);
-  send(ws, ackFrame(origId, false, { error: ADMIN_REQUIRED_TEXT, code: ADMIN_REQUIRED }), cfg);
-  return true;
-}
+/* The rejection side of the admin gate lives in rejectAdminAny inside
+ * startViewerServer: management frames accept adminToken OR adminSig (Phase 2),
+ * and the signature track needs roster access that only exists in that scope. */
 
 /** 从会话文件路径取会话 id（P9 B 旧房间寻址删除用）：文件名最后一个 `_` 之后、`.jsonl` 之前那段。
  *  pi 的会话文件名是 `<timestamp>_<id>.jsonl`；取不出合法 id 时返回 null（调用方不做服务器清理）。 */
@@ -90,6 +86,68 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
   const prefsStore = new PrefsStore(index.dir);
   // viewer 通道只有一个账号口径（握手令牌即账号），客户端上报的 accountId 不作数
   const viewerAccount = () => normalizeAccount(cfg.accountId);
+
+  /* ---------------- Viewer identity keys (crypto Phase 2, design §3.2–§3.5 / §7) ---------------- */
+
+  /** Roster read that never throws: a broken roster reads as "no such viewer". */
+  const viewerRowSafe = (viewerId) => {
+    try {
+      return index.getViewerRow(viewerAccount(), viewerId);
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Live keyed viewer endpoints for content-key routing: connections that completed
+   * viewer challenge-response auth whose roster row is still active. keyFp/boxPub
+   * always come from the roster row, never from the connection's own claims.
+   */
+  const viewerKeyEndpoints = (accountId) => {
+    const out = [];
+    if (accountId !== viewerAccount()) return out;
+    for (const c of rooms.viewers) {
+      const s = c._state;
+      if (!s || !s.authed || s.auth !== "key" || !s.viewerId || c.readyState !== 1) continue;
+      const row = viewerRowSafe(s.viewerId);
+      if (!row || row.revokedAt || !row.signPub || !row.boxPub) continue;
+      out.push({ ws: c, viewerId: s.viewerId, keyFp: keyFingerprint(row.signPub), boxPub: row.boxPub });
+    }
+    return out;
+  };
+  // The local channel consults this provider when routing content_key_grant frames
+  // and when broadcasting content_key_request frames to every keyed end.
+  ctx.viewerKeyEndpoints = viewerKeyEndpoints;
+
+  /**
+   * adminSig track (design §7): instead of the adminToken, a registered, admin-flagged,
+   * non-revoked viewer signs the management frame with its VIK. The signed payload is
+   * pinned in pairing.adminPayload and documented in protocol/v4.json (crypto.auth).
+   * A connection already bound to a viewerId may only sign as that viewer.
+   */
+  const adminSigAuthorized = (ws, msg) => {
+    if (typeof msg.adminSig !== "string" || !msg.adminSig) return false;
+    // The signer is named by the dedicated adminBy field, falling back to the
+    // connection's bound viewerId. msg.viewerId is never the signer: on
+    // viewer_revoke it names the revocation target instead.
+    const bound = ws._state && ws._state.viewerId ? ws._state.viewerId : "";
+    const claimed = typeof msg.adminBy === "string" ? msg.adminBy.trim() : "";
+    const signerId = claimed || bound;
+    if (!signerId || (bound && signerId !== bound)) return false;
+    const row = viewerRowSafe(signerId);
+    if (!row || row.admin !== true || row.revokedAt || !row.signPub) return false;
+    return verifyP256(row.signPub, adminPayload(msg), msg.adminSig);
+  };
+
+  /** Dual-track admin gate for management frames: adminToken OR adminSig. On failure
+   *  the ack shape and code are exactly the token track's (admin_required). */
+  const rejectAdminAny = (ws, msg) => {
+    if (adminAuthorized(cfg, msg) || adminSigAuthorized(ws, msg)) return false;
+    const origId = msg.id ? String(msg.id) : null;
+    log("管理员命令被拒（adminToken/adminSig 均未通过）:", msg.type);
+    send(ws, ackFrame(origId, false, { error: ADMIN_REQUIRED_TEXT, code: ADMIN_REQUIRED }), cfg);
+    return true;
+  };
   // 配置层已检查过同一份 cfg 时不重复告警；直接 startRelay 的调用方在这里补上。
   warnAdminTokenSeparation(cfg);
   const serveWeb = makeServeWeb(cfg.webRoot || path.join(ROOT, "web"));
@@ -596,6 +654,85 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
       onMessage(msg) {
         const s = ws._state;
         if (!s.authed) {
+          // Viewer challenge-response auth (crypto Phase 2, design §3.3): an auth frame
+          // carrying keyFp starts a challenge, auth_response completes it. Isomorphic to
+          // the local channel: the nonce lives only in connection memory and is deleted
+          // on first use whatever the outcome, and the shared 10s unauthenticated
+          // deadline (attachCommon's authTimer) is never extended by the challenge.
+          const failKeyAuth = (code, error) => {
+            noteAuthFailure(source);
+            send(ws, { type: "auth_result", ok: false, error: error || PROTOCOL.errors[code].message, code }, cfg);
+            try { ws.close(4003, "unauthorized"); } catch {}
+          };
+          if (msg.type === "auth_response") {
+            const pend = s.viewerKeyAuth;
+            delete s.viewerKeyAuth;
+            if (!pend) { failKeyAuth("auth_failed", "没有待验签的挑战，请重新发起 auth"); return; }
+            if (Date.now() > pend.expiresAt) { failKeyAuth("auth_failed", "鉴权挑战已过期，请重连后重试"); return; }
+            const row = viewerRowSafe(pend.viewerId);
+            if (row && row.revokedAt) { failKeyAuth("device_revoked"); return; }
+            if (!row || !row.signPub || keyFingerprint(row.signPub) !== pend.keyFp) { failKeyAuth("device_mismatch"); return; }
+            // The VIK is P-256: WebCrypto signatures are ECDSA/SHA-256 in IEEE P1363
+            // form; the payload is the shared auth payload with viewerId as identity.
+            if (!verifyP256(row.signPub, authPayload(pend.viewerId, pend.nonce, pend.clientNonce), msg.sig)) {
+              log("观看端钥鉴权验签失败:", pend.viewerId);
+              failKeyAuth("auth_failed", "签名不正确");
+              return;
+            }
+            const protoError = helloVersionError(pend.hello);
+            if (protoError) {
+              log("viewer 协议版本过低，拒绝握手:", protoError.message, "来源:", source);
+              send(ws, {
+                type: "auth_result",
+                ok: false,
+                code: protoError.code,
+                error: protoError.message,
+                proto: PROTOCOL.proto,
+                minProto: PROTOCOL.minProto,
+              }, cfg);
+              try { ws.close(4003, "unsupported protocol"); } catch {}
+              return;
+            }
+            noteAuthSuccess(source);
+            releaseUnauthenticated();
+            s.authed = true;
+            Object.assign(s, parseHello(pend.hello));
+            clearTimeout(s.authTimer);
+            rooms.viewers.add(ws);
+            s.auth = "key";
+            s.viewerId = pend.viewerId;
+            // New key-auth surface only: auth:"key", the bound viewerId, and the
+            // account's agreed ackFp (null while unknown or diverged, §7). The token
+            // path's auth_result below stays byte-identical for existing clients.
+            const authResult = { type: "auth_result", ok: true, proto: PROTOCOL.proto, caps: RELAY_CAPS, boot: rooms.boot, rooms: rooms.listFor(ws), devices: devicesViewFor(ws, rooms.deviceSnapshot()), auth: "key", viewerId: pend.viewerId, ackFp: ackTrackerOf(ctx).knownAckFp(viewerAccount()) };
+            if (cfg.serverName) authResult.serverName = cfg.serverName;
+            if (hasCap(ws, "prefs.sync")) {
+              const rec = prefsStore.get(viewerAccount());
+              authResult.prefs = rec ? { subset: rec.subset, rev: rec.rev, updatedAt: rec.updatedAt } : null;
+            }
+            if (hasCap(ws, "room.inbox")) {
+              authResult.inbox = rooms.inboxSnapshot();
+            }
+            send(ws, authResult, cfg);
+            replaySessionArchives(ws, devices, cfg);
+            log("viewer 已认证 key", pend.viewerId, helloText(s));
+            return;
+          }
+          if (msg.type === "auth" && msg.role === "viewer" && typeof msg.keyFp === "string" && msg.keyFp) {
+            const viewerId = typeof msg.viewerId === "string" ? msg.viewerId.trim() : "";
+            if (!viewerId || !safeId(viewerId)) { failKeyAuth("device_mismatch", "钥鉴权需要合法的 viewerId"); return; }
+            const row = viewerRowSafe(viewerId);
+            if (row && row.revokedAt) { failKeyAuth("device_revoked"); return; }
+            if (!row || !row.signPub) { failKeyAuth("device_mismatch", "该观看端没有登记公钥，无法用密钥登录（先完成观看端登记）"); return; }
+            if (!p256PubKey(row.signPub)) { failKeyAuth("device_mismatch", "名册中的观看端签名公钥不合规"); return; }
+            if (keyFingerprint(row.signPub) !== msg.keyFp) { failKeyAuth("device_mismatch", "出示的钥指纹与名册登记不一致"); return; }
+            const clientNonce = b64buf(msg.clientNonce);
+            if (!clientNonce || clientNonce.length < 16 || clientNonce.length > 64) { failKeyAuth("auth_failed", "clientNonce 不合规（需 16–64 字节的 base64）"); return; }
+            const nonce = crypto.randomBytes(PROTOCOL.limits.authNonceBytes);
+            s.viewerKeyAuth = { viewerId, keyFp: msg.keyFp, nonce, clientNonce, hello: msg, expiresAt: Date.now() + 10000 };
+            send(ws, { type: "auth_challenge", nonce: nonce.toString("base64"), expiresAt: s.viewerKeyAuth.expiresAt }, cfg);
+            return;
+          }
           if (msg.type === "auth" && msg.role === "viewer" && cfg.viewerToken && safeEqual(msg.token, cfg.viewerToken)) {
             // 低-12：显式声明了过低协议版本的握手要明确拒绝，不能静默按 minProto 放行。
             // 不带 proto 的老客户端仍走兼容期 v3（既有测试/旧前端都依赖这一行为）。
@@ -1146,8 +1283,8 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             break;
           }
           case "pair_create": {
-            // 生成配对码是管理员操作：adminToken 缺失/错误/未配置都在这里返回，不生成码
-            if (rejectAdmin(ws, msg, cfg)) break;
+            // 生成配对码是管理员操作：adminToken/adminSig 都不过都在这里返回，不生成码
+            if (rejectAdminAny(ws, msg)) break;
             // 配对码只在内存里、只能用一次；日志不打印码本身
             const origId = msg.id ? String(msg.id) : null;
             const now = Date.now();
@@ -1194,6 +1331,10 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
               checkDigits: pendingKeys ? pairCheckDigitsV2(code, pendingKeys.signPub, pendingKeys.boxPub) : pairCheckDigits(code),
             };
             if (pendingKeys) found.keyFp = keyFingerprint(pendingKeys.signPub);
+            // boxPub rides along so the approving web end can wrap the account content
+            // key to the pending device (contentKeyGrant on pair_approve, design 3.2);
+            // it is public key material and the SAS v2 check digits already bind it.
+            if (pendingKeys) found.boxPub = pendingKeys.boxPub;
             if (origId) found.id = origId;
             send(ws, found, cfg);
             // 通知等待端「码已被扫/被查」：窗口切处理中態。只发一次（重复 lookup 不重发），
@@ -1207,7 +1348,7 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
           case "pair_approve": {
             // 手机端批准二维码链接：先过管理员门（与 pair_create 同门），再走 local 侧的共用签发段，
             // 结果沿 pending 的等待连接回 pair_result；本端只回 ack，不经手设备令牌明文之外的东西。
-            if (rejectAdmin(ws, msg, cfg)) break;
+            if (rejectAdminAny(ws, msg)) break;
             const origId = msg.id ? String(msg.id) : null;
             const now = Date.now();
             if (pairSourceBlocked(ctx.pairFailures, source, now)) {
@@ -1264,8 +1405,8 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             break;
           }
           case "device_revoke": {
-            // 撤销设备是管理员操作：先验 adminToken，未通过时连设备是否存在都不查、不撤令牌、不断连接
-            if (rejectAdmin(ws, msg, cfg)) break;
+            // 撤销设备是管理员操作：先过管理员门（adminToken/adminSig），未通过时连设备是否存在都不查、不撤令牌、不断连接
+            if (rejectAdminAny(ws, msg)) break;
             const origId = msg.id ? String(msg.id) : null;
             const deviceId = typeof msg.deviceId === "string" ? msg.deviceId.trim() : "";
             if (!deviceId) {
@@ -1301,6 +1442,199 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             rooms.broadcastRoomList();
             break;
           }
+          case "viewer_register": {
+            // Viewer identity registration (crypto Phase 2, design §3.2 / §7): first
+            // registration is an admin operation on the dual-track gate. Keys may ride
+            // at the frame top level or nested under `keys`. The roster row written
+            // here is the only authority for key auth and grant stamping afterwards.
+            if (rejectAdminAny(ws, msg)) break;
+            const origId = msg.id ? String(msg.id) : null;
+            const viewerId = typeof msg.viewerId === "string" ? msg.viewerId.trim() : "";
+            if (!viewerId || !safeId(viewerId)) {
+              send(ws, ackFrame(origId, false, { error: "viewerId 不合规", code: "bad_args" }), cfg);
+              return;
+            }
+            const pubs = cleanViewerPubKeys(msg.keys && typeof msg.keys === "object" ? msg.keys : msg);
+            if (!pubs) {
+              send(ws, ackFrame(origId, false, { error: "公钥不合规：signPub/boxPub 都必须是 P-256 spki 公钥（base64）", code: "bad_args" }), cfg);
+              return;
+            }
+            const prev = viewerRowSafe(viewerId);
+            if (prev && !prev.revokedAt && (prev.signPub !== pubs.signPub || prev.boxPub !== pubs.boxPub)) {
+              // Re-keying an active viewerId in place would silently swap identities;
+              // the only path is revoke-then-register with fresh keys.
+              send(ws, ackFrame(origId, false, { error: "该 viewerId 已登记其他公钥；换钥请先撤销旧登记再重新登记", code: "device_mismatch" }), cfg);
+              return;
+            }
+            if (prev && prev.revokedAt && prev.signPub === pubs.signPub) {
+              // A revoked signing key stays dead even if the same viewerId returns.
+              send(ws, ackFrame(origId, false, { error: "这把签名公钥已被撤销，请生成新钥后重新登记", code: "device_revoked" }), cfg);
+              return;
+            }
+            const row = { viewerId, signPub: pubs.signPub, boxPub: pubs.boxPub };
+            const name = typeof msg.name === "string" ? msg.name.trim().slice(0, MAX_DEVICE_NAME) : "";
+            if (name) row.name = name;
+            if (typeof msg.admin === "boolean") row.admin = msg.admin;
+            else if (!prev) row.admin = false;
+            // Re-registration after a revoke (necessarily with new keys, per the check
+            // above) clears the revocation.
+            if (prev && prev.revokedAt) row.revokedAt = null;
+            try {
+              index.upsertViewer(viewerAccount(), row);
+            } catch (e) {
+              log("观看端登记失败:", viewerId, e.message);
+              send(ws, ackFrame(origId, false, { error: "登记失败：名册文件写不进去", code: "server_error" }), cfg);
+              return;
+            }
+            const saved = viewerRowSafe(viewerId);
+            log("登记观看端身份钥:", viewerId, "指纹", keyFingerprint(pubs.signPub), saved && saved.admin ? "(admin)" : "");
+            send(ws, ackFrame(origId, true, { data: { viewerId, keyFp: keyFingerprint(pubs.signPub), admin: !!(saved && saved.admin) } }), cfg);
+            break;
+          }
+          case "list_viewers": {
+            // Viewer roster listing (crypto Phase 2, design §7): admin-gated. Rows
+            // expose no key material beyond the fingerprint, plus live online state.
+            if (rejectAdminAny(ws, msg)) break;
+            const origId = msg.id ? String(msg.id) : null;
+            const online = new Set(viewerKeyEndpoints(viewerAccount()).map((e) => e.viewerId));
+            let rows = [];
+            try {
+              rows = index.listViewers(viewerAccount());
+            } catch {
+              rows = [];
+            }
+            const frame = {
+              type: "viewer_list",
+              viewers: rows.map((r) => ({
+                viewerId: r.viewerId,
+                name: typeof r.name === "string" ? r.name : "",
+                keyFp: r.signPub ? keyFingerprint(r.signPub) : null,
+                admin: r.admin === true,
+                createdAt: Number(r.createdAt) || 0,
+                revokedAt: r.revokedAt || null,
+                online: online.has(r.viewerId),
+              })),
+            };
+            if (origId) frame.id = origId;
+            send(ws, frame, cfg);
+            break;
+          }
+          case "viewer_revoke": {
+            // Revoke a viewer identity (crypto Phase 2, design §3.5): admin-gated.
+            // Writes revokedAt and drops that viewer's live connections. The ack must
+            // carry the rotation hint: revocation closes the access layer only — the
+            // revoked viewer still holds its ACK copy, so cryptographic removal
+            // requires rotating the ACK and re-distributing it to the kept ends.
+            if (rejectAdminAny(ws, msg)) break;
+            const origId = msg.id ? String(msg.id) : null;
+            const viewerId = typeof msg.viewerId === "string" ? msg.viewerId.trim() : "";
+            if (!viewerId) {
+              send(ws, ackFrame(origId, false, { error: "缺少 viewerId", code: "bad_args" }), cfg);
+              return;
+            }
+            if (!viewerRowSafe(viewerId)) {
+              send(ws, ackFrame(origId, false, { error: "观看端不存在", code: "not_found", viewerId }), cfg);
+              return;
+            }
+            try {
+              index.upsertViewer(viewerAccount(), { viewerId, revokedAt: Date.now() });
+            } catch (e) {
+              log("撤销观看端失败:", viewerId, e.message);
+              send(ws, ackFrame(origId, false, { error: "撤销失败：名册文件写不进去", code: "server_error", viewerId }), cfg);
+              return;
+            }
+            ackTrackerOf(ctx).forget(viewerAccount(), "viewer:" + viewerId);
+            let closed = 0;
+            for (const c of [...rooms.viewers]) {
+              const cs = c._state;
+              if (!cs || cs.viewerId !== viewerId) continue;
+              send(c, errorFrame("device_revoked"), cfg);
+              try { c.close(4003, "viewer revoked"); } catch {}
+              closed++;
+            }
+            log("撤销观看端:", viewerId, "断开连接", closed);
+            send(ws, ackFrame(origId, true, {
+              viewerId,
+              data: {
+                viewerId,
+                closed,
+                ackRotationRequired: true,
+                hint: "撤销只关掉接入层：这台观看端仍留有本账号内容钥（ACK）的副本，密码学上并未移除。要彻底移除，必须轮换 ACK——让任一在线持钥端生成新 ACK 并重新分发给保留的端，被撤销的端不要再收到新钥。",
+              },
+            }), cfg);
+            break;
+          }
+          case "content_key_request": {
+            // Content-key delivery request from a keyed viewer (crypto Phase 2,
+            // design §7): the sender must be key-authed with an active roster row.
+            // The relay stamps `from`/`fromBoxPub` from the roster (never from the
+            // frame) and forwards to every other keyed end of the account.
+            if (s.auth !== "key" || !s.viewerId) {
+              send(ws, errorFrame("device_mismatch", "只有完成密钥登录的观看端能请求内容钥交付"), cfg);
+              return;
+            }
+            const row = viewerRowSafe(s.viewerId);
+            if (!row || row.revokedAt || !row.signPub || !row.boxPub) {
+              send(ws, errorFrame("device_mismatch", "观看端名册钥不可用，不能请求内容钥交付"), cfg);
+              return;
+            }
+            const accountId = viewerAccount();
+            const frame = { type: "content_key_request", from: keyFingerprint(row.signPub), fromBoxPub: row.boxPub, accountId };
+            let delivered = 0;
+            if (typeof ctx.localKeyEndpoints === "function") {
+              for (const e of ctx.localKeyEndpoints(accountId)) {
+                if (send(e.ws, frame, cfg)) delivered++;
+              }
+            }
+            for (const e of viewerKeyEndpoints(accountId)) {
+              if (e.ws === ws) continue;
+              if (send(e.ws, frame, cfg)) delivered++;
+            }
+            if (!delivered) {
+              send(ws, errorFrame("offline", "本账号当前没有其他在线的持钥端，内容钥交付要等持钥设备上线后再请求"), cfg);
+            }
+            break;
+          }
+          case "content_key_grant": {
+            // Content-key delivery from a keyed viewer (crypto Phase 2, design §7):
+            // shape-cleaned by the shared cleaner, stamped from the roster (a
+            // sender-supplied from/fromBoxPub inside the blob is never trusted), then
+            // routed by target fingerprint to devices and viewers alike.
+            if (s.auth !== "key" || !s.viewerId) {
+              send(ws, errorFrame("device_mismatch", "只有完成密钥登录的观看端能发送内容钥交付"), cfg);
+              return;
+            }
+            if (typeof ctx.cleanKeyGrant !== "function" || typeof ctx.routeContentKeyGrant !== "function") {
+              send(ws, errorFrame("server_error", "relay 内部未就绪"), cfg);
+              return;
+            }
+            const grant = ctx.cleanKeyGrant(msg);
+            if (!grant) {
+              send(ws, errorFrame("bad_args", "content_key_grant 字段不合规（需要 to 指纹、nonce 与 ct 包裹）"), cfg);
+              return;
+            }
+            const row = viewerRowSafe(s.viewerId);
+            if (!row || row.revokedAt || !row.signPub || !row.boxPub) {
+              send(ws, errorFrame("device_mismatch", "观看端名册钥不可用，不能发送内容钥交付"), cfg);
+              return;
+            }
+            const frame = { type: "content_key_grant", ...grant, from: keyFingerprint(row.signPub), fromBoxPub: row.boxPub };
+            if (!ctx.routeContentKeyGrant(viewerAccount(), grant.to, frame)) {
+              send(ws, errorFrame("offline", "目标端不在线，内容钥未能送达（relay 不缓存交付，请待其上线后重发）"), cfg);
+            }
+            break;
+          }
+          case "ack_report": {
+            // ackFp reconciliation (design §3.5 / §7): same contract as the local
+            // channel — fingerprints only, never the key itself.
+            if (s.auth !== "key" || !s.viewerId) return;
+            if (!isAckFp(msg.ackFp)) {
+              send(ws, errorFrame("bad_args", "ackFp 必须是 16 位小写十六进制指纹"), cfg);
+              return;
+            }
+            ackTrackerOf(ctx).report(viewerAccount(), "viewer:" + s.viewerId, msg.ackFp, (frame) => send(ws, frame, cfg));
+            break;
+          }
           case "ping":
             send(ws, { type: "pong" }, cfg);
             break;
@@ -1311,6 +1645,11 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
     });
 
     ws.on("close", () => {
+      // A disconnected keyed viewer no longer counts in ackFp reconciliation.
+      const vst = ws._state;
+      if (vst && vst.authed && vst.auth === "key" && vst.viewerId) {
+        try { ackTrackerOf(ctx).forget(viewerAccount(), "viewer:" + vst.viewerId); } catch {}
+      }
       const wasViewer = rooms.viewers.delete(ws);
       const room = ws._room;
       if (room) {

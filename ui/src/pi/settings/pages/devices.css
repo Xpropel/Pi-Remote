@@ -152,3 +152,83 @@
   font-size: 11.5px;
   line-height: 1.45;
 }
+
+/* Viewer identity section (design A phase 2): inline panels under the device
+   card rows -- enable confirmation, backup export/import, revoke confirm.
+   Only --st-* tokens are consumed, same as the rest of this page. */
+.settings-identity-panel {
+  border-top: 1px solid var(--st-border);
+  padding: 12px 0 4px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--st-text-2);
+}
+
+.settings-identity-panel p {
+  margin: 0 0 10px;
+}
+
+.settings-identity-warning {
+  color: var(--st-error);
+}
+
+.settings-identity-error {
+  color: var(--st-error);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-identity-waiting {
+  color: var(--st-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-identity-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.settings-identity-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  color: var(--st-text-3);
+  font-size: 12px;
+}
+
+.settings-identity-field input {
+  max-width: 320px;
+}
+
+.settings-identity-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-identity-actions.is-start {
+  justify-content: flex-start;
+  margin-bottom: 10px;
+}
+
+.settings-identity-fp {
+  font-family: var(--st-font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--st-text-3);
+}
+
+.settings-identity-file {
+  display: none;
+}
+
+.settings-identity-file-name {
+  color: var(--st-text-3);
+  font-size: 12px;
+}

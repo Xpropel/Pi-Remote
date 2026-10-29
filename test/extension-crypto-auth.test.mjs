@@ -314,3 +314,327 @@ test("钥文件自带 ACK：加载即持有，auth_result(key) 不发请求", ()
   bridge.handle({ type: "auth_result", ok: true, caps: ["crypto.auth"], auth: "key", ackFp: ext.contentKeyFingerprint(ack) })
   assert.equal(sent.filter((f) => f.type === "content_key_request").length, 0)
 })
+
+/* ---------- 5) Phase 2: this bridge as grant deliverer + ackFp reconciliation ----------
+ * The bridge now ANSWERS content_key_request when it holds the ACK (deliverer
+ * side of the section 3.2 wrap contract) and reacts to key_mismatch warnings.
+ * The recipient-side unwrap below is written from raw node:crypto only, so the
+ * deliverer implementation is checked against an independent implementation. */
+
+/** Test-side independent unwrap (raw node:crypto): recipient side of the wrap contract. */
+function unwrapAckRaw({ recipientBoxPriv, granterBoxPubB64, accountId, granterFp, recipientFp, blob }) {
+  const pub = crypto.createPublicKey({ key: Buffer.from(granterBoxPubB64, "base64"), format: "der", type: "spki" })
+  const shared = crypto.diffieHellman({ privateKey: recipientBoxPriv, publicKey: pub })
+  const salt = Buffer.from(`${accountId}:${granterFp}:${recipientFp}`, "utf8")
+  const wrapKey = Buffer.from(crypto.hkdfSync("sha256", shared, salt, Buffer.from("pi-remote-ack-wrap-v1", "utf8"), 32))
+  const ct = Buffer.from(blob.ct, "base64")
+  const decipher = crypto.createDecipheriv("aes-256-gcm", wrapKey, Buffer.from(blob.nonce, "base64"))
+  decipher.setAuthTag(ct.subarray(ct.length - 16))
+  return Buffer.concat([decipher.update(ct.subarray(0, ct.length - 16)), decipher.final()])
+}
+
+function logText() {
+  try { return fs.readFileSync(LOG_PATH, "utf8") } catch { return "" }
+}
+
+test("Phase 2 wrapAckGrant: deliverer wrap unwraps on the recipient side (raw crypto); bad inputs -> null", () => {
+  const holder = makeKeyData("dev-holder")
+  const { key } = loadOk(holder.data, "wrap.key.json")
+  const requester = makeKeyData("dev-requester")
+  const requesterFp = keyFingerprint(Buffer.from(requester.data.sign.pub, "base64"))
+  const ack = crypto.randomBytes(32)
+
+  const grant = ext.wrapAckGrant(key, "admin", ack, requesterFp, requester.data.box.pub)
+  assert.ok(grant, "wrap should produce a grant")
+  assert.equal(grant.to, requesterFp)
+  assert.equal(Buffer.from(grant.nonce, "base64").length, 12)
+  assert.equal(Buffer.from(grant.ct, "base64").length, 48, "ct = 32B ACK + 16B GCM tag")
+  const recovered = unwrapAckRaw({
+    recipientBoxPriv: requester.box.privateKey,
+    granterBoxPubB64: holder.data.box.pub,
+    accountId: "admin",
+    granterFp: key.keyFp,
+    recipientFp: requesterFp,
+    blob: grant,
+  })
+  assert.deepEqual(recovered, ack)
+
+  // Bad inputs are refused, never wrapped into a broken grant.
+  assert.equal(ext.wrapAckGrant(key, "admin", ack, "not-a-fingerprint", requester.data.box.pub), null)
+  assert.equal(ext.wrapAckGrant(key, "admin", ack, requesterFp, holder.data.sign.pub), null, "an Ed25519 SPKI is not a box public key")
+  assert.equal(ext.wrapAckGrant(key, "admin", crypto.randomBytes(16), requesterFp, requester.data.box.pub), null, "ACK must be 32 bytes")
+  assert.equal(ext.wrapAckGrant(key, "admin", ack, requesterFp, "%%%not-base64%%%"), null)
+})
+
+test("Phase 2 Bridge: answers a relayed content_key_request once per requester per connection; ACK change re-arms", () => {
+  const holder = makeKeyData("dev-holder")
+  const ack1 = crypto.randomBytes(32)
+  const data = { ...holder.data, contentKeys: { admin: ack1.toString("base64") } }
+  const { key } = loadOk(data, "answer.key.json")
+  const requester = makeKeyData("dev-requester")
+  const requesterFp = keyFingerprint(Buffer.from(requester.data.sign.pub, "base64"))
+  // The relayed request shape (relay stamps from/fromBoxPub from the roster).
+  const request = { type: "content_key_request", from: requesterFp, fromBoxPub: requester.data.box.pub, accountId: "admin" }
+
+  const bridge = new ext.Bridge()
+  const sent = []
+  bridge.send = (obj) => { sent.push(obj); return true }
+  bridge.deviceKey = key
+  const grants = () => sent.filter((f) => f.type === "content_key_grant")
+
+  bridge.handle(request)
+  assert.equal(grants().length, 1, "a held ACK must be delivered on request")
+  assert.equal(grants()[0].to, requesterFp)
+  const recovered1 = unwrapAckRaw({
+    recipientBoxPriv: requester.box.privateKey,
+    granterBoxPubB64: holder.data.box.pub,
+    accountId: "admin",
+    granterFp: key.keyFp,
+    recipientFp: requesterFp,
+    blob: grants()[0],
+  })
+  assert.deepEqual(recovered1, ack1, "the requester can independently unwrap the bridge's grant")
+
+  bridge.handle(request)
+  assert.equal(grants().length, 1, "same requester + same ACK on one connection is answered at most once")
+
+  // The ACK changed (e.g. rotation delivered a new one): the same requester is answered again.
+  const ack2 = crypto.randomBytes(32)
+  assert.equal(ext.storeAckInKeyFile(key, "admin", ack2), true)
+  bridge.handle(request)
+  assert.equal(grants().length, 2, "a changed ACK re-arms the answer")
+  const recovered2 = unwrapAckRaw({
+    recipientBoxPriv: requester.box.privateKey,
+    granterBoxPubB64: holder.data.box.pub,
+    accountId: "admin",
+    granterFp: key.keyFp,
+    recipientFp: requesterFp,
+    blob: grants()[1],
+  })
+  assert.deepEqual(recovered2, ack2)
+
+  // A new connection session forgets the dedupe and answers again.
+  bridge.socketGone()
+  bridge.handle(request)
+  assert.equal(grants().length, 3, "dedupe is scoped to the connection session")
+})
+
+test("Phase 2 Bridge: no ACK held -> request unanswered; other account / malformed / self requests ignored", () => {
+  const requester = makeKeyData("dev-requester")
+  const requesterFp = keyFingerprint(Buffer.from(requester.data.sign.pub, "base64"))
+  const request = { type: "content_key_request", from: requesterFp, fromBoxPub: requester.data.box.pub, accountId: "admin" }
+
+  // No ACK in the key file: silence on the wire, not even an error frame.
+  const empty = makeKeyData("dev-empty")
+  const { key: emptyKey } = loadOk(empty.data, "answer-empty.key.json")
+  const b1 = new ext.Bridge()
+  const sent1 = []
+  b1.send = (obj) => { sent1.push(obj); return true }
+  b1.deviceKey = emptyKey
+  b1.handle(request)
+  assert.equal(sent1.length, 0, "without the ACK the request must stay unanswered")
+
+  // Holding the ACK does not license answering foreign or malformed requests.
+  const holder = makeKeyData("dev-holder")
+  const ack = crypto.randomBytes(32)
+  const { key } = loadOk({ ...holder.data, contentKeys: { admin: ack.toString("base64") } }, "answer-guard.key.json")
+  const b2 = new ext.Bridge()
+  const sent2 = []
+  b2.send = (obj) => { sent2.push(obj); return true }
+  b2.deviceKey = key
+  b2.handle({ ...request, accountId: "someone-else" })
+  b2.handle({ type: "content_key_request", from: requesterFp, accountId: "admin" }) // no fromBoxPub
+  b2.handle({ type: "content_key_request", from: "zzzzzzzzzzzzzzzz", fromBoxPub: requester.data.box.pub, accountId: "admin" }) // bad fingerprint shape
+  b2.handle({ type: "content_key_request", from: key.keyFp, fromBoxPub: holder.data.box.pub, accountId: "admin" }) // self-request
+  assert.equal(sent2.filter((f) => f.type === "content_key_grant").length, 0)
+  assert.equal(sent2.length, 0, "ignored requests produce no frames at all")
+})
+
+test("Phase 2: a viewer-shaped grant is accepted (browser P-256 SPKI output is byte-identical in shape)", () => {
+  const mine = makeKeyData()
+  const { key } = loadOk(mine.data, "viewer-grant.key.json")
+  // The "viewer": VIK/VBK are P-256 key pairs generated by WebCrypto in the
+  // browser; its SPKI export is the same 91-byte DER the roster carries.
+  const viewerSign = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" })
+  const viewerBox = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" })
+  const der = (k, type) => k.export({ format: "der", type }).toString("base64")
+  const viewerSignPubB64 = der(viewerSign.publicKey, "spki")
+  const viewerBoxPubB64 = der(viewerBox.publicKey, "spki")
+  assert.equal(Buffer.from(viewerBoxPubB64, "base64").length, 91, "P-256 SPKI is 91 bytes in browser and Node output alike")
+  const viewerFp = keyFingerprint(Buffer.from(viewerSignPubB64, "base64"))
+
+  const ack = crypto.randomBytes(32)
+  const blob = wrapAckFor({
+    granterBoxPriv: viewerBox.privateKey,
+    recipientBoxPubB64: mine.data.box.pub,
+    accountId: "admin",
+    granterFp: viewerFp,
+    recipientFp: key.keyFp,
+    ack,
+  })
+  // The pure unwrap path accepts it...
+  assert.deepEqual(ext.unwrapAckGrant(key, "admin", blob, viewerFp, viewerBoxPubB64), ack)
+  // ...and so does the full Bridge accept path, persisting the ACK.
+  const bridge = new ext.Bridge()
+  bridge.send = () => true
+  bridge.deviceKey = key
+  bridge.handle({ type: "content_key_grant", to: key.keyFp, from: viewerFp, fromBoxPub: viewerBoxPubB64, ...blob })
+  assert.deepEqual(ext.heldContentKey(key, "admin"), ack)
+})
+
+test("Phase 2: ackFp reconciliation in auth_result + key_mismatch warning reaction (log-only, keys untouched)", () => {
+  const mine = makeKeyData()
+  const ack = crypto.randomBytes(32)
+  const { key } = loadOk({ ...mine.data, contentKeys: { admin: ack.toString("base64") } }, "ackfp.key.json")
+  const bridge = new ext.Bridge()
+  const sent = []
+  bridge.send = (obj) => { sent.push(obj); return true }
+  bridge.deviceKey = key
+
+  // Relay reports a different account ackFp than ours: the divergence is logged.
+  let mark = logText().length
+  bridge.handle({ type: "auth_result", ok: true, caps: ["crypto.auth"], auth: "key", ackFp: "0000000000000000" })
+  assert.match(logText().slice(mark), /不一致/, "a diverging auth_result.ackFp must surface as a warning")
+
+  // Matching ackFp: no divergence warning, no key request.
+  mark = logText().length
+  bridge.handle({ type: "auth_result", ok: true, caps: ["crypto.auth"], auth: "key", ackFp: ext.contentKeyFingerprint(ack) })
+  assert.ok(!/不一致/.test(logText().slice(mark)), "a matching ackFp stays quiet")
+  assert.equal(sent.filter((f) => f.type === "content_key_request").length, 0)
+
+  // The relay's key_mismatch warning (error-code form): logged loudly, and the
+  // bridge neither drops/replaces its ACK nor emits any key-changing frame.
+  mark = logText().length
+  bridge.handle({ type: "error", code: "key_mismatch", message: "本账号各端内容钥指纹不一致" })
+  assert.match(logText().slice(mark), /key_mismatch/)
+  assert.deepEqual(ext.heldContentKey(key, "admin"), ack, "the held ACK must survive a key_mismatch warning untouched")
+  assert.equal(sent.filter((f) => f.type === "content_key_grant" || f.type === "key_update").length, 0, "no automatic rotation or re-delivery")
+
+  // Bare-frame form (defensive): same reaction.
+  mark = logText().length
+  bridge.handle({ type: "key_mismatch", message: "diverged" })
+  assert.match(logText().slice(mark), /key_mismatch/)
+  assert.deepEqual(ext.heldContentKey(key, "admin"), ack)
+})
+
+/* ---------- 6) Phase 2 follow-up: ack_report emission ----------
+ * Relay-side ackFp reconciliation (relay/acktrack.js + the ack_report case in
+ * relay/local.js) is driven by ack_report{ackFp} frames from key-authed ends.
+ * The bridge must report its held ACK fingerprint after key auth, report a
+ * grant that arrives mid-connection, re-report when the ACK changes, and stay
+ * silent on token connections and while no ACK is held. */
+
+/** Build a relayed grant frame delivering `ack` to the bridge owning `key`. */
+function grantFrameFor(key, recipientData, ack) {
+  const granter = makeKeyData("dev-granter")
+  const granterFp = keyFingerprint(Buffer.from(granter.data.sign.pub, "base64"))
+  const blob = wrapAckFor({
+    granterBoxPriv: granter.box.privateKey,
+    recipientBoxPubB64: recipientData.box.pub,
+    accountId: "admin",
+    granterFp,
+    recipientFp: key.keyFp,
+    ack,
+  })
+  return { type: "content_key_grant", to: key.keyFp, from: granterFp, fromBoxPub: granter.data.box.pub, ...blob }
+}
+
+test("Phase 2 ack_report: key auth with ACK held reports exactly once per connection; reconnect re-reports", () => {
+  const mine = makeKeyData()
+  const ack = crypto.randomBytes(32)
+  const { key } = loadOk({ ...mine.data, contentKeys: { admin: ack.toString("base64") } }, "report-auth.key.json")
+  const bridge = new ext.Bridge()
+  const sent = []
+  bridge.send = (obj) => { sent.push(obj); return true }
+  bridge.deviceKey = key
+  const reports = () => sent.filter((f) => f.type === "ack_report")
+
+  bridge.handle({ type: "auth_result", ok: true, caps: ["crypto.auth"], auth: "key" })
+  assert.equal(reports().length, 1, "key auth with a held ACK must report its fingerprint")
+  assert.equal(reports()[0].ackFp, ext.contentKeyFingerprint(ack))
+  assert.match(reports()[0].ackFp, /^[0-9a-f]{16}$/, "ackFp must match the relay-side isAckFp shape")
+
+  bridge.handle({ type: "auth_result", ok: true, caps: ["crypto.auth"], auth: "key" })
+  assert.equal(reports().length, 1, "the same fingerprint on the same connection is reported only once")
+
+  // The relay forgets an end's report when its connection drops, so after a
+  // reconnect the same fingerprint goes out again.
+  bridge.socketGone()
+  bridge.handle({ type: "auth_result", ok: true, caps: ["crypto.auth"], auth: "key" })
+  assert.equal(reports().length, 2, "a new connection reports again")
+  assert.equal(reports()[1].ackFp, ext.contentKeyFingerprint(ack))
+})
+
+test("Phase 2 ack_report: a grant delivered mid-connection (auth happened ACK-less) is reported", () => {
+  const mine = makeKeyData()
+  const { key } = loadOk(mine.data, "report-grant.key.json")
+  const ack = crypto.randomBytes(32)
+
+  const bridge = new ext.Bridge()
+  const sent = []
+  bridge.send = (obj) => { sent.push(obj); return true }
+  bridge.deviceKey = key
+  const reports = () => sent.filter((f) => f.type === "ack_report")
+
+  bridge.handle({ type: "auth_result", ok: true, caps: ["crypto.auth"], auth: "key" })
+  assert.equal(reports().length, 0, "no ACK held at auth time -> nothing to report")
+  assert.equal(sent.filter((f) => f.type === "content_key_request").length, 1, "the ACK request still goes out as before")
+
+  bridge.handle(grantFrameFor(key, mine.data, ack))
+  assert.deepEqual(ext.heldContentKey(key, "admin"), ack)
+  assert.equal(reports().length, 1, "the freshly granted ACK must be reported on this connection")
+  assert.equal(reports()[0].ackFp, ext.contentKeyFingerprint(ack))
+})
+
+test("Phase 2 ack_report: an ACK change mid-connection re-reports with the new fingerprint", () => {
+  const mine = makeKeyData()
+  const ack1 = crypto.randomBytes(32)
+  const { key } = loadOk({ ...mine.data, contentKeys: { admin: ack1.toString("base64") } }, "report-rotate.key.json")
+  const ack2 = crypto.randomBytes(32)
+
+  const bridge = new ext.Bridge()
+  const sent = []
+  bridge.send = (obj) => { sent.push(obj); return true }
+  bridge.deviceKey = key
+  const reports = () => sent.filter((f) => f.type === "ack_report")
+
+  bridge.handle({ type: "auth_result", ok: true, caps: ["crypto.auth"], auth: "key" })
+  assert.deepEqual(reports().map((f) => f.ackFp), [ext.contentKeyFingerprint(ack1)])
+
+  // Rotation: a grant replaces the held ACK -> the new fingerprint is reported.
+  bridge.handle(grantFrameFor(key, mine.data, ack2))
+  assert.deepEqual(ext.heldContentKey(key, "admin"), ack2)
+  assert.deepEqual(reports().map((f) => f.ackFp), [ext.contentKeyFingerprint(ack1), ext.contentKeyFingerprint(ack2)])
+
+  // The same ACK delivered again changes nothing -> no third report.
+  bridge.handle(grantFrameFor(key, mine.data, ack2))
+  assert.equal(reports().length, 2, "an unchanged fingerprint is not re-reported")
+})
+
+test("Phase 2 ack_report: never emitted on token-authed connections or without a device key", () => {
+  const mine = makeKeyData()
+  const ack = crypto.randomBytes(32)
+  const { key } = loadOk({ ...mine.data, contentKeys: { admin: ack.toString("base64") } }, "report-token.key.json")
+
+  // Device key present and ACK held, but the relay took this connection by
+  // token: the ACK logic stays off and no report may go out -- neither from
+  // the auth path, nor from a grant landing on this connection, nor from a
+  // direct reportAckFp call.
+  const b1 = new ext.Bridge()
+  const sent1 = []
+  b1.send = (obj) => { sent1.push(obj); return true }
+  b1.deviceKey = key
+  b1.handle({ type: "auth_result", ok: true, caps: [], auth: "token" })
+  const ack2 = crypto.randomBytes(32)
+  b1.handle(grantFrameFor(key, mine.data, ack2))
+  assert.deepEqual(ext.heldContentKey(key, "admin"), ack2, "the grant itself is still accepted and held")
+  b1.reportAckFp()
+  assert.equal(sent1.filter((f) => f.type === "ack_report").length, 0, "token connections never report")
+
+  // No device key at all: a direct call is a no-op.
+  const b2 = new ext.Bridge()
+  const sent2 = []
+  b2.send = (obj) => { sent2.push(obj); return true }
+  b2.reportAckFp()
+  assert.equal(sent2.length, 0)
+})

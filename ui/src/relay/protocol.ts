@@ -49,6 +49,7 @@ export type Cap =
   | "prefs.sync"
   | "room.inbox"
   | "room.schedule"
+  | "crypto.auth"
   | "room.label"
   | "sync.v3"
   | "health"
@@ -94,9 +95,63 @@ export function pairLookupFrame(code: string) {
 /**
  * 二维码设备链接第二步：管理员在落地页确认后才核销码、签发设备令牌（沿待链接连接下发给 pi 运行端）。
  * adminToken 与 pair_create 同门，只放在这条命令帧里，不参与 viewer 握手、不进 URL。
+ * contentKeyGrant (crypto Phase 2, design section 7): the ACK wrap {to, nonce, ct}
+ * computed locally by the approving viewer; attached only when the approver
+ * holds the ACK and the lookup reply carried the new device's boxPub/keyFp.
+ * The relay passes it through without parsing or persisting it.
  */
-export function pairApproveFrame(code: string, adminToken: string) {
-  return { type: "pair_approve", code, adminToken }
+export function pairApproveFrame(code: string, adminToken: string, contentKeyGrant?: { to: string; nonce: string; ct: string }) {
+  const frame: Record<string, unknown> = { type: "pair_approve", code, adminToken }
+  if (contentKeyGrant) frame.contentKeyGrant = contentKeyGrant
+  return frame
+}
+
+/**
+ * Viewer key auth, first move (crypto Phase 2, design 3.3): same hello shape
+ * as the token auth frame, but the credential is viewerId + keyFp +
+ * clientNonce; the relay answers with auth_challenge and the signature
+ * follows in auth_response. Declares crypto.auth -- the token frame above
+ * deliberately does not, so non-identity behavior stays byte-identical.
+ */
+export function viewerAuthFrame(input: { viewerId: string; keyFp: string; clientNonce: string }) {
+  return {
+    type: "auth",
+    role: "viewer",
+    proto: PROTO,
+    caps: [...VIEWER_CAPS, "crypto.auth"],
+    client: { kind: "viewer", version: CLIENT_VERSION },
+    viewerId: input.viewerId,
+    keyFp: input.keyFp,
+    clientNonce: input.clientNonce,
+  }
+}
+
+/** Viewer key auth, second move: the VIK signature over the pinned auth payload. */
+export function authResponseFrame(sig: string) {
+  return { type: "auth_response", sig }
+}
+
+/**
+ * Ask the account's keyed ends for a wrapped ACK delivery (design 3.2).
+ * The viewer form is bare: the relay stamps from/fromBoxPub/accountId from
+ * the sender's roster row and never trusts frame-supplied copies.
+ */
+export function contentKeyRequestFrame() {
+  return { type: "content_key_request" }
+}
+
+/** Deliver a wrapped ACK to one end, routed by its key fingerprint (design 3.2). */
+export function contentKeyGrantFrame(input: { to: string; accountId: string; blob: { nonce: string; ct: string } }) {
+  return { type: "content_key_grant", to: input.to, accountId: input.accountId, blob: input.blob }
+}
+
+/**
+ * Report this end's ACK fingerprint after key auth (design 3.5 / 7). The
+ * relay stores fingerprints only (never key material) and warns every end
+ * with an error frame code=key_mismatch while the account disagrees.
+ */
+export function ackReportFrame(ackFp: string) {
+  return { type: "ack_report", ackFp }
 }
 
 export function serverInfo(msg: { proto?: unknown; caps?: unknown; serverName?: unknown }): ServerInfo {

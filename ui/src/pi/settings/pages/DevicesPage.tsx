@@ -37,6 +37,7 @@ import {
   deviceRoundTripTextOf,
   deviceStatusTextOf,
 } from "./devicesLogic"
+import { IdentitySection } from "./IdentitySection"
 import "./devices.css"
 
 const REVOKE_ARM_MS = 3000
@@ -238,6 +239,8 @@ export function DevicesPage() {
           })
         )}
       </SettingsGroup>
+
+      <IdentitySection />
 
       <SettingsGroup label="主机行为">
         <SettingsRow

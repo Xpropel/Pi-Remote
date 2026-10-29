@@ -62,7 +62,7 @@ const PROTOCOL = {
     "err.v4": "所有失败都带 code：ack.code / error.code / command_result.code 必填",
     "msg.cid": "远程消息带客户端 id（cid）：回显、送达、失败按 cid 对号",
     "device.token": "设备令牌：配对码换 deviceToken，local 通道按设备鉴权",
-    "device.qr-link": "二维码设备链接（设备发起、手机批准）：local 通道预鉴权帧 pair_request{device:{id?,name,platform},deviceToken?}，relay 生成与 pair_create 同表同 TTL 的配对码并把条目绑定申请连接（条目扩展 pending{ws,device,deviceToken?}；连接断开即删码），回 pair_request_result{ok,code,expiresAt,checkDigits}（失败带 code：bad_args/rate_limited）；viewer 通道 pair_lookup{code} 只对 pending 条目回 pair_lookup_result{name,platform,expiresAt,checkDigits}，不存在/已过期/非 pending 回 error{code:pair_invalid|pair_expired} 且失败按来源计入配对限速记账；pair_approve{code,adminToken} 先过管理员门（与 pair_create 同门），签发与 pair 帧完全同路（令牌只存哈希、upsertDevice、删码、踢旧令牌连接、广播名册），成功沿 pending 连接回 pair_result{ok,accountId,deviceId,deviceToken} 并关闭该连接、向批准端回 ack{ok,data:{deviceId,name}}；签发被拒（如重新配对时 pending 里带的旧 deviceToken 经 checkDeviceToken 核验不达标）回 device_mismatch 并同步沿 pending 连接回 pair_result{ok:false} 通知等待端、删码；等待连接已断开回 ack 失败 code:offline 并删码。checkDigits 为 2 位数字字符串，由 relay 对裸码做 sha256 确定性派生（pairing.pairCheckDigits），终端与确认页同显供人工核对防误批，展示端只显示不计算；pair_lookup 成功时 relay 沿 pending 连接发 pair_claimed 通知等待端进入处理中（每条目只发一次，等待端不依赖它完成主链路）",
+    "device.qr-link": "二维码设备链接（设备发起、手机批准）：local 通道预鉴权帧 pair_request{device:{id?,name,platform},deviceToken?}，relay 生成与 pair_create 同表同 TTL 的配对码并把条目绑定申请连接（条目扩展 pending{ws,device,deviceToken?}；连接断开即删码），回 pair_request_result{ok,code,expiresAt,checkDigits}（失败带 code：bad_args/rate_limited）；viewer 通道 pair_lookup{code} 只对 pending 条目回 pair_lookup_result{name,platform,expiresAt,checkDigits,keyFp?,boxPub?}，不存在/已过期/非 pending 回 error{code:pair_invalid|pair_expired} 且失败按来源计入配对限速记账；pair_approve{code,adminToken} 先过管理员门（与 pair_create 同门），签发与 pair 帧完全同路（令牌只存哈希、upsertDevice、删码、踢旧令牌连接、广播名册），成功沿 pending 连接回 pair_result{ok,accountId,deviceId,deviceToken} 并关闭该连接、向批准端回 ack{ok,data:{deviceId,name}}；签发被拒（如重新配对时 pending 里带的旧 deviceToken 经 checkDeviceToken 核验不达标）回 device_mismatch 并同步沿 pending 连接回 pair_result{ok:false} 通知等待端、删码；等待连接已断开回 ack 失败 code:offline 并删码。checkDigits 为 2 位数字字符串，由 relay 对裸码做 sha256 确定性派生（pairing.pairCheckDigits），终端与确认页同显供人工核对防误批，展示端只显示不计算；pair_lookup 成功时 relay 沿 pending 连接发 pair_claimed 通知等待端进入处理中（每条目只发一次，等待端不依赖它完成主链路）",
     "room.label": "local 通道支持 room_label 轻量改名帧",
     "room.attention": "注意力恢复通道（R3-1）：relay 按房维护回合摘要 lastTurnEnd{kind:done|error,at}（成败归一与页面外通知编排器同源：agent_settled 落定、看落定前最后助手终态；aborted 不记；新回合活动信号到达即清）；room_list 房间条目带 lastTurnEnd（无未读落定时为 null）；摘要变化时向设备级 viewer 连接广播 room_attention{room,lastTurnEnd|null}（字段白名单：只有 room 与 kind/at，不带任何正文/标题）；任一 viewer 订阅进房即清该房摘要并广播 null（单用户多设备口径：一端看过即全端已读）。UI 侧 RoomTurnTracker 仍是实时边沿引擎，本通道只作刷新/重连恢复种子，与 tracker 既有记录按房合并去重（先到为准）",
     "prefs.sync": "主题偏好跨设备同步（R4-1）：同步范围只取通用外观五字段 {theme, chrome, font, size, mono}（faces/color 是皮肤内部细节、completionSound/queueSend 是本设备行为，都不入）。帧：prefs_set{subset, baseRev}（viewer→relay）/ prefs_saved{rev, updatedAt}（relay→发送端回执）/ prefs_changed{subset, rev, updatedAt}（relay→同账户其他 viewer 广播，发送端不收）；auth_result 增 prefs{subset, rev, updatedAt} | null 快照字段。冲突口径 LWW：relay 维护 per-account 单调 rev、以到达顺序裁决（不信客户端时钟），发送端 baseRev 落后不拒绝、但必须以回带 rev 对齐本地。relay per-account 存储（内存态 + 小文件落盘，落盘失败降级纯内存态）。未声明 prefs.sync 的 viewer 不收 prefs_changed、auth_result 不带 prefs 字段（只剥新面）",
@@ -80,7 +80,7 @@ const PROTOCOL = {
     "fs.browse": "设备文件夹浏览（P9 C，attach 声明）：attach 能执行 list_dirs{path?,showHidden?}，只返回允许根目录内的目录名（不返回文件、不传文件内容），成功回 data{root,path,parent,entries,truncated}",
     "agent.state": "agent_state 全量快照事件能力位（子智能体胶囊预留：协议/通道先行，当前无生产者）",
     "usage.activity.v1": "使用活动聚合（P10）：extension 只读本机 pi 会话 jsonl，聚合每日 tokens/messages/sessions、模型分布、活跃/连续天数、峰值（本地时区分天、role=user 口径、不含 cost），经本地通道上报 usage_snapshot{deviceId,requestId,snapshot}；relay 校验并按 account+device 缓存，向 viewer 提供 usage_get{deviceId,requestId,force} → usage_snapshot{available,reason?,snapshot?,receivedAt?,stale?}；快照只含聚合计数（无正文/标题/cwd/金额）。旧端兼容：无此 cap 的 relay 收到 usage_get 回 unknown_type（UI 空态），旧 extension 收到 usage_refresh 忽略/unknown_type（relay 降级 unsupported/timeout），新 relay 不向未声明 cap 的 viewer 主动发 usage 帧",
-    "crypto.auth": "设备/观看端身份（加密地基，设计 A §3；阶段 1 起设备侧已实现：配对登记公钥+pop、SAS v2、local 通道挑战-签名鉴权、key_update、content_key_* 透传与名册 keyFp 下发；观看端身份/adminSig/viewer 名册管理面随阶段 2 启用，未启用前任何端不得据此改变行为）：声明后配对帧 pair/pair_request 可带 keys{signPub, boxPub, pop} 登记公钥（设备签名钥 DIK 为 Ed25519、观看端签名钥 VIK 为 P-256，box 钥两端均为 P-256；长度上限见 limits 的 signPubKeyBytes/boxPubKeyBytes，pop 为对裸配对码的签名），二维码核对字改绑握手记录（SAS）；auth 带 keyFp+clientNonce 时走挑战-签名：relay 回 auth_challenge{nonce, expiresAt}（nonce 长度见 authNonceBytes），端回 auth_response{sig}（签名输入为域分隔串 pi-remote-auth-v1 与身份 id、双侧 nonce 的拼接，上限见 signatureMaxBytes），验签失败/钥已撤销/身份与钥错配复用 auth_failed/device_revoked/device_mismatch，不新增码；auth_result 对钥连接增 auth:\"key\" 取值与 ackFp（本账号内容钥指纹，contentKeyFpChars 位 hex）供端上对账，不一致回 key_mismatch 警告；名册设备行可带 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}} 与 prevKeyFps[]，观看端名册另存 viewers.jsonl，均只登记公钥（公开数据）；管理帧可改带 adminSig（VIK 对帧规范化摘要的签名）替代 adminToken 字段；新帧 content_key_request/content_key_grant（ACK 包裹交付，relay 只按指纹路由透传、不落盘，包裹上限见 wrappedKeyMaxBytes）、key_update（旧 DIK 签新钥集合换登记）、viewer_revoke、list_viewer/viewer_list（观看端名册管理面）随实现阶段逐个启用；钥形态配对成功的 pair_result 带 keyRegistered:true 与 hasKeyHolder（布尔：本次登记之前本账号是否已有其他已登记未撤销公钥的设备，即在册持钥端存在的代理信号——relay 不持 ACK 本身、只能报存在性；设备据此不自生成 ACK、保持无内容钥状态，上线后经 content_key_request 索取；令牌形态 pair_result 不带 hasKeyHolder）",
+    "crypto.auth": "设备/观看端身份（加密地基，设计 A §3；阶段 1 设备侧 + 阶段 2 观看端侧均已实现）：声明后配对帧 pair/pair_request 可带 keys{signPub, boxPub, pop} 登记设备公钥（设备签名钥 DIK 为 Ed25519、box 钥为 P-256；长度上限见 limits 的 signPubKeyBytes/boxPubKeyBytes，pop 为对裸配对码的签名），二维码核对字改绑握手记录（SAS v2）；local 通道 auth 带 keyFp+clientNonce 时走挑战-签名：relay 回 auth_challenge{nonce, expiresAt}（nonce 长度见 authNonceBytes），端回 auth_response{sig}（签名输入为域分隔串 pi-remote-auth-v1 与身份 id、双侧 nonce 的字节拼接，签名上限见 signatureMaxBytes），验签失败/钥已撤销/身份与钥错配复用 auth_failed/device_revoked/device_mismatch，不新增码；观看端身份（阶段 2）：VIK/VBK 均为 P-256（spki 长度上限同 boxPubKeyBytes；signPubKeyBytes 的 44 是 Ed25519 spki 长度、不适用于观看端）；新帧 viewer_register{viewerId, name?, signPub, boxPub（或 keys{signPub, boxPub}）, admin?} 经管理员门把观看端公钥登记进 viewers.jsonl（同 viewerId 在册未撤销时换钥拒绝、须先 viewer_revoke；已撤销的旧签名钥不得以同 viewerId 再登记），成功 ack 的 data 带 {viewerId, keyFp, admin}；viewer 通道 auth 带 viewerId+keyFp+clientNonce 走与设备同构的挑战-签名（签名输入里的身份 id 换成 viewerId，VIK 以 ECDSA P-256/SHA-256、IEEE P1363 编码验签），成功 auth_result 增 auth:\"key\" 与 viewerId；无名册钥的观看端仍可凭 viewerToken 登录（auth:\"token\" 口径，既有 auth_result 面逐字节不变），但令牌登录不构成管理员资格；管理帧（pair_create/pair_approve/device_revoke/viewer_revoke/list_viewers）走双轨管理员门：adminToken 或 adminSig 二选一。adminSig 是在册、admin:true、未撤销的 VIK 对帧规范化摘要的签名，摘要字节钉死为 utf8(\"pi-remote-admin-v1\") ‖ utf8(帧 type) ‖ utf8(规范 JSON)，其中规范 JSON = 帧去掉 adminSig/adminToken/type 三字段后的对象按「对象键递归升序、数组保序、无空白分隔符」序列化的 UTF-8 字节；签名本体为 ECDSA P-256/SHA-256、IEEE P1363（r‖s）、base64；签名者由帧的 adminBy 字段指明（缺省时取连接绑定的 viewerId；注意 viewer_revoke 帧里的 viewerId 是撤销目标而非签名者），已绑 viewerId 的钥连接只能以自身 viewerId 签名；签名不合规与无 adminToken 同果：ack 失败 code=admin_required；新帧 list_viewers（管理员门）回 viewer_list{viewers:[{viewerId, name, keyFp, admin, createdAt, revokedAt, online}]}；viewer_revoke{viewerId}（管理员门）给名册行写 revokedAt 并断开该观看端的全部钥连接，成功 ack 的 data 必带 {closed, ackRotationRequired:true, hint}——撤销只关接入层，被撤销端仍持有 ACK 副本，密码学移除必须轮换 ACK 并重新分发给保留的端；auth_result 对钥连接增 ackFp（本账号各端已达成一致的内容钥指纹，contentKeyFpChars 位 hex，未知或正在分歧时为 null）供端上对账；新帧 ack_report{ackFp} 供钥端在 auth 成功后上报自己所持 ACK 的指纹（relay 只存指纹、永不接触 ACK 本体，仅内存），同账号已上报各端的指纹不一致时向这些端发 error 帧 code=key_mismatch（帧带 ackFps 列出冲突指纹），一致后自动消解；新帧 content_key_request/content_key_grant 为 ACK 包裹交付（relay 只按指纹路由透传、不落盘，包裹上限见 wrappedKeyMaxBytes）：持钥观看端与设备互为端点，转发时 relay 强制以发送方名册钥盖戳 from（发送方 keyFp）与 fromBoxPub（发送方名册 box 公钥），帧内自带的 from/fromBoxPub 不采信；新帧 key_update（旧 DIK 签新钥集合换登记）；名册设备行可带 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}} 与 prevKeyFps[]，观看端行另存 viewers.jsonl，均只登记公钥（公开数据）；钥形态配对成功的 pair_result 带 keyRegistered:true 与 hasKeyHolder（布尔：本次登记之前本账号是否已有其他已登记未撤销公钥的设备，即在册持钥端存在的代理信号——relay 不持 ACK 本身、只能报存在性；设备据此不自生成 ACK、保持无内容钥状态，上线后经 content_key_request 索取；令牌形态 pair_result 不带 hasKeyHolder）；pair_approve 可带 contentKeyGrant，仅做形状清洗后透传进 pair_result，不解析、不落盘",
     "crypto.content": "正文端到端加密（加密地基，设计 A §4.1 中间档 b；阶段 0 仅协议登记、未实现，不产生任何 enc 房间；依赖 crypto.auth）：enc 房间的 msg 本体、remote text、检查点/清单 state 的 pending、流式 delta 文本、session firstMessage 预览与会话归档正文以信封 {enc:1, role?, h, ct} 承载——AES-256-GCM under 每房间一把 RCK，RCK 由账号内容主密钥 ACK 包裹（rckWrap 随房间 meta/快照 keyInfo 下发，包裹上限见 wrappedKeyMaxBytes），h 为 HMAC-SHA256(RCK, 规范化正文) 供 relay 无钥对锚与 remote 取代判定；relay 只见 seq/role/时间/字节数/toolmeta 等元数据，dialog 提示词与 ext_notify 在本档明文（已知暴露）；房间 meta 记录带 enc/ackFp/rckWrap，reset 换代继承 enc 不许洗回明文；未声明本能力的 viewer 订阅 enc 房间、或扩展向 enc 房间写明文，一律回 crypto_required 拒绝（不许把密文当明文渲染）；正文搜索命中 enc 房间回 unsupported 并标注已加密跳过；relay 永不持有 ACK/RCK"
   },
   "errors": {
@@ -592,6 +592,41 @@ function unwrapAckGrant(key: any, accountId: string, grant: any, granterFp: stri
     decipher.setAuthTag(ct.subarray(ct.length - 16));
     const ack = Buffer.concat([decipher.update(ct.subarray(0, ct.length - 16)), decipher.final()]);
     return ack.length === 32 ? ack : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Wrap the account ACK for a requester (Phase 2: this bridge as grant deliverer).
+ *  Exact mirror of unwrapAckGrant: ECDH(own box private key, requester box public
+ *  key) -> HKDF-SHA256(ikm = shared secret, salt = utf8(accountId + ":" + own
+ *  fingerprint + ":" + requester fingerprint), info = "pi-remote-ack-wrap-v1",
+ *  32B) -> AES-256-GCM with a fresh 12B nonce, blob ct = ciphertext || tag (16B).
+ *  Returns the {to, nonce, ct} grant fields (base64) or null on any bad input:
+ *  the requester fingerprint must be the 16-hex roster shape and the requester
+ *  box public key must import as P-256 (a viewer's VBK and a device's DBK are
+ *  both P-256 SPKI, byte-identical in shape). */
+function wrapAckGrant(key: any, accountId: string, ack: any, recipientFp: any, recipientBoxPubB64: any): { to: string; nonce: string; ct: string } | null {
+  if (!Buffer.isBuffer(ack) || ack.length !== 32) return null;
+  if (typeof recipientFp !== "string" || !/^[0-9a-f]{16}$/.test(recipientFp)) return null;
+  const recipientBoxPubDer = b64ToBuffer(recipientBoxPubB64);
+  if (!recipientBoxPubDer) return null;
+  let shared: Buffer;
+  try {
+    const pub = crypto.createPublicKey({ key: recipientBoxPubDer, format: "der", type: "spki" });
+    const details: any = pub.asymmetricKeyDetails || {};
+    if (pub.asymmetricKeyType !== "ec" || details.namedCurve !== "prime256v1") return null;
+    shared = crypto.diffieHellman({ privateKey: key.boxPriv, publicKey: pub });
+  } catch {
+    return null;
+  }
+  const salt = Buffer.from(String(accountId) + ":" + String(key.keyFp) + ":" + recipientFp, "utf8");
+  const wrapKey = Buffer.from(crypto.hkdfSync("sha256", shared, salt, Buffer.from(ACK_WRAP_INFO, "utf8"), 32));
+  try {
+    const nonce = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", wrapKey, nonce);
+    const ct = Buffer.concat([cipher.update(ack), cipher.final(), cipher.getAuthTag()]);
+    return { to: recipientFp, nonce: nonce.toString("base64"), ct: ct.toString("base64") };
   } catch {
     return null;
   }
@@ -3371,6 +3406,16 @@ class Bridge {
   pendingClientNonce: string | null = null;
   /** 本条连接已发过 content_key_request（每条连接至多发一次；持有 ACK 后不再发） */
   ackRequestSent = false;
+  /** Grants already answered on this connection: requester fingerprint -> ackFp
+   *  that was granted. One grant per requester per connection session; only a
+   *  changed ACK (different ackFp, e.g. after a rotation) re-arms an answer. */
+  ackGrantsAnswered = new Map<string, string>();
+  /** ackFp most recently sent to the relay in an ack_report frame on this
+   *  connection; null = nothing reported yet. The relay forgets an end's
+   *  report when the connection drops, so the marker is per-connection state
+   *  (cleared in socketGone): a fresh report goes out after every reconnect,
+   *  and within one connection only a changed ACK re-reports. */
+  ackReportedFp: string | null = null;
   /** 接管持留的 dialog：dialogId → HeldDialog（含排队中的）。同一时刻只一个 active。 */
   dialogHeld = new Map<string, any>();
   dialogHeldQueue: string[] = [];
@@ -3728,6 +3773,11 @@ class Bridge {
     // 钥模式的连接级状态一并作废：clientNonce 单次有效、ACK 请求标记按连接重计
     this.pendingClientNonce = null;
     this.ackRequestSent = false;
+    // Grant-answer dedupe is scoped to the connection session too.
+    this.ackGrantsAnswered.clear();
+    // The relay drops this end's ackFp report together with the connection,
+    // so forget what was reported: the next connection must report again.
+    this.ackReportedFp = null;
     // 接管门控随连接作废（重连后 relay 补发当前值）；持留 dialog 交回本机弹窗——
     // 答案通道已断，继续持留只会让调用方干等到超时（fail-open 红线）
     this.dialogGateHasViewers = false;
@@ -5169,12 +5219,34 @@ class Bridge {
       if (typeof msg.ackFp === "string" && msg.ackFp && msg.ackFp !== fp) {
         log("警告：relay 侧 ackFp（" + msg.ackFp + "）与本机 ACK 指纹（" + fp + "）不一致，各端内容钥可能已分叉，需重新交付或轮换");
       }
+      this.reportAckFp();
       return;
     }
     if (this.ackRequestSent) return;
     this.ackRequestSent = true;
     log("钥鉴权成功，本账号尚无 ACK，已发 content_key_request 等待在线持钥端交付");
     this.send({ type: "content_key_request", want: accountId }, { essential: true });
+  }
+
+  /** Report the held ACK's fingerprint to the relay (ack_report frame, design
+   *  section 3.5): the relay reconciles fingerprints across the account's keyed
+   *  ends and warns every reporting end with key_mismatch on divergence, but
+   *  never sees the ACK itself -- only the 16-hex fingerprint is sent.
+   *  Emission rules: key-authed connections only (the relay drops reports from
+   *  token connections), only while an ACK is actually held, and at most once
+   *  per fingerprint per connection -- a mid-connection ACK change (a grant
+   *  replacing the held key) reports the new fingerprint again. */
+  reportAckFp() {
+    const key = this.deviceKey;
+    if (!key || this.relayAuth !== "key") return;
+    const accountId = deviceIdentity(process.env, this.platform).accountId;
+    const ack = heldContentKey(key, accountId);
+    if (!ack) return;
+    const fp = contentKeyFingerprint(ack);
+    if (this.ackReportedFp === fp) return;
+    this.ackReportedFp = fp;
+    this.send({ type: "ack_report", ackFp: fp }, { essential: true });
+    log("已向 relay 上报本账号 ACK 指纹（ackFp " + fp + "），供各端内容钥对账");
   }
 
   /** 收到 ACK 交付（content_key_grant）：只收指名给本机指纹的；交付方指纹与 box 公钥
@@ -5211,6 +5283,64 @@ class Bridge {
     log(
       "已收到本账号 ACK（ackFp " + contentKeyFingerprint(ack) + "）" +
         (saved ? "并存入钥文件" : "；警告：钥文件写回失败，ACK 只在本进程内存中持有，重启后需重新交付"),
+    );
+    // A grant is the one mid-connection event that can create or replace the
+    // held ACK: (re)report its fingerprint so relay-side reconciliation tracks
+    // this end's current copy. reportAckFp itself no-ops unless this
+    // connection is key-authed, and dedupes an unchanged fingerprint.
+    this.reportAckFp();
+  }
+
+  /** Answer a content_key_request (Phase 2, design sections 3.2/7): when this
+   *  device holds the account ACK, wrap it for the requester and return it as a
+   *  content_key_grant via the relay. The relay stamps from/fromBoxPub from the
+   *  roster when it forwards a request, so the frame already carries the
+   *  requester's fingerprint and box public key (the requester may be another
+   *  device or a viewer -- the handling is identical). Requests for a different
+   *  account, malformed frames, self-requests, and requests we cannot serve
+   *  because no ACK is held stay unanswered: silence on the wire, never a
+   *  partial or wrong grant. */
+  answerContentKeyRequest(msg: any) {
+    const key = this.deviceKey;
+    if (!key) return;
+    const accountId = deviceIdentity(process.env, this.platform).accountId;
+    if (typeof msg.accountId !== "string" || msg.accountId !== accountId) {
+      log("收到 content_key_request 但 accountId 对不上（帧：" + String(msg.accountId || "") + "，本机：" + accountId + "），已忽略");
+      return;
+    }
+    const requesterFp = typeof msg.from === "string" ? msg.from : "";
+    const requesterBoxPub = typeof msg.fromBoxPub === "string" ? msg.fromBoxPub : "";
+    if (!/^[0-9a-f]{16}$/.test(requesterFp) || !requesterBoxPub || requesterFp === key.keyFp) {
+      log("content_key_request 缺合法的请求方指纹/box 公钥（或指名本机自己），已忽略");
+      return;
+    }
+    const ack = heldContentKey(key, accountId);
+    if (!ack) {
+      log("收到 " + requesterFp + " 的 content_key_request，但本机未持有本账号 ACK，无法交付（不作答）");
+      return;
+    }
+    const ackFp = contentKeyFingerprint(ack);
+    if (this.ackGrantsAnswered.get(requesterFp) === ackFp) return;
+    const grant = wrapAckGrant(key, accountId, ack, requesterFp, requesterBoxPub);
+    if (!grant) {
+      log("为 " + requesterFp + " 包裹 ACK 失败（请求方 box 公钥不可用），未交付");
+      return;
+    }
+    this.send({ type: "content_key_grant", to: grant.to, nonce: grant.nonce, ct: grant.ct }, { essential: true });
+    this.ackGrantsAnswered.set(requesterFp, ackFp);
+    log("已应答 " + requesterFp + " 的 content_key_request，ACK 已包裹交付（ackFp " + ackFp + "）");
+  }
+
+  /** React to a key_mismatch warning (design section 3.5): the relay found this
+   *  account's content-key fingerprints diverging across its ends. Surface it
+   *  as a loud log warning and stop there -- this phase never rotates, replaces,
+   *  or deletes keys on its own; recovery is a fresh grant delivery from a
+   *  trusted end or a deliberate ACK rotation by the user. */
+  noteKeyMismatch(detail: string) {
+    log(
+      "警告 key_mismatch：relay 报告本账号各端内容钥指纹不一致" +
+        (detail ? "（" + detail + "）" : "") +
+        "；本机未自动改动任何钥，请从可信端重新交付 ACK，或由用户执行 ACK 轮换",
     );
   }
 
@@ -5572,8 +5702,18 @@ class Bridge {
       this.acceptContentKeyGrant(msg);
       return;
     }
+    if (msg.type === "content_key_request") {
+      // Phase 2 (design sections 3.2/7): a peer end of this account (device or
+      // viewer) asks the online key holders for the ACK; answer only when this
+      // device actually holds it (see answerContentKeyRequest).
+      this.answerContentKeyRequest(msg);
+      return;
+    }
     if (msg.type === "error") {
       if (msg.code === "device_mismatch") log("relay 拒绝了与设备令牌不符的帧:", msg.message || "");
+      // key_mismatch is a reconciliation warning (design section 3.5), not an
+      // auth failure: warn loudly, never touch the held keys automatically.
+      if (msg.code === "key_mismatch") this.noteKeyMismatch(msg.message || "");
       // 旧 relay 不认 room_label：退回整包 room_register，改名照样能同步
       if (msg.code === "unknown_type" && /room_label/.test(String(msg.message || ""))) {
         this.noRoomLabel = true;
@@ -5583,6 +5723,13 @@ class Bridge {
         this._unknownLogged = true;
         log("relay 不支持新帧，清单/窗口功能降级:", msg.message || "");
       }
+      return;
+    }
+    if (msg.type === "key_mismatch") {
+      // Defensive: the warning is registered as an error code (handled in the
+      // error branch above); if a relay ever sends it as a bare frame type,
+      // react the same way instead of dropping it silently.
+      this.noteKeyMismatch(typeof msg.message === "string" ? msg.message : "");
       return;
     }
     if (msg.type === "room_registered") {
@@ -9140,5 +9287,5 @@ function usageEmptySnapshot(options: any = {}): any {
   });
 }
 
-export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, storeAckInKeyFile };
+export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile };
 

@@ -101,6 +101,14 @@ export type PairLookupInfo = {
   platform: string
   expiresAt: number
   checkDigits: string
+  /**
+   * Keyed pairing only (crypto Phase 2): the pending device's signing-key
+   * fingerprint and box public key, when the relay includes them. They let
+   * the approving viewer compute pair_approve's contentKeyGrant locally;
+   * both are public values. Absent for token pairings and older relays.
+   */
+  keyFp?: string
+  boxPub?: string
 }
 
 /** lookup 回包清洗：expiresAt 与 checkDigits 缺一不可（缺了没法倒计时 / 没法核对），其余字段宽容缺省。 */
@@ -109,11 +117,15 @@ export function parsePairLookup(data: unknown): PairLookupInfo {
   const expiresAt = typeof rec.expiresAt === "number" && Number.isFinite(rec.expiresAt) ? rec.expiresAt : 0
   const checkDigits = typeof rec.checkDigits === "string" ? rec.checkDigits.trim() : ""
   if (!expiresAt || !checkDigits) throw new RelayError("server_error", "服务端回包不完整，请重试")
+  const keyFp = typeof rec.keyFp === "string" && rec.keyFp ? rec.keyFp : ""
+  const boxPub = typeof rec.boxPub === "string" && rec.boxPub ? rec.boxPub : ""
   return {
     name: typeof rec.name === "string" ? rec.name : "",
     platform: typeof rec.platform === "string" ? rec.platform : "",
     expiresAt,
     checkDigits,
+    ...(keyFp ? { keyFp } : {}),
+    ...(boxPub ? { boxPub } : {}),
   }
 }
 
