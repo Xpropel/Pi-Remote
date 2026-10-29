@@ -1055,7 +1055,20 @@ test("--pair：带上已有设备编号，成功后把编号和令牌写进 .env
     writeErr: (l) => lines.push(l),
   });
   assert.equal(code, 0, lines.join("\n"));
-  assert.deepEqual(seen[0], { type: "pair", proto: 4, code: "ABCDEFGH", device: { id: "keep-me", name: "书房 Mac", platform: "macos" } });
+  // 阶段 1 起 pair 帧多带 keys{signPub, boxPub, pop}（旧 relay 忽略即可）；其余字段与旧形态一致
+  const { keys: frameKeys, ...frameRest } = seen[0];
+  assert.deepEqual(frameRest, { type: "pair", proto: 4, code: "ABCDEFGH", device: { id: "keep-me", name: "书房 Mac", platform: "macos" } });
+  assert.ok(frameKeys && frameKeys.signPub && frameKeys.boxPub && frameKeys.pop, "pair 帧应带公钥与持有证明");
+  const keyFile = path.join(dir, "pi-remote-device.key.json");
+  const savedKeys = JSON.parse(fs.readFileSync(keyFile, "utf8"));
+  assert.equal(frameKeys.signPub, savedKeys.sign.pub, "帧里的公钥应与本机钥文件一致");
+  const popOk = require("node:crypto").verify(
+    null,
+    Buffer.from("ABCDEFGH", "utf8"),
+    require("node:crypto").createPublicKey({ key: Buffer.from(frameKeys.signPub, "base64"), format: "der", type: "spki" }),
+    Buffer.from(frameKeys.pop, "base64"),
+  );
+  assert.equal(popOk, true, "pop 必须能被独立验签（relay 侧同法）");
   const cfg = attach.loadConfig(envPath, {});
   assert.equal(cfg.deviceId, "keep-me");
   assert.equal(cfg.deviceToken, "secret-token");
@@ -1963,4 +1976,324 @@ test("displayPathOf：显示还原 \\$；命令执行用的原值不动", () => 
   const { ctl, logs } = makeCtl({ platform: "linux" });
   ctl.writeOut("已拉起：" + attach.displayPathOf("/srv/we ird \\$x"));
   assert.match(logs.join("\n"), /已拉起：\/srv\/we ird \$x/);
+});
+
+// ---------- 加密阶段 1（设计 A §3）：设备身份钥 / 配对 v2 / ACK 自持 ----------
+
+const nodeCrypto = require("node:crypto");
+const relayUtil = require("../relay/util.js");
+
+test("身份钥生成：形状与协议 limits 对齐、0600、二次 ensure 不覆盖", () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, ".env");
+  const ctx = attach.ensureDeviceKeys(envPath, { env: {}, deviceId: "dev-1" });
+  assert.equal(ctx.created, true);
+  assert.equal(ctx.file, path.join(dir, "pi-remote-device.key.json"));
+  assert.equal((fs.statSync(ctx.file).mode & 0o777).toString(8), "600");
+  const saved = JSON.parse(fs.readFileSync(ctx.file, "utf8"));
+  assert.equal(saved.v, 1);
+  assert.equal(saved.deviceId, "dev-1");
+  assert.equal(saved.sign.alg, "ed25519");
+  assert.equal(saved.box.alg, "p256");
+  assert.equal(Buffer.from(saved.sign.pub, "base64").length, 44, "Ed25519 spki der 恰为协议 limits signPubKeyBytes");
+  assert.ok(Buffer.from(saved.box.pub, "base64").length <= 128, "P-256 spki der 不超 boxPubKeyBytes");
+  const before = fs.readFileSync(ctx.file, "utf8");
+  const again = attach.ensureDeviceKeys(envPath, { env: {}, deviceId: "dev-other" });
+  assert.equal(again.created, false);
+  assert.equal(again.keys.sign.pub, saved.sign.pub, "已有钥绝不重生成");
+  assert.equal(fs.readFileSync(ctx.file, "utf8"), before, "已有钥文件逐字节不动（deviceId 也不顺手改）");
+});
+
+test("指纹与 relay/util.js 对拍一致（同源同算法）", () => {
+  const dir = tmpDir();
+  const ctx = attach.ensureDeviceKeys(path.join(dir, ".env"), { env: {} });
+  const fp = attach.keyFingerprint(ctx.keys.sign.pub);
+  assert.equal(fp, relayUtil.keyFingerprint(ctx.keys.sign.pub));
+  assert.equal(fp.length, 16);
+  assert.equal(attach.formatFingerprint(fp), relayUtil.formatFingerprint(fp));
+  assert.match(attach.formatFingerprint(fp), /^([0-9a-f]{4} ){3}[0-9a-f]{4}$/);
+});
+
+test("PoP：对裸码签名可被独立验签（relay 验法），错码验不过", () => {
+  const dir = tmpDir();
+  const ctx = attach.ensureDeviceKeys(path.join(dir, ".env"), { env: {} });
+  const pop = attach.signPairPop(ctx.keys, "ABCDEFGH");
+  assert.ok(Buffer.from(pop, "base64").length <= 128, "签名不超 signatureMaxBytes");
+  const pub = nodeCrypto.createPublicKey({ key: Buffer.from(ctx.keys.sign.pub, "base64"), format: "der", type: "spki" });
+  assert.equal(nodeCrypto.verify(null, Buffer.from("ABCDEFGH", "utf8"), pub, Buffer.from(pop, "base64")), true);
+  assert.equal(nodeCrypto.verify(null, Buffer.from("ABCDEFGX", "utf8"), pub, Buffer.from(pop, "base64")), false);
+});
+
+test("钥文件损坏：明确报错且不覆盖（坏 JSON / 公私钥不配对）", () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, ".env");
+  const file = path.join(dir, "pi-remote-device.key.json");
+  fs.writeFileSync(file, "{not json", "utf8");
+  assert.throws(() => attach.loadDeviceKeys(file), /设备钥文件损坏/);
+  assert.throws(() => attach.ensureDeviceKeys(envPath, { env: {} }), /设备钥文件损坏/);
+  assert.equal(fs.readFileSync(file, "utf8"), "{not json", "损坏文件不许被静默覆盖");
+
+  const ctx = attach.ensureDeviceKeys(path.join(dir, "sub", ".env"), { env: {} });
+  const tampered = JSON.parse(fs.readFileSync(ctx.file, "utf8"));
+  const other = attach.generateDeviceKeys("");
+  tampered.sign.pub = other.sign.pub; // 公钥换成别人的：与私钥不成对
+  fs.writeFileSync(ctx.file, JSON.stringify(tampered), "utf8");
+  assert.throws(() => attach.loadDeviceKeys(ctx.file), /不成对|对不上/);
+});
+
+test("ACK 存取：往返、重读保留并发改动、ensure 幂等、首台判定三分支", () => {
+  const dir = tmpDir();
+  const ctx = attach.ensureDeviceKeys(path.join(dir, ".env"), { env: {} });
+  const ack1 = nodeCrypto.randomBytes(32).toString("base64");
+  let keys = attach.storeAccountAck(ctx.file, "admin", ack1);
+  assert.equal(attach.accountAckOf(keys, "admin"), ack1);
+  // 模拟扩展侧并发写：直接在盘上加一个账号的 ACK，本函数的下一次写必须保留它
+  const onDisk = JSON.parse(fs.readFileSync(ctx.file, "utf8"));
+  onDisk.contentKeys.other = "b3RoZXItYWNr";
+  fs.writeFileSync(ctx.file, JSON.stringify(onDisk), "utf8");
+  keys = attach.storeAccountAck(ctx.file, "second", "c2Vjb25kLWFjaw==");
+  assert.equal(attach.accountAckOf(keys, "admin"), ack1);
+  assert.equal(attach.accountAckOf(keys, "other"), "b3RoZXItYWNr");
+  assert.equal(attach.accountAckOf(keys, "second"), "c2Vjb25kLWFjaw==");
+
+  const gen = attach.ensureAccountAck(ctx.file, keys, "third");
+  assert.equal(gen.created, true);
+  assert.equal(Buffer.from(gen.ack, "base64").length, 32);
+  const again = attach.ensureAccountAck(ctx.file, gen.keys, "third");
+  assert.equal(again.created, false);
+  assert.equal(again.ack, gen.ack, "已有 ACK 永不重生成（防分叉）");
+
+  // finalizePairKeys：ackFp / grant / hasKeyHolder 任一在场 → 不生成；全缺席 → 生成自持
+  const fresh = () => {
+    const d = tmpDir();
+    return attach.ensureDeviceKeys(path.join(d, ".env"), { env: {} });
+  };
+  const c1 = fresh();
+  attach.finalizePairKeys(c1, { accountId: "admin", ackFp: "0123456789abcdef" });
+  assert.equal(attach.accountAckOf(c1.keys, "admin"), "", "relay 已知 ACK 指纹时不许自生成");
+  const c2 = fresh();
+  attach.finalizePairKeys(c2, { accountId: "admin", contentKeyGrant: { to: "x", nonce: "n", ct: "c" } });
+  assert.equal(attach.accountAckOf(c2.keys, "admin"), "", "grant 交付在途时不许自生成");
+  const c3 = fresh();
+  attach.finalizePairKeys(c3, { accountId: "admin" });
+  assert.equal(Buffer.from(attach.accountAckOf(c3.keys, "admin"), "base64").length, 32, "首台钥设备生成并自持");
+  const c4 = fresh();
+  attach.finalizePairKeys(c4, { accountId: "admin", hasKeyHolder: true });
+  assert.equal(attach.accountAckOf(c4.keys, "admin"), "", "账号已有其他持钥端时不许自生成（防 ACK 分叉）");
+  const c5 = fresh();
+  attach.finalizePairKeys(c5, { accountId: "admin", hasKeyHolder: false });
+  assert.equal(Buffer.from(attach.accountAckOf(c5.keys, "admin"), "base64").length, 32, "hasKeyHolder=false 与缺席同口径：首台生成自持");
+});
+
+test("--pair 钥形态：keyRegistered 无令牌完成配对，.env 只写路径，ACK 自持生成，钥料不打印", async () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, ".env");
+  fs.writeFileSync(envPath, "PI_REMOTE_RELAY=ws://relay:7001\nPI_REMOTE_DEVICE_" + "TOKEN=" + "stale-token" + "\n", "utf8");
+  const { FakeWS, seen } = fakeRelaySocket((frame) =>
+    frame.type === "pair" ? { type: "pair_result", ok: true, accountId: "admin", deviceId: "dev-key-1", keyRegistered: true } : null,
+  );
+  const lines = [];
+  const code = await attach.pairMain({ pair: "ABCDEFGH", relay: "" }, envPath, {
+    WebSocketImpl: FakeWS,
+    platform: "darwin",
+    env: {},
+    writeOut: (l) => lines.push(l),
+    writeErr: (l) => lines.push(l),
+  });
+  assert.equal(code, 0, lines.join("\n"));
+  assert.ok(seen[0].keys && seen[0].keys.pop, "pair 帧带 keys+pop");
+  const vars = attach.parseEnv(fs.readFileSync(envPath, "utf8"));
+  assert.equal(vars.PI_REMOTE_DEVICE_ID, "dev-key-1");
+  assert.equal(vars.PI_REMOTE_DEVICE_TOKEN, "", "钥形态把旧令牌清空（relay 侧令牌行已作废）");
+  const keyFile = path.join(dir, "pi-remote-device.key.json");
+  assert.equal(vars.PI_REMOTE_DEVICE_KEY_FILE, keyFile, ".env 只写钥文件路径");
+  const keys = JSON.parse(fs.readFileSync(keyFile, "utf8"));
+  assert.equal(keys.deviceId, "dev-key-1", "deviceId 回填钥文件");
+  assert.equal(Buffer.from(keys.contentKeys.admin, "base64").length, 32, "首台钥设备生成 ACK 自持");
+  const text = lines.join("\n");
+  assert.ok(!text.includes(keys.sign.priv), "私钥不许出现在输出里");
+  assert.ok(!text.includes(keys.contentKeys.admin), "ACK 不许出现在输出里");
+  assert.ok(!text.includes("stale-token"), "旧令牌不许出现在输出里");
+  assert.match(text, /身份钥已登记/);
+});
+
+test("--pair 钥形态：relay 回 ackFp 时不自生成 ACK（等交付）", async () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, ".env");
+  const { FakeWS } = fakeRelaySocket((frame) =>
+    frame.type === "pair" ? { type: "pair_result", ok: true, accountId: "admin", deviceId: "dev-key-2", keyRegistered: true, ackFp: "0123456789abcdef" } : null,
+  );
+  const lines = [];
+  const code = await attach.pairMain({ pair: "ABCDEFGH", relay: "ws://r:7001" }, envPath, {
+    WebSocketImpl: FakeWS,
+    platform: "darwin",
+    env: {},
+    writeOut: (l) => lines.push(l),
+    writeErr: (l) => lines.push(l),
+  });
+  assert.equal(code, 0, lines.join("\n"));
+  const keys = JSON.parse(fs.readFileSync(path.join(dir, "pi-remote-device.key.json"), "utf8"));
+  assert.equal(keys.contentKeys, undefined, "账号已有 ACK 时本机不生成");
+});
+
+test("pair_result 双形态：带 deviceKeys 时令牌形态照收（旧 relay 逐字节兼容）", async () => {
+  const dir = tmpDir();
+  const ctx = attach.ensureDeviceKeys(path.join(dir, ".env"), { env: {} });
+  const tok = fakeRelaySocket(() => ({ type: "pair_result", ok: true, accountId: "admin", deviceId: "d1", deviceToken: "tok-1" }));
+  const r1 = await attach.requestPairing({ relay: "ws://r:7001", code: "ABCDEFGH", deviceKeys: ctx.keys, WebSocketImpl: tok.FakeWS, platform: "darwin" });
+  assert.deepEqual([r1.ok, r1.deviceToken, !!r1.keyRegistered], [true, "tok-1", false]);
+  assert.ok(tok.seen[0].keys.pop, "帧照样带 keys（旧 relay 忽略未知字段）");
+  const key = fakeRelaySocket(() => ({ type: "pair_result", ok: true, deviceId: "d2", keyRegistered: true, hasKeyHolder: true }));
+  const r2 = await attach.requestPairing({ relay: "ws://r:7001", code: "ABCDEFGH", deviceKeys: ctx.keys, WebSocketImpl: key.FakeWS, platform: "darwin" });
+  assert.deepEqual([r2.ok, r2.keyRegistered, r2.deviceToken], [true, true, ""], "无令牌不算失败");
+  assert.equal(r2.hasKeyHolder, true, "hasKeyHolder 原样带回（ACK 自持判定在落盘处）");
+});
+
+test("--pair 钥形态：hasKeyHolder=true → 不自生成 ACK，文案如实提示等索取", async () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, ".env");
+  const { FakeWS } = fakeRelaySocket((frame) =>
+    frame.type === "pair" ? { type: "pair_result", ok: true, accountId: "admin", deviceId: "dev-key-3", keyRegistered: true, hasKeyHolder: true } : null,
+  );
+  const lines = [];
+  const code = await attach.pairMain({ pair: "ABCDEFGH", relay: "ws://r:7001" }, envPath, {
+    WebSocketImpl: FakeWS,
+    platform: "darwin",
+    env: {},
+    writeOut: (l) => lines.push(l),
+    writeErr: (l) => lines.push(l),
+  });
+  assert.equal(code, 0, lines.join("\n"));
+  const keys = JSON.parse(fs.readFileSync(path.join(dir, "pi-remote-device.key.json"), "utf8"));
+  assert.equal(keys.contentKeys, undefined, "已有其他持钥端时本机不生成 ACK，钥文件不留该账号条目（防分叉）");
+  const text = lines.join("\n");
+  assert.match(text, /已有持钥设备/, "配对成功文案须如实显示尚未持有内容钥");
+  assert.match(text, /索取/, "文案须说明上线后自动向持钥设备索取");
+  assert.ok(!text.includes("本机持有本账号的内容钥"), "没持有不许装作持有");
+});
+
+test("--link 钥形态：pair_request 自带码 + keys/pop，核对字只展示 relay 回值，keyRegistered 落盘", async () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, ".env");
+  const ctx = attach.ensureDeviceKeys(envPath, { env: {} });
+  const seen = [];
+  class LinkWS {
+    constructor() {
+      this.handlers = {};
+      setImmediate(() => this.handlers.open && this.handlers.open());
+    }
+    on(ev, fn) {
+      this.handlers[ev] = fn;
+    }
+    send(data) {
+      const frame = JSON.parse(data);
+      seen.push(frame);
+      if (frame.type === "pair_request") {
+        // relay 采用设备自带码：回展示形态与 SAS 核对字（核对字由 relay 算，本机只展示）
+        const disp = frame.code.slice(0, 4) + "-" + frame.code.slice(4);
+        setImmediate(() => this.handlers.message(JSON.stringify({ type: "pair_request_result", ok: true, code: disp, expiresAt: Date.now() + 60000, checkDigits: "07" })));
+        setImmediate(() => this.handlers.message(JSON.stringify({ type: "pair_result", ok: true, accountId: "admin", deviceId: "dev-link", keyRegistered: true })));
+      }
+    }
+    close() {}
+  }
+  let shown = null;
+  const r = await attach.requestLinkAttempt({
+    relay: "ws://r:7001",
+    deviceKeys: ctx.keys,
+    WebSocketImpl: LinkWS,
+    platform: "darwin",
+    onCode: (info) => {
+      shown = info;
+    },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.keyRegistered, true);
+  assert.match(seen[0].code, /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/, "带钥申请自带一枚协议字母表的裸码");
+  assert.equal(seen[0].keys.signPub, ctx.keys.sign.pub);
+  const pub = nodeCrypto.createPublicKey({ key: Buffer.from(seen[0].keys.signPub, "base64"), format: "der", type: "spki" });
+  assert.equal(nodeCrypto.verify(null, Buffer.from(seen[0].code, "utf8"), pub, Buffer.from(seen[0].keys.pop, "base64")), true, "pop 签的就是自带码（relay 同法验签）");
+  assert.equal(shown.code, seen[0].code, "relay 采用设备自带码");
+  assert.equal(shown.checkDigits, "07", "核对字是 relay 的值，本机不自算");
+});
+
+test("--pair：展示形态的码（XXXX-XXXX）也先归一再签 pop，与 relay 归一口径一致", async () => {
+  const dir = tmpDir();
+  const ctx = attach.ensureDeviceKeys(path.join(dir, ".env"), { env: {} });
+  const { FakeWS, seen } = fakeRelaySocket(() => ({ type: "pair_result", ok: true, deviceId: "d3", deviceToken: "t3" }));
+  const r = await attach.requestPairing({ relay: "ws://r:7001", code: "abcd-efgh", deviceKeys: ctx.keys, WebSocketImpl: FakeWS, platform: "darwin" });
+  assert.equal(r.ok, true);
+  assert.equal(seen[0].code, "ABCDEFGH", "帧里的码是归一后的裸码");
+  const pub = nodeCrypto.createPublicKey({ key: Buffer.from(seen[0].keys.signPub, "base64"), format: "der", type: "spki" });
+  assert.equal(nodeCrypto.verify(null, Buffer.from("ABCDEFGH", "utf8"), pub, Buffer.from(seen[0].keys.pop, "base64")), true);
+});
+
+test("--doctor：身份钥指纹可见、私钥与 ACK 不打印；无钥时提示尚未生成", async () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, ".env");
+  fs.writeFileSync(envPath, "PI_REMOTE_RELAY=ws://127.0.0.1:7001\nPI_REMOTE_DEVICE_ID=d1\n", "utf8");
+  const baseOpts = (lines) => ({
+    writeOut: (l) => lines.push(String(l)),
+    platform: "darwin",
+    env: { PI_REMOTE_ATTACH_FILE: path.join(dir, "state.json"), PI_REMOTE_PI_BIN: process.execPath },
+    probe: async () => ({ ok: true }),
+    spawnSyncImpl: () => ({ status: 0, stdout: "", stderr: "" }),
+  });
+  const lines1 = [];
+  await attach.doctorMain({}, envPath, baseOpts(lines1));
+  assert.ok(lines1.some((l) => l.includes("设备身份钥") && l.includes("尚未生成")), lines1.join("\n"));
+
+  const ctx = attach.ensureDeviceKeys(envPath, { env: {} });
+  attach.storeAccountAck(ctx.file, "admin", nodeCrypto.randomBytes(32).toString("base64"));
+  const keysNow = attach.loadDeviceKeys(ctx.file);
+  const lines2 = [];
+  await attach.doctorMain({}, envPath, baseOpts(lines2));
+  const text = lines2.join("\n");
+  assert.ok(text.includes("设备身份钥") && text.includes(attach.formatFingerprint(attach.keyFingerprint(keysNow.sign.pub))), text);
+  assert.ok(text.includes("账号内容钥"), text);
+  assert.ok(!text.includes(keysNow.sign.priv), "私钥不许出现在 doctor 输出里");
+  assert.ok(!text.includes(keysNow.contentKeys.admin), "ACK 不许出现在 doctor 输出里");
+});
+
+test("钥模式鉴权帧与应答签名：caps 带 crypto.auth、不带令牌，签名与 relay 的 authPayload 同口径", () => {
+  const dir = tmpDir();
+  const ctx = attach.ensureDeviceKeys(path.join(dir, ".env"), { env: {} });
+  const frame = attach.attachKeyAuthFrame({ deviceId: "dev-1", keys: ctx.keys, platform: "darwin", clientNonce: "Y2xpZW50LW5vbmNlLTE2Yg==" });
+  assert.equal(frame.type, "auth");
+  assert.equal(frame.role, "local");
+  assert.ok(frame.caps.includes("crypto.auth"));
+  assert.ok(frame.caps.includes("session.files"), "既有能力位保留（relay 按 caps 算 features）");
+  assert.equal(frame.keyFp, attach.keyFingerprint(ctx.keys.sign.pub));
+  assert.equal("deviceToken" in frame, false, "带 keyFp 走挑战路，不许再带设备令牌");
+  assert.equal("token" in frame, false);
+  // 独立按 relay/pairing.js 的 authPayload 拼法验签
+  const relayNonce = nodeCrypto.randomBytes(32);
+  const clientNonce = Buffer.from(frame.clientNonce, "base64");
+  const sig = attach.signAuthResponse(ctx.keys, "dev-1", relayNonce.toString("base64"), frame.clientNonce);
+  const payload = Buffer.concat([Buffer.from("pi-remote-auth-v1", "utf8"), Buffer.from("dev-1", "utf8"), relayNonce, clientNonce]);
+  const pub = nodeCrypto.createPublicKey({ key: Buffer.from(ctx.keys.sign.pub, "base64"), format: "der", type: "spki" });
+  assert.equal(nodeCrypto.verify(null, payload, pub, Buffer.from(sig, "base64")), true);
+});
+
+test("连接窗口钥模式：收到 auth_challenge 回 auth_response；无钥窗口不作答", () => {
+  const dir = tmpDir();
+  const ctx = attach.ensureDeviceKeys(path.join(dir, ".env"), { env: {} });
+  const { ctl, frames } = makeCtl({ deviceKeys: ctx.keys });
+  ctl.pendingClientNonce = attach.newClientNonce();
+  const relayNonce = nodeCrypto.randomBytes(32);
+  ctl.handleMessage({ type: "auth_challenge", nonce: relayNonce.toString("base64"), expiresAt: Date.now() + 10000 });
+  const resp = frames.find((f) => f.type === "auth_response");
+  assert.ok(resp, "钥模式窗口必须应答挑战");
+  const payload = Buffer.concat([Buffer.from("pi-remote-auth-v1", "utf8"), Buffer.from("dev-1", "utf8"), relayNonce, Buffer.from(ctl.pendingClientNonce, "base64")]);
+  const pub = nodeCrypto.createPublicKey({ key: Buffer.from(ctx.keys.sign.pub, "base64"), format: "der", type: "spki" });
+  assert.equal(nodeCrypto.verify(null, payload, pub, Buffer.from(resp.sig, "base64")), true);
+  ctl.handleMessage({ type: "auth_result", ok: true, auth: "key", deviceId: "dev-1" });
+  assert.equal(ctl.authed, true);
+  assert.equal(ctl.authMode, "key");
+  ctl.shutdown();
+
+  const plain = makeCtl();
+  plain.ctl.handleMessage({ type: "auth_challenge", nonce: relayNonce.toString("base64"), expiresAt: Date.now() + 10000 });
+  assert.equal(plain.frames.some((f) => f.type === "auth_response"), false, "无钥窗口不许乱应答");
+  plain.ctl.shutdown();
 });

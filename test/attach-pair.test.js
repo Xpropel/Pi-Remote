@@ -1,11 +1,12 @@
 "use strict";
 /**
  * attach --pair 与真实 relay 的联调：
- * viewer 生成配对码 → deploy/attach.cjs pairMain 连真实 local 端口 → pair_result 写 .env
- * → 用落盘的设备令牌重新 auth，确认 relay 认这张令牌。
+ * viewer 生成配对码 → deploy/attach.cjs pairMain 连真实 local 端口 → pair_result 落盘
+ * → 用落盘的钥文件走挑战-签名 auth，确认 relay 认这套钥（阶段 1：钥设备不再发令牌）。
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -115,7 +116,7 @@ async function createPairCode(relay, name) {
   }
 }
 
-test("attach --pair 与真实 relay：配对成功写 .env，设备令牌能再次通过 local 鉴权", async (t) => {
+test("attach --pair 与真实 relay：密钥配对成功落盘，钥文件能通过挑战-签名鉴权", async (t) => {
   const relay = await boot();
   t.after(() => relay.close());
   const relayUrl = `ws://127.0.0.1:${relay.localPort}`;
@@ -140,20 +141,44 @@ test("attach --pair 与真实 relay：配对成功写 .env，设备令牌能再�
   const cfg = attach.loadConfig(envPath, {});
   assert.equal(cfg.relay, relayUrl);
   assert.match(cfg.deviceId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-  assert.equal(typeof cfg.deviceToken, "string");
-  assert.ok(cfg.deviceToken.length >= 20, "设备令牌应足够长");
-  assert.equal(logs.join("\n").includes(cfg.deviceToken), false, "配对成功不能把令牌打印出来");
+  // 阶段 1：relay 验 pop 后登记公钥、停发令牌——.env 里没有设备令牌，只有钥文件路径
+  assert.equal(cfg.deviceToken, "", "钥设备不再下发设备令牌");
+  const vars = attach.parseEnv(fs.readFileSync(envPath, "utf8"));
+  const keyFile = path.join(dir, "pi-remote-device.key.json");
+  assert.equal(vars.PI_REMOTE_DEVICE_KEY_FILE, keyFile);
+  const keys = attach.loadDeviceKeys(keyFile);
+  assert.equal(keys.deviceId, cfg.deviceId, "钥文件回填了 relay 签发的 deviceId");
+  const ackValues = Object.values(keys.contentKeys || {});
+  assert.equal(ackValues.length, 1, "首台钥设备为本账号生成一把 ACK 自持");
+  assert.equal(Buffer.from(ackValues[0], "base64").length, 32);
   assert.match(logs.join("\n"), /配对成功/);
+  assert.equal(logs.join("\n").includes(keys.sign.priv), false, "私钥不能打印出来");
+  assert.equal(logs.join("\n").includes(ackValues[0]), false, "ACK 不能打印出来");
   if (process.platform !== "win32") assert.equal((fs.statSync(envPath).mode & 0o777).toString(8), "600");
+  if (process.platform !== "win32") assert.equal((fs.statSync(keyFile).mode & 0o777).toString(8), "600");
 
-  // 真实 relay 认落盘的设备令牌：不是只有 fake socket 才对
+  // 真实 relay 认落盘的钥：走 §3.3 挑战-签名全程（auth 带 keyFp → auth_challenge → auth_response）
   const local = client(relay.localPort);
   t.after(() => local.close());
   await local.opened;
-  local.send(attach.attachAuthFrame({ deviceId: cfg.deviceId, deviceToken: cfg.deviceToken, platform: "darwin" }));
+  const clientNonce = crypto.randomBytes(16);
+  local.send({
+    type: "auth",
+    role: "local",
+    proto: 4,
+    caps: ["crypto.auth"],
+    client: { kind: "attach-test", version: "test" },
+    deviceId: cfg.deviceId,
+    keyFp: attach.keyFingerprint(keys.sign.pub),
+    clientNonce: clientNonce.toString("base64"),
+  });
+  const challenge = await local.type("auth_challenge");
+  const payload = Buffer.concat([Buffer.from("pi-remote-auth-v1", "utf8"), Buffer.from(cfg.deviceId, "utf8"), Buffer.from(challenge.nonce, "base64"), clientNonce]);
+  const priv = crypto.createPrivateKey({ key: Buffer.from(keys.sign.priv, "base64"), format: "der", type: "pkcs8" });
+  local.send({ type: "auth_response", sig: crypto.sign(null, payload, priv).toString("base64") });
   const auth = await local.type("auth_result");
   assert.equal(auth.ok, true, JSON.stringify(auth));
-  assert.equal(auth.auth, "token");
+  assert.equal(auth.auth, "key");
   assert.equal(auth.deviceId, cfg.deviceId);
 });
 

@@ -3,7 +3,9 @@
  * 加密地基阶段 0（设计 A §8）：只铺地基、零行为变化。
  * 本文件钉住四件事：
  *  1) 协议登记：caps crypto.auth/crypto.content、错误码 crypto_required/key_mismatch、
- *     六个 crypto limits 已进 protocol/v4.json；RELAY_CAPS 本阶段不声明这两项（未实现不冒充）。
+ *     六个 crypto limits 已进 protocol/v4.json；RELAY_CAPS 的声明口径随实现阶段走：
+ *     阶段 0 两项都不声明（未实现不冒充）；阶段 1 设备身份落地后 crypto.auth 进列，
+ *     crypto.content（正文加密，阶段 3）仍不声明。
  *  2) 名册：设备行 keys/prevKeyFps 原样保留往返（写入、普通 upsert 继承、落盘重读、手写文件读入）；
  *     老设备行不带这两个键时落盘形状逐字节不变。viewers.jsonl 具备同样的读写保留能力。
  *  3) store：meta 行未知字段（含 enc/ackFp/rckWrap 形状）读入后经 reset 换代写回不丢
@@ -35,7 +37,7 @@ const PREV_FPS = ["0123456789abcdef"];
 
 /* ---------- 1) 协议登记 ---------- */
 
-test("协议阶段 0 登记：caps / 错误码 / limits 齐全，RELAY_CAPS 暂不声明", () => {
+test("协议登记：caps / 错误码 / limits 齐全，RELAY_CAPS 按实现阶段声明", () => {
   assert.equal(typeof proto.caps["crypto.auth"], "string");
   assert.ok(proto.caps["crypto.auth"].length > 0);
   assert.equal(typeof proto.caps["crypto.content"], "string");
@@ -50,8 +52,9 @@ test("协议阶段 0 登记：caps / 错误码 / limits 齐全，RELAY_CAPS 暂�
   assert.equal(proto.limits.wrappedKeyMaxBytes, 512);
   assert.equal(proto.limits.authNonceBytes, 32);
   assert.equal(proto.limits.contentKeyFpChars, 16);
-  // 阶段 0 未实现：relay 不许在握手里冒充已实现（同 agent.state 预留口径）
-  assert.ok(!RELAY_CAPS.includes("crypto.auth"));
+  // 阶段 1 已实现设备身份（配对登记公钥/挑战鉴权/key_update/grant 透传）：crypto.auth
+  // 名副其实进 RELAY_CAPS；crypto.content（正文加密）仍未实现，不许冒充（阶段 3 再进）。
+  assert.ok(RELAY_CAPS.includes("crypto.auth"));
   assert.ok(!RELAY_CAPS.includes("crypto.content"));
 });
 

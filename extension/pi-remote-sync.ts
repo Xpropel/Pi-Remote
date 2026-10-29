@@ -19,6 +19,8 @@
  *   PI_REMOTE_DEVICE_TOKEN  配对换来的设备令牌（attach --pair 写入）。与 DEVICE_ID 配套时，
  *                           只有它、没有共享 TOKEN 也能连
  *   PI_REMOTE_DEVICE_NAME   设备显示名，缺省按平台：Windows / Mac / Linux
+ *   PI_REMOTE_DEVICE_KEY_FILE 可选，设备钥文件路径（attach 写入，只有路径、钥料在文件里）。
+ *     文件有效时走挑战-签名鉴权（加密阶段 1）；缺失/损坏回退令牌鉴权并在日志里明示
  *   PI_REMOTE_PROJECTS      会话清单要扫描的项目目录，分号分隔
  *   PI_REMOTE_ATTACH_FILE   可选，连接窗口状态文件路径（默认 ~/.pi/agent/remote-attach.json）
  *   PI_REMOTE_ALWAYS_ONLINE 设为 1 时跳过连接窗口门控，总是连接（过渡用，不推荐长期）
@@ -78,7 +80,7 @@ const PROTOCOL = {
     "fs.browse": "设备文件夹浏览（P9 C，attach 声明）：attach 能执行 list_dirs{path?,showHidden?}，只返回允许根目录内的目录名（不返回文件、不传文件内容），成功回 data{root,path,parent,entries,truncated}",
     "agent.state": "agent_state 全量快照事件能力位（子智能体胶囊预留：协议/通道先行，当前无生产者）",
     "usage.activity.v1": "使用活动聚合（P10）：extension 只读本机 pi 会话 jsonl，聚合每日 tokens/messages/sessions、模型分布、活跃/连续天数、峰值（本地时区分天、role=user 口径、不含 cost），经本地通道上报 usage_snapshot{deviceId,requestId,snapshot}；relay 校验并按 account+device 缓存，向 viewer 提供 usage_get{deviceId,requestId,force} → usage_snapshot{available,reason?,snapshot?,receivedAt?,stale?}；快照只含聚合计数（无正文/标题/cwd/金额）。旧端兼容：无此 cap 的 relay 收到 usage_get 回 unknown_type（UI 空态），旧 extension 收到 usage_refresh 忽略/unknown_type（relay 降级 unsupported/timeout），新 relay 不向未声明 cap 的 viewer 主动发 usage 帧",
-    "crypto.auth": "设备/观看端身份（加密地基，设计 A §3；阶段 0 仅协议登记、未实现，任何端不得据此改变行为）：声明后配对帧 pair/pair_request 可带 keys{signPub, boxPub, pop} 登记公钥（设备签名钥 DIK 为 Ed25519、观看端签名钥 VIK 为 P-256，box 钥两端均为 P-256；长度上限见 limits 的 signPubKeyBytes/boxPubKeyBytes，pop 为对裸配对码的签名），二维码核对字改绑握手记录（SAS）；auth 带 keyFp+clientNonce 时走挑战-签名：relay 回 auth_challenge{nonce, expiresAt}（nonce 长度见 authNonceBytes），端回 auth_response{sig}（签名输入为域分隔串 pi-remote-auth-v1 与身份 id、双侧 nonce 的拼接，上限见 signatureMaxBytes），验签失败/钥已撤销/身份与钥错配复用 auth_failed/device_revoked/device_mismatch，不新增码；auth_result 对钥连接增 auth:\"key\" 取值与 ackFp（本账号内容钥指纹，contentKeyFpChars 位 hex）供端上对账，不一致回 key_mismatch 警告；名册设备行可带 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}} 与 prevKeyFps[]，观看端名册另存 viewers.jsonl，均只登记公钥（公开数据）；管理帧可改带 adminSig（VIK 对帧规范化摘要的签名）替代 adminToken 字段；新帧 content_key_request/content_key_grant（ACK 包裹交付，relay 只按指纹路由透传、不落盘，包裹上限见 wrappedKeyMaxBytes）、key_update（旧 DIK 签新钥集合换登记）、viewer_revoke、list_viewer/viewer_list（观看端名册管理面）随实现阶段逐个启用",
+    "crypto.auth": "设备/观看端身份（加密地基，设计 A §3；阶段 1 起设备侧已实现：配对登记公钥+pop、SAS v2、local 通道挑战-签名鉴权、key_update、content_key_* 透传与名册 keyFp 下发；观看端身份/adminSig/viewer 名册管理面随阶段 2 启用，未启用前任何端不得据此改变行为）：声明后配对帧 pair/pair_request 可带 keys{signPub, boxPub, pop} 登记公钥（设备签名钥 DIK 为 Ed25519、观看端签名钥 VIK 为 P-256，box 钥两端均为 P-256；长度上限见 limits 的 signPubKeyBytes/boxPubKeyBytes，pop 为对裸配对码的签名），二维码核对字改绑握手记录（SAS）；auth 带 keyFp+clientNonce 时走挑战-签名：relay 回 auth_challenge{nonce, expiresAt}（nonce 长度见 authNonceBytes），端回 auth_response{sig}（签名输入为域分隔串 pi-remote-auth-v1 与身份 id、双侧 nonce 的拼接，上限见 signatureMaxBytes），验签失败/钥已撤销/身份与钥错配复用 auth_failed/device_revoked/device_mismatch，不新增码；auth_result 对钥连接增 auth:\"key\" 取值与 ackFp（本账号内容钥指纹，contentKeyFpChars 位 hex）供端上对账，不一致回 key_mismatch 警告；名册设备行可带 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}} 与 prevKeyFps[]，观看端名册另存 viewers.jsonl，均只登记公钥（公开数据）；管理帧可改带 adminSig（VIK 对帧规范化摘要的签名）替代 adminToken 字段；新帧 content_key_request/content_key_grant（ACK 包裹交付，relay 只按指纹路由透传、不落盘，包裹上限见 wrappedKeyMaxBytes）、key_update（旧 DIK 签新钥集合换登记）、viewer_revoke、list_viewer/viewer_list（观看端名册管理面）随实现阶段逐个启用；钥形态配对成功的 pair_result 带 keyRegistered:true 与 hasKeyHolder（布尔：本次登记之前本账号是否已有其他已登记未撤销公钥的设备，即在册持钥端存在的代理信号——relay 不持 ACK 本身、只能报存在性；设备据此不自生成 ACK、保持无内容钥状态，上线后经 content_key_request 索取；令牌形态 pair_result 不带 hasKeyHolder）",
     "crypto.content": "正文端到端加密（加密地基，设计 A §4.1 中间档 b；阶段 0 仅协议登记、未实现，不产生任何 enc 房间；依赖 crypto.auth）：enc 房间的 msg 本体、remote text、检查点/清单 state 的 pending、流式 delta 文本、session firstMessage 预览与会话归档正文以信封 {enc:1, role?, h, ct} 承载——AES-256-GCM under 每房间一把 RCK，RCK 由账号内容主密钥 ACK 包裹（rckWrap 随房间 meta/快照 keyInfo 下发，包裹上限见 wrappedKeyMaxBytes），h 为 HMAC-SHA256(RCK, 规范化正文) 供 relay 无钥对锚与 remote 取代判定；relay 只见 seq/role/时间/字节数/toolmeta 等元数据，dialog 提示词与 ext_notify 在本档明文（已知暴露）；房间 meta 记录带 enc/ackFp/rckWrap，reset 换代继承 enc 不许洗回明文；未声明本能力的 viewer 订阅 enc 房间、或扩展向 enc 房间写明文，一律回 crypto_required 拒绝（不许把密文当明文渲染）；正文搜索命中 enc 房间回 unsupported 并标注已加密跳过；relay 永不持有 ACK/RCK"
   },
   "errors": {
@@ -367,8 +369,11 @@ function validCid(v: any): string | undefined {
   return typeof v === "string" && v.length <= PROTOCOL.limits.cidMax && /^[A-Za-z0-9_-]+$/.test(v) ? v : undefined;
 }
 
-/** local 通道鉴权帧：有设备令牌就带上（v4 relay 按设备鉴权）；共享 token 照带，旧 relay 只认它 */
-function authFrame(env: any = process.env, platform: string = process.platform) {
+/** local 通道鉴权帧：有设备令牌就带上（v4 relay 按设备鉴权）；共享 token 照带，旧 relay 只认它。
+ * 钥模式（keyAuth 非空，加密阶段 1 §3.3）：caps 追加 crypto.auth、带 deviceId/keyFp/clientNonce，
+ * 按协议 §7 **不带 deviceToken**（带 keyFp 即走挑战路）；共享 token 字段口径不变。
+ * keyAuth 为空时产出与旧版逐字节一致——无钥环境零变化。 */
+function authFrame(env: any = process.env, platform: string = process.platform, keyAuth: any = null) {
   const frame: any = {
     type: "auth",
     role: "local",
@@ -378,13 +383,245 @@ function authFrame(env: any = process.env, platform: string = process.platform) 
   };
   const deviceId = String((env && env.PI_REMOTE_DEVICE_ID) || "").trim();
   const deviceToken = String((env && env.PI_REMOTE_DEVICE_TOKEN) || "").trim();
-  if (deviceId && deviceToken) {
+  if (keyAuth) {
+    frame.caps = [...CLIENT_CAPS, "crypto.auth"];
+    frame.deviceId = keyAuth.deviceId;
+    frame.keyFp = keyAuth.keyFp;
+    frame.clientNonce = keyAuth.clientNonce;
+  } else if (deviceId && deviceToken) {
     frame.deviceId = deviceId;
     frame.deviceToken = deviceToken;
   }
   const token = String((env && env.PI_REMOTE_TOKEN) || "").trim();
   if (token) frame.token = token;
   return frame;
+}
+
+/* ---------------- 设备钥与挑战-签名鉴权（加密阶段 1，设计 A §3.1/§3.2/§3.3） ----------------
+ * 钥模式是叠加分支：PI_REMOTE_DEVICE_KEY_FILE 指向的钥文件（attach 生成，只经 .env 里的
+ * 路径引用，钥料不进 .env）存在且校验通过才启用；缺失/损坏一律回退既有令牌鉴权并在
+ * 日志里明示（红线：不许静默回退）。钥文件形状（§3.1）：
+ *   {v:1, deviceId, createdAt, sign:{alg:"ed25519", pub, priv}, box:{alg:"p256", pub, priv},
+ *    contentKeys?: {<accountId>: <ACK base64>}}
+ * 公私钥均 pkcs8/spki 的 der base64。本节全部函数只在钥模式下被调用，旧路径零改动。
+ * 签名输入钉死（§3.3）：utf8("pi-remote-auth-v1") ‖ utf8(deviceId) ‖ relayNonce(原字节)
+ * ‖ clientNonce(原字节)，域分隔串不许挪作他用。
+ * ACK 包裹口径（§3.2，与交付方同源、测试对拍）：ECDH(box 私钥, 交付方 box 公钥) →
+ * HKDF-SHA256(ikm=协商秘密, salt=utf8(accountId + ":" + 交付方指纹 + ":" + 本机指纹),
+ * info=utf8("pi-remote-ack-wrap-v1"), 32B) → AES-256-GCM(nonce 12B, ct = 密文‖tag 16B)。 */
+
+const DEVICE_KEY_FILE_ENV = "PI_REMOTE_DEVICE_KEY_FILE";
+const AUTH_SIGN_DOMAIN = "pi-remote-auth-v1";
+const ACK_WRAP_INFO = "pi-remote-ack-wrap-v1";
+/** auth 帧 clientNonce 长度（§3.3：16B；relay 侧 nonce 长度走协议 limits authNonceBytes=32） */
+const CLIENT_NONCE_BYTES = 16;
+
+/** 公钥指纹：与 relay/util.js 的 keyFingerprint 同源同算法（公钥字节 SHA-256 前 8 字节 hex，
+ *  位数走协议 limits contentKeyFpChars）。两处实现靠测试对拍——指纹对不上即钥不对。 */
+function keyFingerprintHex(pub: any): string {
+  const buf = Buffer.isBuffer(pub) ? pub : Buffer.from(String(pub), "base64");
+  return crypto.createHash("sha256").update(buf).digest("hex").slice(0, PROTOCOL.limits.contentKeyFpChars);
+}
+
+/** ACK 指纹：ACK 原字节同法摘要（auth_result.ackFp 对账与状态展示用，16 位 hex） */
+function contentKeyFingerprint(ack: Buffer): string {
+  return crypto.createHash("sha256").update(ack).digest("hex").slice(0, PROTOCOL.limits.contentKeyFpChars);
+}
+
+function b64ToBuffer(v: any): Buffer | null {
+  if (typeof v !== "string" || !v) return null;
+  try {
+    const b = Buffer.from(v, "base64");
+    return b.length ? b : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 钥文件内容 → 钥状态。任何一处不合口径都回 {error}（调用方回退令牌并明示），绝不带病启用。
+ *  除形状/算法/长度外还验公私钥配对：由私钥导出的公钥必须与文件登记的公钥逐字节一致。 */
+function parseDeviceKeyData(data: any, filePath: string): { key: any } | { error: string } {
+  const fail = (error: string) => ({ error });
+  if (!data || typeof data !== "object") return fail("钥文件不是 JSON 对象");
+  if (data.v !== 1) return fail("钥文件版本不支持（v=" + String(data.v) + "）");
+  const deviceId = typeof data.deviceId === "string" ? data.deviceId.trim() : "";
+  if (!deviceId) return fail("钥文件缺 deviceId");
+  const sign = data.sign;
+  const box = data.box;
+  if (!sign || sign.alg !== "ed25519") return fail("sign 段缺失或算法不是 ed25519");
+  if (!box || box.alg !== "p256") return fail("box 段缺失或算法不是 p256");
+  const signPubDer = b64ToBuffer(sign.pub);
+  const signPrivDer = b64ToBuffer(sign.priv);
+  const boxPubDer = b64ToBuffer(box.pub);
+  const boxPrivDer = b64ToBuffer(box.priv);
+  if (!signPubDer || !signPrivDer || !boxPubDer || !boxPrivDer) return fail("公私钥字段缺失或不是 base64");
+  if (signPubDer.length > PROTOCOL.limits.signPubKeyBytes) return fail("签名公钥长度超协议上限");
+  if (boxPubDer.length > PROTOCOL.limits.boxPubKeyBytes) return fail("box 公钥长度超协议上限");
+  let signPriv: any, signPub: any, boxPriv: any, boxPub: any;
+  try {
+    signPriv = crypto.createPrivateKey({ key: signPrivDer, format: "der", type: "pkcs8" });
+    signPub = crypto.createPublicKey({ key: signPubDer, format: "der", type: "spki" });
+    boxPriv = crypto.createPrivateKey({ key: boxPrivDer, format: "der", type: "pkcs8" });
+    boxPub = crypto.createPublicKey({ key: boxPubDer, format: "der", type: "spki" });
+  } catch (e: any) {
+    return fail("密钥材料无法导入：" + (e?.message || String(e)));
+  }
+  if (signPriv.asymmetricKeyType !== "ed25519" || signPub.asymmetricKeyType !== "ed25519") return fail("签名钥不是 Ed25519");
+  const curveOf = (k: any) => (k.asymmetricKeyDetails && k.asymmetricKeyDetails.namedCurve) || "";
+  if (boxPriv.asymmetricKeyType !== "ec" || boxPub.asymmetricKeyType !== "ec" || curveOf(boxPriv) !== "prime256v1" || curveOf(boxPub) !== "prime256v1") {
+    return fail("box 钥不是 P-256");
+  }
+  try {
+    const derivedSign = crypto.createPublicKey(signPriv).export({ format: "der", type: "spki" }) as Buffer;
+    if (!derivedSign.equals(signPubDer)) return fail("签名公私钥不配对（钥文件损坏）");
+    const derivedBox = crypto.createPublicKey(boxPriv).export({ format: "der", type: "spki" }) as Buffer;
+    if (!derivedBox.equals(boxPubDer)) return fail("box 公私钥不配对（钥文件损坏）");
+  } catch (e: any) {
+    return fail("公私钥配对校验失败：" + (e?.message || String(e)));
+  }
+  const contentKeys: Record<string, string> = {};
+  if (data.contentKeys && typeof data.contentKeys === "object") {
+    for (const acc of Object.keys(data.contentKeys)) {
+      const v = data.contentKeys[acc];
+      if (typeof v === "string" && v) contentKeys[acc] = v;
+    }
+  }
+  return {
+    key: {
+      filePath,
+      deviceId,
+      keyFp: keyFingerprintHex(signPubDer),
+      signPriv,
+      signPub,
+      signPubB64: String(sign.pub),
+      boxPriv,
+      boxPub,
+      boxPubB64: String(box.pub),
+      contentKeys,
+    },
+  };
+}
+
+/** 桥启动时加载设备钥。回 {status:"none"}（环境变量未设——普通无钥环境，不算异常）、
+ *  {status:"ok", key} 或 {status:"fallback", warning}（已配置钥却缺失/损坏/与 .env 的
+ *  deviceId 不一致：回退令牌鉴权，warning 必须进日志明示，不许静默）。 */
+function loadDeviceKey(env: any = process.env, fsImpl: any = fs): { status: string; key?: any; warning?: string } {
+  const file = String((env && env[DEVICE_KEY_FILE_ENV]) || "").trim();
+  if (!file) return { status: "none" };
+  let raw: string;
+  try {
+    raw = fsImpl.readFileSync(file, "utf8");
+  } catch (e: any) {
+    return { status: "fallback", warning: "设备钥文件读取失败（" + file + "：" + (e?.message || String(e)) + "），已回退令牌鉴权；如非本意请检查 " + DEVICE_KEY_FILE_ENV };
+  }
+  let data: any;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { status: "fallback", warning: "设备钥文件不是合法 JSON（" + file + "），已回退令牌鉴权" };
+  }
+  const parsed: any = parseDeviceKeyData(data, file);
+  if (parsed.error) {
+    return { status: "fallback", warning: "设备钥文件不可用（" + file + "：" + parsed.error + "），已回退令牌鉴权" };
+  }
+  const envId = String((env && env.PI_REMOTE_DEVICE_ID) || "").trim();
+  if (envId && envId !== parsed.key.deviceId) {
+    return { status: "fallback", warning: "设备钥文件的 deviceId（" + parsed.key.deviceId + "）与 .env 的 PI_REMOTE_DEVICE_ID（" + envId + "）不一致，已回退令牌鉴权" };
+  }
+  return { status: "ok", key: parsed.key };
+}
+
+/** 本机当前持有的某账号 ACK（钥文件 contentKeys 里解出来恰好 32B 才算数，其余视同没有） */
+function heldContentKey(key: any, accountId: string): Buffer | null {
+  if (!key || !key.contentKeys) return null;
+  const buf = b64ToBuffer(key.contentKeys[accountId]);
+  return buf && buf.length === 32 ? buf : null;
+}
+
+/** 挑战签名（§3.3）：Ed25519 签 utf8(域分隔串)‖utf8(deviceId)‖relayNonce‖clientNonce。
+ *  nonce 长度不合口径回 null（调用方不作答、不降级，本次连接等鉴权截止关闭）。 */
+function signAuthChallenge(key: any, relayNonceB64: any, clientNonceB64: any): string | null {
+  const relayNonce = b64ToBuffer(relayNonceB64);
+  const clientNonce = b64ToBuffer(clientNonceB64);
+  if (!relayNonce || relayNonce.length !== PROTOCOL.limits.authNonceBytes) return null;
+  if (!clientNonce || clientNonce.length !== CLIENT_NONCE_BYTES) return null;
+  const data = Buffer.concat([Buffer.from(AUTH_SIGN_DOMAIN, "utf8"), Buffer.from(String(key.deviceId), "utf8"), relayNonce, clientNonce]);
+  try {
+    return crypto.sign(null, data, key.signPriv).toString("base64");
+  } catch {
+    return null;
+  }
+}
+
+/** 验签（relay 侧将采用的同一验法，供测试自证与将来复用）：公钥 spki base64 + 同一签名输入。 */
+function verifyAuthSignature(signPubB64: any, deviceId: string, relayNonceB64: any, clientNonceB64: any, sigB64: any): boolean {
+  const signPubDer = b64ToBuffer(signPubB64);
+  const relayNonce = b64ToBuffer(relayNonceB64);
+  const clientNonce = b64ToBuffer(clientNonceB64);
+  const sig = b64ToBuffer(sigB64);
+  if (!signPubDer || !relayNonce || !clientNonce || !sig) return false;
+  if (sig.length > PROTOCOL.limits.signatureMaxBytes) return false;
+  try {
+    const pub = crypto.createPublicKey({ key: signPubDer, format: "der", type: "spki" });
+    const data = Buffer.concat([Buffer.from(AUTH_SIGN_DOMAIN, "utf8"), Buffer.from(String(deviceId), "utf8"), relayNonce, clientNonce]);
+    return crypto.verify(null, data, pub, sig);
+  } catch {
+    return false;
+  }
+}
+
+/** 解开一份 ACK 交付（§3.2 包裹口径）：blob = {nonce, ct}，ct = AES-256-GCM 密文‖tag。
+ *  上下文对不上（账号/任一指纹/对端 box 公钥）或密文被篡改一律回 null，不留半份钥。 */
+function unwrapAckGrant(key: any, accountId: string, grant: any, granterFp: string, granterBoxPubB64: any): Buffer | null {
+  const nonce = b64ToBuffer(grant && grant.nonce);
+  const ct = b64ToBuffer(grant && grant.ct);
+  if (!nonce || nonce.length !== 12 || !ct || ct.length <= 16) return null;
+  const granterBoxPubDer = b64ToBuffer(granterBoxPubB64);
+  if (!granterBoxPubDer) return null;
+  let shared: Buffer;
+  try {
+    const pub = crypto.createPublicKey({ key: granterBoxPubDer, format: "der", type: "spki" });
+    shared = crypto.diffieHellman({ privateKey: key.boxPriv, publicKey: pub });
+  } catch {
+    return null;
+  }
+  const salt = Buffer.from(String(accountId) + ":" + String(granterFp || "") + ":" + String(key.keyFp), "utf8");
+  const wrapKey = Buffer.from(crypto.hkdfSync("sha256", shared, salt, Buffer.from(ACK_WRAP_INFO, "utf8"), 32));
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-gcm", wrapKey, nonce);
+    decipher.setAuthTag(ct.subarray(ct.length - 16));
+    const ack = Buffer.concat([decipher.update(ct.subarray(0, ct.length - 16)), decipher.final()]);
+    return ack.length === 32 ? ack : null;
+  } catch {
+    return null;
+  }
+}
+
+/** ACK 存回钥文件：读-改-写防覆盖（先重读磁盘现状，只动 contentKeys 一个字段，其余原样），
+ *  落盘纪律与 attach 写 .env 同源（tmp + 0600 + chmod + rename）。成功同步更新内存态；
+ *  失败回 false（调用方留内存态并告警）。 */
+function storeAckInKeyFile(key: any, accountId: string, ack: Buffer, fsImpl: any = fs): boolean {
+  let data: any;
+  try {
+    data = JSON.parse(fsImpl.readFileSync(key.filePath, "utf8"));
+  } catch {
+    return false;
+  }
+  if (!data || typeof data !== "object") return false;
+  const existing = data.contentKeys && typeof data.contentKeys === "object" ? data.contentKeys : {};
+  data.contentKeys = { ...existing, [accountId]: ack.toString("base64") };
+  const tmp = `${key.filePath}.${process.pid}.tmp`;
+  try {
+    fsImpl.rmSync(tmp, { force: true });
+    fsImpl.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    fsImpl.chmodSync(tmp, 0o600);
+    fsImpl.renameSync(tmp, key.filePath);
+  } catch {
+    try { fsImpl.rmSync(tmp, { force: true }); } catch {}
+    return false;
+  }
+  key.contentKeys[accountId] = ack.toString("base64");
+  return true;
 }
 /** 清单单帧最多这么多条（按 updatedAt 倒序）；回合结束上报至少间隔这么久 */
 const MAX_MANIFEST_BATCH = 200;
@@ -3126,6 +3363,14 @@ class Bridge {
   approvalGateList: string[] = (process.env.PI_REMOTE_APPROVAL_GATE_TOOLS || "").split(",").map((s) => s.trim()).filter(Boolean);
   /** 「本会话都允许」的工具名集合（仅内存，随会话切换清空、不落盘，§4.3） */
   approvalSessionAllow = new Set<string>();
+  /* ---------------- 设备钥状态（加密阶段 1，§3） ----------------
+   * deviceKey 在 start() 时按 PI_REMOTE_DEVICE_KEY_FILE 加载；null = 无钥或已回退令牌，
+   * 此时本节全部逻辑不启用、桥行为与旧版一致。私钥只存内存 KeyObject，不进日志/帧。 */
+  deviceKey: any = null;
+  /** 本条连接 auth 帧带出的 clientNonce（钥模式）：auth_challenge 回来时按它签名；连接作废即清 */
+  pendingClientNonce: string | null = null;
+  /** 本条连接已发过 content_key_request（每条连接至多发一次；持有 ACK 后不再发） */
+  ackRequestSent = false;
   /** 接管持留的 dialog：dialogId → HeldDialog（含排队中的）。同一时刻只一个 active。 */
   dialogHeld = new Map<string, any>();
   dialogHeldQueue: string[] = [];
@@ -3165,7 +3410,16 @@ class Bridge {
     }
     g[BRIDGE_KEY] = this;
     tapSink.bridge = this;
-    if (!RELAY_URL || (!TOKEN && !HAS_DEVICE_TOKEN)) {
+    // 加密阶段 1：启动先加载设备钥。钥模式下设备可以没有任何令牌（配对不再签发），
+    // 故连接门槛把「持有有效设备钥」也算一份凭据；缺失/损坏时 loadDeviceKey 给出
+    // warning 并回退令牌——在这里打进日志明示，绝不静默。
+    const keyLoad = loadDeviceKey(process.env);
+    this.deviceKey = keyLoad.key || null;
+    if (keyLoad.warning) log(keyLoad.warning);
+    if (this.deviceKey) {
+      log("设备钥已加载，钥模式待命（deviceId " + this.deviceKey.deviceId + "，keyFp " + this.deviceKey.keyFp + "）");
+    }
+    if (!RELAY_URL || (!TOKEN && !HAS_DEVICE_TOKEN && !this.deviceKey)) {
       log("PI_REMOTE_RELAY 为空，或 PI_REMOTE_TOKEN 与设备令牌都没配，扩展不连接");
       return;
     }
@@ -3368,7 +3622,15 @@ class Bridge {
         this.probeSentAt = 0;
         this.confirmedRoom = null;
         log("已连接 relay:", RELAY_URL);
-        this.send(authFrame(process.env, this.platform));
+        // 钥模式：每条连接生成新 clientNonce 并随 auth 帧带出（§3.3），挑战回来时按它签名；
+        // 无钥时 keyAuth 为 null，auth 帧与旧版逐字节一致。
+        this.pendingClientNonce = null;
+        let keyAuth: any = null;
+        if (this.deviceKey) {
+          this.pendingClientNonce = crypto.randomBytes(CLIENT_NONCE_BYTES).toString("base64");
+          keyAuth = { deviceId: this.deviceKey.deviceId, keyFp: this.deviceKey.keyFp, clientNonce: this.pendingClientNonce };
+        }
+        this.send(authFrame(process.env, this.platform, keyAuth));
         this.armAuthDeadline(ws);
         // 重连后补注册 + 对齐镜像，并重发当前忙闲与用量。两者都只在变化时推送，
         // relay 重启后它缓存的值没了，不重发的话新订阅者一直拿不到。
@@ -3463,6 +3725,9 @@ class Bridge {
     this.clearAuthDeadline();
     this.confirmedRoom = null;
     this.probeSentAt = 0;
+    // 钥模式的连接级状态一并作废：clientNonce 单次有效、ACK 请求标记按连接重计
+    this.pendingClientNonce = null;
+    this.ackRequestSent = false;
     // 接管门控随连接作废（重连后 relay 补发当前值）；持留 dialog 交回本机弹窗——
     // 答案通道已断，继续持留只会让调用方干等到超时（fail-open 红线）
     this.dialogGateHasViewers = false;
@@ -4889,6 +5154,66 @@ class Bridge {
     if (this.relayAuth === "legacy" && HAS_DEVICE_TOKEN) log("relay 没接受设备令牌，按共享令牌登录了（检查 PI_REMOTE_DEVICE_ID / PI_REMOTE_DEVICE_TOKEN）");
   }
 
+  /** 钥鉴权成功后的 ACK 自持对账（加密阶段 1，§3.2）：已持有 → 记 ackFp 并与
+   *  auth_result.ackFp 对账（不一致只告警，key_mismatch 的正式警告帧归 relay）；
+   *  未持有 → 每条连接至多发一次 content_key_request，等在线持钥端经 grant 交付。
+   *  本阶段 ACK 只自持不用（正文加密在阶段 3），但持有状态必须日志可查。 */
+  noteKeyAuthed(msg: any) {
+    const key = this.deviceKey;
+    if (!key) return;
+    const accountId = deviceIdentity(process.env, this.platform).accountId;
+    const ack = heldContentKey(key, accountId);
+    if (ack) {
+      const fp = contentKeyFingerprint(ack);
+      log("钥鉴权成功，本账号 ACK 已持有（ackFp " + fp + "）");
+      if (typeof msg.ackFp === "string" && msg.ackFp && msg.ackFp !== fp) {
+        log("警告：relay 侧 ackFp（" + msg.ackFp + "）与本机 ACK 指纹（" + fp + "）不一致，各端内容钥可能已分叉，需重新交付或轮换");
+      }
+      return;
+    }
+    if (this.ackRequestSent) return;
+    this.ackRequestSent = true;
+    log("钥鉴权成功，本账号尚无 ACK，已发 content_key_request 等待在线持钥端交付");
+    this.send({ type: "content_key_request", want: accountId }, { essential: true });
+  }
+
+  /** 收到 ACK 交付（content_key_grant）：只收指名给本机指纹的；交付方指纹与 box 公钥
+   *  随帧带来（from / fromBoxPub，relay 转发时盖戳），缺一即无法解包、丢弃并记日志。
+   *  解出后存回钥文件（读-改-写），写失败则只留内存并告警。本机已有 ACK 时同样接受
+   *  （ACK 轮换后的新钥靠同一通道覆盖）。 */
+  acceptContentKeyGrant(msg: any) {
+    const key = this.deviceKey;
+    if (!key) return;
+    if (typeof msg.to === "string" && msg.to && msg.to !== key.keyFp) {
+      log("收到指名给其他设备（to " + msg.to + "）的 content_key_grant，已忽略");
+      return;
+    }
+    const granterFp = typeof msg.from === "string" ? msg.from : "";
+    const granterBoxPub = typeof msg.fromBoxPub === "string"
+      ? msg.fromBoxPub
+      : typeof msg.boxPub === "string"
+        ? msg.boxPub
+        : msg.from && typeof msg.from === "object" && typeof msg.from.boxPub === "string"
+          ? msg.from.boxPub
+          : "";
+    if (!granterFp || !granterBoxPub) {
+      log("content_key_grant 缺交付方指纹或 box 公钥，无法解包，已丢弃");
+      return;
+    }
+    const accountId = deviceIdentity(process.env, this.platform).accountId;
+    const ack = unwrapAckGrant(key, accountId, msg, granterFp, granterBoxPub);
+    if (!ack) {
+      log("content_key_grant 解包失败（账号/指纹上下文对不上或密文被篡改），已丢弃");
+      return;
+    }
+    const saved = storeAckInKeyFile(key, accountId, ack);
+    if (!saved) key.contentKeys[accountId] = ack.toString("base64");
+    log(
+      "已收到本账号 ACK（ackFp " + contentKeyFingerprint(ack) + "）" +
+        (saved ? "并存入钥文件" : "；警告：钥文件写回失败，ACK 只在本进程内存中持有，重启后需重新交付"),
+    );
+  }
+
   /** 镜像消息 = 当前分支路径（mirrorMessages）；runtime 失效时 getter 会抛 */
   mirror(): any[] | null {
     const sm = this.ctx && this.ctx.sessionManager;
@@ -5217,6 +5542,34 @@ class Bridge {
       this.authFailed = false;
       this.backoff = RECONNECT_MIN;
       this.applyRelayCaps(msg);
+      // 加密阶段 1：本机持有设备钥且 relay 按钥接受（auth:"key"）才走 ACK 自持逻辑；
+      // relay 没走钥鉴权（旧 relay 按令牌登录）只记一行——本次连接就是令牌连接，不补降级动作。
+      if (this.deviceKey) {
+        if (this.relayAuth === "key") this.noteKeyAuthed(msg);
+        else log("本机持有设备钥，但 relay 未走钥鉴权（auth=" + (this.relayAuth || "null") + "），按令牌连接运行，ACK 逻辑不启用");
+      }
+      return;
+    }
+    if (msg.type === "auth_challenge") {
+      // 加密阶段 1（§3.3）：relay 对钥 auth 的挑战。用 DIK 对域分隔输入签名回 auth_response，
+      // 仍走既有 15 秒鉴权截止（armAuthDeadline 在 onopen 已挂），不另设预算。
+      // 签不出/材料不合口径就不作答——绝不改走令牌重发 auth（relay 拒降级，桥也不自作主张），
+      // 本次连接等截止关闭即失败，日志写清。
+      if (!this.deviceKey || !this.pendingClientNonce) {
+        log("收到 auth_challenge 但本机不在钥模式，忽略（不作答）");
+        return;
+      }
+      const sig = signAuthChallenge(this.deviceKey, msg.nonce, this.pendingClientNonce);
+      if (!sig) {
+        log("auth_challenge 材料不合口径或签名失败，本次连接不作答（等待鉴权截止关闭）");
+        return;
+      }
+      this.send({ type: "auth_response", sig }, { essential: true });
+      return;
+    }
+    if (msg.type === "content_key_grant") {
+      // 加密阶段 1（§3.2）：在线持钥端经 relay 透传来的 ACK 交付，解包后存回钥文件自持。
+      this.acceptContentKeyGrant(msg);
       return;
     }
     if (msg.type === "error") {
@@ -8787,5 +9140,5 @@ function usageEmptySnapshot(options: any = {}): any {
   });
 }
 
-export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary };
+export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, storeAckInKeyFile };
 

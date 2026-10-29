@@ -732,6 +732,213 @@ function writeEnvVars(envPath, vars) {
   restrictEnvFileMode(envPath);
 }
 
+/* ---------- 设备身份钥（加密阶段 1 · attach 侧，设计 A §3.1/§3.2/§7） ----------
+ * 钥文件与 .env 同目录（pi-remote-device.key.json，0600），格式：
+ *   {v:1, deviceId, createdAt, sign:{alg:"ed25519",pub,priv}, box:{alg:"p256",pub,priv}, contentKeys?}
+ * pub/priv 均为 der base64（pub=spki、priv=pkcs8）。私钥与 ACK 只许进这个文件：
+ * .env 里只写一行路径 PI_REMOTE_DEVICE_KEY_FILE，钥料永不进 .env、永不打印。
+ * 扩展侧将来读同一文件完成签名与 ACK 取用——读写函数都收在本段并导出，形状不许另立第二套。 */
+
+const DEVICE_KEY_FILE_NAME = "pi-remote-device.key.json";
+const DEVICE_KEY_PATH_VAR = "PI_REMOTE_DEVICE_KEY_FILE";
+
+/** 公钥指纹：与 relay/util.js 的 keyFingerprint 同源同算法（公钥字节 SHA-256 前 8 字节 = 16 位 hex），两端对拍必须一致 */
+function keyFingerprint(pub) {
+  const buf = Buffer.isBuffer(pub) ? pub : Buffer.from(String(pub), "base64");
+  return crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
+}
+
+/** 指纹人读形态：与 relay/util.js 的 formatFingerprint 同口径（每 4 位 hex 一组空格分隔） */
+function formatFingerprint(fp) {
+  const hex = String(fp).replace(/[^0-9a-f]/gi, "").toLowerCase();
+  return hex.replace(/(.{4})(?=.)/g, "$1 ");
+}
+
+/**
+ * 钥文件路径解析：显式入参 > 环境变量 > .env 文件里的 PI_REMOTE_DEVICE_KEY_FILE > .env 同目录缺省名。
+ * attach 落盘时只写绝对路径；手写相对路径按 .env 所在目录解析，不许随 cwd 漂移。
+ */
+function deviceKeyFilePath(envPath, opts = {}) {
+  if (opts.keyFilePath) return path.resolve(String(opts.keyFilePath));
+  const environ = opts.env || process.env;
+  const fromEnv = environ && typeof environ[DEVICE_KEY_PATH_VAR] === "string" ? environ[DEVICE_KEY_PATH_VAR].trim() : "";
+  if (fromEnv) return path.resolve(fromEnv);
+  const dir = path.dirname(envPath || ENV_PATH);
+  if (envPath && fs.existsSync(envPath)) {
+    try {
+      const vars = parseEnv(fs.readFileSync(envPath, "utf8"));
+      const fromFile = typeof vars[DEVICE_KEY_PATH_VAR] === "string" ? vars[DEVICE_KEY_PATH_VAR].trim() : "";
+      if (fromFile) return path.resolve(dir, fromFile);
+    } catch {}
+  }
+  return path.join(dir, DEVICE_KEY_FILE_NAME);
+}
+
+/** 钥文件落盘：临时文件 + 0600 + rename（沿 writeEnvVars 的原子写纪律）；收紧失败直接报错，不降级成宽权限 */
+function writeDeviceKeyFile(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.rmSync(tmp, { force: true });
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {}
+    throw e;
+  }
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch (e) {
+    throw new Error(`无法把 ${file} 的权限收紧到 0600（里面有私钥）：${e && e.message ? e.message : e}`);
+  }
+}
+
+/** 把钥文件里的 der base64 还原成 KeyObject，并校验公钥确由私钥导出（不成对即坏钥）；校验失败抛错 */
+function deviceKeyObjects(keys) {
+  const signPriv = crypto.createPrivateKey({ key: Buffer.from(keys.sign.priv, "base64"), format: "der", type: "pkcs8" });
+  const boxPriv = crypto.createPrivateKey({ key: Buffer.from(keys.box.priv, "base64"), format: "der", type: "pkcs8" });
+  const signPub = crypto.createPublicKey(signPriv).export({ format: "der", type: "spki" }).toString("base64");
+  const boxPub = crypto.createPublicKey(boxPriv).export({ format: "der", type: "spki" }).toString("base64");
+  if (signPub !== keys.sign.pub || boxPub !== keys.box.pub) throw new Error("公钥与私钥对不上");
+  return { signPriv, boxPriv };
+}
+
+const DEVICE_KEY_CORRUPT_HINT = "如确认要弃用这台设备的这套身份钥：先备份该文件，再删除它并重新配对（会生成新钥，旧钥登记随之失效）";
+
+/**
+ * 读钥文件并完整校验（形状 + 私钥可用 + 公私钥成对）：不存在返回 null；
+ * 存在但损坏直接抛错并给处理办法——绝不静默当作无钥（静默回退等于把损坏伪装成新设备）。
+ */
+function loadDeviceKeys(file) {
+  if (!fs.existsSync(file)) return null;
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+  } catch (e) {
+    throw new Error(`设备钥文件损坏（${file}）：${e && e.message ? e.message : e}。${DEVICE_KEY_CORRUPT_HINT}`);
+  }
+  const bad = (why) => new Error(`设备钥文件形状不对（${file}）：${why}。${DEVICE_KEY_CORRUPT_HINT}`);
+  if (!data || typeof data !== "object" || Array.isArray(data) || data.v !== 1) throw bad("缺 v:1");
+  if (!data.sign || data.sign.alg !== "ed25519" || typeof data.sign.pub !== "string" || !data.sign.pub || typeof data.sign.priv !== "string" || !data.sign.priv) throw bad("sign 段缺失或算法不是 ed25519");
+  if (!data.box || data.box.alg !== "p256" || typeof data.box.pub !== "string" || !data.box.pub || typeof data.box.priv !== "string" || !data.box.priv) throw bad("box 段缺失或算法不是 p256");
+  if (data.contentKeys != null && (typeof data.contentKeys !== "object" || Array.isArray(data.contentKeys))) throw bad("contentKeys 不是对象");
+  try {
+    deviceKeyObjects(data);
+  } catch (e) {
+    throw bad("私钥不可用或与公钥不成对：" + (e && e.message ? e.message : e));
+  }
+  return data;
+}
+
+/** 生成一套新身份钥的数据对象（DIK=Ed25519 签名、DBK=P-256 协商，设计 §2.1/§3.1；编码长度与协议 limits 对齐） */
+function generateDeviceKeys(deviceId = "") {
+  const sign = crypto.generateKeyPairSync("ed25519");
+  const box = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const enc = (key, type) => key.export({ format: "der", type }).toString("base64");
+  return {
+    v: 1,
+    deviceId: typeof deviceId === "string" ? deviceId : "",
+    createdAt: Date.now(),
+    sign: { alg: "ed25519", pub: enc(sign.publicKey, "spki"), priv: enc(sign.privateKey, "pkcs8") },
+    box: { alg: "p256", pub: enc(box.publicKey, "spki"), priv: enc(box.privateKey, "pkcs8") },
+  };
+}
+
+/**
+ * 确保本机有身份钥：已有就读（损坏报错、绝不覆盖）；没有就生成并以 0600 落盘。
+ * 返回 { file, keys, created }。deviceId 是生成当下已知的设备编号（可空，配对成功后由 persistPairResult 回填）。
+ */
+function ensureDeviceKeys(envPath, opts = {}) {
+  const file = deviceKeyFilePath(envPath, opts);
+  const existing = loadDeviceKeys(file);
+  if (existing) return { file, keys: existing, created: false };
+  const keys = generateDeviceKeys(typeof opts.deviceId === "string" ? opts.deviceId : "");
+  writeDeviceKeyFile(file, keys);
+  return { file, keys, created: true };
+}
+
+/**
+ * 配对持有证明 PoP（设计 §3.2/§7）：用 DIK 对「裸配对码」签名——裸码指归一后的大写无横线码
+ * （normalizePairCode 口径，与 relay/pairing.js 的 popPayload 同口径：签裸码的 UTF-8 字节），
+ * 不加域分隔（§7 对 pop 只定到裸码；auth / key_update 的签名才有各自的域分隔串，不许混用）。
+ * relay 用帧里同送的 signPub 对归一后的码验签，通过才登记公钥。入参必须是归一后的裸码。
+ */
+function signPairPop(keys, bareCode) {
+  const { signPriv } = deviceKeyObjects(keys);
+  return crypto.sign(null, Buffer.from(String(bareCode), "utf8"), signPriv).toString("base64");
+}
+
+/** 本机生成一枚配对码（带钥 pair_request 用）：字母表/长度与 relay 的 newPairCode 同源（协议 limits），随机源同为 crypto.randomInt */
+function newDevicePairCode() {
+  const { pairCodeLength, pairCodeAlphabet } = PROTOCOL.limits;
+  let out = "";
+  for (let i = 0; i < pairCodeLength; i++) out += pairCodeAlphabet[crypto.randomInt(pairCodeAlphabet.length)];
+  return out;
+}
+
+/** 读某账号的 ACK（base64）；没有返回 ""。ACK 只从钥文件读，永不打印、永不进 .env */
+function accountAckOf(keys, accountId) {
+  const all = keys && keys.contentKeys && typeof keys.contentKeys === "object" ? keys.contentKeys : {};
+  const v = all[accountId];
+  return typeof v === "string" && v ? v : "";
+}
+
+/**
+ * 写某账号的 ACK：先重新读盘再改再写——钥文件将来还有扩展侧同写，拿着旧快照整份覆写会把
+ * 对方刚写进来的 ACK 冲掉；只动 contentKeys[accountId]，其余字段原样保留。返回最新钥对象。
+ */
+function storeAccountAck(file, accountId, ackB64) {
+  const keys = loadDeviceKeys(file);
+  if (!keys) throw new Error(`设备钥文件不存在（${file}），无法存账号内容钥`);
+  const all = keys.contentKeys && typeof keys.contentKeys === "object" ? { ...keys.contentKeys } : {};
+  all[accountId] = ackB64;
+  keys.contentKeys = all;
+  writeDeviceKeyFile(file, keys);
+  return keys;
+}
+
+/**
+ * 确保本机持有某账号的 ACK：已有直接返回；没有才生成 32B 随机并存入钥文件。
+ * 只许由 finalizePairKeys 在「本设备是本账号首台钥设备」时调——ACK 全账号一把，
+ * 各端各生成一把就是钥分叉，所以这个函数不许被随手调用；已有 ACK 时永不重生成。
+ */
+function ensureAccountAck(file, keys, accountId) {
+  const have = accountAckOf(keys, accountId);
+  if (have) return { ack: have, created: false, keys };
+  const ack = crypto.randomBytes(32).toString("base64");
+  const next = storeAccountAck(file, accountId, ack);
+  return { ack, created: true, keys: next };
+}
+
+/** 配对成功后把 relay 签发的 deviceId 回填钥文件（生成钥时可能还没有编号）；先重新读盘再改，已一致不动文件 */
+function syncDeviceKeyId(file, keys, deviceId) {
+  if (!deviceId) return keys;
+  const fresh = loadDeviceKeys(file) || keys;
+  if (fresh.deviceId === deviceId) return fresh;
+  fresh.deviceId = deviceId;
+  writeDeviceKeyFile(file, fresh);
+  return fresh;
+}
+
+/**
+ * 钥形态配对成功后的 ACK 自持判定（设计 §8 阶段 1，persistPairResult 在 result.keyRegistered 时调）：
+ * 「账号已有 ACK」的信号任一在场 → 本机不生成，保持无内容钥状态等交付/索取：contentKeyGrant
+ * （持钥端正在交付）、ackFp（relay 所知本账号内容钥指纹）、hasKeyHolder（relay 报本次登记前
+ * 本账号已有其他已登记公钥的设备——在册持钥端存在的代理信号；上线后桥走 content_key_request
+ * 索取）。信号全缺席（旧 relay 也全缺席）→ 本机就是首台钥设备，生成并自持。
+ * 本机已有该账号 ACK 时一律不动（ensureAccountAck 内部保证）。
+ */
+function finalizePairKeys(keyCtx, result) {
+  const accountId = result.accountId || "admin";
+  if (accountAckOf(keyCtx.keys, accountId)) return;
+  if (result.contentKeyGrant || (typeof result.ackFp === "string" && result.ackFp)) return;
+  if (result.hasKeyHolder === true) return;
+  keyCtx.keys = ensureAccountAck(keyCtx.file, keyCtx.keys, accountId).keys;
+}
+
 /** local 通道鉴权帧（attach 窗口）：有设备令牌就按设备鉴权；共享 token 照带，旧 relay 只认它 */
 function attachAuthFrame({ token, deviceId, deviceToken, platform = HOST_PLATFORM }) {
   const frame = {
@@ -749,11 +956,76 @@ function attachAuthFrame({ token, deviceId, deviceToken, platform = HOST_PLATFOR
   return frame;
 }
 
+/** 挑战-签名的 clientNonce：16 字节随机 base64（relay 口径 16–64 字节，每次连接新生成一份） */
+function newClientNonce() {
+  return crypto.randomBytes(16).toString("base64");
+}
+
+/**
+ * 钥模式鉴权帧（设计 §3.3）：带 keyFp 即走挑战路，按协议不带 deviceToken（带了反而会被
+ * relay 当降级拒绝）；caps 在窗口既有能力上加 crypto.auth。clientNonce 由调用方生成并
+ * 留存（应答签名要用同一份）；没传时本函数生成，调用方从返回帧的 clientNonce 读回。
+ */
+function attachKeyAuthFrame({ deviceId, keys, platform = HOST_PLATFORM, clientNonce }) {
+  return {
+    type: "auth",
+    role: "local",
+    proto: PROTOCOL.proto,
+    caps: [...CLIENT_CAPS, "crypto.auth"],
+    client: { kind: "attach", version: ATTACH_VERSION, platform: platformId(platform) },
+    deviceId,
+    keyFp: keyFingerprint(keys.sign.pub),
+    clientNonce: clientNonce || newClientNonce(),
+  };
+}
+
+/**
+ * 挑战应答签名（设计 §3.3，与 relay/pairing.js 的 authPayload 同口径，两处不许漂移）：
+ * Ed25519 签 域分隔串 "pi-remote-auth-v1" ‖ deviceId ‖ relayNonce ‖ clientNonce（nonce 均为原始字节）。
+ */
+function signAuthResponse(keys, deviceId, relayNonceB64, clientNonceB64) {
+  const { signPriv } = deviceKeyObjects(keys);
+  const payload = Buffer.concat([
+    Buffer.from("pi-remote-auth-v1", "utf8"),
+    Buffer.from(String(deviceId), "utf8"),
+    Buffer.from(String(relayNonceB64), "base64"),
+    Buffer.from(String(clientNonceB64), "base64"),
+  ]);
+  return crypto.sign(null, payload, signPriv).toString("base64");
+}
+
+/**
+ * pair_result 的成功形态判定（pair 与 pair_request 两条路径共用，不许各写一份）：
+ *  - 令牌形态：带 deviceToken（旧 relay、或未走钥登记）——原样，与旧行为逐字节一致；
+ *  - 钥形态（设计 §3.2/§7）：keyRegistered:true 且无 deviceToken。钥设备不再下发令牌，
+ *    「没令牌」不是失败；contentKeyGrant / ackFp / hasKeyHolder 若在场原样带回（ACK 交付判定在落盘处）。
+ * 都不满足 → 按失败归一 {ok:false, code, error}。
+ */
+function pairResultFromMsg(msg) {
+  if (!msg || msg.type !== "pair_result") return null;
+  if (msg.ok && typeof msg.deviceId === "string" && msg.deviceId) {
+    if (typeof msg.deviceToken === "string" && msg.deviceToken) {
+      return { ok: true, accountId: msg.accountId || "admin", deviceId: msg.deviceId, deviceToken: msg.deviceToken };
+    }
+    if (msg.keyRegistered === true) {
+      const out = { ok: true, accountId: msg.accountId || "admin", deviceId: msg.deviceId, deviceToken: "", keyRegistered: true };
+      if (msg.contentKeyGrant && typeof msg.contentKeyGrant === "object") out.contentKeyGrant = msg.contentKeyGrant;
+      if (typeof msg.ackFp === "string" && msg.ackFp) out.ackFp = msg.ackFp;
+      if (typeof msg.hasKeyHolder === "boolean") out.hasKeyHolder = msg.hasKeyHolder;
+      return out;
+    }
+  }
+  return { ok: false, code: msg.code || "pair_invalid", error: msg.error || PROTOCOL.errors.pair_invalid.message };
+}
+
 /**
  * 配对：连 relay 的 7001，第一帧发 pair{code, device}，等 pair_result。
- * 成功返回 {ok, accountId, deviceId, deviceToken}；失败返回 {ok:false, code, error}。不写文件，由调用方落盘。
+ * 成功返回 {ok, accountId, deviceId, deviceToken}（钥形态另带 keyRegistered:true、deviceToken 为空）；
+ * 失败返回 {ok:false, code, error}。不写文件，由调用方落盘。
+ * deviceKeys 在场时帧里带 keys{signPub, boxPub, pop}（设计 §7）；旧 relay 不认 keys 字段、
+ * 照旧回令牌形态，本函数两种都收——新 attach × 旧 relay 的行为与今天一致。
  */
-function requestPairing({ relay, code, deviceId, deviceName, deviceToken, platform = HOST_PLATFORM, WebSocketImpl, timeoutMs = PAIR_TIMEOUT_MS }) {
+function requestPairing({ relay, code, deviceId, deviceName, deviceToken, deviceKeys, platform = HOST_PLATFORM, WebSocketImpl, timeoutMs = PAIR_TIMEOUT_MS }) {
   return new Promise((resolve) => {
     let WS = WebSocketImpl;
     if (!WS) {
@@ -784,11 +1056,19 @@ function requestPairing({ relay, code, deviceId, deviceName, deviceToken, platfo
     }
     const device = { name: deviceName || defaultDeviceName(platform), platform: platformId(platform) };
     if (deviceId) device.id = deviceId;
+    // 码在本机先归一（CLI 路径 parseArgs 已归一，直接调本函数的可能带展示形态 XXXX-XXXX）：
+    // relay 按归一码查表、按归一码验 pop，两处必须同口径；归一失败的怪码原样发，让 relay 按旧路回 pair_invalid
+    let frameCode = String(code == null ? "" : code);
+    try {
+      frameCode = normalizePairCode(frameCode);
+    } catch {}
     const onOpen = () => {
       try {
-        const frame = { type: "pair", proto: PROTOCOL.proto, code, device };
+        const frame = { type: "pair", proto: PROTOCOL.proto, code: frameCode, device };
         // 重新配对已有设备时 relay 要求出示旧设备令牌；首次配对/撤销后重配没有令牌也能过
         if (deviceToken) frame.deviceToken = String(deviceToken);
+        // 钥登记（设计 §7）：pop 签归一后的裸码，relay 验签通过才登记公钥
+        if (deviceKeys) frame.keys = { signPub: deviceKeys.sign.pub, boxPub: deviceKeys.box.pub, pop: signPairPop(deviceKeys, frameCode) };
         ws.send(JSON.stringify(frame));
       } catch (e) {
         finish({ ok: false, code: "offline", error: "发送配对请求失败：" + (e && e.message ? e.message : e) });
@@ -803,11 +1083,7 @@ function requestPairing({ relay, code, deviceId, deviceName, deviceToken, platfo
       }
       if (!msg) return;
       if (msg.type === "pair_result") {
-        if (msg.ok && typeof msg.deviceId === "string" && typeof msg.deviceToken === "string" && msg.deviceToken) {
-          finish({ ok: true, accountId: msg.accountId || "admin", deviceId: msg.deviceId, deviceToken: msg.deviceToken });
-        } else {
-          finish({ ok: false, code: msg.code || "pair_invalid", error: msg.error || PROTOCOL.errors.pair_invalid.message });
-        }
+        finish(pairResultFromMsg(msg));
         return;
       }
       if (msg.type === "error" && msg.code === "unknown_type") {
@@ -1379,6 +1655,10 @@ class AttachController {
     this.relay = opts.relay || "";
     this.token = opts.token || "";
     this.deviceToken = opts.deviceToken || "";
+    /** 设备身份钥（阶段 1）：main() 从钥文件加载后传入；非空且有 deviceId 时窗口走挑战-签名鉴权，不再用令牌 */
+    this.deviceKeys = opts.deviceKeys || null;
+    /** 本次连接 auth 帧带出的 clientNonce：auth_challenge 回来时按它签名；每次 connect 新生成 */
+    this.pendingClientNonce = "";
     /** relay 回的鉴权方式：token（设备令牌）/ legacy（共享令牌）；旧 relay 不回为 null */
     this.authMode = null;
     this.accountId = opts.accountId || "admin";
@@ -1787,7 +2067,12 @@ class AttachController {
       this.backoff = RECONNECT_MIN;
       this.lastSeen = Date.now();
       this.paintStatus();
-      this.send(attachAuthFrame({ token: this.token, deviceId: this.deviceId, deviceToken: this.deviceToken, platform: this.platform }));
+      if (this.deviceKeys && this.deviceId) {
+        this.pendingClientNonce = newClientNonce();
+        this.send(attachKeyAuthFrame({ deviceId: this.deviceId, keys: this.deviceKeys, platform: this.platform, clientNonce: this.pendingClientNonce }));
+      } else {
+        this.send(attachAuthFrame({ token: this.token, deviceId: this.deviceId, deviceToken: this.deviceToken, platform: this.platform }));
+      }
     };
     const onMessage = (data) => {
       if (this.ws !== ws) return;
@@ -2101,10 +2386,22 @@ class AttachController {
 
   handleMessage(msg) {
     if (!msg || typeof msg.type !== "string") return;
+    if (msg.type === "auth_challenge") {
+      // 钥模式才作答：用 DIK 对挑战签名回 auth_response。材料不合口径就别乱回——
+      // 不作答等 relay 的鉴权截止关连接（与扩展同口径），错误会在 auth 失败路径上显形
+      if (this.deviceKeys && this.pendingClientNonce) {
+        try {
+          this.send({ type: "auth_response", sig: signAuthResponse(this.deviceKeys, this.deviceId, msg.nonce, this.pendingClientNonce) });
+        } catch (e) {
+          this.writeOut("鉴权挑战应答失败（本机钥不可用）：" + (e && e.message ? e.message : e));
+        }
+      }
+      return;
+    }
     if (msg.type === "auth_result") {
       if (!msg.ok) {
         const reason = "relay 鉴权失败：" + (msg.error || "token 不正确");
-        const repair = msg.code === "device_revoked" || msg.code === "device_mismatch" || (this.deviceToken && msg.code === "auth_failed");
+        const repair = msg.code === "device_revoked" || msg.code === "device_mismatch" || ((this.deviceToken || this.deviceKeys) && msg.code === "auth_failed");
         this.shutdown(repair ? `${reason}。在网页上生成配对码后运行：${pairHint(this.platform)}` : reason, 1);
         return;
       }
@@ -3013,9 +3310,27 @@ async function doctorMain(args, envPath, opts = {}) {
   else add("ok", "relay 地址", cfg.relay);
   if (!cfg.deviceId) add("fail", "没有设备编号", "运行 " + initHint(platform) + "、" + pairHint(platform) + " 或 " + linkHint(platform));
   else add("ok", "设备编号", cfg.deviceId);
+  // 设备身份钥（阶段 1）先读一次：钥设备按设计就没有设备令牌，令牌行的判定要参考它（只读，不生成）
+  const keyFile = deviceKeyFilePath(envPath, { env: opts.env || process.env });
+  let devKeys = null;
+  let keyErr = null;
+  try {
+    devKeys = loadDeviceKeys(keyFile);
+  } catch (e) {
+    keyErr = e;
+  }
   if (cfg.deviceToken) add("ok", "设备令牌", "已配对（不会打印）");
   else if (cfg.token) add("warn", "只有共享令牌", "建议在网页「添加或管理设备」生成配对码，再运行 " + pairHint(platform) + "；或运行 " + linkHint(platform) + " 在本机出示二维码扫码链接");
+  else if (devKeys) add("ok", "设备令牌", "无（本机已改用身份钥配对，见下一行）");
   else add("fail", "没有任何令牌", "先配对：" + pairHint(platform) + "，或扫码链接：" + linkHint(platform));
+
+  // 身份钥行：只展示在不在、指纹、ACK 持仓数；私钥与 ACK 永不打印
+  if (keyErr) add("fail", "设备身份钥损坏", keyErr && keyErr.message ? keyErr.message : String(keyErr));
+  else if (devKeys) {
+    add("ok", "设备身份钥", `指纹 ${formatFingerprint(keyFingerprint(devKeys.sign.pub))} · ${keyFile}`);
+    const ackCount = devKeys.contentKeys && typeof devKeys.contentKeys === "object" ? Object.keys(devKeys.contentKeys).filter((k) => typeof devKeys.contentKeys[k] === "string" && devKeys.contentKeys[k]).length : 0;
+    if (ackCount > 0) add("ok", "账号内容钥", `本机持有 ${ackCount} 个账号的 ACK（只存钥文件，从不打印）`);
+  } else add("warn", "设备身份钥", "尚未生成（配对 " + pairHint(platform) + " 或 " + linkHint(platform) + " 时自动生成）；当前仍走令牌鉴权");
 
   if (cfg.relay) {
     const safety = attachRelaySafetyError(cfg.relay, { allowRemote: args.allowRemote });
@@ -3268,10 +3583,18 @@ async function main(argv) {
     }
     process.on("exit", () => keeper.killAllSync());
   }
+  // 身份钥（阶段 1）：钥文件在且完好 → 窗口走挑战-签名鉴权；损坏时按设计 §3.1 明示后回退令牌路（不许静默）
+  let deviceKeys = null;
+  try {
+    deviceKeys = loadDeviceKeys(deviceKeyFilePath(envPath));
+  } catch (e) {
+    console.error("设备钥文件不可用，本次窗口回退令牌鉴权：" + (e && e.message ? e.message : e));
+  }
   const ctl = new AttachController({
     relay: cfg.relay,
     token: cfg.token,
     deviceToken: cfg.deviceToken,
+    deviceKeys,
     accountId: cfg.accountId,
     deviceId: cfg.deviceId,
     deviceName: cfg.deviceName,
@@ -3300,14 +3623,25 @@ async function main(argv) {
   return 0;
 }
 
-/** --pair / --link 共用落盘：把签发到的设备编号 + 令牌写进 .env（令牌不打印），写完收紧文件权限 */
-function persistPairResult(args, envPath, cfg, result) {
-  const vars = { PI_REMOTE_DEVICE_ID: result.deviceId, PI_REMOTE_DEVICE_TOKEN: result.deviceToken };
+/**
+ * --pair / --link 共用落盘：把签发结果写进 .env（令牌不打印），写完收紧文件权限。
+ * keyCtx 在场时一并写钥文件路径（只有路径、没有钥料——扩展凭它找钥文件，设计 §3.1）。
+ * 钥形态（result.keyRegistered）：没有令牌可写，把 .env 里的旧设备令牌清空——relay 在
+ * 登记钥时已作废该设备的令牌行（设计 §3.4），本机留着残值只会诱使扩展误走令牌路；
+ * 随后回填钥文件的 deviceId，并在本机是首台钥设备时生成自持 ACK（finalizePairKeys）。
+ */
+function persistPairResult(args, envPath, cfg, result, keyCtx = null) {
+  const vars = { PI_REMOTE_DEVICE_ID: result.deviceId, PI_REMOTE_DEVICE_TOKEN: result.deviceToken || "" };
+  if (keyCtx) vars[DEVICE_KEY_PATH_VAR] = keyCtx.file;
   if (args.relay && args.relay !== cfg.relay) vars.PI_REMOTE_RELAY = args.relay;
   if (!cfg.deviceName || !fs.existsSync(envPath)) vars.PI_REMOTE_DEVICE_NAME = cfg.deviceName;
   writeEnvVars(envPath, vars);
   // 设备令牌已落盘：再显式收紧一次，避免旧 .env 的宽权限被 writeEnvVars 之外的路径沿用
   restrictEnvFileMode(envPath);
+  if (keyCtx) {
+    keyCtx.keys = syncDeviceKeyId(keyCtx.file, keyCtx.keys, result.deviceId);
+    if (result.keyRegistered) finalizePairKeys(keyCtx, result);
+  }
 }
 
 /** --pair：换设备令牌并写进 .env；已有的设备编号带上，名册和会话清单保持不变 */
@@ -3328,6 +3662,15 @@ async function pairMain(args, envPath, opts = {}) {
     }
     if (!isLocalRelayHost(relayHostOf(relay) || "")) printRemoteRelayWarning(relay, envPath);
   }
+  // 身份钥（阶段 1）：配对前确保本机有钥（没有就生成）；钥文件损坏直接报错停下，
+  // 不许悄悄退回令牌配对——那会把损坏伪装成「新设备」，还可能把已登记的身份顶掉
+  let keyCtx = null;
+  try {
+    keyCtx = ensureDeviceKeys(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+  } catch (e) {
+    err(e && e.message ? e.message : String(e));
+    return 1;
+  }
   out(`正在向 ${relay} 配对…`);
   const result = await requestPairing({
     relay,
@@ -3335,6 +3678,7 @@ async function pairMain(args, envPath, opts = {}) {
     deviceId: cfg.deviceId,
     deviceName: cfg.deviceName,
     deviceToken: cfg.deviceToken,
+    deviceKeys: keyCtx.keys,
     platform: opts.platform || HOST_PLATFORM,
     WebSocketImpl: opts.WebSocketImpl,
     timeoutMs: opts.timeoutMs,
@@ -3343,9 +3687,17 @@ async function pairMain(args, envPath, opts = {}) {
     err(`配对失败（${result.code}）：${result.error}`);
     return 1;
   }
-  persistPairResult(args, envPath, cfg, result);
-  out(`配对成功：设备 ${result.deviceId}，令牌已写入 ${envPath}（令牌不打印，.env 权限 600）`);
-  out("下一步：重启正在运行的 pi（扩展启动时读取令牌），然后运行 attach 打开连接窗口。");
+  persistPairResult(args, envPath, cfg, result, keyCtx);
+  if (result.keyRegistered) {
+    out(`配对成功：设备 ${result.deviceId}，身份钥已登记（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}），本机不再使用设备令牌`);
+    out(`钥文件：${keyCtx.file}（0600，含私钥，切勿外传）；.env 里只写了它的路径`);
+    if (accountAckOf(keyCtx.keys, result.accountId)) out("本机持有本账号的内容钥 ACK（只存钥文件，从不打印）。");
+    else if (result.hasKeyHolder === true) out("本账号已有持钥设备，本机尚未持有内容钥（ACK）：上线后会自动向持钥设备索取；若那台设备已不在，请在那台设备上处理，或走重新交付。");
+    out("下一步：重启正在运行的 pi（扩展启动时读取钥文件），然后运行 attach 打开连接窗口。");
+  } else {
+    out(`配对成功：设备 ${result.deviceId}，令牌已写入 ${envPath}（令牌不打印，.env 权限 600）`);
+    out("下一步：重启正在运行的 pi（扩展启动时读取令牌），然后运行 attach 打开连接窗口。");
+  }
   return 0;
 }
 
@@ -3826,7 +4178,7 @@ function startLinkWindowServer(state, opts = {}) {
  * pair_result/error 带 pair_expired、本地到点——都归一成 { ok:false, code:"pair_expired", expired:true }。
  * relay 太旧不认识 pair_request（unknown_type）→ code:"unsupported"，调用方提示改用 --pair。
  */
-function requestLinkAttempt({ relay, deviceId, deviceName, deviceToken, platform = HOST_PLATFORM, WebSocketImpl, timeoutMs = PAIR_TIMEOUT_MS, onCode, onClaimed, registerAbort }) {
+function requestLinkAttempt({ relay, deviceId, deviceName, deviceToken, deviceKeys, platform = HOST_PLATFORM, WebSocketImpl, timeoutMs = PAIR_TIMEOUT_MS, onCode, onClaimed, registerAbort }) {
   return new Promise((resolve) => {
     let WS = WebSocketImpl;
     if (!WS) {
@@ -3868,10 +4220,18 @@ function requestLinkAttempt({ relay, deviceId, deviceName, deviceToken, platform
     if (deviceId) device.id = deviceId;
     // 重新链接已有设备时 relay 要核验旧令牌防接管：与 pair 帧同口径，device 内外各放一份
     if (deviceToken) device.deviceToken = String(deviceToken);
+    // 带钥申请（阶段 1，relay 契约）：pop 必须绑一枚确定的码、而 relay 发码在申请之后——
+    // 所以带钥时码由本机生成并随帧带上（frame.code），pop 签它；relay 验签后采用这枚码、
+    // 核对字升级 SAS v2。不带钥的旧申请不带 code，relay 照旧发码、v1 核对字，逐字节不变。
+    const selfCode = deviceKeys ? newDevicePairCode() : "";
     const onOpen = () => {
       try {
         const frame = { type: "pair_request", proto: PROTOCOL.proto, device };
         if (deviceToken) frame.deviceToken = String(deviceToken);
+        if (deviceKeys) {
+          frame.code = selfCode;
+          frame.keys = { signPub: deviceKeys.sign.pub, boxPub: deviceKeys.box.pub, pop: signPairPop(deviceKeys, selfCode) };
+        }
         ws.send(JSON.stringify(frame));
       } catch (e) {
         finish({ ok: false, code: "offline", error: "发送链接请求失败：" + (e && e.message ? e.message : e) });
@@ -3886,6 +4246,11 @@ function requestLinkAttempt({ relay, deviceId, deviceName, deviceToken, platform
       }
       if (!msg || typeof msg.type !== "string") return;
       if (msg.type === "pair_request_result") {
+        // 失败形态（relay 契约）：{ok:false, code:错误码, error}——这里的 code 是错误码不是配对码，别当码解析
+        if (msg.ok === false) {
+          finish({ ok: false, code: typeof msg.code === "string" && msg.code ? msg.code : "pair_invalid", error: msg.error || "relay 拒绝了链接请求" });
+          return;
+        }
         clearTimeout(hardTimer);
         const code = String(msg.code || "").toUpperCase().replace(/[\s-]+/g, "");
         const expiresAt = Number(msg.expiresAt) || 0;
@@ -3911,13 +4276,10 @@ function requestLinkAttempt({ relay, deviceId, deviceName, deviceToken, platform
         return;
       }
       if (msg.type === "pair_result") {
-        if (msg.ok && typeof msg.deviceId === "string" && typeof msg.deviceToken === "string" && msg.deviceToken) {
-          finish({ ok: true, accountId: msg.accountId || "admin", deviceId: msg.deviceId, deviceToken: msg.deviceToken });
-        } else if ((msg.code || "") === "pair_expired") {
-          finish(expiredResult());
-        } else {
-          finish({ ok: false, code: msg.code || "pair_invalid", error: msg.error || PROTOCOL.errors.pair_invalid.message });
-        }
+        const r = pairResultFromMsg(msg);
+        if (r && r.ok) finish(r);
+        else if ((msg.code || "") === "pair_expired") finish(expiredResult());
+        else finish(r);
         return;
       }
       if (msg.type === "error" && typeof msg.code === "string") {
@@ -3963,6 +4325,14 @@ async function linkMain(args, envPath, opts = {}) {
       return 2;
     }
     if (!isLocalRelayHost(relayHostOf(relay) || "")) printRemoteRelayWarning(relay, envPath);
+  }
+  // 身份钥（阶段 1）：与 --pair 同口径——出示前确保本机有钥，损坏直接报错，不静默退回令牌路
+  let keyCtx = null;
+  try {
+    keyCtx = ensureDeviceKeys(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+  } catch (e) {
+    err(e && e.message ? e.message : String(e));
+    return 1;
   }
   const deviceName = cfg.deviceName || defaultDeviceName(platform);
   const viewerPort = args.viewerPort || Number((opts.env || process.env).PI_REMOTE_VIEWER_PORT) || 7002;
@@ -4101,6 +4471,7 @@ async function linkMain(args, envPath, opts = {}) {
         deviceId: cfg.deviceId,
         deviceName,
         deviceToken: cfg.deviceToken,
+        deviceKeys: keyCtx.keys,
         platform,
         WebSocketImpl: opts.WebSocketImpl,
         timeoutMs: opts.timeoutMs,
@@ -4129,10 +4500,18 @@ async function linkMain(args, envPath, opts = {}) {
         break;
       }
       if (result.ok) {
-        persistPairResult(args, envPath, cfg, result);
+        persistPairResult(args, envPath, cfg, result, keyCtx);
         state.phase = "done";
-        out(`链接成功：设备 ${result.deviceId}，令牌已写入 ${envPath}（令牌不打印，.env 权限 600）`);
-        out("下一步：重启正在运行的 pi（扩展启动时读取令牌），然后运行 attach 打开连接窗口。");
+        if (result.keyRegistered) {
+          out(`链接成功：设备 ${result.deviceId}，身份钥已登记（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}），本机不再使用设备令牌`);
+          out(`钥文件：${keyCtx.file}（0600，含私钥，切勿外传）；.env 里只写了它的路径`);
+          if (accountAckOf(keyCtx.keys, result.accountId)) out("本机持有本账号的内容钥 ACK（只存钥文件，从不打印）。");
+          else if (result.hasKeyHolder === true) out("本账号已有持钥设备，本机尚未持有内容钥（ACK）：上线后会自动向持钥设备索取；若那台设备已不在，请在那台设备上处理，或走重新交付。");
+          out("下一步：重启正在运行的 pi（扩展启动时读取钥文件），然后运行 attach 打开连接窗口。");
+        } else {
+          out(`链接成功：设备 ${result.deviceId}，令牌已写入 ${envPath}（令牌不打印，.env 权限 600）`);
+          out("下一步：重启正在运行的 pi（扩展启动时读取令牌），然后运行 attach 打开连接窗口。");
+        }
         const linger = opts.doneLingerMs == null ? 6000 : Number(opts.doneLingerMs);
         const why = await waitRegen(linger);
         if (why === "regen" && !aborted) continue;
@@ -5190,6 +5569,24 @@ module.exports = {
   normalizePairCode,
   writeEnvVars,
   attachAuthFrame,
+  attachKeyAuthFrame,
+  signAuthResponse,
+  newClientNonce,
+  keyFingerprint,
+  formatFingerprint,
+  deviceKeyFilePath,
+  writeDeviceKeyFile,
+  loadDeviceKeys,
+  generateDeviceKeys,
+  ensureDeviceKeys,
+  signPairPop,
+  newDevicePairCode,
+  accountAckOf,
+  storeAccountAck,
+  ensureAccountAck,
+  syncDeviceKeyId,
+  finalizePairKeys,
+  pairResultFromMsg,
   requestPairing,
   pairMain,
   pairHint,

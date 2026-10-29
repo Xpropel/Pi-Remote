@@ -43,6 +43,108 @@ function pairCheckDigits(code) {
   return String((digest[0] * 256 + digest[1]) % 100).padStart(2, "0");
 }
 
+/**
+ * 核对字 v2（SAS，加密设计 §3.2）：声明 crypto.auth 的配对把核对字改绑握手记录——
+ * sha256("pair-check-v2:" + 裸码 + ":" + signPub + ":" + boxPub) 同法折 00–99。
+ * 公钥被中间人替换时两端数字必然不一致；relay 仍是唯一计算方，展示端只显示不许自算。
+ * 只在带 keys 的配对上用；未带 keys 的旧设备继续用 pairCheckDigits（v1），逐字节不变。
+ */
+function pairCheckDigitsV2(code, signPub, boxPub) {
+  const digest = crypto.createHash("sha256").update("pair-check-v2:" + String(code) + ":" + String(signPub) + ":" + String(boxPub)).digest();
+  return String((digest[0] * 256 + digest[1]) % 100).padStart(2, "0");
+}
+
+/* ---------------- 设备公钥（加密地基阶段 1，设计 §3） ----------------
+ * 签名载荷的字节口径在此钉死（跨端契约，扩展/attach 必须同源实现、测试对拍）：
+ * - pop（持有证明）：Ed25519 对「裸配对码」的 UTF-8 字节签名（裸码 = 归一后的大写无横线码）。
+ * - auth：Buffer.concat(utf8("pi-remote-auth-v1"), utf8(deviceId), relayNonce 原始字节, clientNonce 原始字节)。
+ * - key_update：Buffer.concat(utf8("pi-remote-keyupdate-v1"), utf8(deviceId), utf8(newSignPub), utf8(newBoxPub))，
+ *   公钥按帧里的 base64 字符串形态签（避免 DER 重编码歧义）。 */
+
+/** base64 串 → Buffer；非法/空返回 null。只接受标准 base64（含 +/ 与 = 填充），与两端编码器口径一致 */
+function b64buf(v) {
+  if (typeof v !== "string" || !v || v.length > 4096 || !/^[A-Za-z0-9+/]+={0,2}$/.test(v)) return null;
+  try {
+    const buf = Buffer.from(v, "base64");
+    return buf.length ? buf : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 签名公钥（spki der base64）→ KeyObject；不是 Ed25519 返回 null */
+function ed25519PubKey(signPub) {
+  const der = b64buf(signPub);
+  if (!der || der.length > PROTOCOL.limits.signPubKeyBytes) return null;
+  try {
+    const key = crypto.createPublicKey({ key: der, format: "der", type: "spki" });
+    return key.asymmetricKeyType === "ed25519" ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+/** box 公钥（spki der base64）→ KeyObject；不是 P-256 返回 null */
+function p256PubKey(boxPub) {
+  const der = b64buf(boxPub);
+  if (!der || der.length > PROTOCOL.limits.boxPubKeyBytes) return null;
+  try {
+    const key = crypto.createPublicKey({ key: der, format: "der", type: "spki" });
+    return key.asymmetricKeyType === "ec" && key.asymmetricKeyDetails && key.asymmetricKeyDetails.namedCurve === "prime256v1" ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Ed25519 验签：公钥/签名/载荷任一不合规一律 false，不抛 */
+function verifyEd25519(signPub, payload, sigB64) {
+  const key = ed25519PubKey(signPub);
+  const sig = b64buf(sigB64);
+  if (!key || !sig || sig.length > PROTOCOL.limits.signatureMaxBytes) return false;
+  try {
+    return crypto.verify(null, payload, key, sig);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 配对帧 keys 的白名单清洗（名册会落盘，进门前先按协议 limits 把尺寸钉死）：
+ * {signPub, boxPub} 必须是可解析的 Ed25519 / P-256 spki 公钥。pop 在内时一并校验
+ * 形状（验签由调用方对裸码做）。任一不合规返回 null，调用方拒绝整帧 keys。
+ */
+function cleanPubKeys(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const signPub = typeof raw.signPub === "string" ? raw.signPub : "";
+  const boxPub = typeof raw.boxPub === "string" ? raw.boxPub : "";
+  if (!ed25519PubKey(signPub) || !p256PubKey(boxPub)) return null;
+  return { signPub, boxPub };
+}
+
+function cleanPairKeys(raw) {
+  const pubs = cleanPubKeys(raw);
+  if (!pubs) return null;
+  const pop = raw && typeof raw.pop === "string" ? raw.pop : "";
+  const sig = b64buf(pop);
+  if (!sig || sig.length > PROTOCOL.limits.signatureMaxBytes) return null;
+  return { ...pubs, pop };
+}
+
+/** pop 的签名载荷：裸配对码的 UTF-8 字节 */
+function popPayload(code) {
+  return Buffer.from(String(code), "utf8");
+}
+
+/** auth 签名载荷（§3.3 域分隔）：域串 ‖ deviceId ‖ relayNonce ‖ clientNonce（nonce 均为原始字节） */
+function authPayload(deviceId, relayNonce, clientNonce) {
+  return Buffer.concat([Buffer.from("pi-remote-auth-v1", "utf8"), Buffer.from(String(deviceId), "utf8"), relayNonce, clientNonce]);
+}
+
+/** key_update 签名载荷（§3.5 域分隔）：域串 ‖ deviceId ‖ 新 signPub ‖ 新 boxPub（公钥取帧内 base64 串形态） */
+function keyUpdatePayload(deviceId, newSignPub, newBoxPub) {
+  return Buffer.concat([Buffer.from("pi-remote-keyupdate-v1", "utf8"), Buffer.from(String(deviceId), "utf8"), Buffer.from(String(newSignPub), "utf8"), Buffer.from(String(newBoxPub), "utf8")]);
+}
+
 /** 用户输入的配对码：不分大小写，忽略空格和短横线；长度或字符不对返回空串 */
 function normalizePairCode(v) {
   if (typeof v !== "string") return "";
@@ -120,4 +222,4 @@ function checkDeviceToken(index, devices, cfg, deviceId, token) {
   return { ok: true, accountId };
 }
 
-module.exports = { PAIR_FAIL_WINDOW_MS, PAIR_FAIL_MAX, PAIR_FAIL_SOURCES_MAX, PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken };
+module.exports = { PAIR_FAIL_WINDOW_MS, PAIR_FAIL_MAX, PAIR_FAIL_SOURCES_MAX, PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, b64buf, ed25519PubKey, p256PubKey, verifyEd25519, cleanPubKeys, cleanPairKeys, popPayload, authPayload, keyUpdatePayload, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken };

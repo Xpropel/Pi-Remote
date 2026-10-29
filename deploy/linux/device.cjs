@@ -379,7 +379,17 @@ async function relayHealth(ctx, relay) {
   }
 }
 
-/** 拿 .env 里的身份向 relay 认一次证就断开：不登记窗口，不影响已经连着的窗口和扩展 */
+/** 本机身份钥（阶段 1）：钥文件在且完好才返回钥对象；没有/损坏都返回 null（doctor 另有 attach 侧的损坏提示口径，这里只认「能不能用钥登录」） */
+function deviceKeysOf(ctx) {
+  try {
+    return attach.loadDeviceKeys(attach.deviceKeyFilePath(ctx.envPath, { env: ctx.env }));
+  } catch {
+    return null;
+  }
+}
+
+/** 拿 .env 里的身份向 relay 认一次证就断开：不登记窗口，不影响已经连着的窗口和扩展。
+ * 有身份钥且已配对时走挑战-签名（钥设备按设计停用令牌，拿令牌去探只会换回拒绝）。 */
 function probeAuth(ctx, cfg, timeoutMs = 4000) {
   return new Promise((resolve) => {
     let WS = ctx.WebSocketImpl;
@@ -412,9 +422,11 @@ function probeAuth(ctx, cfg, timeoutMs = 4000) {
       finish({ ok: false, code: "offline", error: (e && e.message) || String(e) });
       return;
     }
+    const keys = deviceKeysOf(ctx);
+    const keyFrame = keys && cfg.deviceId ? attach.attachKeyAuthFrame({ deviceId: cfg.deviceId, keys, platform: ctx.platform }) : null;
     const onOpen = () => {
       try {
-        ws.send(JSON.stringify(attach.attachAuthFrame({ token: cfg.token, deviceId: cfg.deviceId, deviceToken: cfg.deviceToken, platform: ctx.platform })));
+        ws.send(JSON.stringify(keyFrame || attach.attachAuthFrame({ token: cfg.token, deviceId: cfg.deviceId, deviceToken: cfg.deviceToken, platform: ctx.platform })));
       } catch (e) {
         finish({ ok: false, code: "offline", error: (e && e.message) || String(e) });
       }
@@ -426,7 +438,16 @@ function probeAuth(ctx, cfg, timeoutMs = 4000) {
       } catch {
         return;
       }
-      if (!msg || msg.type !== "auth_result") return;
+      if (!msg) return;
+      if (msg.type === "auth_challenge" && keyFrame) {
+        try {
+          ws.send(JSON.stringify({ type: "auth_response", sig: attach.signAuthResponse(keys, cfg.deviceId, msg.nonce, keyFrame.clientNonce) }));
+        } catch (e) {
+          finish({ ok: false, code: "auth_failed", error: "本机钥签名失败：" + ((e && e.message) || String(e)) });
+        }
+        return;
+      }
+      if (msg.type !== "auth_result") return;
       finish(msg.ok ? { ok: true, auth: msg.auth || null } : { ok: false, code: msg.code || "auth_failed", error: msg.error || "" });
     };
     const onClose = () => finish({ ok: false, code: "offline", error: "连接被关闭" });
@@ -531,8 +552,8 @@ function cmdInit(ctx, o = {}) {
   ctx.out(`  PI_REMOTE_DEVICE_NAME = ${cfg.deviceName}`);
   ctx.out(`  PI_REMOTE_PROJECTS    = ${cfg.projects.map(displayPathOf).join(";") || "（空：网页上不能新建会话，用 --projects 设）"}`);
   ctx.out(`  PI_REMOTE_PI_BIN      = ${displayPathOf(pick("PI_REMOTE_PI_BIN")) || "（没找到 pi：先装 pi，再跑一次 init）"}`);
-  ctx.out(`  设备令牌              = ${cfg.deviceToken ? "已配对" : "未配对"}`);
-  if (!cfg.deviceToken) ctx.out(`下一步：网页「设备」→「添加设备」拿配对码，然后 ${hint(ctx, "pair XXXX-XXXX")}`);
+  ctx.out(`  设备凭据              = ${cfg.deviceToken ? "已配对（设备令牌）" : deviceKeysOf(ctx) ? "已配对（身份钥）" : "未配对"}`);
+  if (!cfg.deviceToken && !deviceKeysOf(ctx)) ctx.out(`下一步：网页「设备」→「添加设备」拿配对码，然后 ${hint(ctx, "pair XXXX-XXXX")}`);
   return 0;
 }
 
@@ -634,7 +655,7 @@ async function waitWindowUp(ctx, cfg, before, hours, dirs) {
 async function cmdUp(ctx, o = {}) {
   if (blockRoot(ctx)) return 2;
   const { cfg } = settings(ctx);
-  if (!cfg.deviceId || !cfg.relay || (!cfg.deviceToken && !cfg.token)) {
+  if (!cfg.deviceId || !cfg.relay || (!cfg.deviceToken && !cfg.token && !deviceKeysOf(ctx))) {
     ctx.err(`还没配对：网页「设备」→「添加设备」拿配对码，然后 ${hint(ctx, "pair XXXX-XXXX")}`);
     return 1;
   }
@@ -818,7 +839,7 @@ async function cmdStatus(ctx) {
   const { cfg } = settings(ctx);
   ctx.out(describeWindow(ctx, readWindow(ctx), hasSession(ctx, ATTACH_SESSION)));
   const who = cfg.deviceId ? `${cfg.deviceName}（${cfg.deviceId}）` : `${cfg.deviceName}（没有设备编号）`;
-  ctx.out(`设备：${who} · ${cfg.deviceToken ? "已配对" : "未配对"}`);
+  ctx.out(`设备：${who} · ${cfg.deviceToken || deviceKeysOf(ctx) ? "已配对" : "未配对"}`);
   const relay = cfg.relay || LOOPBACK_RELAY;
   const h = await relayHealth(ctx, relay);
   if (h.ok && h.data) {
@@ -904,9 +925,16 @@ async function cmdDoctor(ctx) {
   }
 
   let paired = false;
+  let pairKind = "";
+  const devKeys = deviceKeysOf(ctx);
   if (cfg.deviceId && cfg.deviceToken) {
     paired = true;
+    pairKind = "token";
     ok(`已配对：设备 ${cfg.deviceId}`);
+  } else if (cfg.deviceId && devKeys) {
+    paired = true;
+    pairKind = "key";
+    ok(`已配对（身份钥）：设备 ${cfg.deviceId} · 指纹 ${attach.formatFingerprint(attach.keyFingerprint(devKeys.sign.pub))}`);
   } else if (cfg.deviceId && cfg.token) warn("只有共享令牌（PI_REMOTE_TOKEN），没配对：网页「添加设备」后 " + hint(ctx, "pair XXXX-XXXX"));
   else fail("还没配对：网页「设备」→「添加设备」拿配对码，然后 " + hint(ctx, "pair XXXX-XXXX"));
 
@@ -923,10 +951,10 @@ async function cmdDoctor(ctx) {
 
   if (paired && h.ok) {
     const a = await probeAuth(ctx, cfg);
-    if (a.ok && a.auth === "token") ok("设备令牌有效");
-    else if (a.ok) warn(`relay 按 ${a.auth || "旧"} 方式认了这台设备，不是设备令牌`);
+    if (a.ok && a.auth === pairKind) ok(pairKind === "key" ? "设备身份钥有效" : "设备令牌有效");
+    else if (a.ok) warn(`relay 按 ${a.auth || "旧"} 方式认了这台设备，不是${pairKind === "key" ? "身份钥" : "设备令牌"}`);
     else if (a.code === "device_revoked") fail("这台设备在网页上被撤销了：重新配对（" + hint(ctx, "pair XXXX-XXXX") + "）");
-    else fail(`设备令牌没通过（${a.code}${a.error ? "：" + a.error : ""}）：重新配对`);
+    else fail(`${pairKind === "key" ? "设备身份钥" : "设备令牌"}没通过（${a.code}${a.error ? "：" + a.error : ""}）：重新配对`);
   }
 
   const w = readWindow(ctx);

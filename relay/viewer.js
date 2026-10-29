@@ -7,17 +7,17 @@ const { WebSocketServer } = require("ws");
 const { cleanCid } = require("./store");
 const { DEFAULT_ACCOUNT } = require("./index");
 const PROTOCOL = require("./protocol.json");
-const { safeEqual, log } = require("./util");
+const { safeEqual, log, keyFingerprint } = require("./util");
 const { ROOT, DEFAULT_CONFIG, normalizeAccount, positiveInt, warnAdminTokenSeparation } = require("./config");
 const { RELAY_CAPS, hasCap, parseHello, helloVersionError, helloText, errorFrame, send, broadcast, ackFrame, snapshotBodyFrom, snapshotFrame } = require("./wire");
 const { PrefsStore, cleanPrefsSubset } = require("./prefs");
 const { attachCommon, keepalive } = require("./conn");
-const { PAIR_CODES_MAX, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairSourceBlocked, notePairFailure, requestSource } = require("./pairing");
+const { PAIR_CODES_MAX, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, pairSourceBlocked, notePairFailure, requestSource } = require("./pairing");
 const { commandTimeoutMs, MESSAGE_COMMANDS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, pruneDedupe, dedupeKeyOf } = require("./commands");
 const { MAX_DEVICE_NAME, UNREGISTERED_DEVICE, normPath, cwdAllowed, underRoots, boundAccount } = require("./devices");
 const { replaySessionArchives } = require("./sessionArchive");
 const { purgeSessions } = require("./purge");
-const { resendFallbackBody, queryKey, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, pushDialogGate, clearRoomTurnEnd, broadcastRoomAttention } = require("./rooms");
+const { resendFallbackBody, queryKey, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, pushDialogGate, clearRoomTurnEnd, broadcastRoomAttention, devicesViewFor } = require("./rooms");
 const { makeServeWeb, healthBody } = require("./web");
 
 // 认证失败记账的来源数上限（只在内存里）。满了挤掉最久没有活动的来源；正常部署远到不了这个数。
@@ -619,7 +619,7 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             Object.assign(s, parseHello(msg));
             clearTimeout(s.authTimer);
             rooms.viewers.add(ws);
-            const authResult = { type: "auth_result", ok: true, proto: PROTOCOL.proto, caps: RELAY_CAPS, boot: rooms.boot, rooms: rooms.listFor(ws), devices: rooms.deviceSnapshot() };
+            const authResult = { type: "auth_result", ok: true, proto: PROTOCOL.proto, caps: RELAY_CAPS, boot: rooms.boot, rooms: rooms.listFor(ws), devices: devicesViewFor(ws, rooms.deviceSnapshot()) };
             if (cfg.serverName) authResult.serverName = cfg.serverName;
             // 偏好同步快照（R4-1，新面按 cap 剥离）：声明了 prefs.sync 才带 prefs 字段
             // （有记录给 {subset, rev, updatedAt}，无记录给 null——UI 据此播种第一版）；
@@ -652,7 +652,7 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             break;
           }
           case "list_rooms": {
-            const listFrame = { type: "room_list", devices: rooms.deviceSnapshot(), rooms: rooms.listFor(ws) };
+            const listFrame = { type: "room_list", devices: devicesViewFor(ws, rooms.deviceSnapshot()), rooms: rooms.listFor(ws) };
             // 收件箱账本快照（设计 D §1）：与 auth_result 同口径，按 cap 附带，未声明不带字段。
             if (hasCap(ws, "room.inbox")) listFrame.inbox = rooms.inboxSnapshot();
             send(ws, listFrame, cfg);
@@ -1183,7 +1183,17 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
               send(ws, errorFrame(expired ? "pair_expired" : "pair_invalid", undefined, { id: origId }), cfg);
               return;
             }
-            const found = { type: "pair_lookup_result", name: entry.pending.device.name, platform: entry.pending.device.platform, expiresAt: entry.expiresAt, checkDigits: pairCheckDigits(code) };
+            // 带钥申请的核对字是 SAS v2（绑握手记录，§3.2），并多带 keyFp 供确认页人工核对
+            // 「将要批准的设备钥指纹」（§7）；未带钥的旧申请仍是 v1 核对字、无 keyFp，逐字节不变。
+            const pendingKeys = entry.pending.keys || null;
+            const found = {
+              type: "pair_lookup_result",
+              name: entry.pending.device.name,
+              platform: entry.pending.device.platform,
+              expiresAt: entry.expiresAt,
+              checkDigits: pendingKeys ? pairCheckDigitsV2(code, pendingKeys.signPub, pendingKeys.boxPub) : pairCheckDigits(code),
+            };
+            if (pendingKeys) found.keyFp = keyFingerprint(pendingKeys.signPub);
             if (origId) found.id = origId;
             send(ws, found, cfg);
             // 通知等待端「码已被扫/被查」：窗口切处理中態。只发一次（重复 lookup 不重发），
@@ -1226,7 +1236,7 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
               send(ws, ackFrame(origId, false, { error: "relay 内部未就绪", code: "server_error" }), cfg);
               return;
             }
-            const r = ctx.issuePairEntry({ code, entry, cleaned: entry.pending.device, presentedToken: entry.pending.deviceToken, exceptWs: pendingWs });
+            const r = ctx.issuePairEntry({ code, entry, cleaned: entry.pending.device, presentedToken: entry.pending.deviceToken, exceptWs: pendingWs, keys: entry.pending.keys || undefined });
             if (!r.ok) {
               // 签发被拒（如重新配对旧令牌不达标）：等待端同步收到失败，别让它干等到过期；
               // 本次申请到此为止，删码关连接，设备想再试要重新 attach --link。
@@ -1236,7 +1246,18 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
               send(ws, ackFrame(origId, false, { error: r.error, code: r.code }), cfg);
               return;
             }
-            send(pendingWs, { type: "pair_result", ok: true, accountId: r.accountId, deviceId: r.deviceId, deviceToken: r.deviceToken }, cfg);
+            if (r.keyRegistered) {
+              // 钥设备：不经手令牌（根本没签发）；批准端算好的 ACK 包裹（contentKeyGrant）
+              // 只做形状清洗后原样透传进 pair_result，不解析、不落盘（设计 §3.2/§7）。
+              // 本阶段观看端尚无钥（阶段 2 才有发送方），字段多半缺席，清洗别挡正常批准的路。
+              const result = { type: "pair_result", ok: true, accountId: r.accountId, deviceId: r.deviceId, keyRegistered: true, hasKeyHolder: !!r.hasKeyHolder };
+              const grant = msg.contentKeyGrant != null && typeof ctx.cleanKeyGrant === "function" ? ctx.cleanKeyGrant(msg.contentKeyGrant) : null;
+              if (grant) result.contentKeyGrant = grant;
+              else if (msg.contentKeyGrant != null) log("pair_approve 的 contentKeyGrant 形状不合规，已忽略（批准照常）");
+              send(pendingWs, result, cfg);
+            } else {
+              send(pendingWs, { type: "pair_result", ok: true, accountId: r.accountId, deviceId: r.deviceId, deviceToken: r.deviceToken }, cfg);
+            }
             try { pendingWs.close(1000, "pair done"); } catch {}
             log("二维码链接批准完成:", r.accountId, r.deviceId);
             send(ws, ackFrame(origId, true, { deviceId: r.deviceId, data: { deviceId: r.deviceId, name: entry.pending.device.name } }), cfg);
@@ -1260,6 +1281,15 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
                 return;
               }
               revoked = index.revokeDeviceTokens(accountId, deviceId);
+              // 设备身份钥一并作废（设计 §3.5）：keys.sign 写 revokedAt，此后该 deviceId 的
+              // 挑战鉴权一律 device_revoked；设备要回来只能重新配对生成新钥（旧指纹转 prevKeyFps）。
+              const row = index.getDeviceRow(accountId, deviceId);
+              if (row && row.keys && row.keys.sign && typeof row.keys.sign.pub === "string" && row.keys.sign.pub && !row.keys.sign.revokedAt) {
+                index.upsertDevice(accountId, {
+                  id: deviceId,
+                  keys: { ...row.keys, sign: { ...row.keys.sign, revokedAt: Date.now() } },
+                });
+              }
             } catch (e) {
               log("撤销设备令牌失败:", deviceId, e.message);
               send(ws, ackFrame(origId, false, { error: "撤销失败：令牌文件写不进去", code: "server_error", deviceId }), cfg);

@@ -4,11 +4,11 @@ const crypto = require("node:crypto");
 const { WebSocketServer } = require("ws");
 const { cleanCid } = require("./store");
 const PROTOCOL = require("./protocol.json");
-const { safeId, safeEqual, log } = require("./util");
+const { safeId, safeEqual, log, keyFingerprint } = require("./util");
 const { normalizeAccount } = require("./config");
 const { RELAY_CAPS, parseHello, helloVersionError, helloText, hasCap, failureCode, errorFrame, send, broadcast, ackFrame, snapshotBodyFrom, snapshotFrame } = require("./wire");
 const { attachCommon, keepalive } = require("./conn");
-const { PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken } = require("./pairing");
+const { PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, b64buf, verifyEd25519, cleanPubKeys, cleanPairKeys, popPayload, authPayload, keyUpdatePayload, p256PubKey, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken } = require("./pairing");
 const { REMOTE_MESSAGE_EVENTS, finishWaiter, settleEntry } = require("./commands");
 const { MAX_DEVICE_NAME, normalizePlatform, cleanProjects, blankDevice, boundAccount } = require("./devices");
 const { cancelResend, restartResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, broadcastRoomAttention, broadcastRoomWaiting } = require("./rooms");
@@ -644,6 +644,91 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
     send(ws, errorFrame("device_mismatch", "这台设备已经配对，必须用设备令牌连接（共享 localToken 不能冒用；" + what + "）"), cfg);
   };
 
+  /* ---------------- 设备身份钥（加密地基阶段 1，设计 §3） ----------------
+   * 名册钥的唯一读口：keys.sign.pub 是 Ed25519 spki der base64；sign.revokedAt 一旦
+   * 写下（device_revoke 写），该钥在配对/鉴权/轮换所有路径上都按已撤销论处。 */
+
+  /** 读设备行（反查/名册异常时按无行处理，绝不让钥路径把连接处理掀翻） */
+  const deviceRowSafe = (accountId, deviceId) => {
+    try {
+      return index.getDeviceRow(accountId, deviceId);
+    } catch {
+      return null;
+    }
+  };
+
+  /** 设备已登记且未撤销的钥：{signPub, boxPub, addedAt}；无钥/已撤销返回 null */
+  const activeKeysOf = (row) => {
+    const sign = row && row.keys && row.keys.sign;
+    if (!sign || typeof sign.pub !== "string" || !sign.pub || sign.revokedAt) return null;
+    const box = row.keys.box;
+    return {
+      signPub: sign.pub,
+      boxPub: box && typeof box.pub === "string" ? box.pub : "",
+      addedAt: Number(sign.addedAt) || 0,
+    };
+  };
+
+  /** 设备登记过钥但已被撤销（device_revoke 写 sign.revokedAt） */
+  const revokedKeysOf = (row) => {
+    const sign = row && row.keys && row.keys.sign;
+    return !!(sign && typeof sign.pub === "string" && sign.pub && sign.revokedAt);
+  };
+
+  /** 连接在 local 通道上的设备 id：令牌/钥绑定优先，其次窗口登记，再次房间归属 */
+  const connDeviceId = (c) => {
+    const s = c && c._state;
+    return (s && s.boundDeviceId) || c._deviceId || (c._room && c._room.deviceId) || "";
+  };
+
+  /** 本账号在线持钥端（local 连接）：[{ws, deviceId, keyFp}]。内容钥路由的端点表，
+   * 现算不缓存——连接数小，名册钥又是刚性事实，不值得再养一份会漂移的副本。 */
+  const keyEndpoints = (accountId) => {
+    const out = [];
+    for (const c of wss.clients) {
+      const s = c._state;
+      if (!s || !s.authed || c.readyState !== 1) continue;
+      const deviceId = connDeviceId(c);
+      if (!deviceId) continue;
+      const row = deviceRowSafe(boundAccount(index, devices, deviceId, cfg.accountId), deviceId);
+      const keys = activeKeysOf(row);
+      if (!keys) continue;
+      if (boundAccount(index, devices, deviceId, cfg.accountId) !== accountId) continue;
+      out.push({ ws: c, deviceId, keyFp: keyFingerprint(keys.signPub) });
+    }
+    return out;
+  };
+
+  /**
+   * 内容钥 grant 路由（设计 §3.2/§7 透传骨架）：按目标指纹投给在线持钥端，原样转发、
+   * 不解析 blob、不落盘。投不到返回 false，调用方给发送方明确回执（不静默吞）。
+   * 经 ctx 暴露给 viewer 通道（阶段 2 的观看端持钥端接入时复用同一路由）。
+   */
+  const routeContentKeyGrant = (accountId, toKeyFp, frame) => {
+    const hit = keyEndpoints(accountId).find((e) => e.keyFp === toKeyFp);
+    if (!hit) return false;
+    return send(hit.ws, frame, cfg);
+  };
+  ctx.routeContentKeyGrant = routeContentKeyGrant;
+
+  /** content_key_grant 帧的透传清洗：只认 {to, nonce, ct} 三个字符串字段并按 limits 钉尺寸；
+   *  blob 本体对 relay 不透明——只量字节，不解内容。不合规返回 null。
+   *  可选 fromBoxPub（阶段 2 的观看端发送方在 blob 外自带其 box 公钥时）合规则原样保留，
+   *  不合规只丢该字段不挡整帧——收端缺它解不开包裹，但那是发送方的事，relay 不代偿。 */
+  const cleanKeyGrant = (raw) => {
+    if (!raw || typeof raw !== "object") return null;
+    const to = typeof raw.to === "string" ? raw.to : "";
+    const nonce = typeof raw.nonce === "string" ? raw.nonce : "";
+    const ct = typeof raw.ct === "string" ? raw.ct : "";
+    if (!/^[0-9a-f]{16}$/.test(to) || !nonce || nonce.length > 64 || !ct) return null;
+    const ctBytes = b64buf(ct);
+    if (!ctBytes || ctBytes.length > PROTOCOL.limits.wrappedKeyMaxBytes) return null;
+    const out = { to, nonce, ct };
+    if (typeof raw.fromBoxPub === "string" && p256PubKey(raw.fromBoxPub)) out.fromBoxPub = raw.fromBoxPub;
+    return out;
+  };
+  ctx.cleanKeyGrant = cleanKeyGrant;
+
   /**
    * 配对设备信息规整（handlePair 与 pair_request 同口径）：id 可选但给了就必须 safeId；
    * name 必填（设备没给时用码条目里预置的名字兜底），platform 必填。不合规返回 null。
@@ -665,23 +750,80 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
    * 返回 {ok:true, accountId, deviceId, deviceToken} 或 {ok:false, code, error}；
    * 失败一律不删码、不签发，调用方决定怎么回执（handlePair 是码可重试，approve 路径会作废条目）。
    */
-  const issueForPairEntry = ({ code, entry, cleaned, presentedToken, exceptWs }) => {
+  const issueForPairEntry = ({ code, entry, cleaned, presentedToken, exceptWs, keys }) => {
     const now = Date.now();
     const deviceId = cleaned.wantId || crypto.randomUUID();
     const accountId = boundAccount(index, devices, deviceId, entry.accountId);
+    // 设备身份钥（阶段 1）：keys 是调用方已清洗（且 pop 已验签）的公钥材料，无 keys = 旧令牌路径。
+    const prevRow = deviceRowSafe(accountId, deviceId);
+    const prevKeys = activeKeysOf(prevRow);
+    const prevRevoked = revokedKeysOf(prevRow);
+    if (!keys && prevKeys) {
+      // 已启用密钥的设备不许经旧配对路径降级回令牌（降级即绕过，设计 §3.3 双轨铁律）
+      log("拒绝重新配对：设备已启用密钥配对，旧路径不许降级", accountId, deviceId);
+      return { ok: false, code: "device_mismatch", error: "这台设备已启用密钥配对，不能用旧方式重新配对（请用新版 attach；确需重来先在管理端撤销该设备）" };
+    }
+    if (keys && prevKeys && prevKeys.signPub !== keys.signPub) {
+      // 钥已登记且未撤销时配对不许换钥：换钥走 key_update（旧钥签名）或先撤销再配对（§3.5）
+      log("拒绝重新配对：设备钥已登记，配对换钥被拒", accountId, deviceId);
+      return { ok: false, code: "device_mismatch", error: "这台设备的钥已登记且未撤销，配对不能换钥（换钥请用 key_update，或先撤销设备再重新配对）" };
+    }
     // 已知 deviceId + 还有有效令牌：这是一次"替换/重新配对"，必须出示旧设备令牌。
     // 否则任何人拿一个自己生成的配对码就能接管网页名册里看到的那台设备。
+    // 例外：带 keys 且公钥与已登记的一致时，pop（调用方已验）就是持有证明，等同旧令牌核验。
     let replacing = false;
     try {
       replacing = index.hasDeviceToken(accountId, deviceId);
     } catch {}
-    if (replacing) {
+    if (replacing && !(keys && prevKeys && prevKeys.signPub === keys.signPub)) {
       const oldToken = typeof presentedToken === "string" ? presentedToken : "";
       const verified = oldToken ? checkDeviceToken(index, devices, cfg, deviceId, oldToken) : { ok: false };
       if (!verified.ok) {
         log("拒绝重新配对：缺少或错误旧设备令牌", accountId, deviceId);
         return { ok: false, code: "device_mismatch", error: "这台设备已经配过对；重新配对需要旧设备令牌（先撤销或在本机 attach --pair 时带上原令牌）" };
       }
+    }
+    if (keys) {
+      // 钥设备签发：登记公钥、停发令牌（新令牌不签发、已有令牌行一并作废，§3.4），其余口径与令牌路径一致。
+      // hasKeyHolder：本次登记之前，本账号是否已有「其他」设备登记了未撤销的公钥——
+      // 在册持钥端存在的代理信号。relay 没有也不该有 ACK 本身，只能报存在性；attach
+      // 据此不自生成 ACK（第二台钥设备再各生成一把就是账号内容钥分叉），改走上线索取。
+      let hasKeyHolder = false;
+      try {
+        for (const row of index.listDevices(accountId)) {
+          if (!row || row.id === deviceId) continue;
+          if (activeKeysOf(row)) { hasKeyHolder = true; break; }
+        }
+      } catch {}
+      try {
+        const prevFps = Array.isArray(prevRow && prevRow.prevKeyFps) ? [...prevRow.prevKeyFps] : [];
+        if (prevRevoked && prevRow.keys && prevRow.keys.sign && typeof prevRow.keys.sign.pub === "string") {
+          const oldFp = keyFingerprint(prevRow.keys.sign.pub);
+          if (oldFp !== keyFingerprint(keys.signPub) && !prevFps.includes(oldFp)) prevFps.push(oldFp);
+        }
+        const rosterKeys = {
+          sign: { alg: "ed25519", pub: keys.signPub, addedAt: prevKeys && prevKeys.addedAt ? prevKeys.addedAt : now },
+          box: { alg: "p256", pub: keys.boxPub },
+        };
+        index.revokeDeviceTokens(accountId, deviceId);
+        index.touchAccount(accountId);
+        index.upsertDevice(accountId, {
+          id: deviceId,
+          name: cleaned.name,
+          platform: cleaned.platform,
+          pairedAt: now,
+          keys: rosterKeys,
+          prevKeyFps: prevFps.length ? prevFps.slice(-8) : undefined,
+        });
+      } catch (e) {
+        log("配对登记公钥失败（配对码保留，可重试）:", e.message);
+        return { ok: false, code: "server_error", error: "设备公钥保存失败" };
+      }
+      ctx.pairCodes.delete(code); // 只能用一次
+      ctx.dropDevice(deviceId, { tokenOnly: true, except: exceptWs });
+      log("设备配对（密钥）:", accountId, deviceId, cleaned.name, cleaned.platform, "keyFp", keyFingerprint(keys.signPub));
+      rooms.broadcastRoomList();
+      return { ok: true, accountId, deviceId, keyRegistered: true, hasKeyHolder };
     }
     const deviceToken = crypto.randomBytes(PROTOCOL.limits.deviceTokenBytes).toString("base64url");
     try {
@@ -730,8 +872,24 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
     if (!cleaned) {
       return fail("bad_args", "设备信息不完整：需要 name、platform，id 只能用字母数字和 ._-");
     }
-    const r = issueForPairEntry({ code, entry, cleaned, presentedToken: msg.deviceToken, exceptWs: ws });
+    // 带 keys = 密钥配对（阶段 1）：先清洗公钥、再验持有证明（对裸码的 Ed25519 签名），
+    // 不过一律不登记——没有私钥的人把别人的公钥填进来也登记不上。
+    let keys;
+    if (msg.keys != null) {
+      keys = cleanPairKeys(msg.keys);
+      if (!keys) return fail("bad_args", "公钥材料不合规：需要 Ed25519 签名公钥与 P-256 box 公钥（spki der base64）及 pop 签名");
+      if (!verifyEd25519(keys.signPub, popPayload(code), keys.pop)) {
+        notePairFailure(ctx.pairFailures, source, now);
+        log("配对失败：pop 验签不过", source);
+        return fail("auth_failed", "公钥持有证明（pop）验签失败：签名与所登记的公钥不匹配");
+      }
+    }
+    const r = issueForPairEntry({ code, entry, cleaned, presentedToken: msg.deviceToken, exceptWs: ws, keys });
     if (!r.ok) return fail(r.code, r.error);
+    if (r.keyRegistered) {
+      reply({ type: "pair_result", ok: true, accountId: r.accountId, deviceId: r.deviceId, keyRegistered: true, hasKeyHolder: !!r.hasKeyHolder });
+      return;
+    }
     reply({ type: "pair_result", ok: true, accountId: r.accountId, deviceId: r.deviceId, deviceToken: r.deviceToken });
   };
 
@@ -755,16 +913,37 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
     }
     for (const [k, e] of ctx.pairCodes) if (e.expiresAt <= now) ctx.pairCodes.delete(k);
     if (ctx.pairCodes.size >= PAIR_CODES_MAX) return fail("rate_limited", "未使用的配对码太多，等旧的过期后再生成");
-    const code = newPairCode(ctx.pairCodes);
+    // 带 keys = 密钥配对（阶段 1）：pop 签的是裸码、码在申请帧到达前 relay 还没生成——
+    // 所以带钥申请必须自带配对码（设备生成并签名），relay 验 pop 后采用该码；
+    // 核对字随之升级 SAS v2（绑握手记录）。不带 keys 的旧申请仍由 relay 生成码、用 v1 核对字，逐字节不变。
+    let keys;
+    let code;
+    if (msg.keys != null) {
+      keys = cleanPairKeys(msg.keys);
+      if (!keys) return fail("bad_args", "公钥材料不合规：需要 Ed25519 签名公钥与 P-256 box 公钥（spki der base64）及 pop 签名");
+      code = normalizePairCode(msg.code);
+      if (!code) return fail("bad_args", "带公钥申请链接码时必须自带配对码（pop 签的就是它），请重新生成后再申请");
+      if (ctx.pairCodes.has(code)) return fail("pair_invalid", "自带的配对码已被占用，请换一个重新申请");
+      if (!verifyEd25519(keys.signPub, popPayload(code), keys.pop)) {
+        notePairFailure(ctx.pairFailures, source, now);
+        log("链接码申请失败：pop 验签不过", source);
+        return fail("auth_failed", "公钥持有证明（pop）验签失败：签名与所登记的公钥不匹配");
+      }
+    } else {
+      code = newPairCode(ctx.pairCodes);
+    }
     const expiresAt = now + (cfg.pairCodeTtlMs || PROTOCOL.limits.pairCodeTtlMs);
     // 账号只认 relay 配置：设备侧申请不能指定账号，也不采信客户端上报的 accountId
     const accountId = normalizeAccount(cfg.accountId);
     // 重新配对时 attach 会带上 .env 里的旧设备令牌：先存进 pending，approve 签发前由共用段核验
     const presentedToken = typeof msg.deviceToken === "string" ? msg.deviceToken : "";
-    ctx.pairCodes.set(code, { accountId, name: cleaned.name, expiresAt, pending: { ws, device: cleaned, deviceToken: presentedToken } });
+    const pending = { ws, device: cleaned, deviceToken: presentedToken };
+    if (keys) pending.keys = { signPub: keys.signPub, boxPub: keys.boxPub };
+    ctx.pairCodes.set(code, { accountId, name: cleaned.name, expiresAt, pending });
+    const digits = keys ? pairCheckDigitsV2(code, keys.signPub, keys.boxPub) : pairCheckDigits(code);
     // 日志不打印码本身（与 pair_create 同口径）；核对字是派生值，可以记
-    log("设备申请二维码链接码:", cleaned.name, cleaned.platform, "核对字", pairCheckDigits(code), "有效至", new Date(expiresAt).toISOString());
-    send(ws, { type: "pair_request_result", ok: true, code: formatPairCode(code), expiresAt, checkDigits: pairCheckDigits(code) }, cfg);
+    log("设备申请二维码链接码:", cleaned.name, cleaned.platform, "核对字", digits, "有效至", new Date(expiresAt).toISOString());
+    send(ws, { type: "pair_request_result", ok: true, code: formatPairCode(code), expiresAt, checkDigits: digits }, cfg);
   };
 
   const registered = (ws, room) => {
@@ -825,11 +1004,67 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             send(ws, { type: "auth_result", ok: false, error: error || PROTOCOL.errors[code].message, code }, cfg);
             ws.close(4003, "unauthorized");
           };
+          // 挑战-签名鉴权（加密地基阶段 1，设计 §3.3）：auth 带 keyFp 先领挑战，
+          // auth_response 带签名回来验。nonce 只活在连接内存里、用后即删（无论成败），
+          // 总预算与 10 秒未鉴权截止（attachCommon 的 authTimer）共用一本账、不延长。
+          if (msg.type === "auth_response") {
+            const pend = s.keyAuth;
+            delete s.keyAuth;
+            if (!pend) return fail("auth_failed", "没有待验签的挑战，请重新发起 auth");
+            if (Date.now() > pend.expiresAt) return fail("auth_failed", "鉴权挑战已过期，请重连后重试");
+            const row = deviceRowSafe(pend.accountId, pend.deviceId);
+            if (revokedKeysOf(row)) return fail("device_revoked");
+            const keys = activeKeysOf(row);
+            if (!keys || keyFingerprint(keys.signPub) !== pend.keyFp) return fail("device_mismatch");
+            if (!verifyEd25519(keys.signPub, authPayload(pend.deviceId, pend.nonce, pend.clientNonce), msg.sig)) {
+              log("钥鉴权验签失败:", pend.deviceId);
+              return fail("auth_failed", "签名不正确");
+            }
+            const protoError = helloVersionError(pend.hello);
+            if (protoError) {
+              log("local 协议版本过低，拒绝握手:", protoError.message, "来源:", source);
+              return fail(protoError.code, protoError.message);
+            }
+            s.authed = true;
+            s.stream = true;
+            Object.assign(s, parseHello(pend.hello));
+            clearTimeout(s.authTimer);
+            s.auth = "key";
+            s.boundDeviceId = pend.deviceId;
+            s.accountId = pend.accountId;
+            const res = { type: "auth_result", ok: true, proto: PROTOCOL.proto, caps: RELAY_CAPS, boot: rooms.boot, auth: "key", deviceId: pend.deviceId };
+            if (cfg.serverName) res.serverName = cfg.serverName;
+            send(ws, res, cfg);
+            log("local 已认证 key", pend.deviceId, helloText(s));
+            return;
+          }
           if (msg.type !== "auth" || msg.role !== "local") return fail("auth_failed", "token 不正确");
+          if (typeof msg.keyFp === "string" && msg.keyFp) {
+            const deviceId = typeof msg.deviceId === "string" ? msg.deviceId.trim() : "";
+            if (!deviceId || !safeId(deviceId)) return fail("device_mismatch", "钥鉴权需要合法的 deviceId");
+            const accountId = boundAccount(index, devices, deviceId, cfg.accountId);
+            const row = deviceRowSafe(accountId, deviceId);
+            if (revokedKeysOf(row)) return fail("device_revoked");
+            const keys = activeKeysOf(row);
+            if (!keys) return fail("device_mismatch", "这台设备没有登记公钥，无法用密钥登录（先完成密钥配对）");
+            if (keyFingerprint(keys.signPub) !== msg.keyFp) return fail("device_mismatch", "出示的钥指纹与名册登记不一致");
+            const clientNonce = b64buf(msg.clientNonce);
+            if (!clientNonce || clientNonce.length < 16 || clientNonce.length > 64) return fail("auth_failed", "clientNonce 不合规（需 16–64 字节的 base64）");
+            const nonce = crypto.randomBytes(PROTOCOL.limits.authNonceBytes);
+            s.keyAuth = { deviceId, accountId, keyFp: msg.keyFp, nonce, clientNonce, hello: msg, expiresAt: Date.now() + 10000 };
+            send(ws, { type: "auth_challenge", nonce: nonce.toString("base64"), expiresAt: s.keyAuth.expiresAt }, cfg);
+            return;
+          }
           const deviceToken = typeof msg.deviceToken === "string" ? msg.deviceToken : "";
           if (deviceToken) {
             // 带了设备令牌就只按令牌认：失败不退回共享 token，否则撤销形同虚设
             const deviceId = typeof msg.deviceId === "string" ? msg.deviceId.trim() : "";
+            // 双轨铁律（§3.3/§3.4）：已登记公钥的设备不许改走令牌——降级即绕过。
+            // 停发时令牌行已一并作废，这里再钉一道显式拒绝，不依赖令牌表状态。
+            if (deviceId && activeKeysOf(deviceRowSafe(boundAccount(index, devices, deviceId, cfg.accountId), deviceId))) {
+              log("拒绝令牌登录：设备已启用密钥登录", deviceId);
+              return fail("auth_failed", "这台设备已启用密钥登录，设备令牌已停用");
+            }
             let r = { ok: false, code: "auth_failed" };
             try {
               if (deviceId) r = checkDeviceToken(index, devices, cfg, deviceId, deviceToken);
@@ -1454,6 +1689,101 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             // P9 A：离线房间摘要是空的，补一次空摘要（在离线态之后广播，waitingOf 才返回空）
             broadcastRoomWaiting(rooms, room, cfg);
             broadcast(room.viewers, { type: "room_offline", room: room.id }, cfg);
+            rooms.broadcastRoomList();
+            break;
+          }
+          case "content_key_request": {
+            // 内容钥交付请求（阶段 1 透传骨架，设计 §3.2/§7）：relay 只把请求转给本账号
+            // 其他在线持钥端，不落盘、不缓存 grant；无人可投时给请求方明确回执，
+            // 请求方据此保持「已配对、无内容钥」状态，不装作正常。
+            const deviceId = connDeviceId(ws);
+            if (!deviceId) return;
+            const accountId = boundAccount(index, devices, deviceId, cfg.accountId);
+            const myKeys = activeKeysOf(deviceRowSafe(accountId, deviceId));
+            if (!myKeys) {
+              send(ws, errorFrame("device_mismatch", "本设备未登记公钥，不能请求内容钥交付"), cfg);
+              return;
+            }
+            // 转发盖戳（跨端契约）：请求方 keyFp + box 公钥一并带上——持钥端要拿请求方的
+            // box 公钥才能把 ACK 包裹给它（§7 的 request 只有 {want}，无从交付，必须靠转发补齐）。
+            const frame = { type: "content_key_request", from: keyFingerprint(myKeys.signPub), fromBoxPub: myKeys.boxPub, accountId };
+            let delivered = 0;
+            for (const e of keyEndpoints(accountId)) {
+              if (e.ws === ws) continue;
+              if (send(e.ws, frame, cfg)) delivered++;
+            }
+            if (!delivered) {
+              send(ws, errorFrame("offline", "本账号当前没有其他在线的持钥端，内容钥交付要等持钥设备上线后再请求"), cfg);
+            }
+            break;
+          }
+          case "content_key_grant": {
+            // 内容钥交付（透传骨架）：发送方必须是本账号在册持钥端；包裹只按目标指纹
+            // 路由、原样转发，relay 不解析、不落盘（§3.2/§7）。目标不在线明确回执。
+            const deviceId = connDeviceId(ws);
+            if (!deviceId) return;
+            const grant = cleanKeyGrant(msg);
+            if (!grant) {
+              send(ws, errorFrame("bad_args", "content_key_grant 字段不合规（需要 to 指纹、nonce 与 ct 包裹）"), cfg);
+              return;
+            }
+            const accountId = boundAccount(index, devices, deviceId, cfg.accountId);
+            const myKeys = activeKeysOf(deviceRowSafe(accountId, deviceId));
+            if (!myKeys) {
+              send(ws, errorFrame("device_mismatch", "本设备未登记公钥，不能发送内容钥交付"), cfg);
+              return;
+            }
+            // 转发盖戳（跨端契约，桥侧钉死）：blob 只有 {to, nonce, ct}，收端做 ECDH 必须
+            // 知道交付方的 box 公钥——帧上补 from（交付方 keyFp）与 fromBoxPub（spki base64），
+            // 缺一桥会整帧丢弃。发送方在 blob 里自带了 fromBoxPub 也不采信，以名册登记为准。
+            const frame = { type: "content_key_grant", ...grant, from: keyFingerprint(myKeys.signPub), fromBoxPub: myKeys.boxPub };
+            if (!routeContentKeyGrant(accountId, grant.to, frame)) {
+              send(ws, errorFrame("offline", "目标设备不在线，内容钥未能送达（relay 不缓存交付，请待其上线后重发）"), cfg);
+            }
+            break;
+          }
+          case "key_update": {
+            // 设备钥轮换（§3.5）：旧 DIK 对新公钥集合签名（域分隔 pi-remote-keyupdate-v1），
+            // 验过才换登记；旧钥指纹进 prevKeyFps 备查，换完断该设备其他连接。
+            // 旧钥已丢/签不了名 → 只能走重新配对（管理员批准），这里不留后门。
+            const deviceId = typeof msg.deviceId === "string" ? msg.deviceId.trim() : "";
+            if (!deviceId || deviceId !== connDeviceId(ws)) {
+              if (deviceId) mismatch(ws, "key_update", deviceId);
+              return;
+            }
+            const accountId = boundAccount(index, devices, deviceId, cfg.accountId);
+            const row = deviceRowSafe(accountId, deviceId);
+            const cur = activeKeysOf(row);
+            if (!cur) {
+              send(ws, errorFrame("device_mismatch", "本设备没有在册公钥，不能轮换（先完成密钥配对）"), cfg);
+              return;
+            }
+            const pubs = cleanPubKeys({ signPub: msg.newSignPub, boxPub: msg.newBoxPub });
+            if (!pubs) {
+              send(ws, errorFrame("bad_args", "新公钥不合规：需要 Ed25519 签名公钥与 P-256 box 公钥（spki der base64）"), cfg);
+              return;
+            }
+            if (!verifyEd25519(cur.signPub, keyUpdatePayload(deviceId, pubs.signPub, pubs.boxPub), msg.sig)) {
+              log("key_update 验签失败:", deviceId);
+              send(ws, errorFrame("auth_failed", "key_update 验签失败：须由当前登记的设备私钥对新公钥签名"), cfg);
+              return;
+            }
+            try {
+              const prevFps = Array.isArray(row.prevKeyFps) ? [...row.prevKeyFps] : [];
+              const oldFp = keyFingerprint(cur.signPub);
+              if (!prevFps.includes(oldFp)) prevFps.push(oldFp);
+              index.upsertDevice(accountId, {
+                id: deviceId,
+                keys: { sign: { alg: "ed25519", pub: pubs.signPub, addedAt: Date.now() }, box: { alg: "p256", pub: pubs.boxPub } },
+                prevKeyFps: prevFps.slice(-8),
+              });
+            } catch (e) {
+              log("key_update 登记失败:", e.message);
+              send(ws, errorFrame("server_error", "新公钥保存失败"), cfg);
+              return;
+            }
+            ctx.dropDevice(deviceId, { except: ws });
+            log("设备钥轮换:", accountId, deviceId, "keyFp", keyFingerprint(pubs.signPub));
             rooms.broadcastRoomList();
             break;
           }

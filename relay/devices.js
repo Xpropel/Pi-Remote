@@ -1,7 +1,7 @@
 "use strict";
 /** 设备名册：平台与路径规则、白名单清洗、账号绑定、room_list 的设备项 */
 const { DEFAULT_ACCOUNT } = require("./index");
-const { log } = require("./util");
+const { log, keyFingerprint } = require("./util");
 const { normalizeAccount } = require("./config");
 
 const UNREGISTERED_DEVICE = "未登记设备";
@@ -179,10 +179,21 @@ function buildDeviceList(index, devices, rooms, accountId = DEFAULT_ACCOUNT) {
       return false;
     }
   };
+  // 设备身份钥（加密设计 §3.5）：指纹与登记时间只来自索引行（公钥是公开数据），
+  // 无钥设备不带这两个键。是否下发由发送侧按连接的 crypto.auth cap 裁剪
+  // （rooms.devicesViewFor）——未声明 cap 的旧端设备条目逐字节不变。
+  const keyFpOf = (row) => {
+    const pub = row && row.keys && row.keys.sign && typeof row.keys.sign.pub === "string" ? row.keys.sign.pub : "";
+    return pub ? keyFingerprint(pub) : null;
+  };
+  const keyAddedAtOf = (row) => {
+    const at = row && row.keys && row.keys.sign ? Number(row.keys.sign.addedAt) : NaN;
+    return Number.isFinite(at) && at > 0 ? at : null;
+  };
   for (const row of rows) {
     seen.add(row.id);
     const mem = devices.get(row.id);
-    out.push({
+    const entry = {
       id: row.id,
       accountId: (mem && mem.accountId) || accountId,
       name: (mem && mem.name) || row.name || "",
@@ -198,7 +209,13 @@ function buildDeviceList(index, devices, rooms, accountId = DEFAULT_ACCOUNT) {
       trash: trashOf(mem),
       browseRoots: browseRootsOf(mem),
       latencyMs: latencyOf(mem),
-    });
+    };
+    const keyFp = keyFpOf(row);
+    if (keyFp) {
+      entry.keyFp = keyFp;
+      entry.keyAddedAt = keyAddedAtOf(row);
+    }
+    out.push(entry);
   }
   for (const [id, mem] of devices) {
     if (seen.has(id)) continue;

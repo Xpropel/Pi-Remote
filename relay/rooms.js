@@ -808,6 +808,20 @@ function roomListCapKey(ws) {
   return key;
 }
 
+/** 设备条目的 cap 裁剪（加密设计 §3.5/§7）：keyFp/keyAddedAt 只发给声明 crypto.auth
+ *  的连接；未声明的（旧端、设备窗口）拿剥掉这两键的副本，条目其余字段一律不动。
+ *  与 roomsViewFor 同纪律：无字段可剥时原样返回，不造无谓副本。 */
+function devicesViewFor(ws, devices) {
+  if (hasCap(ws, "crypto.auth")) return devices;
+  return (devices || []).map((d) => {
+    if (!d || (!Object.prototype.hasOwnProperty.call(d, "keyFp") && !Object.prototype.hasOwnProperty.call(d, "keyAddedAt"))) return d;
+    const out = { ...d };
+    delete out.keyFp;
+    delete out.keyAddedAt;
+    return out;
+  });
+}
+
 function roomsViewFor(ws, list) {
   const key = roomListCapKey(ws);
   if (key === (1 << ROOM_LIST_CAPS.length) - 1) return list;
@@ -1334,23 +1348,24 @@ class Rooms {
         }
         return view;
       };
-      const groups = new Map(); // capKey(+inbox 位) -> { view, inbox, conns }
+      const groups = new Map(); // capKey(+inbox 位 +crypto 位) -> { view, devices, inbox, conns }
       let inboxSnap = null; // 账本快照懒算一次：只有声明 room.inbox 的组才附带（§1.5 cap 门控）
       for (const v of this.viewers) {
         const withInbox = hasCap(v, "room.inbox");
         // inbox 位用 32：roomListCapKey 已占满低 5 位（room.schedule 是第 5 位 = 16），
         // 原先的 16 位与排期 cap 位相撞，必须上移一位。
-        const key = roomListCapKey(v) | (withInbox ? 32 : 0);
+        // crypto 位用 64：设备条目的 keyFp/keyAddedAt 只给声明 crypto.auth 的组（devicesViewFor）。
+        const key = roomListCapKey(v) | (withInbox ? 32 : 0) | (hasCap(v, "crypto.auth") ? 64 : 0);
         let g = groups.get(key);
         if (!g) {
-          g = { view: viewFor(v), inbox: withInbox, conns: [] };
+          g = { view: viewFor(v), devices: devicesViewFor(v, devices), inbox: withInbox, conns: [] };
           groups.set(key, g);
         }
         g.conns.push(v);
       }
       for (const g of groups.values()) {
         if (!g.conns.length) continue;
-        const frame = { type: "room_list", devices, rooms: g.view };
+        const frame = { type: "room_list", devices: g.devices, rooms: g.view };
         if (g.inbox) {
           if (!inboxSnap) inboxSnap = this.inboxSnapshot();
           frame.inbox = inboxSnap;
@@ -1361,9 +1376,10 @@ class Rooms {
         // 设备窗口只需要判断"本机哪些房间在线"：只发它自己的设备和房间，
         // 不把别的账号/设备的房间（cwd、标题）推给每个本机窗口。
         // 设备窗口连接不声明 cap，固定走「什么能力都没有」的那份（P9 A）。
+        const bareDevices = devicesViewFor(null, devices);
         for (const ws of this.deviceConns()) {
           if (!ws || ws.readyState !== 1) continue;
-          send(ws, JSON.stringify(roomListForDevice(ws._deviceId, devices, viewFor(null))), this.cfg);
+          send(ws, JSON.stringify(roomListForDevice(ws._deviceId, bareDevices, viewFor(null))), this.cfg);
         }
       }
     });
@@ -1502,4 +1518,4 @@ function clearSessionState(room) {
   return hadTurnEnd;
 }
 
-module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor };
+module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor, devicesViewFor };

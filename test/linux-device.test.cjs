@@ -518,7 +518,7 @@ test("小工具：tmux 末尾分号转义、/healthz 地址、node 版本门槛�
   assert.equal(fs.existsSync(box.envPath), false, "坏配对码不生成 .env、不连 relay");
 });
 
-test("配对与体检（进程内真 relay）：device.sh pair 把令牌写进 .env（600，不打印）→ doctor 的健康检查与令牌鉴权都过 → 网页撤销后 doctor 报被撤销", async (t) => {
+test("配对与体检（进程内真 relay）：device.sh pair 登记身份钥（.env 只写路径，600，钥料不打印）→ doctor 的健康检查与钥鉴权都过 → 网页撤销后 doctor 报被撤销", async (t) => {
   const { startRelay } = require("../relay/server.js");
   const WebSocket = require("ws");
   const box = sandbox(t);
@@ -558,11 +558,18 @@ test("配对与体检（进程内真 relay）：device.sh pair 把令牌写进 .
   assert.equal(await device.main(["pair", code.toLowerCase(), "--relay", relayUrl], pair.ctx), 0, pair.errText());
   const saved = attach.parseEnv(fs.readFileSync(box.envPath, "utf8"));
   assert.ok(saved.PI_REMOTE_DEVICE_ID);
-  assert.ok(saved.PI_REMOTE_DEVICE_TOKEN && saved.PI_REMOTE_DEVICE_TOKEN.length >= 40);
+  // 阶段 1：relay 验 pop 后登记公钥、停发令牌——.env 里没有设备令牌，只有钥文件路径
+  assert.equal(saved.PI_REMOTE_DEVICE_TOKEN || "", "", "钥设备不再下发设备令牌");
+  const keyFile = path.join(path.dirname(box.envPath), "pi-remote-device.key.json");
+  assert.equal(saved.PI_REMOTE_DEVICE_KEY_FILE, keyFile, ".env 只写钥文件路径");
+  const devKeys = attach.loadDeviceKeys(keyFile);
+  assert.equal(devKeys.deviceId, saved.PI_REMOTE_DEVICE_ID);
+  assert.equal(fs.statSync(keyFile).mode & 0o777, 0o600, "钥文件 600");
   assert.equal(saved.PI_REMOTE_RELAY, relayUrl);
   assert.equal(saved.PI_REMOTE_LAUNCHER, "tmux", "没有 .env 时先按 init 生成");
   assert.equal(fs.statSync(box.envPath).mode & 0o777, 0o600);
-  assert.equal(pair.text().includes(saved.PI_REMOTE_DEVICE_TOKEN), false, "令牌不打印");
+  assert.equal(pair.text().includes(devKeys.sign.priv), false, "私钥不打印");
+  assert.equal(pair.text().includes(attach.accountAckOf(devKeys, "admin")), false, "ACK 不打印");
   assert.match(pair.text(), /device\.sh up/);
   const listed = await take((f) => f.type === "room_list" && (f.devices || []).some((d) => d.id === saved.PI_REMOTE_DEVICE_ID));
   assert.equal(listed.devices.find((d) => d.id === saved.PI_REMOTE_DEVICE_ID).platform, "linux");
@@ -574,7 +581,7 @@ test("配对与体检（进程内真 relay）：device.sh pair 把令牌写进 .
   const doc = ctxFor(box, { env });
   assert.equal(await device.main(["doctor"], doc.ctx), 0, doc.text());
   assert.match(doc.text(), /^\[ok\]   relay 健康（proto 4/m);
-  assert.match(doc.text(), /^\[ok\]   设备令牌有效$/m);
+  assert.match(doc.text(), /^\[ok\]   设备身份钥有效$/m);
   assert.match(doc.text(), /^\[ok\]   relay ws:\/\/127\.0\.0\.1:\d+（回环/m);
   assert.match(doc.text(), /^\[ok\]   pi 1\.0\.2/m);
   assert.match(doc.text(), /^\[warn\] 连接窗口没开/m);
