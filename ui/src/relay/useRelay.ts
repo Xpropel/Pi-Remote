@@ -12,7 +12,7 @@ import {
 } from "./deletedSessions"
 import { composerFactsOf } from "./composerFacts"
 import { cleanSessionTitleText } from "./titleText"
-import { archiveView, rememberSessionArchive, touchSessionArchive, type ArchiveSession } from "./sessionArchive"
+import { archiveView, rememberSessionArchive, touchSessionArchive, type ArchiveMessage, type ArchiveSession } from "./sessionArchive"
 import {
   archiveKeysOf,
   createPurgedSessionTable,
@@ -41,6 +41,7 @@ import {
   errorCode,
   devicesFromRoomList,
   findStartedRoom,
+  firstMessageEncOf,
   folderAllowed,
   isUnknownType,
   isViaTunnelHostname,
@@ -138,7 +139,7 @@ import {
   type LazySend,
 } from "./lazySession"
 import { headerMeta } from "./presence"
-import { V3_SERVER, ackReportFrame, authFrame, authResponseFrame, contentKeyGrantFrame, contentKeyRequestFrame, deviceRevokeFrame, hasCap, isCid, newCid, pairApproveFrame, pairCreateFrame, pairLookupFrame, serverInfo, viewerAuthFrame, type ServerInfo } from "./protocol"
+import { V3_SERVER, ackReportFrame, authFrame, authResponseFrame, contentKeyGrantFrame, contentKeyRequestFrame, deviceRevokeFrame, frameWithAdminToken, hasCap, isCid, newCid, pairApproveFrame, pairCreateFrame, pairLookupFrame, serverInfo, viewerAuthFrame, type ServerInfo } from "./protocol"
 import { parsePairLookup, type PairLookupInfo } from "./pairLink"
 import {
   EMPTY_VIEWER_IDENTITY_STATE,
@@ -148,6 +149,17 @@ import {
   type ViewerIdentityCore,
   type ViewerIdentityState,
 } from "./viewerIdentity"
+import {
+  RoomKeyCache,
+  UNDECRYPTABLE_LABEL,
+  UNDECRYPTABLE_TEXT,
+  decryptCtText,
+  decryptRoomEvent,
+  decryptSnapshotMessages,
+  envelopeFromTextField,
+  isContentEnvelope,
+  snapshotKeyInfoOf,
+} from "./contentDecrypt"
 import { mobileNavFromPrefsSubset } from "@/pi/model/prefs"
 import type { PiMobileNavMode } from "@/pi/mobile/types"
 import { emptyRemoteQueue, parseRemoteQueueItem, parseRemoteQueueState, type RemoteQueueState } from "./remoteQueue"
@@ -392,17 +404,46 @@ export function lastAssistantMessageFailed(messages: readonly AgentMessage[]): b
 }
 
 /** 扩展回包里的 session 行（改名/冷 fork）→ 前端清单行；字段不合法就丢弃，不让脏数据进列表。 */
+/**
+ * Per-room content-crypto status surfaced to the UI (crypto Phase 3,
+ * design 4.1): ready = the room key is unwrapped and envelopes decrypt;
+ * waiting-ack = the room is encrypted but this viewer holds no ACK yet
+ * (a content_key_request is in flight); mismatch = the snapshot's keyInfo
+ * ackFp disagrees with the held ACK (NOT a pile of decrypt failures --
+ * the room is keyed by a different account content key); crypto-required
+ * = the relay refused this viewer access to the enc room; failed = the
+ * keyInfo arrived but the RCK would not unwrap under the held ACK.
+ */
+export type RoomCryptoStatus = "ready" | "waiting-ack" | "mismatch" | "crypto-required" | "failed"
+
+type RoomCryptoEntry = {
+  /** The relay stated (room_list / snapshot header) that this room is body-encrypted. */
+  enc: boolean
+  /** Snapshot keyInfo for this room: the RCK wrap + the ACK fingerprint it belongs to. */
+  keyInfo: { ackFp: string; rckWrap: string } | null
+  status: RoomCryptoStatus | null
+  /** Resolvers parked until keyInfo lands (live events ahead of the first snapshot). */
+  keyWaiters: Array<() => void>
+  /** A content_key_request was already sent for this room on this connection. */
+  ackRequested: boolean
+}
+
+/** Upper bound a live event may wait for its room's keyInfo before degrading to placeholders. */
+const ROOM_KEY_WAIT_MS = 15000
+
 function sessionFileRow(value: unknown): SessionEntry | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
   const raw = value as Record<string, unknown>
   const id = typeof raw.id === "string" ? raw.id.trim() : ""
   const filePath = typeof raw.path === "string" ? raw.path : ""
   if (!id || !filePath) return null
+  const firstMessageEnc = firstMessageEncOf(raw.firstMessage)
   return {
     id,
     path: filePath,
     name: typeof raw.name === "string" ? raw.name : "",
     firstMessage: typeof raw.firstMessage === "string" ? raw.firstMessage : "",
+    ...(firstMessageEnc ? { firstMessageEnc } : {}),
     cwd: typeof raw.cwd === "string" ? raw.cwd : "",
     messageCount: typeof raw.messageCount === "number" && Number.isFinite(raw.messageCount) ? raw.messageCount : 0,
     sizeBytes: typeof raw.sizeBytes === "number" && Number.isFinite(raw.sizeBytes) ? raw.sizeBytes : 0,
@@ -446,9 +487,36 @@ export function useRelay() {
   /** Pending list_viewers waiters, keyed by the request id the relay echoes
    *  back on the viewer_list frame. */
   const viewerListWaitersRef = useRef(new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number }>())
+  /** Fail a pending roster read at once with the relay's own refusal reason.
+   *  A refused list_viewers is answered with an ack/error frame carrying the
+   *  request id, never with a viewer_list frame, so without this the waiter
+   *  would sit out its full timeout and report a misleading "timed out". */
+  const failViewerListWaiter = (id: string, reason: string): boolean => {
+    const waiter = viewerListWaitersRef.current.get(id)
+    if (!waiter) return false
+    viewerListWaitersRef.current.delete(id)
+    window.clearTimeout(waiter.timer)
+    waiter.reject(new Error(reason))
+    return true
+  }
   /** Last pair_lookup result per code, so approvePairLink can compute the
    *  contentKeyGrant for a keyed pairing (needs the device box key). */
   const pairLookupStashRef = useRef<{ code: string; info: PairLookupInfo } | null>(null)
+  // Content decryption (crypto Phase 3, design 4.1): per-room envelope
+  // state. Decryption is async (WebCrypto) while frame dispatch is sync,
+  // so frames for an enc room are serialized through a per-room promise
+  // chain and decrypted in arrival order; plaintext rooms never enter the
+  // chain and keep the byte-identical synchronous path. RCKs live only as
+  // non-extractable CryptoKeys in the RoomKeyCache (memory only).
+  const roomCryptoRef = useRef(new Map<string, RoomCryptoEntry>())
+  const roomKeyCacheRef = useRef(new RoomKeyCache())
+  const roomChainsRef = useRef(new Map<string, Promise<void>>())
+  const [decryptFailures, setDecryptFailures] = useState<Readonly<Record<string, number>>>({})
+  const [roomCryptoStatuses, setRoomCryptoStatuses] = useState<Readonly<Record<string, RoomCryptoStatus>>>({})
+  /** Decrypted firstMessage previews keyed by the envelope ct they came from. */
+  const [decryptedPreviews, setDecryptedPreviews] = useState<ReadonlyMap<string, string>>(new Map())
+  /** Preview cts a decrypt pass was already kicked for (deleted again when no ACK was available, so a later pass retries). */
+  const previewKickedRef = useRef(new Set<string>())
   const [authed, setAuthed] = useState(false)
   const [status, setStatus] = useState("未连接")
   /** 这个 token 连上过：之后断开算"重连"，界面出断线横幅而不是首次连接的加载条 */
@@ -901,6 +969,231 @@ export function useRelay() {
   useEffect(() => {
     void ensureIdentityReady()
   }, [ensureIdentityReady])
+
+  /* ---------------- content decryption (crypto Phase 3) ---------------- */
+
+  const roomCryptoEntryOf = (roomId: string): RoomCryptoEntry => {
+    let entry = roomCryptoRef.current.get(roomId)
+    if (!entry) {
+      entry = { enc: false, keyInfo: null, status: null, keyWaiters: [], ackRequested: false }
+      roomCryptoRef.current.set(roomId, entry)
+    }
+    return entry
+  }
+
+  const noteRoomCryptoStatus = (roomId: string, status: RoomCryptoStatus) => {
+    const entry = roomCryptoEntryOf(roomId)
+    if (entry.status === status) return
+    entry.status = status
+    setRoomCryptoStatuses((prev) => (prev[roomId] === status ? prev : { ...prev, [roomId]: status }))
+  }
+
+  const noteDecryptFailures = (roomId: string, count: number) => {
+    if (!roomId || count <= 0) return
+    setDecryptFailures((prev) => ({ ...prev, [roomId]: (prev[roomId] ?? 0) + count }))
+  }
+
+  const wakeRoomKeyWaiters = (roomId: string) => {
+    const entry = roomCryptoRef.current.get(roomId)
+    if (!entry || !entry.keyWaiters.length) return
+    const waiters = entry.keyWaiters
+    entry.keyWaiters = []
+    for (const wake of waiters) wake()
+  }
+
+  /** Record a room's snapshot keyInfo (noted synchronously at the frame gate, before the frame is chained). */
+  const noteRoomKeyInfo = (roomId: string, keyInfo: { ackFp: string; rckWrap: string }) => {
+    const entry = roomCryptoEntryOf(roomId)
+    entry.enc = true
+    entry.keyInfo = keyInfo
+    wakeRoomKeyWaiters(roomId)
+  }
+
+  /** Sync encryption flags from a roster (room_list / auth_result rooms). */
+  const noteRoomsCrypto = (list: readonly RoomInfo[]) => {
+    for (const room of list) {
+      if (room.enc !== undefined) roomCryptoEntryOf(room.id).enc = room.enc
+    }
+  }
+
+  /** Serialize one async unit of work per room so decrypted frames keep arrival order. */
+  const enqueueRoomCryptoTask = (roomId: string, task: () => Promise<void>) => {
+    const prev = roomChainsRef.current.get(roomId) ?? Promise.resolve()
+    const next = prev.then(task, task).then(undefined, () => {})
+    roomChainsRef.current.set(roomId, next)
+    void next.then(() => {
+      if (roomChainsRef.current.get(roomId) === next) roomChainsRef.current.delete(roomId)
+    })
+  }
+
+  /** Ask the account's keyed ends for an ACK delivery, at most once per room per connection. */
+  const requestAckForRoom = (roomId: string) => {
+    const entry = roomCryptoEntryOf(roomId)
+    if (entry.ackRequested) return
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN || !authedRef.current) return
+    entry.ackRequested = true
+    try {
+      ws.send(JSON.stringify(contentKeyRequestFrame()))
+    } catch {
+      entry.ackRequested = false
+    }
+  }
+
+  /**
+   * Resolve the room's RCK: unwrap the noted keyInfo under the held ACK.
+   * With park=true a caller ahead of the first snapshot waits (bounded)
+   * for the keyInfo the snapshot gate notes synchronously. Every failure
+   * mode lands in a named room status instead of per-item noise: no ACK
+   * -> waiting-ack (+ a content_key_request), ackFp disagreement ->
+   * mismatch (the held ACK is simply a different key), unwrap failure ->
+   * failed. Returns null in all of those cases.
+   */
+  const awaitRoomKey = async (roomId: string, park: boolean): Promise<CryptoKey | null> => {
+    const entry = roomCryptoEntryOf(roomId)
+    if (!entry.keyInfo && park) {
+      await new Promise<void>((resolve) => {
+        const timer = window.setTimeout(resolve, ROOM_KEY_WAIT_MS)
+        entry.keyWaiters.push(() => {
+          window.clearTimeout(timer)
+          resolve()
+        })
+      })
+    }
+    const core = identityCoreRef.current ?? (await ensureIdentityReady())
+    if (!core) return null
+    const accountId = core.accountId()
+    if (!entry.keyInfo) {
+      if (!core.hasAckFor(accountId)) {
+        noteRoomCryptoStatus(roomId, "waiting-ack")
+        requestAckForRoom(roomId)
+      } else {
+        // The room is enc but the relay sent no keyInfo: nothing honest
+        // to decrypt with, and inventing a key is not an option.
+        noteRoomCryptoStatus(roomId, "failed")
+      }
+      return null
+    }
+    const heldFp = core.ackFpFor(accountId)
+    if (heldFp && entry.keyInfo.ackFp && heldFp !== entry.keyInfo.ackFp) {
+      // Notify once per transition; the check itself re-runs on every
+      // frame, so importing the right ACK later heals the room on its own.
+      if (entry.status !== "mismatch") {
+        noteRoomCryptoStatus(roomId, "mismatch")
+        core.noteKeyMismatch([heldFp, entry.keyInfo.ackFp])
+        syncIdentityState()
+      }
+      return null
+    }
+    const ackKey = core.ackCryptoKey(accountId)
+    if (!ackKey) {
+      noteRoomCryptoStatus(roomId, "waiting-ack")
+      requestAckForRoom(roomId)
+      return null
+    }
+    const key = await roomKeyCacheRef.current.roomKey(roomId, entry.keyInfo.ackFp, entry.keyInfo.rckWrap, ackKey)
+    if (!key) {
+      noteRoomCryptoStatus(roomId, "failed")
+      return null
+    }
+    noteRoomCryptoStatus(roomId, "ready")
+    return key
+  }
+
+  /**
+   * Kick the async decrypt of one encrypted firstMessage preview (an
+   * ACK-level text envelope). Results land in decryptedPreviews keyed by
+   * ct and are substituted into rooms/sessions before list building, so
+   * titles and previews behave exactly as with plaintext previews. A
+   * failed open shows the undecryptable label instead of ciphertext.
+   */
+  const kickPreviewDecryption = (ct: string) => {
+    if (!ct || previewKickedRef.current.has(ct)) return
+    previewKickedRef.current.add(ct)
+    void (async () => {
+      const core = identityCoreRef.current ?? (await ensureIdentityReady())
+      const ackKey = core?.ackCryptoKey(core.accountId()) ?? null
+      if (!ackKey) {
+        // No ACK yet: un-kick so the pass re-runs when an ACK lands.
+        previewKickedRef.current.delete(ct)
+        return
+      }
+      const text = await decryptCtText(ackKey, ct)
+      const value = text ?? UNDECRYPTABLE_LABEL
+      setDecryptedPreviews((prev) => {
+        if (prev.get(ct) === value) return prev
+        const next = new Map(prev)
+        next.set(ct, value)
+        return next
+      })
+    })()
+  }
+
+  /** Kick preview decryption for every encrypted preview currently in view (re-run when an ACK lands). */
+  useEffect(() => {
+    for (const room of rooms) if (room.firstMessageEnc) kickPreviewDecryption(room.firstMessageEnc)
+    for (const list of Object.values(sessionsByDevice)) {
+      for (const session of list) if (session.firstMessageEnc) kickPreviewDecryption(session.firstMessageEnc)
+    }
+    // kickPreviewDecryption is ref/setState-only; the identity fields are
+    // the re-run trigger for previews that were waiting on an ACK.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rooms, sessionsByDevice, viewerIdentity.hasAck, viewerIdentity.ackFp])
+
+  /**
+   * Decrypt a session_archive payload (design 4.1: ACK-level envelopes --
+   * either the whole body as one sealed blob, or per-message ct, plus an
+   * envelope firstMessage). Only the decrypted session is ever stored in
+   * the archive cache; entries that cannot be opened keep their slot with
+   * the undecryptable text rather than leaking ciphertext into the view.
+   */
+  const decryptAndStoreArchive = async (deviceId: string, session: ArchiveSession) => {
+    const core = identityCoreRef.current ?? (await ensureIdentityReady())
+    const ackKey = core?.ackCryptoKey(core.accountId()) ?? null
+    let messages: ArchiveMessage[] | null = null
+    if (session.enc === 1 && typeof session.ct === "string") {
+      const text = ackKey ? await decryptCtText(ackKey, session.ct) : null
+      if (text !== null) {
+        try {
+          const parsed: unknown = JSON.parse(text)
+          const list = Array.isArray(parsed)
+            ? parsed
+            : parsed && typeof parsed === "object" && Array.isArray((parsed as { messages?: unknown }).messages)
+              ? (parsed as { messages: unknown[] }).messages
+              : null
+          if (list) {
+            messages = list.filter(
+              (m): m is ArchiveMessage => !!m && typeof m === "object" && typeof (m as ArchiveMessage).text === "string",
+            )
+          }
+        } catch {
+          messages = null
+        }
+      }
+      if (!messages) {
+        messages = [{ id: "undecryptable", role: "assistant", text: UNDECRYPTABLE_TEXT }]
+      }
+    } else {
+      messages = []
+      for (const message of session.messages) {
+        if (message.enc === 1 && typeof message.ct === "string") {
+          const text = ackKey ? await decryptCtText(ackKey, message.ct) : null
+          messages.push({ id: message.id, role: message.role, text: text ?? UNDECRYPTABLE_TEXT, timestamp: message.timestamp })
+        } else {
+          messages.push(message)
+        }
+      }
+    }
+    let firstMessage = session.firstMessage ?? null
+    const firstEnc = firstMessageEncOf(session.firstMessage)
+    if (firstEnc) {
+      const text = ackKey ? await decryptCtText(ackKey, firstEnc) : null
+      firstMessage = text ?? UNDECRYPTABLE_LABEL
+    }
+    const decrypted: ArchiveSession = { ...session, messages, firstMessage, enc: undefined, ct: undefined }
+    rememberSessionArchive(archivesRef.current, `${deviceId}\n${decrypted.id}`, decrypted)
+    setArchiveTick((n) => n + 1)
+  }
   // Identity transport: the settings facade (relay/viewerIdentity.ts) reaches
   // the relay through these closures. Management frames that carry no
   // adminSig get the current adminToken attached here; the token field is
@@ -909,7 +1202,7 @@ export function useRelay() {
   useEffect(() => {
     setViewerIdentityTransport({
       sendAdminCommand: (frame) => {
-        const signed = typeof frame.adminSig === "string" && frame.adminSig ? frame : { ...frame, adminToken: adminTokenRef.current }
+        const signed = frameWithAdminToken(frame, adminTokenRef.current)
         return channel.raw(signed, "没有收到回应，结果未知，请稍后核对")
       },
       requestViewerList: (frame) =>
@@ -926,7 +1219,13 @@ export function useRelay() {
           }, 10000)
           viewerListWaitersRef.current.set(id, { resolve, reject, timer })
           try {
-            ws.send(JSON.stringify({ ...frame, id }))
+            // Same dual track as sendAdminCommand: a list_viewers frame the
+            // identity could not sign (not registered yet, or not an admin
+            // viewer) must still carry the saved admin token. Without it
+            // the relay refuses the frame with an ack frame, which the
+            // roster waiter never sees, so the read hangs until the
+            // timeout above fires.
+            ws.send(JSON.stringify({ ...frameWithAdminToken(frame, adminTokenRef.current), id }))
           } catch {
             window.clearTimeout(timer)
             viewerListWaitersRef.current.delete(id)
@@ -1948,6 +2247,157 @@ export function useRelay() {
         clearRoom()
       }
     }
+    /**
+     * Apply one snapshot frame whose messages are already plaintext (the
+     * plaintext path passes msg.messages verbatim; the enc path passes
+     * the decrypted list). Extracted from onmessage so the async decrypt
+     * chain can run the identical bookkeeping after decryption.
+     */
+    const processSnapshotFrame = (msg: Record<string, unknown>, messages: AgentMessage[]) => {
+      const step = snapshotStep(syncRef.current, msg)
+      if (step.action === "resync-since" || step.action === "resync-full") {
+        resync(step.action === "resync-since")
+        return
+      }
+      // 陈旧全量（同世代 seq 更小）整帧忽略：连 pending 标记也不能让它置真，
+      // 否则忽略后没有后续帧来清，界面会一直显示"正在从本机拉取会话…"（UI·relay 中-2）。
+      if (step.action === "ignore") return
+      if (msg.snapshotPending === true) setSnapshotPending(true)
+      if (msg.snapshotPending !== true) setSnapshotPending(false)
+      syncRef.current = step.next
+      if (step.action === "full") {
+        // 全量快照也会在会话换代时广播：只清旧的截断/连接提示，"已切换分支"之类留给用户看
+        setNotice((prev) => clearConnectivity(clearNoticeCode(prev, "truncated")))
+        dispatch({ type: "snapshot", messages })
+        // 快照里可能已有工具块：等 transcript 落地后与已到的结束元数据合并。
+        terminalHistoryPendingRef.current = true
+        // 服务器安全阀触发（单房 10000 条 / 磁盘 8MB 扫描上限）：镜像不完整，必须明说，
+        // 否则用户会把截断后的会话当成完整历史（见 data-interface.md §4.11）
+        if (msg.truncated === true) {
+          setNotice({
+            text: "这个会话很长，只加载了最近一部分历史（更早的消息服务端未交付）。",
+            tone: "warn",
+            codes: ["truncated"],
+          })
+        }
+        // 历史补拉（R2-5）：全量快照整段换代，游标与入口状态一并重置（代次+1 让在飞补拉作废）；
+        // 截断过才有“加载更早”入口，未截断即完整历史、入口不出现。
+        historyGenRef.current += 1
+        historyCursorRef.current = null
+        // 整段换代：窗口缓存里的条目可能已不属于当前分支，一并作废（UI·relay 中-5）。
+        historyCacheRef.current = null
+        applyHistory({ room: roomRef.current || "", status: msg.truncated === true ? "more" : "done", error: "", truncated: msg.truncated === true, lastAdded: 0 })
+      } else {
+        dispatch({ type: "append", messages })
+        // 增量快照也可能带来断线期间的工具块：同样等 transcript 落地后与已到的元数据合并。
+        terminalHistoryPendingRef.current = true
+      }
+      setBusy(!!msg.busy)
+      if (!msg.busy) {
+        // 断线期间这一轮已跑完：用快照里的终版消息判错误，补发一次完成信号
+        finishTurn(lastAssistantMessageFailed(messages))
+        setActivity("")
+      } else if (!turnActiveRef.current) {
+        // 快照就是“正在跑”的权威状态：中途挂载/重连时也开启这一轮的完成信号
+        startTurn()
+      }
+      // 快照落地后再发排队消息：此时乐观气泡不会再被 snapshot(reset) 擦掉。
+      const lazyDeviceId = selectedDeviceRef.current
+      if (lazyDeviceId && roomRef.current) lazyRoomReadyRef.current(roomRef.current, lazyDeviceId)
+      for (let k = messages.length - 1; k >= 0; k -= 1) {
+        const item = messages[k]
+        if (item?.role === "assistant" && typeof item.model === "string" && item.model) {
+          rememberModel(item)
+          break
+        }
+      }
+    }
+
+    /** Apply one room_event frame whose event payload is already plaintext. */
+    const processRoomEventFrame = (msg: Record<string, unknown>, event: { type?: string }) => {
+      const step = eventStep(syncRef.current, msg.seq, msg.rev)
+      if (step.action === "ignore") return
+      if (step.action === "resync-since" || step.action === "resync-full") {
+        resync(step.action === "resync-since")
+        return
+      }
+      syncRef.current = step.next
+      handleEventRef.current(event)
+    }
+
+    /** Does this streaming event carry any sealed field? (detection only; decryption happens in the chain) */
+    const eventHasSealedFields = (event: Record<string, unknown>): boolean => {
+      if (isContentEnvelope(event.message) || isContentEnvelope(event.text)) return true
+      if (isContentEnvelope(event.args) || isContentEnvelope(event.result) || isContentEnvelope(event.partialResult)) return true
+      const inner = event.assistantMessageEvent
+      if (isRecord(inner)) {
+        if (typeof inner.ct === "string") return true
+        if (envelopeFromTextField(inner.delta) || envelopeFromTextField(inner.content)) return true
+      }
+      return false
+    }
+
+    /**
+     * The enc gate (crypto Phase 3): decide synchronously, at frame
+     * arrival, whether a snapshot / room_event frame for the current room
+     * must go through the per-room async decrypt chain. A snapshot's
+     * keyInfo is noted here -- synchronously, before chaining -- so live
+     * events chained behind it find the room key ready. The noting runs
+     * BEFORE the enc early return below: roster frames pre-flag enc
+     * rooms without carrying keyInfo, so an already-flagged room would
+     * otherwise never record the wrap its snapshots carry, and its
+     * decrypt chain could never resolve the room key. Plaintext rooms
+     * never satisfy the gate and keep the synchronous path untouched.
+     */
+    const frameNeedsCrypto = (roomId: string, msg: Record<string, unknown>): boolean => {
+      if (msg.type === "snapshot") {
+        const keyInfo = snapshotKeyInfoOf(msg)
+        if (keyInfo) noteRoomKeyInfo(roomId, keyInfo)
+      }
+      const entry = roomCryptoRef.current.get(roomId)
+      if (entry?.enc) return true
+      if (msg.type === "snapshot") {
+        let needs = msg.enc === 1
+        if (!needs && Array.isArray(msg.messages) && msg.messages.some((m) => isContentEnvelope(m))) needs = true
+        if (needs) roomCryptoEntryOf(roomId).enc = true
+        return needs
+      }
+      if (msg.type === "room_event" && isRecord(msg.event) && eventHasSealedFields(msg.event)) {
+        roomCryptoEntryOf(roomId).enc = true
+        return true
+      }
+      return false
+    }
+
+    /** Enc snapshot: decrypt the whole list under the room key, then run the shared snapshot bookkeeping. */
+    const processEncSnapshot = async (msg: Record<string, unknown>): Promise<void> => {
+      const roomId = typeof msg.room === "string" ? msg.room : roomRef.current
+      if (!roomId) return
+      const key = await awaitRoomKey(roomId, false)
+      const raw = Array.isArray(msg.messages) ? msg.messages : []
+      const { messages, failures } = await decryptSnapshotMessages(key, raw)
+      noteDecryptFailures(roomId, failures)
+      // Wake any live events parked on this room's key (they re-resolve it
+      // from the cache); done even when the snapshot itself carried no
+      // keyInfo, so the chain can never stall on a missing wrap.
+      wakeRoomKeyWaiters(roomId)
+      if (roomRef.current !== roomId) return
+      processSnapshotFrame(msg, messages)
+    }
+
+    /** Enc room_event: decrypt the payload, then run the shared event step. A dropped delta settles via message_end. */
+    const processEncRoomEvent = async (msg: Record<string, unknown>): Promise<void> => {
+      const roomId = typeof msg.room === "string" ? msg.room : roomRef.current
+      if (!roomId) return
+      const key = await awaitRoomKey(roomId, true)
+      const rawEvent = isRecord(msg.event) ? msg.event : {}
+      const { event, failures, drop } = await decryptRoomEvent(key, rawEvent)
+      noteDecryptFailures(roomId, failures)
+      if (drop) return
+      if (roomRef.current !== roomId) return
+      processRoomEventFrame(msg, event as { type?: string })
+    }
+
     ws.onmessage = (ev) => {
       // 代际守卫必须放在解析/分发之前：旧 socket 迟到的帧（尤其 room_event）一旦进入
       // 下面的 reducer，就会在当前连接上重放一遍（流式翻倍、串房）。onclose 已有同款守卫。
@@ -2031,6 +2481,7 @@ export function useRelay() {
           const list = withoutDeletedRooms(parseRooms(msg.rooms), readDeletedSessions(deletedStorage(), Date.now()), roomRef.current || null)
           roomsRef.current = list
           setRooms(list)
+          noteRoomsCrypto(list)
           // B-1：名册边沿喂注意力追踪（断线期间别房跑完的回合在这里补落定）
           // R3-1：同一份名册里的 relay 回合摘要紧接着种回（刷新/重连恢复的主路径）
           commitRoomTurnTracker(
@@ -2216,7 +2667,7 @@ export function useRelay() {
             void core.wrapAckGrant(account, fromFp, fromBoxPub).then((blob) => {
               if (blob && wsRef.current === ws) {
                 try {
-                  ws.send(JSON.stringify(contentKeyGrantFrame({ to: fromFp, accountId: account, blob })))
+                  ws.send(JSON.stringify(contentKeyGrantFrame({ to: fromFp, blob })))
                 } catch {
                   /* the close path handles a dead socket */
                 }
@@ -2243,6 +2694,7 @@ export function useRelay() {
         const previous = roomsRef.current.find((room) => room.id === roomRef.current)
         roomsRef.current = list
         setRooms(list)
+        noteRoomsCrypto(list)
         // B-1：名册边沿喂注意力追踪（别房 busy true→false = 一回合落定）
         // R3-1：同一份名册里的 relay 回合摘要紧接着种回（刷新/重连恢复的主路径）
         commitRoomTurnTracker(
@@ -2374,7 +2826,12 @@ export function useRelay() {
           else settleQuery(ackId, msg, null)
           return
         }
-        channel.ack(msg)
+        if (!channel.ack(msg) && ackId && msg.ok === false) {
+          // A refused list_viewers comes back as this failure ack (the relay
+          // never acks a successful one -- it sends viewer_list instead):
+          // fail the roster waiter with the real reason, not a timeout.
+          failViewerListWaiter(ackId, typeof msg.error === "string" && msg.error ? msg.error : "读取观看端名册被中转服务拒绝")
+        }
         return
       }
       if (type === "command_accepted") {
@@ -2389,6 +2846,18 @@ export function useRelay() {
         const deviceId = typeof msg.deviceId === "string" ? msg.deviceId : ""
         const session = msg.session as ArchiveSession | undefined
         if (deviceId && session && typeof session.id === "string" && Array.isArray(session.messages)) {
+          // Crypto Phase 3: a sealed archive (whole-blob ct, per-message
+          // ct, or an envelope firstMessage) is decrypted first and only
+          // the decrypted session enters the cache -- ciphertext must
+          // never reach the archive view as if it were text.
+          const sealed =
+            (session.enc === 1 && typeof session.ct === "string") ||
+            session.messages.some((m) => m.enc === 1 && typeof m.ct === "string") ||
+            firstMessageEncOf(session.firstMessage) !== null
+          if (sealed) {
+            void decryptAndStoreArchive(deviceId, session)
+            return
+          }
           // LRU 上限（UI·relay 中-4）：点开过的归档正文不会无限常驻，最旧的最多留 32 份。
           rememberSessionArchive(archivesRef.current, `${deviceId}\n${session.id}`, session)
           setArchiveTick((n) => n + 1)
@@ -2462,6 +2931,9 @@ export function useRelay() {
         }
         // 命令被拒（rate_limited 等，relay 带回了请求 id）：对应命令立刻失败，不再干等超时
         if (qid && channel.error(msg)) return
+        // A roster read refused with an id-bearing error frame (rather than
+        // an ack) fails its waiter the same way: real reason, no timeout.
+        if (qid && failViewerListWaiter(qid, message)) return
         // 订阅的房间已不存在（sessionStorage 里的旧 id）：清空房间并自动挑一个在线的，
         // 否则 roomId 留着但连不上，输入条永久禁用。
         if (msg.code === "no_room") {
@@ -2481,6 +2953,17 @@ export function useRelay() {
           identityCoreRef.current?.noteKeyMismatch(fps.length > 1 ? fps : null)
           syncIdentityState()
           setNotice({ text: "内容钥指纹对不上：账号里各端持有的 ACK 不一致，请核对各端的备份与导入。", tone: "warn" })
+          return
+        }
+        // The relay refused this viewer access to an encrypted room
+        // (crypto Phase 3, design 4.1): an old client without the
+        // crypto.content cap, or a viewer identity the relay cannot
+        // place. Surface a plain-language per-room state -- the room's
+        // ciphertext is never decrypted-into-gibberish downstream.
+        if (code === "crypto_required") {
+          const roomId = typeof msg.room === "string" && msg.room ? msg.room : roomRef.current || ""
+          if (roomId) noteRoomCryptoStatus(roomId, "crypto-required")
+          setNotice({ text: "这个房间已加密，当前观看端无法读取：需要先启用观看端身份并持有内容钥。", tone: "bad" })
           return
         }
         setNotice({ text: String(msg.message || msg.code || "出错了"), tone: "bad" })
@@ -2628,75 +3111,23 @@ export function useRelay() {
         return
       }
       if (type === "snapshot") {
-        const step = snapshotStep(syncRef.current, msg)
-        if (step.action === "resync-since" || step.action === "resync-full") {
-          resync(step.action === "resync-since")
+        // Enc rooms detour through the per-room decrypt chain (async);
+        // plaintext rooms run the identical bookkeeping synchronously.
+        const frameRoom = typeof msg.room === "string" ? msg.room : roomRef.current
+        if (frameRoom && frameNeedsCrypto(frameRoom, msg)) {
+          enqueueRoomCryptoTask(frameRoom, () => processEncSnapshot(msg))
           return
         }
-        // 陈旧全量（同世代 seq 更小）整帧忽略：连 pending 标记也不能让它置真，
-        // 否则忽略后没有后续帧来清，界面会一直显示"正在从本机拉取会话…"（UI·relay 中-2）。
-        if (step.action === "ignore") return
-        if (msg.snapshotPending === true) setSnapshotPending(true)
-        if (msg.snapshotPending !== true) setSnapshotPending(false)
-        syncRef.current = step.next
-        const messages = Array.isArray(msg.messages) ? (msg.messages as AgentMessage[]) : []
-        if (step.action === "full") {
-          // 全量快照也会在会话换代时广播：只清旧的截断/连接提示，"已切换分支"之类留给用户看
-          setNotice((prev) => clearConnectivity(clearNoticeCode(prev, "truncated")))
-          dispatch({ type: "snapshot", messages })
-          // 快照里可能已有工具块：等 transcript 落地后与已到的结束元数据合并。
-          terminalHistoryPendingRef.current = true
-          // 服务器安全阀触发（单房 10000 条 / 磁盘 8MB 扫描上限）：镜像不完整，必须明说，
-          // 否则用户会把截断后的会话当成完整历史（见 data-interface.md §4.11）
-          if (msg.truncated === true) {
-            setNotice({
-              text: "这个会话很长，只加载了最近一部分历史（更早的消息服务端未交付）。",
-              tone: "warn",
-              codes: ["truncated"],
-            })
-          }
-          // 历史补拉（R2-5）：全量快照整段换代，游标与入口状态一并重置（代次+1 让在飞补拉作废）；
-          // 截断过才有“加载更早”入口，未截断即完整历史、入口不出现。
-          historyGenRef.current += 1
-          historyCursorRef.current = null
-          // 整段换代：窗口缓存里的条目可能已不属于当前分支，一并作废（UI·relay 中-5）。
-          historyCacheRef.current = null
-          applyHistory({ room: roomRef.current || "", status: msg.truncated === true ? "more" : "done", error: "", truncated: msg.truncated === true, lastAdded: 0 })
-        } else {
-          dispatch({ type: "append", messages })
-          // 增量快照也可能带来断线期间的工具块：同样等 transcript 落地后与已到的元数据合并。
-          terminalHistoryPendingRef.current = true
-        }
-        setBusy(!!msg.busy)
-        if (!msg.busy) {
-          // 断线期间这一轮已跑完：用快照里的终版消息判错误，补发一次完成信号
-          finishTurn(lastAssistantMessageFailed(messages))
-          setActivity("")
-        } else if (!turnActiveRef.current) {
-          // 快照就是“正在跑”的权威状态：中途挂载/重连时也开启这一轮的完成信号
-          startTurn()
-        }
-        // 快照落地后再发排队消息：此时乐观气泡不会再被 snapshot(reset) 擦掉。
-        const lazyDeviceId = selectedDeviceRef.current
-        if (lazyDeviceId && roomRef.current) lazyRoomReadyRef.current(roomRef.current, lazyDeviceId)
-        for (let k = messages.length - 1; k >= 0; k -= 1) {
-          const item = messages[k]
-          if (item?.role === "assistant" && typeof item.model === "string" && item.model) {
-            rememberModel(item)
-            break
-          }
-        }
+        processSnapshotFrame(msg, Array.isArray(msg.messages) ? (msg.messages as AgentMessage[]) : [])
         return
       }
       if (type === "room_event") {
-        const step = eventStep(syncRef.current, msg.seq, msg.rev)
-        if (step.action === "ignore") return
-        if (step.action === "resync-since" || step.action === "resync-full") {
-          resync(step.action === "resync-since")
+        const frameRoom = typeof msg.room === "string" ? msg.room : roomRef.current
+        if (frameRoom && frameNeedsCrypto(frameRoom, msg)) {
+          enqueueRoomCryptoTask(frameRoom, () => processEncRoomEvent(msg))
           return
         }
-        syncRef.current = step.next
-        handleEventRef.current((msg.event || {}) as { type?: string })
+        processRoomEventFrame(msg, (msg.event || {}) as { type?: string })
         return
       }
       if (type === "room_state") {
@@ -4648,18 +5079,48 @@ export function useRelay() {
   }, [reconnect])
 
   const selectedDevice = devices.find((device) => device.id === selectedDeviceId) ?? null
+  // Encrypted firstMessage previews (crypto Phase 3): substitute the
+  // decrypted text (or the undecryptable label) over the raw preview
+  // before any list building, so titles/previews never see ciphertext.
+  // Rooms/sessions without an enc preview keep their object identity.
+  const previewRooms = useMemo(
+    () =>
+      decryptedPreviews.size
+        ? rooms.map((room) =>
+            room.firstMessageEnc && decryptedPreviews.has(room.firstMessageEnc)
+              ? { ...room, firstMessage: decryptedPreviews.get(room.firstMessageEnc) ?? room.firstMessage }
+              : room,
+          )
+        : rooms,
+    [rooms, decryptedPreviews],
+  )
+  const previewSessionsByDevice = useMemo(() => {
+    if (!decryptedPreviews.size) return sessionsByDevice
+    let changed = false
+    const next: Record<string, SessionEntry[]> = {}
+    for (const [deviceId, list] of Object.entries(sessionsByDevice)) {
+      next[deviceId] = list.map((session) => {
+        if (session.firstMessageEnc && decryptedPreviews.has(session.firstMessageEnc)) {
+          changed = true
+          return { ...session, firstMessage: decryptedPreviews.get(session.firstMessageEnc) ?? session.firstMessage }
+        }
+        return session
+      })
+    }
+    return changed ? next : sessionsByDevice
+  }, [sessionsByDevice, decryptedPreviews])
   const listedSessions = useMemo(
     () =>
       selectedDevice
-        ? mergeDeviceSessions(selectedDevice, rooms, sessionsByDevice[selectedDevice.id] || [], !!truncatedByDevice[selectedDevice.id])
+        ? mergeDeviceSessions(selectedDevice, previewRooms, previewSessionsByDevice[selectedDevice.id] || [], !!truncatedByDevice[selectedDevice.id])
         : [],
-    [selectedDevice, rooms, sessionsByDevice, truncatedByDevice],
+    [selectedDevice, previewRooms, previewSessionsByDevice, truncatedByDevice],
   )
   const sessionsTruncated = selectedDeviceId ? !!truncatedByDevice[selectedDeviceId] : false
   const pendingStart = selectedDeviceId ? pendingStarts[selectedDeviceId] ?? null : null
   /** 只点选未载入会话时，给三套皮肤一个可显示的“合成房间”（不订阅、不启动） */
   const lazyRoom = useMemo(() => (lazySession ? lazyRoomFromRow(lazySession) : null), [lazySession])
-  const shownRooms = useMemo(() => withLazyRoom(rooms, lazyRoom), [rooms, lazyRoom])
+  const shownRooms = useMemo(() => withLazyRoom(previewRooms, lazyRoom), [previewRooms, lazyRoom])
 
   /** 输入卡唯一事实源：组件只读这个对象，不再自己拼 canSend/canType/placeholder。
    *  口径在 relay/composerFacts.ts（开发画廊的 fixture 也用它）：未载入会话、设备在线时按在线算，发第一条走 lazySend。 */
@@ -4724,13 +5185,18 @@ export function useRelay() {
     selectedDeviceId,
     selectedDevice,
     deviceMode,
-    sessionsByDevice,
+    sessionsByDevice: previewSessionsByDevice,
     sessionsLoading,
     sessionsTruncated,
     pendingStarts,
     pendingStart,
     commandInFlight,
     snapshotPending,
+    // Content decryption (crypto Phase 3): honest per-room state for the
+    // open room -- waiting for an ACK, a mismatched account key, or a
+    // relay refusal -- plus the visible undecryptable-message count.
+    roomCryptoStatus: roomId ? roomCryptoStatuses[roomId] ?? null : null,
+    decryptFailureCount: roomId ? decryptFailures[roomId] ?? 0 : 0,
     listedSessions,
     lazySession,
     /** 未载入会话的本机正文。设备连上后由 attach 读会话文件推过来。 */

@@ -50,6 +50,7 @@ export type Cap =
   | "room.inbox"
   | "room.schedule"
   | "crypto.auth"
+  | "crypto.content"
   | "room.label"
   | "sync.v3"
   | "health"
@@ -72,6 +73,18 @@ export function authFrame(token: string) {
 
 /** 管理命令的单独口令校验失败码；普通查看/发消息不需要 adminToken。 */
 export const ADMIN_REQUIRED = "admin_required"
+
+/**
+ * Attach the stored admin token to a management frame that carries no
+ * adminSig (crypto Phase 2): a viewer that cannot sign (not registered, or
+ * not an admin viewer) falls back to the token track. The adminToken field
+ * is excluded from the adminSig canonical form, so attaching it after
+ * signing never invalidates a signature; a frame that already carries a
+ * signature is returned untouched so a stray token can never shadow it.
+ */
+export function frameWithAdminToken<T extends Record<string, unknown>>(frame: T, adminToken: string): T {
+  return typeof frame.adminSig === "string" && frame.adminSig ? frame : { ...frame, adminToken }
+}
 
 /** 生成配对码：adminToken 只放在这条命令帧里，不参与 viewer 握手、不进 URL。 */
 export function pairCreateFrame(adminToken: string) {
@@ -118,7 +131,11 @@ export function viewerAuthFrame(input: { viewerId: string; keyFp: string; client
     type: "auth",
     role: "viewer",
     proto: PROTO,
-    caps: [...VIEWER_CAPS, "crypto.auth"],
+    // crypto.content (Phase 3) depends on crypto.auth (design 7): only a
+    // keyed viewer can hold an ACK and decrypt envelopes, so the content
+    // cap rides on the key-auth frame only -- the token frame stays
+    // byte-identical and token viewers keep getting plaintext service.
+    caps: [...VIEWER_CAPS, "crypto.auth", "crypto.content"],
     client: { kind: "viewer", version: CLIENT_VERSION },
     viewerId: input.viewerId,
     keyFp: input.keyFp,
@@ -140,9 +157,18 @@ export function contentKeyRequestFrame() {
   return { type: "content_key_request" }
 }
 
-/** Deliver a wrapped ACK to one end, routed by its key fingerprint (design 3.2). */
-export function contentKeyGrantFrame(input: { to: string; accountId: string; blob: { nonce: string; ct: string } }) {
-  return { type: "content_key_grant", to: input.to, accountId: input.accountId, blob: input.blob }
+/**
+ * Deliver a wrapped ACK to one end, routed by its key fingerprint (design 3.2).
+ * The wire shape is FLAT -- { type, to, nonce, ct } -- the canonical shape the
+ * relay's shared grant cleaner (cleanKeyGrant) accepts and the device bridge
+ * itself sends; a nested blob is rejected by the relay as bad_args. No
+ * accountId rides the frame: the relay derives the account from the sender's
+ * connection and the cleaner drops frame-supplied copies anyway, while
+ * receivers (bridge unwrapAckGrant, viewer acceptAckGrant) unwrap against
+ * their own account context -- so the field could never reach a consumer.
+ */
+export function contentKeyGrantFrame(input: { to: string; blob: { nonce: string; ct: string } }) {
+  return { type: "content_key_grant", to: input.to, nonce: input.blob.nonce, ct: input.blob.ct }
 }
 
 /**

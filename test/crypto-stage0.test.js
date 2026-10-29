@@ -53,9 +53,10 @@ test("协议登记：caps / 错误码 / limits 齐全，RELAY_CAPS 按实现阶�
   assert.equal(proto.limits.authNonceBytes, 32);
   assert.equal(proto.limits.contentKeyFpChars, 16);
   // 阶段 1 已实现设备身份（配对登记公钥/挑战鉴权/key_update/grant 透传）：crypto.auth
-  // 名副其实进 RELAY_CAPS；crypto.content（正文加密）仍未实现，不许冒充（阶段 3 再进）。
+  // 名副其实进 RELAY_CAPS；阶段 3 已实现正文加密（信封落盘/版本门/迁移）：crypto.content
+  // 同样名副其实进 RELAY_CAPS（本断言随阶段推进更新，旧口径见 git 历史）。
   assert.ok(RELAY_CAPS.includes("crypto.auth"));
-  assert.ok(!RELAY_CAPS.includes("crypto.content"));
+  assert.ok(RELAY_CAPS.includes("crypto.content"));
 });
 
 /* ---------- 2) 设备名册 keys 往返 ---------- */

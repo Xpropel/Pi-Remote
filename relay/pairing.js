@@ -191,14 +191,18 @@ function canonicalJson(value) {
 /**
  * adminSig payload (design §7; the canonicalization is fixed here and documented in
  * protocol/v4.json under crypto.auth): utf8("pi-remote-admin-v1") || utf8(frame.type) ||
- * utf8(canonicalJson(frame without the adminSig / adminToken / type fields)).
+ * utf8(canonicalJson(frame without the adminSig / adminToken / type / id fields)).
+ * The id field is excluded because it is a transport correlation handle, not
+ * management intent: the web transports stamp the request id onto the frame AFTER
+ * the identity core has signed it, so an id inside the canonical form would make
+ * every signed frame unverifiable at the relay.
  * The signature itself is ECDSA P-256 / SHA-256, IEEE P1363, base64 — see verifyP256.
  */
 function adminPayload(frame) {
   const src = frame && typeof frame === "object" ? frame : {};
   const rest = {};
   for (const k of Object.keys(src)) {
-    if (k === "adminSig" || k === "adminToken" || k === "type") continue;
+    if (k === "adminSig" || k === "adminToken" || k === "type" || k === "id") continue;
     rest[k] = src[k];
   }
   return Buffer.concat([

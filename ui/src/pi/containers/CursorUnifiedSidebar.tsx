@@ -88,6 +88,7 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
           pinned: scopeState.pins.includes(key),
           archived: scopeState.archives.includes(key),
           groupId: sidebarWorkspaceGroupId(cwd || session?.cwd),
+          enc: session?.enc,
         }
       })
       return { id: group.key, kind: "workspace" as const, label: group.label || sidebarWorkspaceLabel(cwd), cwd, collapsed, sessions, count: sessions.length }

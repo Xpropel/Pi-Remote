@@ -19,7 +19,9 @@ import {
   formatFingerprintText,
   identityStateViewOf,
   isSelfViewerRow,
+  registrationErrorTextOf,
   viewerStatusTextOf,
+  IDENTITY_NOT_REGISTERED_TEXT,
   IDENTITY_PHASE_NOTE,
   IDENTITY_UNRECOVERABLE_WARNING,
   IDENTITY_WAITING_ACK_TEXT,
@@ -119,23 +121,60 @@ test("identity state shaping: none / waiting-ack / ready branches", () => {
   assert.equal(identityStateViewOf({}).phase, "none")
   assert.equal(identityStateViewOf("garbage").phase, "none")
 
-  const waiting = identityStateViewOf({ viewerId: "v-1", keyFp: "3f9ac41d77b002e5" })
+  const waiting = identityStateViewOf({ viewerId: "v-1", keyFp: "3f9ac41d77b002e5", registered: true })
   assert.equal(waiting.phase, "waiting-ack")
   assert.equal(waiting.viewerId, "v-1")
   assert.equal(waiting.ackFp, null)
+  assert.equal(waiting.registered, true)
 
-  const ready = identityStateViewOf({ viewerId: "v-1", ackFp: "aaaaaaaabbbbbbbb", backedUpAt: 1761715200000 })
+  const ready = identityStateViewOf({ viewerId: "v-1", ackFp: "aaaaaaaabbbbbbbb", backedUpAt: 1761715200000, registered: true })
   assert.equal(ready.phase, "ready")
   assert.equal(ready.backedUp, true)
   assert.equal(ready.backedUpAt, 1761715200000)
 })
 
+test("identity state shaping: keys without a confirmed registration are the not-registered error state", () => {
+  // The live bug: keys persisted by a registration the relay refused
+  // (admin_required) were rendered as "registered, just wait for the ACK".
+  const refused = identityStateViewOf({ viewerId: "v-1", keyFp: "3f9ac41d77b002e5", registered: false, lastError: "admin_required" })
+  assert.equal(refused.phase, "not-registered")
+  assert.equal(refused.registered, false)
+  assert.equal(refused.lastError, "admin_required")
+
+  // A snapshot that does not state registration must never claim it either.
+  const unstated = identityStateViewOf({ viewerId: "v-1", keyFp: "3f9ac41d77b002e5" })
+  assert.equal(unstated.phase, "not-registered")
+  assert.equal(unstated.registered, false)
+
+  // Holding an ACK does not paper over a missing registration; the ackFp
+  // still surfaces so the state stays inspectable and recoverable.
+  const withAck = identityStateViewOf({ viewerId: "v-1", ackFp: "aaaaaaaabbbbbbbb", registered: false })
+  assert.equal(withAck.phase, "not-registered")
+  assert.equal(withAck.ackFp, "aaaaaaaabbbbbbbb")
+})
+
+test("not-registered copy: states the refusal reason and the admin-token recovery path", () => {
+  const refused = identityStateViewOf({ viewerId: "v-1", registered: false, lastError: "admin_required" })
+  assert.match(registrationErrorTextOf(refused), /管理员凭据未通过/)
+  const other = identityStateViewOf({ viewerId: "v-1", registered: false, lastError: "relay_down" })
+  assert.match(registrationErrorTextOf(other), /relay_down/)
+  const silent = identityStateViewOf({ viewerId: "v-1", registered: false })
+  assert.equal(registrationErrorTextOf(silent), "")
+  const waiting = identityStateViewOf({ viewerId: "v-1", registered: true })
+  assert.equal(registrationErrorTextOf(waiting), "", "the reason line only renders in the not-registered state")
+  assert.match(IDENTITY_NOT_REGISTERED_TEXT, /还没有在中转服务登记成功/)
+  assert.match(IDENTITY_NOT_REGISTERED_TEXT, /管理员令牌/)
+  assert.match(IDENTITY_NOT_REGISTERED_TEXT, /添加设备/)
+  assert.match(IDENTITY_NOT_REGISTERED_TEXT, /重新登记/)
+  assert.match(IDENTITY_NOT_REGISTERED_TEXT, /忘记本机身份/)
+})
+
 test("identity state shaping: backup status text follows the phase", () => {
-  const notBackedUp = identityStateViewOf({ viewerId: "v-1", ackFp: "aaaaaaaabbbbbbbb" })
+  const notBackedUp = identityStateViewOf({ viewerId: "v-1", ackFp: "aaaaaaaabbbbbbbb", registered: true })
   assert.match(backupStatusTextOf(notBackedUp), /尚未备份/)
-  const backedUp = identityStateViewOf({ viewerId: "v-1", ackFp: "aaaaaaaabbbbbbbb", backedUp: true })
+  const backedUp = identityStateViewOf({ viewerId: "v-1", ackFp: "aaaaaaaabbbbbbbb", backedUp: true, registered: true })
   assert.match(backupStatusTextOf(backedUp), /已建口令备份/)
-  const waiting = identityStateViewOf({ viewerId: "v-1" })
+  const waiting = identityStateViewOf({ viewerId: "v-1", registered: true })
   assert.equal(backupStatusTextOf(waiting), "")
 })
 
@@ -170,7 +209,7 @@ test("authorized viewers: status text and self detection", () => {
   const revoked = authorizedViewerRowOf({ viewerId: "v-2", revokedAt: now - 1000 })
   assert.match(viewerStatusTextOf(revoked, now), /已撤销/)
 
-  const view = identityStateViewOf({ viewerId: "v-1" })
+  const view = identityStateViewOf({ viewerId: "v-1", registered: true })
   assert.equal(isSelfViewerRow(admin, view), true)
   assert.equal(isSelfViewerRow(revoked, view), false)
 })
@@ -196,7 +235,15 @@ test("mandatory honesty copy: revoke notice admits the ACK copy stays valid", ()
 })
 
 test("mandatory honesty copy: waiting state and phase note stay truthful", () => {
+  assert.match(IDENTITY_WAITING_ACK_TEXT, /本机身份已登记/)
   assert.match(IDENTITY_WAITING_ACK_TEXT, /内容钥（ACK）/)
-  assert.match(IDENTITY_PHASE_NOTE, /仍未加密/)
-  assert.match(IDENTITY_PHASE_NOTE, /不要据此认为内容已被加密/)
+  // Phase 3 ships body encryption: the note must say bodies are encrypted
+  // end to end, and stay honest about tier-b (metadata and dialog text
+  // still cross the relay in plaintext). The stale Phase-2 claim that
+  // bodies are not encrypted yet must never come back.
+  assert.match(IDENTITY_PHASE_NOTE, /正文已启用端到端加密/)
+  assert.match(IDENTITY_PHASE_NOTE, /密文/)
+  assert.match(IDENTITY_PHASE_NOTE, /元数据/)
+  assert.match(IDENTITY_PHASE_NOTE, /明文/)
+  assert.doesNotMatch(IDENTITY_PHASE_NOTE, /仍未加密/)
 })

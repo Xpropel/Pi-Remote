@@ -15,8 +15,14 @@
  * - Revoking a viewer only removes access. The revoked viewer keeps its ACK
  *   copy and can still unwrap room keys sealed before the revocation; real
  *   removal requires an ACK rotation. The UI must say so, not imply otherwise.
- * - Phase 2 completes the identity system only. Body encryption ships in a
- *   later phase, so the surface must never claim content is encrypted yet.
+ * - Phase 3 ships body encryption: conversation bodies are end-to-end
+ *   encrypted and the relay only forwards and stores ciphertext. Tier-b
+ *   honesty still applies: session metadata and dialog (ask/answer) text
+ *   cross the relay in plaintext, and the copy must keep saying so.
+ * - Keys that exist locally but were never registered with the relay (the
+ *   registration was refused or never finished) are an error state, never
+ *   the waiting-for-ACK state: an unregistered viewer has no roster row,
+ *   so no ACK can ever be delivered to it.
  */
 import { lastOnlineTextOf } from "./devicesLogic.ts"
 
@@ -44,9 +50,26 @@ export const IDENTITY_WAITING_ACK_TEXT =
 export const VIEWER_REVOKE_ACK_NOTICE =
   "注意：撤销只是让这个观看端无法再登录，它手里已经拿到的内容钥副本不会失效——撤销前包裹好的房间钥，它仍然解得开。想真正除名，必须再轮换账号内容钥（ACK 轮换）；这里先如实说明，本页不会假装撤销等于密码学除名。"
 
-/** Phase-2 honesty note: identity complete, body encryption not shipped yet. */
+/** Phase-3 note: identity plus body encryption, with the tier-b caveats. */
 export const IDENTITY_PHASE_NOTE =
-  "本页完成的是「身份」部分：设备与观看端都用密钥证明身份。正文加密在下一阶段上线，本阶段对话正文仍未加密，请不要据此认为内容已被加密。"
+  "设备与观看端都用密钥证明身份，对话正文已启用端到端加密：中转服务只能转发和保存密文，解不开正文。需要如实说明的是，本阶段的加密只覆盖正文——会话元数据（标题、时间等）和问答弹窗的文本仍会以明文经过中转服务。"
+
+/**
+ * Error copy for keys that exist locally but are NOT registered with the
+ * relay: the registration was refused or never completed, so this viewer
+ * has no roster row -- it cannot key-auth, and no ACK delivery can ever
+ * reach it. Registration is an admin operation: it needs the admin token
+ * saved through the pairing dialog (the "添加设备" flow on this page).
+ */
+export const IDENTITY_NOT_REGISTERED_TEXT =
+  "本机身份密钥已经生成，但还没有在中转服务登记成功，因此现在还不能用密钥登录，也收不到内容钥（ACK）——请不要只是等待，登记不成功时 ACK 永远不会送达。登记需要管理员凭据：请先在本页「添加设备」的配对对话框里保存管理员令牌，再点下方「重新登记」。实在不行，也可以「忘记本机身份」清掉这副密钥，从头再来。"
+
+/** One-line refusal reason for the not-registered state, from the core's lastError code. */
+export function registrationErrorTextOf(view: IdentityStateView): string {
+  if (view.phase !== "not-registered" || !view.lastError) return ""
+  if (view.lastError === "admin_required") return "上次登记被中转服务拒绝：管理员凭据未通过（多半是还没保存管理员令牌，或令牌不对）。"
+  return `上次登记没有成功（${view.lastError}）。`
+}
 
 /** Roster unavailable note (old relay or identity core not wired up yet). */
 export const VIEWERS_UNSUPPORTED_TEXT = "当前连接没有提供观看端名册（旧版中转服务，或身份核心尚未接通），这里不会假装列出名单。"
@@ -60,6 +83,12 @@ export type ViewerIdentityPhase =
   | "unavailable"
   /** No identity in this browser yet; the enable flow is offered. */
   | "none"
+  /**
+   * Keys exist locally but the relay roster does NOT hold this identity:
+   * the registration was refused or never completed. An error state with
+   * recovery actions (re-register / forget), never a "just wait" state.
+   */
+  | "not-registered"
   /** Identity registered, but no ACK has been delivered to this browser. */
   | "waiting-ack"
   /** Identity registered and the ACK is held locally. */
@@ -73,6 +102,10 @@ export interface IdentityStateView {
   /** ACK fingerprint once held, else null. */
   ackFp: string | null
   accountId: string | null
+  /** True only when the core states the relay roster holds this identity. */
+  registered: boolean
+  /** Last failure code worth surfacing (e.g. a refused registration), else null. */
+  lastError: string | null
   /** True once a passphrase backup has been created from this browser. */
   backedUp: boolean
   backedUpAt: number | null
@@ -103,14 +136,21 @@ export function identityStateViewOf(raw: unknown): IdentityStateView {
   const ackFp = state ? stringOf(state.ackFp) : null
   const hasIdentity = state ? state.hasIdentity === true || viewerId !== null : false
   const hasAck = state ? state.hasAck === true || ackFp !== null : false
+  // Registration is claimed ONLY when the core explicitly states it. Keys
+  // without a confirmed registration derive the not-registered error state:
+  // deriving waiting-ack here is what once presented a relay-refused
+  // registration as "registered, just wait for the ACK".
+  const registered = state ? state.registered === true : false
   const backedUpAt = state ? timeOf(state.backedUpAt) : null
-  const phase: ViewerIdentityPhase = !hasIdentity ? "none" : hasAck ? "ready" : "waiting-ack"
+  const phase: ViewerIdentityPhase = !hasIdentity ? "none" : !registered ? "not-registered" : hasAck ? "ready" : "waiting-ack"
   return {
     phase,
     viewerId,
     keyFp: state ? stringOf(state.keyFp ?? state.signFp) : null,
     ackFp,
     accountId: state ? stringOf(state.accountId) : null,
+    registered,
+    lastError: state ? stringOf(state.lastError) : null,
     backedUp: state ? state.backedUp === true || backedUpAt !== null : false,
     backedUpAt,
   }

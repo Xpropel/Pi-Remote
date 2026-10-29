@@ -93,6 +93,11 @@ const DEFAULT_CONFIG = {
   //                     默认全关，须在 config 里显式写 true 才发（防意外轰炸）。
   notifyWebhookUrl: "",
   notifyEvents: { turn_done: false, turn_error: false, dialog_waiting: false },
+  // Plaintext-room policy while body encryption rolls out (design section 5):
+  // "allow" (default) = plaintext rooms behave exactly as before;
+  // "readonly" = plaintext rooms reject NEW writes but stay readable;
+  // "deny" = plaintext rooms reject reads and writes. Enc rooms are unaffected.
+  cryptoPlaintextRooms: "allow",
 };
 
 /**
@@ -284,6 +289,12 @@ function loadConfig(cfgPath = path.join(__dirname, "config.json")) {
   if (process.env.PI_REMOTE_NOTIFY_WEBHOOK_URL != null) cfg.notifyWebhookUrl = String(process.env.PI_REMOTE_NOTIFY_WEBHOOK_URL).trim();
   else cfg.notifyWebhookUrl = typeof cfg.notifyWebhookUrl === "string" ? cfg.notifyWebhookUrl.trim() : "";
   cfg.notifyEvents = sanitizeNotifyEvents(cfg.notifyEvents);
+  // Only the three documented values survive; anything else warns and falls
+  // back to "allow" (same sanitize pattern as the rest of this loader).
+  if (cfg.cryptoPlaintextRooms !== "allow" && cfg.cryptoPlaintextRooms !== "readonly" && cfg.cryptoPlaintextRooms !== "deny") {
+    console.warn(`[config] cryptoPlaintextRooms 值无效（${JSON.stringify(cfg.cryptoPlaintextRooms)}）：按默认 "allow" 处理`);
+    cfg.cryptoPlaintextRooms = "allow";
+  }
   return cfg;
 }
 

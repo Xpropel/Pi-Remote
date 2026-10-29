@@ -2297,3 +2297,290 @@ test("连接窗口钥模式：收到 auth_challenge 回 auth_response；无钥�
   assert.equal(plain.frames.some((f) => f.type === "auth_response"), false, "无钥窗口不许乱应答");
   plain.ctl.shutdown();
 });
+
+// ── Crypto Phase 3: session_archive producer sealing ─────────────────────
+// Independent unwrap of the pinned ACK envelope layout -- base64 of
+// nonce(12) || ciphertext || tag(16) -- using raw node:crypto only, never a
+// producer helper, so a layout drift on either side fails here instead of
+// round-tripping silently.
+function openAckText(ack, ctB64) {
+  const raw = Buffer.from(ctB64, "base64");
+  const nonce = raw.subarray(0, 12);
+  const tag = raw.subarray(raw.length - 16);
+  const ct = raw.subarray(12, raw.length - 16);
+  const decipher = nodeCrypto.createDecipheriv("aes-256-gcm", ack, nonce);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ct), decipher.final()]).toString("utf8");
+}
+
+const ARCHIVE_ACK = Buffer.from("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", "hex");
+const ARCHIVE_ACK_B64 = ARCHIVE_ACK.toString("base64");
+const MARKER_FIRST = "MARKER-FIRST looking for the launch checklist";
+const MARKER_BODY = "MARKER-BODY the checklist is sealed and shipped";
+
+function sampleArchive() {
+  return {
+    id: "sess-sealed-1",
+    path: "C:\\sess\\t_sess-sealed-1.jsonl",
+    cwd: "D:\\work\\app",
+    name: "sealed chat",
+    firstMessage: MARKER_FIRST,
+    messageCount: 2,
+    modified: "2024-01-01T00:00:00.000Z",
+    sizeBytes: 1234,
+    createdAt: 1700000000000,
+    updatedAt: 1700000000001,
+    parentSession: "p1",
+    truncated: false,
+    omitted: 0,
+    messages: [
+      { id: "m1", role: "user", text: MARKER_FIRST, timestamp: 1700000000001 },
+      { id: "m2", role: "assistant", text: MARKER_BODY, timestamp: 1700000000002 },
+    ],
+  };
+}
+
+test("archiveWireBody: no ACK keeps the plaintext wire form byte-identical", () => {
+  const archive = sampleArchive();
+  const wired = attach.archiveWireBody(archive, null);
+  assert.equal(JSON.stringify(wired), JSON.stringify(attach.archiveBody(archive)));
+  assert.deepEqual(wired, attach.archiveBody(archive));
+});
+
+test("archiveWireBody: with an ACK the blob and firstMessage are sealed, metadata stays readable", () => {
+  const archive = sampleArchive();
+  const sealed = attach.archiveWireBody(archive, ARCHIVE_ACK);
+  assert.equal(sealed.enc, 1);
+  assert.equal(typeof sealed.ct, "string");
+  assert.deepEqual(sealed.messages, [], "the outside carries an empty messages array; the body lives in the blob");
+  const wire = JSON.stringify(sealed);
+  assert.ok(!wire.includes("MARKER-FIRST") && !wire.includes("MARKER-BODY"), "no corpus plaintext anywhere in the sealed payload");
+  // Tier-b metadata stays in the clear; local-only fields are still stripped.
+  assert.equal(sealed.id, "sess-sealed-1");
+  assert.equal(sealed.cwd, "D:\\work\\app");
+  assert.equal(sealed.name, "sealed chat");
+  assert.equal(sealed.messageCount, 2);
+  assert.equal(sealed.path, undefined);
+  assert.equal(sealed.sizeBytes, undefined);
+  // Independent unwrap recovers the exact original message list.
+  const parsed = JSON.parse(openAckText(ARCHIVE_ACK, sealed.ct));
+  assert.deepEqual(parsed, { messages: attach.archiveBody(archive).messages });
+  // firstMessage travels as its own ACK envelope { enc:1, ct }.
+  assert.equal(typeof sealed.firstMessage, "object");
+  assert.equal(sealed.firstMessage.enc, 1);
+  assert.equal(openAckText(ARCHIVE_ACK, sealed.firstMessage.ct), MARKER_FIRST);
+  // A wrong key cannot open either envelope.
+  const other = Buffer.alloc(32, 9);
+  assert.throws(() => openAckText(other, sealed.ct));
+  assert.throws(() => openAckText(other, sealed.firstMessage.ct));
+  // The local archive object is never mutated by sealing.
+  assert.equal(archive.firstMessage, MARKER_FIRST);
+  assert.equal(archive.messages.length, 2);
+  assert.equal(archive.messages[1].text, MARKER_BODY);
+});
+
+function writeMarkerSessionFile(root, id) {
+  const dir = path.join(root, "--proj--");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "1700000000000_" + id + ".jsonl");
+  const lines = [
+    JSON.stringify({ type: "session", id, cwd: path.join(os.tmpdir(), "proj"), timestamp: 1700000000000 }),
+    JSON.stringify({ type: "message", id: "m1", timestamp: 1700000000001, message: { role: "user", content: MARKER_FIRST } }),
+    JSON.stringify({ type: "message", id: "m2", timestamp: 1700000000002, message: { role: "assistant", content: MARKER_BODY } }),
+  ];
+  fs.writeFileSync(file, lines.join("\n") + "\n");
+  return file;
+}
+
+test("session_archive flow: a device holding the ACK publishes sealed archives", async (t) => {
+  const root = tmpSessionRoot(t);
+  writeMarkerSessionFile(root, "sealed-flow");
+  const { ctl, frames } = p9Ctl({ deviceKeys: { contentKeys: { admin: ARCHIVE_ACK_B64 } } });
+  ctl.publishLibrary();
+  await new Promise((r) => setTimeout(r, 120));
+  const frame = frames.find((f) => f.type === "session_archive" && f.session && f.session.id === "sealed-flow");
+  assert.ok(frame, "archive frame was published");
+  assert.equal(frame.session.enc, 1);
+  assert.ok(!JSON.stringify(frame).includes("MARKER-"), "no corpus plaintext in the whole frame");
+  const parsed = JSON.parse(openAckText(ARCHIVE_ACK, frame.session.ct));
+  assert.deepEqual(parsed.messages.map((m) => m.text), [MARKER_FIRST, MARKER_BODY]);
+  assert.equal(frame.session.firstMessage.enc, 1);
+  assert.equal(openAckText(ARCHIVE_ACK, frame.session.firstMessage.ct), MARKER_FIRST);
+  ctl.shutdown();
+});
+
+test("session_archive flow: an ACK persisted to the key file after startup is picked up", async (t) => {
+  const root = tmpSessionRoot(t);
+  writeMarkerSessionFile(root, "sealed-late");
+  const dir = tmpDir();
+  const keyFile = path.join(dir, "pi-remote-device.key.json");
+  const keys = attach.generateDeviceKeys("dev-1");
+  keys.contentKeys = { admin: ARCHIVE_ACK_B64 };
+  attach.writeDeviceKeyFile(keyFile, keys);
+  // The window started with no keys at all; the ACK only exists in the file
+  // (the extension persisted it there after a content_key_grant).
+  const { ctl, frames } = p9Ctl({ deviceKeys: null, keyFilePath: keyFile });
+  ctl.publishLibrary();
+  await new Promise((r) => setTimeout(r, 120));
+  const frame = frames.find((f) => f.type === "session_archive" && f.session && f.session.id === "sealed-late");
+  assert.ok(frame, "archive frame was published");
+  assert.equal(frame.session.enc, 1, "fresh key-file read finds the ACK and seals");
+  assert.ok(!JSON.stringify(frame).includes("MARKER-"));
+  ctl.shutdown();
+});
+
+test("session_archive flow: a legacy token device keeps publishing plaintext archives", async (t) => {
+  const root = tmpSessionRoot(t);
+  writeMarkerSessionFile(root, "plain-flow");
+  const { ctl, frames } = p9Ctl();
+  ctl.publishLibrary();
+  await new Promise((r) => setTimeout(r, 120));
+  const frame = frames.find((f) => f.type === "session_archive" && f.session && f.session.id === "plain-flow");
+  assert.ok(frame, "archive frame was published");
+  assert.equal(frame.session.enc, undefined);
+  assert.equal(frame.session.firstMessage, MARKER_FIRST);
+  assert.deepEqual(frame.session.messages.map((m) => m.text), [MARKER_FIRST, MARKER_BODY]);
+  ctl.shutdown();
+});
+
+// ── Crypto Phase 3 follow-up: session_manifest preview sealing ──────────
+// The manifest row's firstMessage is a body slice: with an ACK it leaves as
+// an ACK envelope in firstMessageEnc (the extension's field and shape) and
+// the plaintext preview is nulled; without an ACK the row is untouched.
+
+test("manifestWireRow: no ACK keeps the manifest row byte-identical", () => {
+  const archive = sampleArchive();
+  const wired = attach.manifestWireRow(archive, null);
+  const plain = require("../deploy/session-library.cjs").manifestRow(archive);
+  assert.equal(JSON.stringify(wired), JSON.stringify(plain));
+  assert.deepEqual(wired, plain);
+  assert.equal(wired.firstMessage, MARKER_FIRST);
+  assert.equal(wired.firstMessageEnc, undefined);
+});
+
+test("manifestWireRow: with an ACK the preview is sealed into firstMessageEnc and nulled in the clear", () => {
+  const archive = sampleArchive();
+  const row = attach.manifestWireRow(archive, ARCHIVE_ACK);
+  assert.equal(row.firstMessage, null, "the plaintext preview never crosses");
+  assert.equal(typeof row.firstMessageEnc, "object");
+  assert.equal(row.firstMessageEnc.enc, 1);
+  // Independent unwrap recovers the preview exactly.
+  assert.equal(openAckText(ARCHIVE_ACK, row.firstMessageEnc.ct), MARKER_FIRST);
+  assert.ok(!JSON.stringify(row).includes("MARKER-"), "no preview plaintext anywhere in the row");
+  // Tier-b metadata stays in the clear.
+  assert.equal(row.id, archive.id);
+  assert.equal(row.cwd, archive.cwd);
+  assert.equal(row.messageCount, archive.messageCount);
+  // A wrong key cannot open the envelope.
+  assert.throws(() => openAckText(Buffer.alloc(32, 9), row.firstMessageEnc.ct));
+  // A row without a preview stays clean even with an ACK.
+  const bare = attach.manifestWireRow({ ...archive, firstMessage: null }, ARCHIVE_ACK);
+  assert.equal(bare.firstMessage, null);
+  assert.equal(bare.firstMessageEnc, undefined);
+});
+
+test("session_manifest flow: a device holding the ACK publishes sealed manifest previews", async (t) => {
+  const root = tmpSessionRoot(t);
+  writeMarkerSessionFile(root, "sealed-manifest");
+  const { ctl, frames } = p9Ctl({ deviceKeys: { contentKeys: { admin: ARCHIVE_ACK_B64 } } });
+  ctl.publishLibrary();
+  await new Promise((r) => setTimeout(r, 120));
+  const frame = frames.find((f) => f.type === "session_manifest");
+  assert.ok(frame, "manifest frame was published");
+  const row = frame.sessions.find((s) => s.id === "sealed-manifest");
+  assert.ok(row, "manifest carries the marker session row");
+  assert.equal(row.firstMessage, null);
+  assert.equal(row.firstMessageEnc.enc, 1);
+  assert.equal(openAckText(ARCHIVE_ACK, row.firstMessageEnc.ct), MARKER_FIRST);
+  assert.ok(!JSON.stringify(frame).includes("MARKER-"), "no preview plaintext anywhere in the manifest frame");
+  ctl.shutdown();
+});
+
+test("session_manifest flow: a legacy token device keeps plaintext manifest previews", async (t) => {
+  const root = tmpSessionRoot(t);
+  writeMarkerSessionFile(root, "plain-manifest");
+  const { ctl, frames } = p9Ctl();
+  ctl.publishLibrary();
+  await new Promise((r) => setTimeout(r, 120));
+  const frame = frames.find((f) => f.type === "session_manifest");
+  assert.ok(frame, "manifest frame was published");
+  const row = frame.sessions.find((s) => s.id === "plain-manifest");
+  assert.ok(row, "manifest carries the marker session row");
+  assert.equal(row.firstMessage, MARKER_FIRST);
+  assert.equal(row.firstMessageEnc, undefined);
+  ctl.shutdown();
+});
+
+/* ---- Startup gate: a usable device key file counts as a credential ----
+ * Regression (found by real end-to-end testing of a clean keyed install):
+ * key-paired devices are issued NO token (PI_REMOTE_DEVICE_TOKEN stays
+ * empty), so main()'s old gate (!cfg.token && !cfg.deviceToken) refused
+ * them with "please pair first" even though they ARE paired. These tests
+ * pin the gate predicate: key file for the same deviceId passes; missing,
+ * corrupt, or different-deviceId key files still refuse; token devices are
+ * unaffected. */
+
+function keyGateFixture(t, { deviceId = "dev-key-gate", keyDeviceId = deviceId, envExtra = [], keyMode = "valid" } = {}) {
+  const dir = tmpDir();
+  const envPath = path.join(dir, ".env");
+  const lines = [`PI_REMOTE_DEVICE_ID=${deviceId}`, "PI_REMOTE_RELAY=ws://127.0.0.1:7001", ...envExtra];
+  fs.writeFileSync(envPath, lines.join("\n") + "\n");
+  // deviceKeyFilePath() consults the process env var first; pin it off so
+  // the fixture's default location (next to the .env file) is what resolves.
+  const prev = process.env.PI_REMOTE_DEVICE_KEY_FILE;
+  delete process.env.PI_REMOTE_DEVICE_KEY_FILE;
+  t.after(() => {
+    if (prev === undefined) delete process.env.PI_REMOTE_DEVICE_KEY_FILE;
+    else process.env.PI_REMOTE_DEVICE_KEY_FILE = prev;
+  });
+  if (keyMode !== "missing") {
+    const keyPath = attach.deviceKeyFilePath(envPath);
+    if (keyMode === "corrupt") fs.writeFileSync(keyPath, "{not a key file");
+    else attach.writeDeviceKeyFile(keyPath, attach.generateDeviceKeys(keyDeviceId));
+  }
+  return { dir, envPath };
+}
+
+// The exact credential half of main()'s startup gate, composed from the
+// real loadConfig + hasUsableDeviceKey (deviceId presence is gated earlier
+// in main and always set in these fixtures).
+function startupGateRefuses(envPath) {
+  const cfg = attach.loadConfig(envPath, {});
+  return !cfg.relay || (!cfg.token && !cfg.deviceToken && !attach.hasUsableDeviceKey(envPath, cfg.deviceId));
+}
+
+test("startup gate: key-paired device with no tokens passes via its key file", (t) => {
+  const { envPath } = keyGateFixture(t);
+  const cfg = attach.loadConfig(envPath, {});
+  assert.equal(cfg.token, "");
+  assert.equal(cfg.deviceToken, "");
+  assert.equal(attach.hasUsableDeviceKey(envPath, cfg.deviceId), true);
+  assert.equal(startupGateRefuses(envPath), false, "keyed install must not be refused as unpaired");
+});
+
+test("startup gate: key file issued for a different deviceId does not pass", (t) => {
+  const { envPath } = keyGateFixture(t, { keyDeviceId: "dev-someone-else" });
+  const cfg = attach.loadConfig(envPath, {});
+  assert.equal(attach.hasUsableDeviceKey(envPath, cfg.deviceId), false);
+  assert.equal(startupGateRefuses(envPath), true);
+});
+
+test("startup gate: no key file and no tokens still refuses", (t) => {
+  const { envPath } = keyGateFixture(t, { keyMode: "missing" });
+  const cfg = attach.loadConfig(envPath, {});
+  assert.equal(attach.hasUsableDeviceKey(envPath, cfg.deviceId), false);
+  assert.equal(startupGateRefuses(envPath), true);
+});
+
+test("startup gate: corrupt key file does not pass and does not throw", (t) => {
+  const { envPath } = keyGateFixture(t, { keyMode: "corrupt" });
+  const cfg = attach.loadConfig(envPath, {});
+  assert.equal(attach.hasUsableDeviceKey(envPath, cfg.deviceId), false);
+  assert.equal(startupGateRefuses(envPath), true);
+});
+
+test("startup gate: token device without any key file still passes (unchanged)", (t) => {
+  const { envPath } = keyGateFixture(t, { keyMode: "missing", envExtra: ["PI_REMOTE_DEVICE_TOKEN=tok-1"] });
+  assert.equal(attach.hasUsableDeviceKey(envPath, "dev-key-gate"), false);
+  assert.equal(startupGateRefuses(envPath), false, "device-token installs keep passing exactly as before");
+});

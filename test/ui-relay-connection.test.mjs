@@ -7,6 +7,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { emptySync, eventStep, snapshotStep } from "../ui/src/relay/sync.ts"
+import { frameWithAdminToken } from "../ui/src/relay/protocol.ts"
 import { emptyRoomTurnTracker, roomTurnEndsOf, seedRoomTurnEnds } from "../ui/src/relay/attention.ts"
 import {
   SESSION_ARCHIVE_MAX_ENTRIES,
@@ -41,6 +42,58 @@ test("增量路径不受影响：append/ignore/resync-since/resync-full 语义�
   assert.equal(eventStep({ room: "r", rev: "A", seq: 4 }, 5, "A").action, "apply")
 })
 
+test("管理帧双通道：未签名帧补带 adminToken，已签名帧原样不动", () => {
+  const unsigned = { type: "list_viewers" }
+  const attached = frameWithAdminToken(unsigned, "tok-1")
+  assert.equal(attached.adminToken, "tok-1")
+  assert.equal(attached.type, "list_viewers")
+  assert.equal("adminToken" in unsigned, false, "原帧不被就地修改")
+
+  const signed = { type: "list_viewers", adminSig: "c2ln", adminBy: "vw-1" }
+  const untouched = frameWithAdminToken(signed, "tok-1")
+  assert.equal(untouched, signed, "已签名帧返回同一对象，令牌不能盖过签名通道")
+  assert.equal("adminToken" in untouched, false)
+
+  const emptySig = frameWithAdminToken({ type: "list_viewers", adminSig: "" }, "tok-1")
+  assert.equal(emptySig.adminToken, "tok-1", "空签名按未签名处理")
+})
+
+test("身份通道接线：requestViewerList 与 sendAdminCommand 一样经 frameWithAdminToken 补带令牌", () => {
+  const relay = relaySource()
+  const transportAt = relay.indexOf("setViewerIdentityTransport({")
+  assert.ok(transportAt > 0, "身份通道必须还在")
+  const transport = relay.slice(transportAt, relay.indexOf("return () => setViewerIdentityTransport(null)", transportAt))
+  assert.match(transport, /sendAdminCommand:[\s\S]*?frameWithAdminToken/, "sendAdminCommand 走双通道补带")
+  const listAt = transport.indexOf("requestViewerList:")
+  assert.ok(listAt > 0, "requestViewerList 必须还在")
+  assert.match(transport.slice(listAt), /frameWithAdminToken\(frame, adminTokenRef\.current\)/, "名册读取也要给未签名帧补带 adminToken，否则未登记身份永远超时")
+})
+
+test("名册读取被拒要立刻失败：ack/error 分发把拒绝原因交给 failViewerListWaiter，不等 10 秒超时", () => {
+  const relay = relaySource()
+  // The helper itself: drops the waiter, clears its timer, rejects with the reason.
+  const helperAt = relay.indexOf("const failViewerListWaiter")
+  assert.ok(helperAt > 0, "failViewerListWaiter 必须还在")
+  const helper = relay.slice(helperAt, relay.indexOf("}", relay.indexOf("waiter.reject", helperAt)) + 1)
+  assert.match(helper, /viewerListWaitersRef\.current\.delete\(id\)/, "失败时先摘掉等待者")
+  assert.match(helper, /clearTimeout\(waiter\.timer\)/, "失败时清掉超时定时器")
+  assert.match(helper, /waiter\.reject\(new Error\(reason\)\)/, "失败时以真实原因 reject")
+
+  // The ack branch: a failed ack the command channel does not claim (the
+  // roster request bypasses the channel) fails the waiter with the ack text.
+  const ackAt = relay.indexOf('if (type === "ack") {')
+  assert.ok(ackAt > 0, "ack 分发必须还在")
+  const ackBranch = relay.slice(ackAt, relay.indexOf('if (type === "command_accepted")', ackAt))
+  assert.match(ackBranch, /failViewerListWaiter\(ackId,/, "ack 分发必须把名册等待者按 id 立刻失败掉")
+  assert.match(ackBranch, /msg\.ok === false/, "只有失败 ack 才算拒绝（成功名册走 viewer_list 帧）")
+
+  // The error branch: an id-bearing error frame fails the waiter the same way.
+  const errAt = relay.indexOf('if (type === "error") {')
+  assert.ok(errAt > 0, "error 分发必须还在")
+  const errBranch = relay.slice(errAt, relay.indexOf('if (type === "usage_state")', errAt))
+  assert.match(errBranch, /failViewerListWaiter\(qid, message\)/, "error 分发必须把名册等待者按 id 立刻失败掉")
+})
+
 test("重连退避：socket onopen 不再清零，鉴权成功分支才重置", () => {
   const relay = relaySource()
   const onopenAt = relay.indexOf("ws.onopen = () => {")
@@ -58,8 +111,11 @@ test("重连退避：socket onopen 不再清零，鉴权成功分支才重置", 
 
 test("陈旧全量快照不置 snapshotPending：先判定 ignore 再动 pending 标记（防永久转圈）", () => {
   const relay = relaySource()
-  const at = relay.indexOf('if (type === "snapshot") {')
-  const branch = relay.slice(at, relay.indexOf('if (type === "room_event") {', at))
+  // Phase 3 extracted the snapshot bookkeeping into processSnapshotFrame
+  // (shared by the synchronous plaintext path and the async decrypt
+  // chain); the ordering invariant lives there now.
+  const at = relay.indexOf("const processSnapshotFrame")
+  const branch = relay.slice(at, relay.indexOf("const processRoomEventFrame", at))
   const stepAt = branch.indexOf("snapshotStep(syncRef.current, msg)")
   const ignoreAt = branch.indexOf('if (step.action === "ignore") return')
   const pendingAt = branch.indexOf("setSnapshotPending(true)")
@@ -123,6 +179,21 @@ test("接线：session_archive 写入走 LRU、读取 touch、登出清空；历
   assert.match(relay, /mergeHistoryWindow\(cache, room, page\)/)
   assert.match(relay, /historyCacheCovers\(cache, fromIndex\) \? historyWindowFrom\(cache, fromIndex\) : null/, "缓存覆盖时零请求切页")
   assert.doesNotMatch(relay, /fetchWindow\(probe\.total - cursor\.index \+ window\)/, "旧的整段重拉路径必须移除")
+})
+
+test("加密门顺序回归：snapshot 的 keyInfo 记录必须排在 enc 早退之前（名册预标记的房间也要拿到 wrap）", () => {
+  const relay = relaySource()
+  const gateAt = relay.indexOf("const frameNeedsCrypto")
+  assert.ok(gateAt > 0, "frameNeedsCrypto 必须还在")
+  const gate = relay.slice(gateAt, relay.indexOf("const processEncSnapshot", gateAt))
+  const extractAt = gate.indexOf("snapshotKeyInfoOf(msg)")
+  const noteAt = gate.indexOf("noteRoomKeyInfo(roomId, keyInfo)")
+  const earlyAt = gate.indexOf("if (entry?.enc) return true")
+  assert.ok(extractAt >= 0, "门内必须用 snapshotKeyInfoOf 提取帧的 keyInfo")
+  assert.ok(noteAt > extractAt, "提取后必须调用 noteRoomKeyInfo 记录")
+  assert.ok(earlyAt > noteAt, "记录必须排在 enc 早退之前：名册（room_list/auth_result）只预标记 enc、不带 keyInfo，早退在前会让这类房间的 snapshot 永远记不到 keyInfo、房间钥永远解不出来")
+  const noters = gate.match(/noteRoomKeyInfo\(/g) ?? []
+  assert.equal(noters.length, 1, "门内只应有一处 keyInfo 记录点（单一记账口）")
 })
 
 test("接线：退出登录连管理员令牌一并清除（UI 中-2 回归）", () => {

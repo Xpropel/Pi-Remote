@@ -5,6 +5,13 @@ export type ArchiveMessage = {
   role: "user" | "assistant"
   text: string
   timestamp?: number
+  /**
+   * Crypto Phase 3: the text arrived sealed as an ACK-level envelope
+   * (enc:1 + ct, plaintext is the UTF-8 text). useRelay decrypts these
+   * on arrival and only ever stores the decrypted form in the cache.
+   */
+  enc?: number
+  ct?: string
 }
 
 export type ArchiveSession = {
@@ -16,6 +23,14 @@ export type ArchiveSession = {
   truncated?: boolean
   omitted?: number
   messages: ArchiveMessage[]
+  /**
+   * Crypto Phase 3: whole-payload sealed form -- enc:1 + ct whose
+   * plaintext (ACK key) is the JSON of { messages } (or a bare message
+   * array). Decrypted on arrival in useRelay; the cached copy is the
+   * decrypted session, never the blob.
+   */
+  enc?: number
+  ct?: string
 }
 
 export type SessionArchiveView = {

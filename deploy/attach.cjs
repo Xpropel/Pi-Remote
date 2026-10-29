@@ -833,6 +833,24 @@ function loadDeviceKeys(file) {
   return data;
 }
 
+/**
+ * Startup-gate helper: whether this install holds a usable identity key file
+ * for the given deviceId. Key-paired devices are issued no token, so a valid
+ * key file counts as a credential for the main() startup gate. A missing
+ * file, a corrupt file, or a key file issued for a different deviceId does
+ * NOT count — the gate must still refuse those installs.
+ */
+function hasUsableDeviceKey(envPath, deviceId) {
+  if (!deviceId) return false;
+  let keys = null;
+  try {
+    keys = loadDeviceKeys(deviceKeyFilePath(envPath));
+  } catch {
+    return false;
+  }
+  return !!(keys && keys.deviceId === deviceId);
+}
+
 /** 生成一套新身份钥的数据对象（DIK=Ed25519 签名、DBK=P-256 协商，设计 §2.1/§3.1；编码长度与协议 limits 对齐） */
 function generateDeviceKeys(deviceId = "") {
   const sign = crypto.generateKeyPairSync("ed25519");
@@ -1448,6 +1466,61 @@ function archiveBody(archive) {
 }
 
 /**
+ * Crypto Phase 3: seal one text under the account content key (ACK).
+ * The envelope payload is base64( nonce(12) || AES-256-GCM(ACK, utf8(text)) || tag(16) ),
+ * the same ACK-level layout the web end opens (decryptCtText) and the
+ * extension produces for firstMessage previews. The nonce is fresh random
+ * per seal and never reused.
+ */
+function sealAckText(ack, text) {
+  const nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", ack, nonce);
+  const ct = Buffer.concat([cipher.update(String(text), "utf8"), cipher.final()]);
+  return Buffer.concat([nonce, ct, cipher.getAuthTag()]).toString("base64");
+}
+
+/**
+ * Crypto Phase 3: the on-the-wire form of a session_archive payload.
+ * Without an ACK (legacy token device) this is exactly archiveBody(archive),
+ * byte for byte. With an ACK the body travels as one whole sealed blob
+ * (design 4.1: the archive body is content, relay only forwards/caches
+ * ciphertext): a session-level { enc:1, ct } whose plaintext is the JSON of
+ * { messages }, an empty messages array on the outside (consumers gate on
+ * it before decrypting), the tier-b metadata (id/cwd/name/counts) left in
+ * the clear, and firstMessage replaced by its own ACK envelope { enc:1, ct }.
+ * The local archive object is never mutated -- attach's own window/status
+ * surfaces keep working on the plaintext in memory.
+ */
+function archiveWireBody(archive, ack) {
+  const body = archiveBody(archive);
+  if (!ack) return body;
+  const sealed = { ...body, messages: [], enc: 1, ct: sealAckText(ack, JSON.stringify({ messages: body.messages })) };
+  if (typeof body.firstMessage === "string" && body.firstMessage) {
+    sealed.firstMessage = { enc: 1, ct: sealAckText(ack, body.firstMessage) };
+  }
+  return sealed;
+}
+
+/**
+ * Crypto Phase 3: the on-the-wire form of one session_manifest row.
+ * Without an ACK this is exactly manifestRow(archive), byte for byte. With
+ * an ACK the preview is a body slice (design 4.1), so it must not cross in
+ * plaintext: it travels as an ACK-level envelope in firstMessageEnc -- the
+ * same field and shape the extension's manifest rows use -- and the
+ * plaintext firstMessage is nulled. The rest of the row is tier-b metadata
+ * and stays in the clear.
+ */
+function manifestWireRow(archive, ack) {
+  const row = manifestRow(archive);
+  if (!ack) return row;
+  if (typeof row.firstMessage === "string" && row.firstMessage) {
+    row.firstMessageEnc = { enc: 1, ct: sealAckText(ack, row.firstMessage) };
+    row.firstMessage = null;
+  }
+  return row;
+}
+
+/**
  * P1-4：正文读不出来的会话文件也要出现在带 scope:"device" 的全量清单里，
  * 否则 relay 对账会当成「设备上已经删掉了」，打墓碑并清副本，可文件还在磁盘上。
  * P9 第 2 轮审查 BUG-2：兜底行**只带 id / path / updatedAt**，其余字段一律不写（undefined，不是 null/""/0）。
@@ -1657,6 +1730,8 @@ class AttachController {
     this.deviceToken = opts.deviceToken || "";
     /** 设备身份钥（阶段 1）：main() 从钥文件加载后传入；非空且有 deviceId 时窗口走挑战-签名鉴权，不再用令牌 */
     this.deviceKeys = opts.deviceKeys || null;
+    /** Key file path (Phase 3): lets archive sealing re-read the file so an ACK the extension persisted after this window started is still picked up. */
+    this.keyFilePath = opts.keyFilePath || "";
     /** 本次连接 auth 帧带出的 clientNonce：auth_challenge 回来时按它签名；每次 connect 新生成 */
     this.pendingClientNonce = "";
     /** relay 回的鉴权方式：token（设备令牌）/ legacy（共享令牌）；旧 relay 不回为 null */
@@ -2202,6 +2277,41 @@ class AttachController {
     return sessionRootFromEnv();
   }
 
+  /**
+   * Crypto Phase 3: the ACK this window can seal session archives with, as
+   * a 32-byte Buffer, or null when the device holds no content key. A fresh
+   * read of the key file wins over the startup snapshot: the extension may
+   * have received the account ACK (content_key_grant) and persisted it after
+   * this window started, and the file is the shared source of truth. A
+   * missing or unreadable file falls back to the snapshot; a stored value
+   * that is not a 32-byte key counts as "no ACK" (legacy plaintext form).
+   */
+  archiveAckKey() {
+    let keys = this.deviceKeys;
+    if (this.keyFilePath) {
+      try {
+        keys = loadDeviceKeys(this.keyFilePath) || keys;
+      } catch {
+        // A broken key file was already reported loudly at startup; sealing
+        // simply falls back to whatever the snapshot holds.
+      }
+    }
+    const b64 = accountAckOf(keys, this.accountId);
+    if (!b64) return null;
+    const buf = Buffer.from(b64, "base64");
+    return buf.length === 32 ? buf : null;
+  }
+
+  /** session_archive payloads leave sealed whenever this device holds the account ACK. */
+  archiveWire(archive) {
+    return archiveWireBody(archive, this.archiveAckKey());
+  }
+
+  /** session_manifest rows leave with sealed previews whenever this device holds the account ACK. */
+  manifestWire(archive) {
+    return manifestWireRow(archive, this.archiveAckKey());
+  }
+
   publishLibrary() {
     if (!this.authed || !this.deviceId) return;
     const root = this.sessionRoot();
@@ -2222,7 +2332,7 @@ class AttachController {
       try {
         const archive = readArchive(file);
         if (!archive.id) continue;
-        sessions.push(manifestRow(archive));
+        sessions.push(this.manifestWire(archive));
         archives.push(archive);
         ids.add(String(archive.id));
         try {
@@ -2262,7 +2372,7 @@ class AttachController {
         this.writeOut("已同步 " + archives.length + " 个本地会话");
         return;
       }
-      this.send({ type: "session_archive", deviceId: this.deviceId, session: archiveBody(archive) });
+      this.send({ type: "session_archive", deviceId: this.deviceId, session: this.archiveWire(archive) });
       // P1-1：全量补正文也算"这个会话最近发过正文"，10 分钟内不再重复
       this.archiveSentAt.set(String(archive.id), Date.now());
       setTimeout(step, 30);
@@ -2338,7 +2448,7 @@ class AttachController {
       this.publishedMtimes.set(id, info.mtimeMs);
       // 改动 → 只发清单行（元数据），不发正文（P1-1 手机流量）。扫描行去掉 active：
       // manifestRow 默认 active:false，会把运行中会话在索引里的活动位清掉（BUG-4）。
-      const row = manifestRow(archive);
+      const row = this.manifestWire(archive);
       delete row.active;
       this.send({
         type: "session_manifest",
@@ -2349,7 +2459,7 @@ class AttachController {
       });
       const last = this.archiveSentAt.get(id) || 0;
       if (known && nowAt - last < ARCHIVE_RESEND_MS) continue;
-      this.send({ type: "session_archive", deviceId: this.deviceId, session: archiveBody(archive) });
+      this.send({ type: "session_archive", deviceId: this.deviceId, session: this.archiveWire(archive) });
       this.archiveSentAt.set(id, nowAt);
     }
   }
@@ -3541,7 +3651,7 @@ async function main(argv) {
     console.error("缺少 PI_REMOTE_DEVICE_ID。请先配对：" + pairHint() + "，或扫码链接：" + linkHint() + "（或 " + initHint() + "）");
     return 1;
   }
-  if (!cfg.relay || (!cfg.token && !cfg.deviceToken)) {
+  if (!cfg.relay || (!cfg.token && !cfg.deviceToken && !hasUsableDeviceKey(envPath, cfg.deviceId))) {
     console.error("缺少 PI_REMOTE_RELAY，或 PI_REMOTE_TOKEN 与设备令牌都没配。请先配对：" + pairHint() + "，或扫码链接：" + linkHint());
     return 1;
   }
@@ -3595,6 +3705,7 @@ async function main(argv) {
     token: cfg.token,
     deviceToken: cfg.deviceToken,
     deviceKeys,
+    keyFilePath: deviceKeyFilePath(envPath),
     accountId: cfg.accountId,
     deviceId: cfg.deviceId,
     deviceName: cfg.deviceName,
@@ -5548,6 +5659,9 @@ module.exports = {
   hasTrashCommand,
   deleteLikePi,
   archiveBody,
+  sealAckText,
+  archiveWireBody,
+  manifestWireRow,
   defaultSessionLookup,
   listSessionsCached,
   buildSpawnSpec,
@@ -5577,6 +5691,7 @@ module.exports = {
   deviceKeyFilePath,
   writeDeviceKeyFile,
   loadDeviceKeys,
+  hasUsableDeviceKey,
   generateDeviceKeys,
   ensureDeviceKeys,
   signPairPop,

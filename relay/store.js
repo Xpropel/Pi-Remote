@@ -76,12 +76,19 @@ const path = require("node:path");
 const { StringDecoder } = require("node:string_decoder");
 const crypto = require("node:crypto");
 const { safeKey } = require("./index");
+const PROTOCOL = require("./protocol.json");
 
 const FLUSH_BUF_MAX_BYTES = 64 * 1024 * 1024; // 落盘失败时的缓冲硬顶（防 OOM）
 const FLUSH_BUF_MAX_COUNT = 5000;         // 落盘失败时的缓冲条数硬顶（磁盘满时事件仍在灌入）
 const FLUSH_BATCH = 200;
 const INDEX_REMOTE_WINDOW = 2000; // 索引时只为最近 2000 条 remote 维护取代关系
 const MSG_PREFIX = /^\{"k":"msg","seq":(\d+),"m":/;
+/** Encrypted msg line prefix (crypto Phase 3, design section 4.1): the envelope
+ *  fields follow seq in pinned order (enc, role, h, ct), so the fast path can slice
+ *  the frame-form envelope out of the stored line without a JSON round trip. */
+const MSG_ENC_PREFIX = /^\{"k":"msg","seq":(\d+),"enc":1,/;
+const HMAC_HEX_RE = /^[0-9a-f]{64}$/; // envelope h: HMAC-SHA256 hex
+const ACK_FP_RE = /^[0-9a-f]{16}$/;   // content-key fingerprint (protocol limit contentKeyFpChars)
 const CID_RE = /^[A-Za-z0-9_-]{1,64}$/; // 与协议 limits.cidMax 一致
 // ended-tool 元数据：很小，但也不能让一条坏帧/异常会话无限占内存。
 // 默认每房保留最近 2000 条（旧的 200 条上限会让长会话的终端胶囊历史持续滚出）：
@@ -284,6 +291,74 @@ function hashPinsTimestamp(m) {
   return !!m && STAMPED_ROLES.has(m.role) && !!m.timestamp;
 }
 
+
+/** Frame/record envelope shape (crypto Phase 3, design section 4.1): {enc:1, role, h, ct}.
+ *  The relay never decrypts: it only checks the shape, stores the envelope verbatim,
+ *  and compares h values for anchoring and remote supersede. */
+function isEnvelope(v) {
+  return !!v && typeof v === "object" && v.enc === 1 &&
+    typeof v.role === "string" && !!v.role &&
+    typeof v.h === "string" && HMAC_HEX_RE.test(v.h) &&
+    typeof v.ct === "string" && v.ct.length > 0;
+}
+
+/** The envelope as delivered inside frames / snapshot items: {enc:1, role, h, ct}. */
+function envelopeFrameJson(env) {
+  return JSON.stringify({ enc: 1, role: env.role, h: env.h, ct: env.ct });
+}
+
+/** Snapshot item for an encrypted remote record: the envelope plus the remote
+ *  marker fields the plaintext form carries (role/timestamp/cid stay readable). */
+function remoteEnvelopeJson(rec) {
+  const o = { enc: 1, role: "user", remote: true };
+  if (typeof rec.at === "number" && Number.isFinite(rec.at)) o.timestamp = rec.at;
+  o.h = rec.h;
+  o.ct = rec.ct;
+  const cid = cleanCid(rec.cid);
+  if (cid) o.cid = cid;
+  return JSON.stringify(o);
+}
+
+/** The envelope fields of a remote_message event ({enc:1, h, ct} flattened onto
+ *  the event by the extension), or null when the event is a plaintext remote. */
+function remoteEnvelopeOf(event) {
+  if (!event || event.enc !== 1) return null;
+  if (typeof event.h !== "string" || !HMAC_HEX_RE.test(event.h)) return null;
+  if (typeof event.ct !== "string" || !event.ct) return null;
+  return { h: event.h, ct: event.ct };
+}
+
+/** Validate an enc-room declaration {ackFp, rckWrap} (design section 5 room meta).
+ *  rckWrap is an opaque base64 blob for the relay: only its length is checked
+ *  (protocol limit wrappedKeyMaxBytes); it is never parsed or logged. */
+function cleanEncMeta(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const ackFp = typeof raw.ackFp === "string" ? raw.ackFp : "";
+  const rckWrap = typeof raw.rckWrap === "string" ? raw.rckWrap : "";
+  if (!ACK_FP_RE.test(ackFp)) return null;
+  if (!rckWrap || rckWrap.length > PROTOCOL.limits.wrappedKeyMaxBytes) return null;
+  return { enc: 1, ackFp, rckWrap };
+}
+
+/** The enc subset of a room's metaExtra ({enc:1, ackFp?, rckWrap?}), or null for
+ *  plaintext rooms. Fields that fail validation are dropped, never trusted. */
+function encMetaOf(metaExtra) {
+  if (!metaExtra || metaExtra.enc !== 1) return null;
+  const out = { enc: 1 };
+  if (typeof metaExtra.ackFp === "string" && ACK_FP_RE.test(metaExtra.ackFp)) out.ackFp = metaExtra.ackFp;
+  if (typeof metaExtra.rckWrap === "string" && metaExtra.rckWrap.length <= PROTOCOL.limits.wrappedKeyMaxBytes) {
+    out.rckWrap = metaExtra.rckWrap;
+  }
+  return out;
+}
+
+/** Alignment anchor for a snapshot item: envelopes anchor on their keyed h,
+ *  plaintext messages on hashOf (design section 4.1 — the relay compares the
+ *  extension-supplied h for enc rooms, it can never recompute it). */
+function anchorOf(item) {
+  return isEnvelope(item) ? item.h : hashOf(item);
+}
+
 function newRev() {
   return crypto.randomBytes(6).toString("hex");
 }
@@ -365,6 +440,9 @@ class RoomStore {
     this._prewarmed = new Map();
     // 异步索引任务登记表（R-4）：构造器预热与首次打开共用同一引擎，一房最多一个在飞任务。
     this._indexJobs = new Map();
+    // Disk-probe cache for encInfo() on rooms that are not loaded yet:
+    // roomId -> {sig, meta}; sig pins the first segment's (mtime, size) + total size.
+    this._encProbeCache = new Map();
     this._prewarmScheduled = false;
     this._prewarmPending = 0;
     this._prewarmWaiters = [];
@@ -963,6 +1041,9 @@ class RoomStore {
       // 首/尾 hash 在扫描结束后各算一次即可：中间消息的 hash 不参与索引。
       firstMsg: null,
       lastMsg: null,
+      // Enc records anchor on their keyed h instead of a parsed message (section 4.1).
+      firstHash: null,
+      lastHash: null,
       // 临时环：只为最后 cacheSize 条保留原始记录，结束时再物化 JSON。
       tail: [],
       skipped: 0,
@@ -1012,7 +1093,19 @@ class RoomStore {
         return;
       }
       if (rec.seq > r.seq) r.seq = rec.seq;
-      if (rec.k === "msg" && rec.m) {
+      if (rec.k === "msg" && rec.enc === 1 && typeof rec.ct === "string") {
+        // Encrypted record (design section 4.1): the body is an opaque envelope.
+        // Anchors come from the keyed h the extension computed; the relay never
+        // parses a body here, it only counts, caches the line and matches h.
+        if (rec.role === "system") return;
+        if (typeof rec.h === "string" && HMAC_HEX_RE.test(rec.h)) {
+          if (!ctx.firstHash) ctx.firstHash = rec.h;
+          ctx.lastHash = rec.h;
+        }
+        r.msgCount += 1;
+        ctx.tail.push({ rec, line: t });
+        if (rec.role === "user" && typeof rec.h === "string") this._supersedePendingByH(r, rec.h);
+      } else if (rec.k === "msg" && rec.m) {
         if (rec.m.role === "system") return;
         if (!ctx.firstMsg) ctx.firstMsg = rec.m;
         ctx.lastMsg = rec.m;
@@ -1020,7 +1113,11 @@ class RoomStore {
         ctx.tail.push({ rec, line: t });
         if (rec.m.role === "user") this._supersedePending(r, contentText(rec.m));
       } else if (rec.k === "remote") {
-        this._rememberRemote(r, rec.seq, String(rec.text || ""), cleanCid(rec.cid));
+        if (rec.enc === 1 && typeof rec.ct === "string") {
+          this._rememberRemote(r, { seq: rec.seq, h: rec.h, ct: rec.ct, cid: cleanCid(rec.cid) });
+        } else {
+          this._rememberRemote(r, { seq: rec.seq, text: String(rec.text || ""), cid: cleanCid(rec.cid) });
+        }
         ctx.tail.push({ rec, line: t });
       }
       if (ctx.tail.length > this.cacheSize * 2) ctx.tail = ctx.tail.slice(-this.cacheSize);
@@ -1118,7 +1215,19 @@ class RoomStore {
 
   /** 一条 user 消息只取代最早一条还没被取代的同文本回显（索引路径，不写 drop 行） */
   _supersedePending(r, text) {
-    const i = r.pendingRemotes.findIndex((p) => !r.superseded.has(p.seq) && remoteEchoMatches(p.text, text));
+    const i = r.pendingRemotes.findIndex((p) => !r.superseded.has(p.seq) && typeof p.text === "string" && remoteEchoMatches(p.text, text));
+    if (i < 0) return false;
+    r.superseded.add(r.pendingRemotes[i].seq);
+    r.pendingRemotes.splice(i, 1);
+    this._trimSuperseded(r);
+    return true;
+  }
+
+  /** Enc rooms (index path): a user envelope supersedes the earliest pending
+   *  remote envelope with the same keyed h (design section 4.1 — the HMAC
+   *  equality check replaces the text comparison; same FIFO order). */
+  _supersedePendingByH(r, h) {
+    const i = r.pendingRemotes.findIndex((p) => !r.superseded.has(p.seq) && p.enc === 1 && p.h === h);
     if (i < 0) return false;
     r.superseded.add(r.pendingRemotes[i].seq);
     r.pendingRemotes.splice(i, 1);
@@ -1127,8 +1236,9 @@ class RoomStore {
   }
 
   _finishIndex(r, ctx) {
-    if (!r.firstMsgHash && ctx.firstMsg) r.firstMsgHash = hashOf(ctx.firstMsg);
-    if (ctx.lastMsg) r.lastMsgHash = hashOf(ctx.lastMsg);
+    if (!r.firstMsgHash) r.firstMsgHash = ctx.firstHash || (ctx.firstMsg ? hashOf(ctx.firstMsg) : null);
+    if (ctx.lastHash) r.lastMsgHash = ctx.lastHash;
+    else if (ctx.lastMsg) r.lastMsgHash = hashOf(ctx.lastMsg);
     const keep = ctx.tail.length > this.cacheSize ? ctx.tail.slice(-this.cacheSize) : ctx.tail;
     for (const { rec, line } of keep) this._cachePush(r, this._entryFromRecord(rec, line));
     // 病态文件里 drop 行可能先于 remote 行：索引结束时统一过滤一次（正常文件是空操作）。
@@ -1318,8 +1428,24 @@ class RoomStore {
         return "recent 条目非法";
       }
     }
+    if (rec.encMeta != null) {
+      const em = rec.encMeta;
+      if (!em || em.enc !== 1 ||
+          (em.ackFp != null && (typeof em.ackFp !== "string" || !ACK_FP_RE.test(em.ackFp))) ||
+          (em.rckWrap != null && (typeof em.rckWrap !== "string" || !em.rckWrap || em.rckWrap.length > PROTOCOL.limits.wrappedKeyMaxBytes))) {
+        return "encMeta 非法";
+      }
+    }
     for (const q of rec.pending) {
-      if (!q || !Number.isInteger(q.seq) || q.seq <= 0 || q.seq > rec.maxSeq || typeof q.text !== "string") {
+      if (!q || !Number.isInteger(q.seq) || q.seq <= 0 || q.seq > rec.maxSeq) {
+        return "pending 条目非法";
+      }
+      // Enc pending entries carry the envelope (ct+h) instead of text (section 4.1).
+      if (q.enc === 1) {
+        if (typeof q.h !== "string" || !HMAC_HEX_RE.test(q.h) || typeof q.ct !== "string" || !q.ct) {
+          return "pending 条目非法";
+        }
+      } else if (typeof q.text !== "string") {
         return "pending 条目非法";
       }
     }
@@ -1401,8 +1527,14 @@ class RoomStore {
       lastHash: r.lastMsgHash,
       headTruncated: !!r.headTruncated,
       metaWritten: !!r.metaWritten,
+      // The room's enc meta rides the state payload: a checkpoint/manifest-based
+      // cold open never rescans the meta line (it sits before the state), so
+      // without this field an enc room would resurrect as plaintext (Phase 0 gap).
+      encMeta: encMetaOf(r.metaExtra),
       recent: this._packRecent(r.recent),
-      pending: r.pendingRemotes.map((p) => ({ seq: p.seq, text: p.text, cid: p.cid || undefined })),
+      pending: r.pendingRemotes.map((p) => (p.enc === 1
+        ? { seq: p.seq, enc: 1, h: p.h, ct: p.ct, cid: p.cid || undefined }
+        : { seq: p.seq, text: p.text, cid: p.cid || undefined })),
       toolMetas: [...r.toolMetas.values()].map((m) => ({ ...m })),
       superseded: packSeqs(r.superseded),
       at: Date.now(),
@@ -1428,6 +1560,9 @@ class RoomStore {
       return empty;
     }
     if (!data || data.v !== MANIFEST_VERSION || data.room !== id || !Array.isArray(data.segments)) return empty;
+    // Room-dimension enc fields (design section 4.1 manifest rule): a fallback
+    // source for the enc meta when segment states are missing/invalid.
+    empty.encMeta = encMetaOf(data);
     const entries = layout.sealed.map(() => null);
     let base = null;
     let covered = 0;
@@ -1476,7 +1611,17 @@ class RoomStore {
     let fd;
     try {
       fd = fs.openSync(tmp, "w");
-      fs.writeFileSync(fd, JSON.stringify({ v: MANIFEST_VERSION, room: r.id, rev: r.rev, updatedAt: Date.now(), segments }) + "\n", "utf8");
+      const doc = { v: MANIFEST_VERSION, room: r.id, rev: r.rev, updatedAt: Date.now(), segments };
+      // Room-dimension enc fields (design section 4.1): the manifest is the cold
+      // open's first read, so the enc flag must be visible here even before any
+      // segment state is consulted. rckWrap stays an opaque blob.
+      const em = encMetaOf(r.metaExtra);
+      if (em) {
+        doc.enc = 1;
+        if (em.ackFp) doc.ackFp = em.ackFp;
+        if (em.rckWrap) doc.rckWrap = em.rckWrap;
+      }
+      fs.writeFileSync(fd, JSON.stringify(doc) + "\n", "utf8");
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = undefined;
@@ -1501,10 +1646,10 @@ class RoomStore {
     const ckEnd = ck ? ck.end : -1;
     const manEnd = man.base ? man.base.end : -1;
     if (man.base && manEnd >= ckEnd) {
-      return { kind: "manifest", end: manEnd, state: man.base.state, ck, entries: man.entries };
+      return { kind: "manifest", end: manEnd, state: man.base.state, ck, entries: man.entries, encMeta: man.encMeta || null };
     }
-    if (ck) return { kind: "ckpt", end: ckEnd, ck, entries: man.entries };
-    return { kind: "none", end: 0, ck: null, entries: man.entries };
+    if (ck) return { kind: "ckpt", end: ckEnd, ck, entries: man.entries, encMeta: man.encMeta || null };
+    return { kind: "none", end: 0, ck: null, entries: man.entries, encMeta: man.encMeta || null };
   }
 
   /** 由 base 在房间对象上装好起点状态（清单 base 不动 r.ckpt：它不是检查点，
@@ -1516,6 +1661,9 @@ class RoomStore {
     } else if (base.kind === "manifest" && base.state) {
       this._applyStateRec(r, base.state);
       if (base.ck) r.ckpt = { off: base.ck.off, len: base.ck.len, end: base.ck.end, sum: base.ck.sum };
+    }
+    if (base.encMeta && !encMetaOf(r.metaExtra)) {
+      r.metaExtra = { ...(r.metaExtra || {}), ...base.encMeta };
     }
   }
 
@@ -1563,7 +1711,13 @@ class RoomStore {
     const pending = [];
     for (const p of rec.pending) {
       if (superseded.has(p.seq)) continue;
-      pending.push({ seq: p.seq, text: p.text, cid: cleanCid(p.cid) });
+      if (p.enc === 1) pending.push({ seq: p.seq, enc: 1, h: p.h, ct: p.ct, cid: cleanCid(p.cid) });
+      else pending.push({ seq: p.seq, text: p.text, cid: cleanCid(p.cid) });
+    }
+    if (rec.encMeta) {
+      r.metaExtra = { ...(r.metaExtra || {}), enc: 1 };
+      if (rec.encMeta.ackFp) r.metaExtra.ackFp = rec.encMeta.ackFp;
+      if (rec.encMeta.rckWrap) r.metaExtra.rckWrap = rec.encMeta.rckWrap;
     }
     r.rev = rec.rev;
     r.metaWritten = !!rec.metaWritten;
@@ -1856,15 +2010,23 @@ class RoomStore {
   /** 磁盘记录 → 热缓存条目。msg 行是本模块写出的固定前缀格式时直接切片，省一次 stringify */
   _entryFromRecord(rec, line) {
     if (rec.k === "remote") {
+      if (rec.enc === 1) return { k: "remote", seq: rec.seq, h: rec.h, json: remoteEnvelopeJson(rec) };
       return { k: "remote", seq: rec.seq, text: rec.text, json: remoteJson(rec.text, rec.at || 0, cleanCid(rec.cid)) };
     }
     let json = null;
-    if (line && MSG_PREFIX.test(line) && line.endsWith("}")) {
+    if (line && rec.enc === 1 && MSG_ENC_PREFIX.test(line) && line.endsWith("}")) {
+      // Stored line is {"k":"msg","seq":N,"enc":1,"role":..,"h":..,"ct":..}:
+      // the frame envelope is the same tail behind an {"enc":1, head.
+      const m = MSG_ENC_PREFIX.exec(line);
+      json = `{"enc":1,${line.slice(m[0].length, -1)}}`;
+    } else if (line && MSG_PREFIX.test(line) && line.endsWith("}")) {
       const m = MSG_PREFIX.exec(line);
       json = line.slice(m[0].length, -1);
     }
-    if (json === null) json = JSON.stringify(rec.m);
-    return { k: "msg", seq: rec.seq, json };
+    if (json === null) json = rec.enc === 1 ? envelopeFrameJson(rec) : JSON.stringify(rec.m);
+    const entry = { k: "msg", seq: rec.seq, json };
+    if (rec.enc === 1 && typeof rec.h === "string") entry.h = rec.h;
+    return entry;
   }
 
   _cachePush(r, entry) {
@@ -2001,6 +2163,29 @@ class RoomStore {
     r.buf.push(line);
     if (flush) this._flush(r, { sync: true });
     else this._scheduleFlush(r);
+  }
+
+  /** Store one encrypted message record (design section 4.1): the envelope is
+   *  written verbatim — nonce/ct are never re-generated relay-side — the room
+   *  anchors track its keyed h, and a user envelope supersedes the earliest
+   *  pending remote with the same h. */
+  _pushEnvelope(r, env) {
+    r.seq += 1;
+    const entry = { k: "msg", seq: r.seq, h: env.h, json: envelopeFrameJson(env) };
+    this._cachePush(r, entry);
+    r.lastMsgHash = env.h;
+    if (!r.firstMsgHash) r.firstMsgHash = env.h;
+    r.msgCount += 1;
+    const rec = { k: "msg", seq: r.seq, enc: 1, role: env.role, h: env.h, ct: env.ct };
+    this._writeLine(r, JSON.stringify(rec));
+    if (env.role === "user") this._supersedeRemoteByH(r, env.h);
+    return entry;
+  }
+
+  /** Seed/append dispatch: snapshot items are envelopes for enc rooms and
+   *  plaintext messages otherwise; each keeps its own storage form. */
+  _pushItem(r, item) {
+    return isEnvelope(item) ? this._pushEnvelope(r, item) : this._pushMsg(r, item);
   }
 
   _pushMsg(r, m, json) {
@@ -2679,25 +2864,45 @@ class RoomStore {
       const r = this._room(roomId, { create: true });
       if (!r) return 0;
       if (this._journalIfIndexing(r, { op: "record", event })) return 0; // 索引落地后重放时才分配 seq
-      this._pushMsg(r, event.message);
+      if (isEnvelope(event.message)) {
+        // Safety net: an envelope record marks the room enc even without a prior
+        // declaration, so the version gates engage instead of leaking ciphertext
+        // to incapable viewers as if it were a message.
+        if (!encMetaOf(r.metaExtra)) this._markEncUnknown(r);
+        this._pushEnvelope(r, event.message);
+      } else {
+        this._pushMsg(r, event.message);
+      }
       return r.seq;
     }
     if (event.type === "tool_execution_end") {
       this.recordToolEnd(roomId, event);
       return 0; // 元数据不是 transcript 记录，不占 seq
     }
-    if (event.type === "remote_message" && typeof event.text === "string") {
+    if (event.type === "remote_message" && (typeof event.text === "string" || remoteEnvelopeOf(event))) {
       const r = this._room(roomId, { create: true });
       if (!r) return 0;
       if (this._journalIfIndexing(r, { op: "record", event })) return 0;
       r.seq += 1;
       const at = event.at || Date.now();
       const cid = cleanCid(event.cid);
-      this._cachePush(r, { k: "remote", seq: r.seq, text: event.text, json: remoteJson(event.text, at, cid) });
-      const line = { k: "remote", seq: r.seq, text: event.text, at };
-      if (cid) line.cid = cid;
-      this._writeLine(r, JSON.stringify(line));
-      this._rememberRemote(r, r.seq, event.text, cid);
+      const env = remoteEnvelopeOf(event);
+      if (env) {
+        if (!encMetaOf(r.metaExtra)) this._markEncUnknown(r);
+        const line = { k: "remote", seq: r.seq, enc: 1, at };
+        if (cid) line.cid = cid;
+        line.h = env.h;
+        line.ct = env.ct;
+        this._cachePush(r, { k: "remote", seq: r.seq, h: env.h, json: remoteEnvelopeJson(line) });
+        this._writeLine(r, JSON.stringify(line));
+        this._rememberRemote(r, { seq: r.seq, h: env.h, ct: env.ct, cid });
+      } else {
+        this._cachePush(r, { k: "remote", seq: r.seq, text: event.text, json: remoteJson(event.text, at, cid) });
+        const line = { k: "remote", seq: r.seq, text: event.text, at };
+        if (cid) line.cid = cid;
+        this._writeLine(r, JSON.stringify(line));
+        this._rememberRemote(r, { seq: r.seq, text: event.text, cid });
+      }
       return r.seq;
     }
     if (event.type === "remote_message_failed") this.markRemoteFailed(roomId, event.text, event.cid);
@@ -2711,13 +2916,127 @@ class RoomStore {
     return this.persist && this._layoutIn(id, this._roomDir(id)).exists;
   }
 
+  /** A room's enc meta ({enc:1, ackFp?, rckWrap?}) or null when the room is
+   *  plaintext / does not exist. Loaded rooms answer from memory; otherwise the
+   *  meta line at the head of the first segment is probed with a bounded read
+   *  and cached against that file's (mtime, size) plus the layout total — the
+   *  meta line of a live generation never changes in place. */
+  encInfo(roomId) {
+    const loaded = this.rooms.get(roomId);
+    if (loaded) return encMetaOf(loaded.metaExtra);
+    if (!this.persist || !safeRoomId(roomId)) return null;
+    const layout = this._layoutIn(roomId, this._roomDir(roomId));
+    if (!layout.exists) return null;
+    const first = layout.sealed.length ? layout.sealed[0] : null;
+    const firstFile = first ? first.file : layout.active.file;
+    let sig = null;
+    try {
+      const st = fs.statSync(firstFile);
+      sig = `${st.mtimeMs}:${st.size}:${layout.total}`;
+    } catch { return null; }
+    const hit = this._encProbeCache.get(roomId);
+    if (hit && hit.sig === sig) return hit.meta;
+    let meta = null;
+    try {
+      const fd = fs.openSync(firstFile, "r");
+      try {
+        const buf = Buffer.alloc(64 * 1024);
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        const nl = buf.subarray(0, n).indexOf(0x0a);
+        const line = (nl >= 0 ? buf.subarray(0, nl) : buf.subarray(0, n)).toString("utf8").trim();
+        const rec = JSON.parse(line);
+        if (rec && rec.k === "meta") {
+          const extra = {};
+          for (const key of Object.keys(rec)) {
+            if (key === "k" || key === "seq" || key === "rev" || key === "headTruncated") continue;
+            extra[key] = rec[key];
+          }
+          meta = encMetaOf(extra);
+        }
+      } finally { fs.closeSync(fd); }
+    } catch { meta = null; }
+    this._encProbeCache.set(roomId, { sig, meta });
+    return meta;
+  }
+
+  /** Declare (or replace) a room's enc meta (design section 5: the meta record
+   *  gains enc/ackFp/rckWrap). Takes effect in memory immediately; on disk it
+   *  rides the generation's next meta line — appended right away when the
+   *  current generation already has one (the scanner honors the latest meta
+   *  line), otherwise the first write of the generation carries it. rckWrap is
+   *  stored verbatim and never parsed or logged (opaque to the relay). */
+  setEncMeta(roomId, meta) {
+    const clean = cleanEncMeta(meta);
+    if (!clean) return false;
+    const r = this._room(roomId, { create: true });
+    if (!r) return false;
+    const prev = encMetaOf(r.metaExtra);
+    r.metaExtra = { ...(r.metaExtra || {}), ...clean };
+    this._encProbeCache.delete(roomId);
+    if (prev && prev.ackFp === clean.ackFp && prev.rckWrap === clean.rckWrap) return true;
+    if (r.metaWritten && this.persist && !r._indexing) {
+      const metaObj = { k: "meta", seq: 0, rev: r.rev, headTruncated: r.headTruncated || undefined };
+      Object.assign(metaObj, r.metaExtra);
+      this._writeLine(r, JSON.stringify(metaObj), { flush: true });
+    }
+    return true;
+  }
+
+  /** Mark a room enc without key material (safety net for envelope records that
+   *  arrive without a prior declaration): the version gates engage and snapshot
+   *  keyInfo simply lacks rckWrap, so capable viewers fail loudly on decrypt
+   *  instead of rendering ciphertext as text. */
+  _markEncUnknown(r) {
+    if (encMetaOf(r.metaExtra)) return;
+    r.metaExtra = { ...(r.metaExtra || {}), enc: 1 };
+    this._encProbeCache.delete(r.id);
+    console.warn(`[store] 房间 ${r.id} 收到信封记录但未声明 enc 元数据：已按 enc 房处理（keyInfo 缺 rckWrap）`);
+  }
+
+  /** Encrypted-generation migration (design section 5). The candidate history
+   *  is verified BEFORE anything on disk changes: it is counted and anchored in
+   *  memory and compared with the declared trailer {msgCount, lastHash} (the
+   *  last record's h). Only on a match — and only with no other live writer —
+   *  is the plaintext generation destroyed (reset: active file truncated,
+   *  sealed segments, manifest and checkpoint removed) and replaced by the
+   *  encrypted generation carrying the enc meta. On any mismatch both
+   *  generations survive untouched and the device may retry. */
+  migrateRoom(roomId, messages, trailer, meta, { hasLiveWriter = false } = {}) {
+    const fail = (reason, extra) => ({ ok: false, reason, ...(extra || {}) });
+    const r = this._room(roomId, { create: true });
+    if (!r) return fail("bad_room");
+    if (r._indexing) return fail("indexing");
+    if (hasLiveWriter) return fail("live_writer");
+    const clean = cleanEncMeta(meta);
+    if (!clean) return fail("bad_enc_meta");
+    if (!trailer || !Number.isInteger(trailer.msgCount) || trailer.msgCount < 0 ||
+        typeof trailer.lastHash !== "string" || !trailer.lastHash) {
+      return fail("bad_trailer");
+    }
+    const raw = Array.isArray(messages) ? messages : [];
+    const candidates = raw.filter((m) => m && typeof m.role === "string" && m.role !== "system");
+    if (!candidates.length || candidates.some((m) => !isEnvelope(m))) return fail("not_envelopes");
+    const lastHash = candidates[candidates.length - 1].h;
+    if (candidates.length !== trailer.msgCount || lastHash !== trailer.lastHash) {
+      return fail("trailer_mismatch", { landed: { msgCount: candidates.length, lastHash } });
+    }
+    if (!this.reset(roomId)) return fail("reset_failed");
+    // reset() deliberately keeps metaExtra (the enc inheritance rule); replace
+    // it wholesale with the migration's declared meta before seeding, so the
+    // new generation's meta line carries exactly this declaration.
+    r.metaExtra = { ...clean };
+    this._encProbeCache.delete(roomId);
+    this._seedAll(r, candidates, false);
+    return { ok: true, msgCount: candidates.length, lastHash };
+  }
+
   /** 对齐锚点（扩展重连时据此决定只传尾部还是全量）。
    *  indexFailed=true 表示这个房间的索引没装全（扫描失败/病态文件）：调用方/诊断能看到"不完整"，
    *  而不是把半份历史当正常房。 */
   info(roomId) {
     const r = this._room(roomId);
     if (!r) {
-      return { exists: false, rev: null, seq: 0, msgCount: 0, firstHash: null, lastHash: null, dropped: 0, indexFailed: false, indexing: false };
+      return { exists: false, rev: null, seq: 0, msgCount: 0, firstHash: null, lastHash: null, dropped: 0, indexFailed: false, indexing: false, enc: 0 };
     }
     return {
       exists: true,
@@ -2726,6 +3045,7 @@ class RoomStore {
       msgCount: r.msgCount,
       firstHash: r.firstMsgHash,
       lastHash: r.lastMsgHash,
+      enc: encMetaOf(r.metaExtra) ? 1 : 0,
       dropped: r.dropped || 0,
       indexFailed: !!(r._indexFailed || r.indexPartial),
       // 异步索引在飞（R-4）：锚点（rev/seq/hash）此刻都是占位空值，调用方据此知道要等落地后重问。
@@ -2741,6 +3061,10 @@ class RoomStore {
     for (let i = r.recent.length - 1; i >= 0 && newestFirst.length < n; i--) {
       const e = r.recent[i];
       if (!e || e.k !== "msg") continue;
+      if (typeof e.h === "string") {
+        newestFirst.push(e.h);
+        continue;
+      }
       try {
         newestFirst.push(hashOf(JSON.parse(e.json)));
       } catch {
@@ -2756,7 +3080,7 @@ class RoomStore {
         if (!disk.records.length) break;
         for (const rec of disk.records) {
           if (rec.k !== "msg") continue;
-          newestFirst.push(hashOf(rec.m));
+          newestFirst.push(rec.enc === 1 && typeof rec.h === "string" ? rec.h : hashOf(rec.m));
           if (newestFirst.length >= n) break;
         }
         budget -= disk.scanned || 0;
@@ -2778,7 +3102,8 @@ class RoomStore {
 
   _seedAll(r, incoming, headTruncated) {
     r.headTruncated = !!headTruncated;
-    for (const m of incoming) this._pushMsg(r, m);
+    if (!encMetaOf(r.metaExtra) && incoming.some((m) => isEnvelope(m))) this._markEncUnknown(r);
+    for (const m of incoming) this._pushItem(r, m);
     this._flush(r, { sync: true });
   }
 
@@ -2820,10 +3145,11 @@ class RoomStore {
       const tail = [];
       for (const e of r.recent) {
         if (e.k !== "msg") continue;
+        if (typeof e.h === "string") { tail.push(e.h); continue; }
         try { tail.push(hashOf(JSON.parse(e.json))); } catch { tail.length = 0; break; }
       }
       if (tail.length) {
-        const incomingHash = incoming.map((m) => hashOf(m));
+        const incomingHash = incoming.map((m) => anchorOf(m));
         const n = tail.length;
         if (M >= n) {
           // 从右往左：整段尾窗在快照里重复时取最近一次（存储里的就是最新尾部），避免把已有消息再追加一遍
@@ -2860,8 +3186,8 @@ class RoomStore {
       }
     } else {
       // 位置对齐：只看 数量 / 头 hash / 尾 hash 三个锚点（不用 hash 集合：连发同文本"继续"会被误判已存在）
-      const headOk = !!r.firstMsgHash && hashOf(incoming[0]) === r.firstMsgHash;
-      const tailOk = !!r.lastMsgHash && N > 0 && M >= N && hashOf(incoming[N - 1]) === r.lastMsgHash;
+      const headOk = !!r.firstMsgHash && anchorOf(incoming[0]) === r.firstMsgHash;
+      const tailOk = !!r.lastMsgHash && N > 0 && M >= N && anchorOf(incoming[N - 1]) === r.lastMsgHash;
       if (headOk && tailOk) appendFrom = N;
       else console.warn(`[store] 房间 ${roomId} 镜像换代：reset 后重新 seed（快照 ${M} 条，原存储 ${N} 条，headOk=${headOk} tailOk=${tailOk}）`);
     }
@@ -2880,10 +3206,11 @@ class RoomStore {
   }
 
   _appendFrom(r, incoming, from) {
+    if (!encMetaOf(r.metaExtra) && incoming.some((m) => isEnvelope(m))) this._markEncUnknown(r);
     const baseSeq = r.seq;
     const items = [];
     // 按位置追加，绝不做 hash 判重——同文本的连续消息是真实新增
-    for (let i = from; i < incoming.length; i++) items.push(this._pushMsg(r, incoming[i]).json);
+    for (let i = from; i < incoming.length; i++) items.push(this._pushItem(r, incoming[i]).json);
     if (items.length) this._flush(r, { sync: true });
     return { seeded: 0, merged: items.length, reset: false, baseSeq, items };
   }
@@ -2916,12 +3243,23 @@ class RoomStore {
     // 只核对最后一条会误伤同内容 custom：问询之后多落的 k 条必须整段都在上传的前 k 条里
     const tail = this._tailHashes(r, k);
     if (tail.length !== k) return fail();
-    for (let t = 0; t < k; t++) if (hashOf(incoming[t]) !== tail[t]) return fail();
+    for (let t = 0; t < k; t++) if (anchorOf(incoming[t]) !== tail[t]) return fail();
     return { ok: true, ...this._appendFrom(r, incoming, k) };
   }
 
-  _rememberRemote(r, seq, text, cid = null) {
-    r.pendingRemotes.push({ seq, text, cid });
+  /** Pending remote bookkeeping. Plaintext entries carry {seq, text, cid};
+   *  enc entries carry {seq, enc:1, h, ct, cid} (ct is kept so checkpoint state
+   *  can carry the envelope, per design section 4.1 pending rule). */
+  _rememberRemote(r, entry) {
+    const p = { seq: entry.seq, cid: entry.cid || null };
+    if (entry.h) {
+      p.enc = 1;
+      p.h = entry.h;
+      if (entry.ct) p.ct = entry.ct;
+    } else {
+      p.text = entry.text || "";
+    }
+    r.pendingRemotes.push(p);
     if (r.pendingRemotes.length > INDEX_REMOTE_WINDOW) r.pendingRemotes.shift();
   }
 
@@ -2938,7 +3276,13 @@ class RoomStore {
 
   /** pi 的 user 消息取代 remote 回显：同文本有多条时先进先出取最早一条（后发的还在排队） */
   _supersedeRemote(r, text) {
-    const i = r.pendingRemotes.findIndex((p) => remoteEchoMatches(p.text, text));
+    const i = r.pendingRemotes.findIndex((p) => typeof p.text === "string" && remoteEchoMatches(p.text, text));
+    return i >= 0 ? this._dropRemote(r, i) : false;
+  }
+
+  /** Enc rooms (live path): same FIFO supersede as _supersedeRemote, keyed on h. */
+  _supersedeRemoteByH(r, h) {
+    const i = r.pendingRemotes.findIndex((p) => p.enc === 1 && p.h === h);
     return i >= 0 ? this._dropRemote(r, i) : false;
   }
 
@@ -2954,7 +3298,9 @@ class RoomStore {
     let i = -1;
     if (id) i = r.pendingRemotes.findIndex((p) => p.cid === id);
     else if (typeof text === "string") {
-      for (i = r.pendingRemotes.length - 1; i >= 0; i--) if (remoteEchoMatches(r.pendingRemotes[i].text, text)) break;
+      for (i = r.pendingRemotes.length - 1; i >= 0; i--) {
+        if (typeof r.pendingRemotes[i].text === "string" && remoteEchoMatches(r.pendingRemotes[i].text, text)) break;
+      }
     }
     return i >= 0 ? this._dropRemote(r, i) : false;
   }
@@ -3023,6 +3369,15 @@ class RoomStore {
    *  **永不抛错**：调用方（快照发布/重发兜底）拿到异常就发不出帧，订阅者会一直等首帧。
    *  真出 I/O 异常时退化为"带真实锚点 + truncated:true"的空快照，至少让 UI 明确收到不完整而不是干等。
    */
+  /** Snapshot enc header fields (design section 7): present only for enc rooms.
+   *  snapshotBodyFrom renders them as the frame's enc/keyInfo header; the relay
+   *  only ever forwards ackFp + the opaque rckWrap, never key material. */
+  _snapEncFields(r) {
+    const em = r ? encMetaOf(r.metaExtra) : null;
+    if (!em) return null;
+    return { enc: 1, keyInfo: { ackFp: em.ackFp || null, rckWrap: em.rckWrap || null } };
+  }
+
   snapshot(roomId, opts = {}) {
     try {
       return this._snapshot(roomId, opts);
@@ -3036,6 +3391,7 @@ class RoomStore {
         delta: false,
         baseSeq: 0,
         items: [],
+        ...(r ? this._snapEncFields(r) || {} : {}),
       };
     }
   }
@@ -3049,9 +3405,10 @@ class RoomStore {
     // 订阅方靠既有补发/重订阅在索引落地后收敛，绝不能把空占位当"已同步到 seq=0"。
     const indexPartial = !!(r._indexFailed || r.indexPartial);
     const indexing = !!r._indexing;
+    const encFields = this._snapEncFields(r);
     if (!indexPartial && !indexing && since && since.rev === r.rev && Number.isInteger(since.seq) && since.seq >= 0 && since.seq <= r.seq) {
       const d = this._collect(r, { after: since.seq, limit, maxBytes });
-      if (!d.truncated) return { rev: r.rev, seq: r.seq, truncated: false, delta: true, baseSeq: since.seq, items: d.items };
+      if (!d.truncated) return { rev: r.rev, seq: r.seq, truncated: false, delta: true, baseSeq: since.seq, items: d.items, ...(encFields || {}) };
       // 增量本身超安全阀（离线太久）：退回全量，由全量路径给出 truncated 语义
     }
     const f = this._collect(r, { after: 0, limit, maxBytes });
@@ -3059,7 +3416,7 @@ class RoomStore {
     if (f.truncated) {
       console.warn(`[store] 房间 ${r.id} 快照截断：交付 ${f.items.length} 条（触及 ${limit} 条 / ${Math.round(maxBytes / 1048576)}MB 安全阀）`);
     }
-    return { rev: r.rev, seq: r.seq, truncated, delta: false, baseSeq: 0, items: f.items };
+    return { rev: r.rev, seq: r.seq, truncated, delta: false, baseSeq: 0, items: f.items, ...(encFields || {}) };
   }
 
   /** 收集 seq > after 的可交付记录（old→new）；先热缓存，不够再磁盘尾扫描 */

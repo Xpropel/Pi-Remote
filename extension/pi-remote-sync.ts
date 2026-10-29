@@ -80,8 +80,8 @@ const PROTOCOL = {
     "fs.browse": "设备文件夹浏览（P9 C，attach 声明）：attach 能执行 list_dirs{path?,showHidden?}，只返回允许根目录内的目录名（不返回文件、不传文件内容），成功回 data{root,path,parent,entries,truncated}",
     "agent.state": "agent_state 全量快照事件能力位（子智能体胶囊预留：协议/通道先行，当前无生产者）",
     "usage.activity.v1": "使用活动聚合（P10）：extension 只读本机 pi 会话 jsonl，聚合每日 tokens/messages/sessions、模型分布、活跃/连续天数、峰值（本地时区分天、role=user 口径、不含 cost），经本地通道上报 usage_snapshot{deviceId,requestId,snapshot}；relay 校验并按 account+device 缓存，向 viewer 提供 usage_get{deviceId,requestId,force} → usage_snapshot{available,reason?,snapshot?,receivedAt?,stale?}；快照只含聚合计数（无正文/标题/cwd/金额）。旧端兼容：无此 cap 的 relay 收到 usage_get 回 unknown_type（UI 空态），旧 extension 收到 usage_refresh 忽略/unknown_type（relay 降级 unsupported/timeout），新 relay 不向未声明 cap 的 viewer 主动发 usage 帧",
-    "crypto.auth": "设备/观看端身份（加密地基，设计 A §3；阶段 1 设备侧 + 阶段 2 观看端侧均已实现）：声明后配对帧 pair/pair_request 可带 keys{signPub, boxPub, pop} 登记设备公钥（设备签名钥 DIK 为 Ed25519、box 钥为 P-256；长度上限见 limits 的 signPubKeyBytes/boxPubKeyBytes，pop 为对裸配对码的签名），二维码核对字改绑握手记录（SAS v2）；local 通道 auth 带 keyFp+clientNonce 时走挑战-签名：relay 回 auth_challenge{nonce, expiresAt}（nonce 长度见 authNonceBytes），端回 auth_response{sig}（签名输入为域分隔串 pi-remote-auth-v1 与身份 id、双侧 nonce 的字节拼接，签名上限见 signatureMaxBytes），验签失败/钥已撤销/身份与钥错配复用 auth_failed/device_revoked/device_mismatch，不新增码；观看端身份（阶段 2）：VIK/VBK 均为 P-256（spki 长度上限同 boxPubKeyBytes；signPubKeyBytes 的 44 是 Ed25519 spki 长度、不适用于观看端）；新帧 viewer_register{viewerId, name?, signPub, boxPub（或 keys{signPub, boxPub}）, admin?} 经管理员门把观看端公钥登记进 viewers.jsonl（同 viewerId 在册未撤销时换钥拒绝、须先 viewer_revoke；已撤销的旧签名钥不得以同 viewerId 再登记），成功 ack 的 data 带 {viewerId, keyFp, admin}；viewer 通道 auth 带 viewerId+keyFp+clientNonce 走与设备同构的挑战-签名（签名输入里的身份 id 换成 viewerId，VIK 以 ECDSA P-256/SHA-256、IEEE P1363 编码验签），成功 auth_result 增 auth:\"key\" 与 viewerId；无名册钥的观看端仍可凭 viewerToken 登录（auth:\"token\" 口径，既有 auth_result 面逐字节不变），但令牌登录不构成管理员资格；管理帧（pair_create/pair_approve/device_revoke/viewer_revoke/list_viewers）走双轨管理员门：adminToken 或 adminSig 二选一。adminSig 是在册、admin:true、未撤销的 VIK 对帧规范化摘要的签名，摘要字节钉死为 utf8(\"pi-remote-admin-v1\") ‖ utf8(帧 type) ‖ utf8(规范 JSON)，其中规范 JSON = 帧去掉 adminSig/adminToken/type 三字段后的对象按「对象键递归升序、数组保序、无空白分隔符」序列化的 UTF-8 字节；签名本体为 ECDSA P-256/SHA-256、IEEE P1363（r‖s）、base64；签名者由帧的 adminBy 字段指明（缺省时取连接绑定的 viewerId；注意 viewer_revoke 帧里的 viewerId 是撤销目标而非签名者），已绑 viewerId 的钥连接只能以自身 viewerId 签名；签名不合规与无 adminToken 同果：ack 失败 code=admin_required；新帧 list_viewers（管理员门）回 viewer_list{viewers:[{viewerId, name, keyFp, admin, createdAt, revokedAt, online}]}；viewer_revoke{viewerId}（管理员门）给名册行写 revokedAt 并断开该观看端的全部钥连接，成功 ack 的 data 必带 {closed, ackRotationRequired:true, hint}——撤销只关接入层，被撤销端仍持有 ACK 副本，密码学移除必须轮换 ACK 并重新分发给保留的端；auth_result 对钥连接增 ackFp（本账号各端已达成一致的内容钥指纹，contentKeyFpChars 位 hex，未知或正在分歧时为 null）供端上对账；新帧 ack_report{ackFp} 供钥端在 auth 成功后上报自己所持 ACK 的指纹（relay 只存指纹、永不接触 ACK 本体，仅内存），同账号已上报各端的指纹不一致时向这些端发 error 帧 code=key_mismatch（帧带 ackFps 列出冲突指纹），一致后自动消解；新帧 content_key_request/content_key_grant 为 ACK 包裹交付（relay 只按指纹路由透传、不落盘，包裹上限见 wrappedKeyMaxBytes）：持钥观看端与设备互为端点，转发时 relay 强制以发送方名册钥盖戳 from（发送方 keyFp）与 fromBoxPub（发送方名册 box 公钥），帧内自带的 from/fromBoxPub 不采信；新帧 key_update（旧 DIK 签新钥集合换登记）；名册设备行可带 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}} 与 prevKeyFps[]，观看端行另存 viewers.jsonl，均只登记公钥（公开数据）；钥形态配对成功的 pair_result 带 keyRegistered:true 与 hasKeyHolder（布尔：本次登记之前本账号是否已有其他已登记未撤销公钥的设备，即在册持钥端存在的代理信号——relay 不持 ACK 本身、只能报存在性；设备据此不自生成 ACK、保持无内容钥状态，上线后经 content_key_request 索取；令牌形态 pair_result 不带 hasKeyHolder）；pair_approve 可带 contentKeyGrant，仅做形状清洗后透传进 pair_result，不解析、不落盘",
-    "crypto.content": "正文端到端加密（加密地基，设计 A §4.1 中间档 b；阶段 0 仅协议登记、未实现，不产生任何 enc 房间；依赖 crypto.auth）：enc 房间的 msg 本体、remote text、检查点/清单 state 的 pending、流式 delta 文本、session firstMessage 预览与会话归档正文以信封 {enc:1, role?, h, ct} 承载——AES-256-GCM under 每房间一把 RCK，RCK 由账号内容主密钥 ACK 包裹（rckWrap 随房间 meta/快照 keyInfo 下发，包裹上限见 wrappedKeyMaxBytes），h 为 HMAC-SHA256(RCK, 规范化正文) 供 relay 无钥对锚与 remote 取代判定；relay 只见 seq/role/时间/字节数/toolmeta 等元数据，dialog 提示词与 ext_notify 在本档明文（已知暴露）；房间 meta 记录带 enc/ackFp/rckWrap，reset 换代继承 enc 不许洗回明文；未声明本能力的 viewer 订阅 enc 房间、或扩展向 enc 房间写明文，一律回 crypto_required 拒绝（不许把密文当明文渲染）；正文搜索命中 enc 房间回 unsupported 并标注已加密跳过；relay 永不持有 ACK/RCK"
+    "crypto.auth": "设备/观看端身份（加密地基，设计 A §3；阶段 1 设备侧 + 阶段 2 观看端侧均已实现）：声明后配对帧 pair/pair_request 可带 keys{signPub, boxPub, pop} 登记设备公钥（设备签名钥 DIK 为 Ed25519、box 钥为 P-256；长度上限见 limits 的 signPubKeyBytes/boxPubKeyBytes，pop 为对裸配对码的签名），二维码核对字改绑握手记录（SAS v2）；local 通道 auth 带 keyFp+clientNonce 时走挑战-签名：relay 回 auth_challenge{nonce, expiresAt}（nonce 长度见 authNonceBytes），端回 auth_response{sig}（签名输入为域分隔串 pi-remote-auth-v1 与身份 id、双侧 nonce 的字节拼接，签名上限见 signatureMaxBytes），验签失败/钥已撤销/身份与钥错配复用 auth_failed/device_revoked/device_mismatch，不新增码；观看端身份（阶段 2）：VIK/VBK 均为 P-256（spki 长度上限同 boxPubKeyBytes；signPubKeyBytes 的 44 是 Ed25519 spki 长度、不适用于观看端）；新帧 viewer_register{viewerId, name?, signPub, boxPub（或 keys{signPub, boxPub}）, admin?} 经管理员门把观看端公钥登记进 viewers.jsonl（同 viewerId 在册未撤销时换钥拒绝、须先 viewer_revoke；已撤销的旧签名钥不得以同 viewerId 再登记），成功 ack 的 data 带 {viewerId, keyFp, admin}；viewer 通道 auth 带 viewerId+keyFp+clientNonce 走与设备同构的挑战-签名（签名输入里的身份 id 换成 viewerId，VIK 以 ECDSA P-256/SHA-256、IEEE P1363 编码验签），成功 auth_result 增 auth:\"key\" 与 viewerId；无名册钥的观看端仍可凭 viewerToken 登录（auth:\"token\" 口径，既有 auth_result 面逐字节不变），但令牌登录不构成管理员资格；管理帧（pair_create/pair_approve/device_revoke/viewer_revoke/list_viewers）走双轨管理员门：adminToken 或 adminSig 二选一。adminSig 是在册、admin:true、未撤销的 VIK 对帧规范化摘要的签名，摘要字节钉死为 utf8(\"pi-remote-admin-v1\") ‖ utf8(帧 type) ‖ utf8(规范 JSON)，其中规范 JSON = 帧去掉 adminSig/adminToken/type/id 四字段后的对象按「对象键递归升序、数组保序、无空白分隔符」序列化的 UTF-8 字节（id 是传输层在签名之后追加的相关句柄、不属于管理意图，故不进规范化摘要）；签名本体为 ECDSA P-256/SHA-256、IEEE P1363（r‖s）、base64；签名者由帧的 adminBy 字段指明（缺省时取连接绑定的 viewerId；注意 viewer_revoke 帧里的 viewerId 是撤销目标而非签名者），已绑 viewerId 的钥连接只能以自身 viewerId 签名；签名不合规与无 adminToken 同果：ack 失败 code=admin_required；新帧 list_viewers（管理员门）回 viewer_list{viewers:[{viewerId, name, keyFp, admin, createdAt, revokedAt, online}]}；viewer_revoke{viewerId}（管理员门）给名册行写 revokedAt 并断开该观看端的全部钥连接，成功 ack 的 data 必带 {closed, ackRotationRequired:true, hint}——撤销只关接入层，被撤销端仍持有 ACK 副本，密码学移除必须轮换 ACK 并重新分发给保留的端；auth_result 对钥连接增 ackFp（本账号各端已达成一致的内容钥指纹，contentKeyFpChars 位 hex，未知或正在分歧时为 null）供端上对账；新帧 ack_report{ackFp} 供钥端在 auth 成功后上报自己所持 ACK 的指纹（relay 只存指纹、永不接触 ACK 本体，仅内存），同账号已上报各端的指纹不一致时向这些端发 error 帧 code=key_mismatch（帧带 ackFps 列出冲突指纹），一致后自动消解；新帧 content_key_request/content_key_grant 为 ACK 包裹交付（relay 只按指纹路由透传、不落盘，包裹上限见 wrappedKeyMaxBytes）：持钥观看端与设备互为端点，转发时 relay 强制以发送方名册钥盖戳 from（发送方 keyFp）与 fromBoxPub（发送方名册 box 公钥），帧内自带的 from/fromBoxPub 不采信；新帧 key_update（旧 DIK 签新钥集合换登记）；名册设备行可带 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}} 与 prevKeyFps[]，观看端行另存 viewers.jsonl，均只登记公钥（公开数据）；钥形态配对成功的 pair_result 带 keyRegistered:true 与 hasKeyHolder（布尔：本次登记之前本账号是否已有其他已登记未撤销公钥的设备，即在册持钥端存在的代理信号——relay 不持 ACK 本身、只能报存在性；设备据此不自生成 ACK、保持无内容钥状态，上线后经 content_key_request 索取；令牌形态 pair_result 不带 hasKeyHolder）；pair_approve 可带 contentKeyGrant，仅做形状清洗后透传进 pair_result，不解析、不落盘",
+    "crypto.content": "正文端到端加密（加密地基，设计 A §4.1 中间档 b；阶段 3 已实现：relay 侧存储/门控/迁移全量落地；依赖 crypto.auth）：enc 房间的 msg 本体与 remote 回显以信封承载——消息信封 {enc:1, role, h, ct}（AES-256-GCM under 每房间一把 RCK，ct=base64(nonce12‖密文‖tag16)，RCK 由账号内容主密钥 ACK 包裹，rckWrap 随房间 meta 与快照 keyInfo 下发、relay 只作不透明 blob 转存、长度上限见 wrappedKeyMaxBytes），h 为 HMAC-SHA256(RCK, 规范化正文) 的 64 位小写 hex，relay 无钥用它做对锚（firstHash/lastHash/tailHashes）与 remote 取代判定（同 h 先到者被取代、FIFO）；落盘记录：msg 行 {k:\"msg\", seq, enc:1, role, h, ct}（与明文 {k:\"msg\", seq, m} 同代共存、按行判别），remote 行 {k:\"remote\", seq, enc:1, at, cid?, h, ct}，viewer→设备消息帧为 {type:\"message\", room, enc:1, ct, h, cid?}（cid 仍受 msg.cid 门控），设备→relay 的 remote 事件为扁平形 {type:\"remote_message\", enc:1, h, ct, cid?, at?}；房间 meta 记录带 enc/ackFp/rckWrap（ackFp 为 ACK 的 SHA-256 前 8 字节 hex、长度见 contentKeyFpChars），reset 换代继承 enc 不许洗回明文；检查点/清单 state 携带 encMeta{enc,ackFp,rckWrap} 与 enc 形态 pending{seq, enc:1, h, ct, cid?}（明文 pending 仍为 {seq, text, cid?}），清单 index.json 顶层另带 enc/ackFp/rckWrap；快照帧仅向声明本能力的连接带 enc:1 与 keyInfo{ackFp, rckWrap} 头（快照体 messages 为信封 JSON 串）；room_list/auth_result.rooms 条目仅向声明本能力的连接带 enc:0|1，room_registered 帧带 enc:0|1；版本门：未声明本能力的 viewer 订阅 enc 房间回 error 帧 code=crypto_required（retryable:false）且不下发任何快照，未声明本能力的扩展连接向 enc 房间的任何写入、以及已声明连接向 enc 房间写明文记录（message_end 非信封 / remote_message 非信封形 / 明文快照）同样逐次回 crypto_required 并拒绝落盘，房间转 enc（注册声明 enc 或迁移完成）时在座的未声明 viewer 被同帧摘除；明文房间收到 enc 信封消息（viewer message 带 enc）回 bad_args；正文搜索（search_session_bodies）命中 enc 房间回 ack 失败 code=unsupported 且 data{unsupported:true, reason:\"room_encrypted\", roomId}，不静默省略；迁移（设计 §5）：设备经快照通道发 {type:\"snapshot\", room, migration:{msgCount, lastHash}, messages:[信封…]} 并同帧声明 enc（扁平字段 enc:1/ackFp/rckWrap 或嵌套 enc 对象，两式都认；room_register 的 room 对象同口径），relay 先在内存核 trailer（候选条数与末条 h）再动盘：不符回 migration_result{ok:false, reason:\"trailer_mismatch\"} 且两代数据都保留可重试；房间另有 live writer（busy 或其他连接占用 local）回 reason:\"live_writer\"；核对通过才删明文代（reset 子集：活动文件截断、密封段/清单/检查点删除）并以信封代 seed，回 migration_result{ok:true, msgCount, lastHash}；relay 配置 cryptoPlaintextRooms（config.json，默认 \"allow\"）：\"readonly\" = 明文房间拒绝新写入（事件记录与快照 seed，明文策略拒绝回 code=unsupported）、\"deny\" = 明文房间读写都拒（订阅回 unsupported）；enc 房间不受该策略影响；relay 只见 seq/role/时间/字节数/toolmeta 等元数据，dialog 提示词与 ext_notify 在本档明文（已知暴露，tier b 拍板口径）；图片预算改写对 enc 记录自动跳过（ct 内无图可读、改写会破坏 h 对锚）；relay 永不持有 ACK/RCK"
   },
   "errors": {
     "auth_failed": {
@@ -345,7 +345,7 @@ const EXT_VERSION = "4.0.0";
 /** 本扩展声明的能力（protocol/v4.json 的 caps 键）。
  *  dialog.observe：O1 观察帧已真实生产（dialog_open/close、ext_status、ext_notify）才声明；
  *  dialog.respond：O2 接管应答已落地（beginDialog/noteDialogAnswer，定版说明第一部分 §2）才声明。 */
-const CLIENT_CAPS = ["err.v4", "msg.cid", "device.token", "room.label", "sync.v3", "dialog.observe", "dialog.respond", "usage.activity.v1"];
+const CLIENT_CAPS = ["err.v4", "msg.cid", "device.token", "room.label", "sync.v3", "dialog.observe", "dialog.respond", "usage.activity.v1", "crypto.content"];
 
 /** 远程命令/注入的失败：code 取自协议错误码表，不认识的一律记 internal */
 class RemoteError extends Error {
@@ -486,6 +486,15 @@ function parseDeviceKeyData(data: any, filePath: string): { key: any } | { error
       if (typeof v === "string" && v) contentKeys[acc] = v;
     }
   }
+  // Phase 3: per-room key wraps (roomId -> rckWrap base64). Only the
+  // ACK-wrapped RCK is ever stored; the RCK itself never touches disk.
+  const roomKeys: Record<string, string> = {};
+  if (data.roomKeys && typeof data.roomKeys === "object") {
+    for (const rid of Object.keys(data.roomKeys)) {
+      const v = data.roomKeys[rid];
+      if (typeof v === "string" && v) roomKeys[rid] = v;
+    }
+  }
   return {
     key: {
       filePath,
@@ -498,6 +507,7 @@ function parseDeviceKeyData(data: any, filePath: string): { key: any } | { error
       boxPub,
       boxPubB64: String(box.pub),
       contentKeys,
+      roomKeys,
     },
   };
 }
@@ -658,6 +668,303 @@ function storeAckInKeyFile(key: any, accountId: string, ack: Buffer, fsImpl: any
   key.contentKeys[accountId] = ack.toString("base64");
   return true;
 }
+
+/** Persist one room key wrap into the device key file (read-modify-write,
+ *  atomic tmp+rename at 0600, same discipline as storeAckInKeyFile). Only
+ *  the ACK-wrapped RCK (rckWrap) is stored -- never the RCK itself. */
+function storeRoomKeyInKeyFile(key: any, roomId: string, rckWrap: string, fsImpl: any = fs): boolean {
+  let data: any;
+  try {
+    data = JSON.parse(fsImpl.readFileSync(key.filePath, "utf8"));
+  } catch {
+    return false;
+  }
+  if (!data || typeof data !== "object") return false;
+  const existing = data.roomKeys && typeof data.roomKeys === "object" ? data.roomKeys : {};
+  data.roomKeys = { ...existing, [roomId]: rckWrap };
+  const tmp = `${key.filePath}.${process.pid}.tmp`;
+  try {
+    fsImpl.rmSync(tmp, { force: true });
+    fsImpl.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    fsImpl.chmodSync(tmp, 0o600);
+    fsImpl.renameSync(tmp, key.filePath);
+  } catch {
+    try { fsImpl.rmSync(tmp, { force: true }); } catch {}
+    return false;
+  }
+  if (!key.roomKeys || typeof key.roomKeys !== "object") key.roomKeys = {};
+  key.roomKeys[roomId] = rckWrap;
+  return true;
+}
+
+/* ---------------- Phase 3: content encryption (design section 4.1, tier b) ----------------
+ * Pinned constructions (identical on extension / relay / web; cross-checked
+ * by the stage-3 acceptance harness):
+ *   envelope = { enc: 1, role, h, ct }
+ *   ct       = base64( nonce(12) || AES-256-GCM(RCK, utf8(canonicalJson(m))) || tag(16) )
+ *   h        = HMAC-SHA256(RCK, utf8(canonicalJson(m))) as hex -- over the
+ *              exact bytes ct encrypts, so resealing a body (fresh nonce)
+ *              keeps the same h anchor while ct changes.
+ *   rckWrap  = base64( nonce(12) || AES-256-GCM(ACK, RCK) || tag(16) )
+ * canonicalJson is the codebase's signed-payload canonical form (object keys
+ * sorted recursively, arrays in order, no whitespace; relay/pairing.js
+ * canonicalJson semantics). String envelopes (streaming delta text, remote
+ * echo text) reuse the same ct construction over the raw string. */
+
+/** Canonical JSON serialization (pairing.js canonicalJson semantics). */
+function canonicalJsonOf(value: any): string {
+  if (value === null || typeof value !== "object") {
+    const s = JSON.stringify(value);
+    return s === undefined ? "null" : s;
+  }
+  if (Array.isArray(value)) return "[" + value.map(canonicalJsonOf).join(",") + "]";
+  const parts: string[] = [];
+  for (const k of Object.keys(value).sort()) {
+    if (value[k] === undefined) continue;
+    parts.push(JSON.stringify(k) + ":" + canonicalJsonOf(value[k]));
+  }
+  return "{" + parts.join(",") + "}";
+}
+
+/** AES-256-GCM seal: base64( nonce(12) || ciphertext || tag(16) ). */
+function gcmSeal(key: Buffer, plain: Buffer): string {
+  const nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
+  const ct = Buffer.concat([cipher.update(plain), cipher.final()]);
+  return Buffer.concat([nonce, ct, cipher.getAuthTag()]).toString("base64");
+}
+
+/** Inverse of gcmSeal; null on any failure (wrong key, tampered, malformed). */
+function gcmOpen(key: Buffer, b64: any): Buffer | null {
+  const buf = b64ToBuffer(b64);
+  if (!buf || buf.length < 12 + 16) return null;
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, buf.subarray(0, 12));
+    decipher.setAuthTag(buf.subarray(buf.length - 16));
+    return Buffer.concat([decipher.update(buf.subarray(12, buf.length - 16)), decipher.final()]);
+  } catch {
+    return null;
+  }
+}
+
+/** The content hash of a message body under a room key (envelope field h). */
+function contentHashOf(rck: Buffer, m: any): string {
+  return crypto.createHmac("sha256", rck).update(canonicalJsonOf(m), "utf8").digest("hex");
+}
+
+/** Seal a message body into its wire/store envelope (design section 4.1). */
+function sealBody(rck: Buffer, m: any): any {
+  const norm = canonicalJsonOf(m);
+  return {
+    enc: 1,
+    role: m && typeof m.role === "string" ? m.role : "",
+    h: crypto.createHmac("sha256", rck).update(norm, "utf8").digest("hex"),
+    ct: gcmSeal(rck, Buffer.from(norm, "utf8")),
+  };
+}
+const encryptMessageBody = sealBody;
+
+/** Inverse of sealBody; null when the envelope is malformed, the key is
+ *  wrong, or the ciphertext was tampered with. Also verifies h against the
+ *  decrypted body so a swapped envelope cannot pass silently. */
+function openBody(rck: Buffer, env: any): any {
+  if (!env || env.enc !== 1 || typeof env.ct !== "string") return null;
+  const plain = gcmOpen(rck, env.ct);
+  if (!plain) return null;
+  let body: any;
+  try {
+    body = JSON.parse(plain.toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof env.h === "string" && env.h && contentHashOf(rck, body) !== env.h) return null;
+  return body;
+}
+const decryptMessageBody = openBody;
+
+/** The h of a remote echo under a room key: HMAC-SHA256(RCK, utf8(text)).
+ *  The superseding user message carries this value as echoH so the relay
+ *  can retire the remote record by plain h equality (design section 4.1). */
+function remoteHashOf(rck: Buffer, text: string): string {
+  return crypto.createHmac("sha256", rck).update(String(text ?? ""), "utf8").digest("hex");
+}
+
+/** Seal a raw string under a key (streaming deltas, remote echo text). */
+function encryptTextCt(key: Buffer, text: string): string {
+  return gcmSeal(key, Buffer.from(String(text ?? ""), "utf8"));
+}
+
+/** Inverse of encryptTextCt; null on failure. */
+function decryptTextCt(key: Buffer, ct: any): string | null {
+  const plain = gcmOpen(key, ct);
+  return plain ? plain.toString("utf8") : null;
+}
+
+/** Wrap a room key under the account ACK (room meta rckWrap, design 5).
+ *  Both keys must be exactly 32 bytes; anything else is refused (null)
+ *  rather than wrapped into a grant no peer could ever use. */
+function wrapRoomKey(ack: Buffer, rck: Buffer): string | null {
+  try {
+    if (!ack || ack.length !== 32 || !rck || rck.length !== 32) return null;
+    return gcmSeal(ack, rck);
+  } catch { return null; }
+}
+
+/** Inverse of wrapRoomKey; only a 32-byte result counts as a room key. */
+function unwrapRoomKey(ack: Buffer, wrap: any): Buffer | null {
+  const plain = gcmOpen(ack, wrap);
+  return plain && plain.length === 32 ? plain : null;
+}
+
+/** ACK-level envelope for short body slices (session firstMessage previews,
+ *  design section 4.1): { enc: 1, ct } sealed with the ACK directly. */
+function encryptAckText(ack: Buffer, text: string): any {
+  return { enc: 1, ct: encryptTextCt(ack, text) };
+}
+
+/** Inverse of encryptAckText; null on failure. */
+function decryptAckText(ack: Buffer, env: any): string | null {
+  if (!env || env.enc !== 1) return null;
+  return decryptTextCt(ack, env.ct);
+}
+
+/** Mirror of relay/store.js remoteEchoMatches (same source, same behavior):
+ *  exact equality, or the user text only appends pi's image-hint lines. */
+function remoteEchoMatchesText(remoteText: any, userText: any): boolean {
+  if (typeof remoteText !== "string" || typeof userText !== "string") return false;
+  if (userText === remoteText) return true;
+  if (!remoteText || !userText.startsWith(remoteText)) return false;
+  const rest = userText.slice(remoteText.length);
+  if (!rest.startsWith("\n\n")) return false;
+  const lines = rest.slice(2).split("\n");
+  return lines.length > 0 && lines.every((line) => line.startsWith("[Image"));
+}
+
+/** One batch's total image budget (base64 chars), mirroring relay/rooms.js
+ *  IMAGE_TOTAL_MAX_CHARS. The per-image cap is IMAGE_MAX_CHARS above. */
+const IMAGE_TOTAL_MAX_CHARS = 192 * 1024;
+
+/** Apply the relay's image budget (relay/rooms.js shrinkImagesDeep +
+ *  omitImageIfNeeded) with identical decisions: an image is replaced by the
+ *  standard placeholder when it exceeds the per-image cap or would push the
+ *  batch total over IMAGE_TOTAL_MAX_CHARS; traversal is pre-order in
+ *  document order (first come, first served). For plaintext rooms the relay
+ *  applies this itself before record(); for enc rooms it only sees
+ *  ciphertext, so the extension must apply the SAME budget before sealing
+ *  (design section 4.1). Immutable: pi's live objects are never rewritten
+ *  in place (see shrinkDeep) -- an unchanged input returns by reference. */
+function shrinkImagesWithBudget(root: any): any {
+  if (!root || typeof root !== "object") return root;
+  // Pass 1: decide omissions in relay's exact traversal order.
+  const omitted = new WeakSet<any>();
+  const seen = new WeakSet<any>();
+  const state = { total: 0 };
+  const stack: any[] = [root];
+  let hits = 0;
+  while (stack.length) {
+    const v = stack.pop();
+    if (!v || typeof v !== "object" || seen.has(v)) continue;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      for (let i = v.length - 1; i >= 0; i--) {
+        const x = v[i];
+        if (x && typeof x === "object") stack.push(x);
+      }
+      continue;
+    }
+    if (v.type === "image" && typeof v.data === "string") {
+      const chars = v.data.length;
+      if (chars <= IMAGE_MAX_CHARS && state.total + chars <= IMAGE_TOTAL_MAX_CHARS) {
+        state.total += chars;
+      } else {
+        omitted.add(v);
+        hits++;
+      }
+      continue;
+    }
+    const keys = Object.keys(v);
+    for (let i = keys.length - 1; i >= 0; i--) {
+      const x = v[keys[i]];
+      if (x && typeof x === "object") stack.push(x);
+    }
+  }
+  if (!hits) return root;
+  // Pass 2: rebuild with omitted nodes swapped for the standard placeholder.
+  const memo = new WeakMap<any, any>();
+  const rebuild = (v: any): any => {
+    if (!v || typeof v !== "object") return v;
+    if (memo.has(v)) return memo.get(v);
+    if (omitted.has(v)) {
+      const out = { ...v, data: "", omitted: true, omittedBytes: Math.floor((v.data.length * 3) / 4) };
+      memo.set(v, out);
+      return out;
+    }
+    if (Array.isArray(v)) {
+      const out: any[] = new Array(v.length);
+      memo.set(v, out);
+      let changed = false;
+      for (let i = 0; i < v.length; i++) {
+        const y = rebuild(v[i]);
+        out[i] = y;
+        if (y !== v[i]) changed = true;
+      }
+      if (!changed) {
+        memo.set(v, v);
+        return v;
+      }
+      return out;
+    }
+    const out: any = {};
+    memo.set(v, out);
+    let changed = false;
+    for (const k of Object.keys(v)) {
+      const y = rebuild(v[k]);
+      out[k] = y;
+      if (y !== v[k]) changed = true;
+    }
+    if (!changed) {
+      memo.set(v, v);
+      return v;
+    }
+    return out;
+  };
+  return rebuild(root);
+}
+
+/** Seal every { type: "text", text } block inside a tool result structure
+ *  (tool_execution_update partialResult / tool_execution_end result): each
+ *  text becomes a string envelope under the room key and gains enc: 1.
+ *  Non-text blocks (images) pass through untouched -- the relay still
+ *  applies its image budget to these events since they are not enveloped
+ *  whole. Depth-bounded; returns the input by reference when nothing hit. */
+function encryptTextBlocksDeep(rck: Buffer, root: any, depth = 0): any {
+  if (!root || typeof root !== "object" || depth > 12) return root;
+  if (Array.isArray(root)) {
+    let out: any[] | null = null;
+    for (let i = 0; i < root.length; i++) {
+      const y = encryptTextBlocksDeep(rck, root[i], depth + 1);
+      if (y !== root[i]) {
+        if (!out) out = root.slice();
+        out[i] = y;
+      }
+    }
+    return out || root;
+  }
+  if (root.type === "text" && typeof root.text === "string") {
+    return { ...root, text: encryptTextCt(rck, root.text), enc: 1 };
+  }
+  let out: any = null;
+  for (const k of Object.keys(root)) {
+    const x = root[k];
+    if (!x || typeof x !== "object") continue;
+    const y = encryptTextBlocksDeep(rck, x, depth + 1);
+    if (y !== root[k]) {
+      if (!out) out = { ...root };
+      out[k] = y;
+    }
+  }
+  return out || root;
+}
 /** 清单单帧最多这么多条（按 updatedAt 倒序）；回合结束上报至少间隔这么久 */
 const MAX_MANIFEST_BATCH = 200;
 /** 清单里的 firstMessage 只留预览。SessionManager.list 给的是首条用户消息全文，不能整段写进帧。 */
@@ -674,6 +981,10 @@ const NAME_SCAN_FILES = 20; // resolveSession 名字回退最多扫这么多个�
 /** 可丢弃的事件（流式 delta / 工具中间输出）：背压时可以丢，message_end / tool_execution_end 会给权威全量。
  *  反过来判定：**其余一律关键**（收尾/元数据/错误丢一个，远端就永久缺状态）。 */
 const DROPPABLE_FORWARD = new Set(["message_update", "tool_execution_update", "bash_execution_update", "provider_stream_event"]);
+/** Event types that carry body content (Phase 3): when the relay rejects
+ *  enc writes (crypto_required), these stop instead of falling back to
+ *  plaintext; every other frame keeps flowing. */
+const BODY_EVENT_TYPES = new Set(["message_start", "message_update", "message_end", "tool_execution_update", "tool_execution_end", "bash_execution_update", "remote_message"]);
 
 /** 只读命令：不进串行队列，立即执行（读不会和 set_model/compact 交错出问题；排在一条 30s 的 bash 后面才是问题）。
  *  abort / abort_bash 同样必须插队——排在被中断的那条命令后面就永远中断不了。 */
@@ -3406,6 +3717,10 @@ class Bridge {
   pendingClientNonce: string | null = null;
   /** 本条连接已发过 content_key_request（每条连接至多发一次；持有 ACK 后不再发） */
   ackRequestSent = false;
+  /** Whether the post-auth catch-up (onAuthSuccess) already ran on this
+   *  connection; reset in socketGone so every new connection replays it
+   *  exactly once. */
+  authReplayDone = false;
   /** Grants already answered on this connection: requester fingerprint -> ackFp
    *  that was granted. One grant per requester per connection session; only a
    *  changed ACK (different ackFp, e.g. after a rotation) re-arms an answer. */
@@ -3416,6 +3731,29 @@ class Bridge {
    *  (cleared in socketGone): a fresh report goes out after every reconnect,
    *  and within one connection only a changed ACK re-reports. */
   ackReportedFp: string | null = null;
+  /** Phase 3 (tier b) room content keys: roomId -> { rck, ackFp, rckWrap }.
+   *  An entry's presence means the room runs encrypted from this bridge:
+   *  bodies leave as envelopes and the room meta rides room_register. */
+  roomKeyCache = new Map<string, any>();
+  /** Rooms the relay reported holding plaintext history. Such a room must
+   *  be encrypted through migration (a new encrypted generation via
+   *  seedOrMerge), never by silently flipping its meta to enc. */
+  plainHistoryRooms = new Set<string>();
+  /** Remote echoes sent for enc rooms, FIFO: { text, h, cid }. Matched
+   *  against the superseding user message_end so its envelope can carry
+   *  echoH -- the relay retires remote records by h equality (section 4.1). */
+  pendingRemoteEchoes: any[] = [];
+  /** In-flight plaintext -> enc migration of the live room:
+   *  { roomId, msgCount, lastHash }. The verification trailer rides full
+   *  snapshots until the relay confirms (migration_result) or a reconnect
+   *  re-offers it, so an interrupted migration is safe to re-enter. */
+  migrationPending: any = null;
+  migrationTrailerSent = false;
+  /** Set when the relay rejects an enc write with crypto_required on this
+   *  connection: body sends for the room stop loudly instead of falling
+   *  back to plaintext -- an enc room must never receive plaintext. */
+  encWriteRejected = false;
+  private encRejectLogged = false;
   /** 接管持留的 dialog：dialogId → HeldDialog（含排队中的）。同一时刻只一个 active。 */
   dialogHeld = new Map<string, any>();
   dialogHeldQueue: string[] = [];
@@ -3677,20 +4015,14 @@ class Bridge {
         }
         this.send(authFrame(process.env, this.platform, keyAuth));
         this.armAuthDeadline(ws);
-        // 重连后补注册 + 对齐镜像，并重发当前忙闲与用量。两者都只在变化时推送，
-        // relay 重启后它缓存的值没了，不重发的话新订阅者一直拿不到。
-        // 必须走 room_register：新连接在 relay 侧还没绑定房间（relay 可能刚重启），轻量 sync 会被直接忽略。
+        // Nothing but the auth frame may leave on this socket before
+        // auth_result ok (the catch-up lives in onAuthSuccess): with key
+        // auth, the challenge round trip completes a full RTT later, so
+        // anything sent here reaches the relay while this connection is
+        // still unauthenticated.
         this.relayV3 = false;
         this.relayCaps = null;
         this.relayAuth = null;
-        if (this.roomId) {
-          this.requestSync("reconnect", true);
-          this.send({ type: "state", room: this.roomId, busy: this.busy });
-          this._lastUsagePayload = "";
-          this.pushUsage("reconnect");
-          this.manifestArmed = true;
-          this.enqueueManifest({ full: true });
-        }
       };
 
       ws.onmessage = (ev: any) => {
@@ -3773,11 +4105,18 @@ class Bridge {
     // 钥模式的连接级状态一并作废：clientNonce 单次有效、ACK 请求标记按连接重计
     this.pendingClientNonce = null;
     this.ackRequestSent = false;
+    this.authReplayDone = false;
     // Grant-answer dedupe is scoped to the connection session too.
     this.ackGrantsAnswered.clear();
     // The relay drops this end's ackFp report together with the connection,
     // so forget what was reported: the next connection must report again.
     this.ackReportedFp = null;
+    // Phase 3: a crypto_required rejection is per-connection (the next
+    // connection re-negotiates caps/meta), and a pending migration
+    // verification trailer must be re-offered after reconnect.
+    this.encWriteRejected = false;
+    this.encRejectLogged = false;
+    this.migrationTrailerSent = false;
     // 接管门控随连接作废（重连后 relay 补发当前值）；持留 dialog 交回本机弹窗——
     // 答案通道已断，继续持留只会让调用方干等到超时（fail-open 红线）
     this.dialogGateHasViewers = false;
@@ -3987,6 +4326,29 @@ class Bridge {
 
   private sendEvent(ev: any, essential: boolean) {
     if (!this.roomId) return;
+    // Every event frame -- message mirrors, and the dialog / ext_status /
+    // task-list observation frames that share this choke point -- must
+    // wait for auth_result ok: during the key-auth challenge window the
+    // relay has not accepted this connection yet. Dropping is safe: the
+    // post-auth snapshot resync and the dialog re-publish on sync
+    // reconcile whatever was in flight.
+    if (!this.authed) return;
+    // Phase 3 (tier b): for an enc room, body-carrying events are sealed
+    // here -- the single choke point every live event passes through
+    // (direct sends, coalesced deltas and queued tool updates alike). If
+    // the relay has rejected enc writes on this connection
+    // (crypto_required), body events stop loudly instead of ever falling
+    // back to plaintext; non-body frames (dialog, status) keep flowing.
+    if (ev && typeof ev.type === "string" && this.encEntry(this.roomId)) {
+      if (this.encWriteRejected && BODY_EVENT_TYPES.has(ev.type)) {
+        if (!this.encRejectLogged) {
+          this.encRejectLogged = true;
+          log("错误：relay 已以 crypto_required 拒绝本房的加密写入，已停止发送正文（不会回退明文）；请先处理 relay 侧问题");
+        }
+        return;
+      }
+      ev = this.encryptEventForRoom(ev);
+    }
     this.send({ type: "event", room: this.roomId, event: ev }, { essential });
   }
 
@@ -4958,6 +5320,22 @@ class Bridge {
       platform: idn.platform,
     };
     if (idn.deviceId) room.deviceId = idn.deviceId;
+    // Phase 3 (tier b): room content meta rides the registration frame --
+    // room.enc / room.ackFp / room.rckWrap, mirroring the store meta
+    // record's fields (design section 5). Key material is created lazily
+    // for rooms with no known plaintext history; a room already known to
+    // hold plaintext history only gains meta through migration (its key
+    // entry is created by maybeMigrateRoom and picked up here from the
+    // cache). Without content readiness nothing is added at all.
+    if (this.contentReady() && this.roomId) {
+      let entry = this.roomKeyCache.get(this.roomId);
+      if (!entry && !this.plainHistoryRooms.has(this.roomId)) entry = this.ensureRoomKey(this.roomId);
+      if (entry) {
+        room.enc = 1;
+        room.ackFp = entry.ackFp;
+        room.rckWrap = entry.rckWrap;
+      }
+    }
     return room;
   }
 
@@ -4991,6 +5369,11 @@ class Bridge {
         this._lastUsagePayload = "";
         // 审批门的「本会话都允许」只活在本会话内，换会话即清（§4.3）
         this.approvalSessionAllow.clear();
+        // Phase 3: remote echoes belong to the old room (its relay-side
+        // pending records retire with that room), and a pending migration
+        // only ever refers to the room it was started for.
+        this.pendingRemoteEchoes = [];
+        if (this.migrationPending && this.migrationPending.roomId !== String(id)) this.migrationPending = null;
       }
       this.roomId = String(id);
       this.cwd = sm?.cwd || ctx?.cwd || null;
@@ -5035,7 +5418,11 @@ class Bridge {
 
   enqueueManifest(partial: any) {
     if (!deviceIdentity().deviceId) return;
-    if (!this.connected || this.closing) return;
+    // The manifest is a business frame: enqueued before auth_result ok it
+    // would flush (~40ms later) into a still-unauthenticated connection.
+    // onAuthSuccess enqueues a full manifest, which supersedes any
+    // partial accumulated here, so dropping the partial loses nothing.
+    if (!this.connected || !this.authed || this.closing) return;
     const cur = this.pendingManifest || { full: false, ids: new Set<string>(), removed: new Set<string>(), activity: false, rows: [] as any[] };
     if (partial && partial.full) cur.full = true;
     if (partial && partial.activity) cur.activity = true;
@@ -5123,9 +5510,24 @@ class Bridge {
   }
 
   async flushManifest() {
+    // A flush timer armed while authenticated can fire inside the next
+    // connection's pre-auth window: hold the pending job (do not consume
+    // it) and retry on the coalesce cadence until auth completes. While
+    // fully disconnected there is no retry loop -- the job stays pending
+    // and the post-auth enqueue in onAuthSuccess re-arms the flush.
+    if (!this.authed || !this.connected) {
+      if (this.connected && this.pendingManifest && !this.closing && !this.manifestTimer) {
+        this.manifestTimer = setTimeout(() => {
+          this.manifestTimer = null;
+          void this.flushManifest();
+        }, MANIFEST_COALESCE_MS);
+        if (this.manifestTimer.unref) this.manifestTimer.unref();
+      }
+      return;
+    }
     const job = this.pendingManifest;
     this.pendingManifest = null;
-    if (!job || this.closing || !this.connected) return;
+    if (!job || this.closing) return;
     const idn = deviceIdentity();
     if (!idn.deviceId) return;
     try {
@@ -5174,6 +5576,23 @@ class Bridge {
         removed: [...job.removed],
         now: Date.now(),
       });
+      // Phase 3 (design section 4.1): a session row's firstMessage is a
+      // body slice, so once content encryption is ready it travels as an
+      // ACK-level envelope (firstMessageEnc) and the plaintext preview is
+      // dropped from the frame; the viewer decrypts it for the list.
+      // Without full content readiness the manifest keeps its legacy
+      // shape byte for byte.
+      if (this.contentReady()) {
+        const ack = this.accountAck();
+        if (ack) {
+          for (const row of frame.sessions) {
+            if (row && typeof row.firstMessage === "string" && row.firstMessage) {
+              row.firstMessageEnc = encryptAckText(ack, row.firstMessage);
+              row.firstMessage = null;
+            }
+          }
+        }
+      }
       this.send(frame, { essential: true });
     } catch (e: any) {
       log("会话清单上报失败:", e?.message);
@@ -5289,6 +5708,10 @@ class Bridge {
     // this end's current copy. reportAckFp itself no-ops unless this
     // connection is key-authed, and dedupes an unchanged fingerprint.
     this.reportAckFp();
+    // Phase 3: a freshly arrived ACK may be the last missing leg for
+    // content encryption (re-wrap cached room keys under it, offer room
+    // meta for an empty room, or kick off a deferred migration).
+    try { this.maybeContentBecameReady(); } catch {}
   }
 
   /** Answer a content_key_request (Phase 2, design sections 3.2/7): when this
@@ -5344,6 +5767,285 @@ class Bridge {
     );
   }
 
+  /* ---------------- Phase 3: room content keys + migration (design sections 4.1 / 5) ---------------- */
+
+  /** The ACK this bridge currently holds for its account (32 bytes) or null. */
+  accountAck(): Buffer | null {
+    if (!this.deviceKey) return null;
+    const accountId = deviceIdentity(process.env, this.platform).accountId;
+    return heldContentKey(this.deviceKey, accountId);
+  }
+
+  /** Content encryption may only activate when all three legs stand:
+   *  key-mode auth on this connection, the relay declared crypto.content
+   *  back in auth_result, and an ACK is actually held. Anything less and
+   *  every byte on the wire stays exactly as before Phase 3 (old relay,
+   *  token mode, or no ACK delivered yet). */
+  contentReady(): boolean {
+    return (
+      !!this.deviceKey &&
+      this.relayAuth === "key" &&
+      !!this.relayCaps &&
+      this.relayCaps.has("crypto.content") &&
+      !!this.accountAck()
+    );
+  }
+
+  /** Get (or create) the content key entry for a room. Creation generates a
+   *  fresh random RCK, wraps it under the held ACK, and persists the wrap
+   *  in the device key file, so a restart recovers the same RCK. Recovery
+   *  order: memory -> key file wrap -> (relay wrap, via adoptRoomWrap). */
+  ensureRoomKey(roomId: string): any {
+    if (!roomId) return null;
+    const cached = this.roomKeyCache.get(roomId);
+    if (cached) return cached;
+    const ack = this.accountAck();
+    if (!ack) return null;
+    const key = this.deviceKey;
+    let rck: Buffer | null = null;
+    let rckWrap = "";
+    const stored = key && key.roomKeys ? key.roomKeys[roomId] : "";
+    if (stored) {
+      rck = unwrapRoomKey(ack, stored);
+      if (rck) rckWrap = stored;
+      else log("房间", roomId, "本地保存的 rckWrap 无法用当前 ACK 解开（ACK 可能已轮换），将尝试 relay 侧包裹或重新生成");
+    }
+    if (!rck) {
+      rck = crypto.randomBytes(32);
+      rckWrap = wrapRoomKey(ack, rck);
+      if (key && key.filePath && !storeRoomKeyInKeyFile(key, roomId, rckWrap)) {
+        log("警告：房间", roomId, "的 rckWrap 写回钥文件失败，RCK 只在本进程内存中持有，重启后需靠 relay 房间 meta 恢复");
+      }
+    }
+    const entry = { rck, ackFp: contentKeyFingerprint(ack), rckWrap };
+    this.roomKeyCache.set(roomId, entry);
+    return entry;
+  }
+
+  /** Adopt a relay-carried rckWrap for a room we hold no key for (room meta
+   *  carries the wrap precisely so RCKs survive, design section 5). The
+   *  adopted wrap is also persisted into the device key file. */
+  adoptRoomWrap(roomId: string, rckWrap: any): any {
+    if (!roomId || typeof rckWrap !== "string" || !rckWrap) return null;
+    const existing = this.roomKeyCache.get(roomId);
+    if (existing) return existing;
+    const ack = this.accountAck();
+    if (!ack) return null;
+    const rck = unwrapRoomKey(ack, rckWrap);
+    if (!rck) return null;
+    const entry = { rck, ackFp: contentKeyFingerprint(ack), rckWrap };
+    this.roomKeyCache.set(roomId, entry);
+    const key = this.deviceKey;
+    if (key && key.filePath && (!key.roomKeys || key.roomKeys[roomId] !== rckWrap)) {
+      storeRoomKeyInKeyFile(key, roomId, rckWrap);
+    }
+    return entry;
+  }
+
+  /** The room's live content key entry when bodies must be sealed for it:
+   *  content ready, the room is the confirmed live room, and key material
+   *  exists. Any other state sends plaintext exactly as before Phase 3. */
+  encEntry(roomId: string | null): any {
+    if (!roomId || this.confirmedRoom !== roomId || !this.contentReady()) return null;
+    const cached = this.roomKeyCache.get(roomId);
+    if (cached) return cached;
+    // Create on demand: every caller of encEntry is a post-registration
+    // send path, and a room with no known plaintext history must never
+    // emit a plaintext body just because registration's roomPayload ran
+    // before the ACK arrived. Rooms WITH known plaintext history are
+    // excluded -- their key material is created by migration, not here.
+    if (this.plainHistoryRooms.has(roomId)) return null;
+    return this.ensureRoomKey(roomId);
+  }
+
+  /** Room crypto bookkeeping on room_registered. Returns true when it
+   *  started a migration (the caller then skips the normal syncSnapshot:
+   *  bumpEpoch already queued a fresh registration whose reply drives the
+   *  encrypted seed). */
+  noteRoomCrypto(msg: any): boolean {
+    const room = this.roomId;
+    if (!room) return false;
+    // Recover a relay-carried wrap first (room meta / snapshot keyInfo shapes).
+    const wrap =
+      typeof msg.rckWrap === "string"
+        ? msg.rckWrap
+        : msg.meta && typeof msg.meta.rckWrap === "string"
+          ? msg.meta.rckWrap
+          : msg.keyInfo && typeof msg.keyInfo.rckWrap === "string"
+            ? msg.keyInfo.rckWrap
+            : "";
+    if (wrap && !this.roomKeyCache.has(room)) {
+      if (this.adoptRoomWrap(room, wrap)) log("已从 relay 房间 meta 恢复本房 RCK（ackFp", this.roomKeyCache.get(room).ackFp + "）");
+    }
+    const relayEnc =
+      msg.enc === 1 || msg.enc === true || (msg.meta && (msg.meta.enc === 1 || msg.meta.enc === true)) || !!wrap;
+    const n = Number(msg.msgCount) || 0;
+    if (relayEnc) {
+      this.plainHistoryRooms.delete(room);
+      return false;
+    }
+    if (!this.contentReady()) return false;
+    if (n > 0) {
+      // The relay holds plaintext history for this room. Any key material
+      // created speculatively at register time must NOT seal live traffic
+      // into the plaintext generation: drop it (its wrap persists in the
+      // key file, and migration re-adopts the very same RCK for the
+      // encrypted generation it seeds).
+      this.roomKeyCache.delete(room);
+      this.plainHistoryRooms.add(room);
+      return this.maybeMigrateRoom(room);
+    }
+    // n === 0 with a pending migration: the relay now holds (part of) the
+    // encrypted generation. Once its count reaches the migrated count,
+    // re-offer the verification trailer once per connection via a full
+    // snapshot (seedOrMerge makes the duplicate content a no-op).
+    if (this.migrationPending && this.migrationPending.roomId === room && !this.migrationTrailerSent) {
+      if (n === this.migrationPending.msgCount) {
+        log("迁移校验重提：relay 加密世代条数已与迁移账目一致（", n, "条），重发带校验尾的快照");
+        this.pushSnapshot("migration-verify");
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Migrate the live room's plaintext history to an encrypted generation
+   *  (design section 5): seal the full local mirror, seed it as a new
+   *  generation through the existing epoch/seedOrMerge channel, and attach
+   *  the verification trailer (msgCount + lastHash, where lastHash is the
+   *  last record's h). The relay deletes the plaintext generation only
+   *  after its own verification passes. Refuses to run while the room has
+   *  live write traffic -- mixing a generation swap with a live stream
+   *  would interleave plaintext and encrypted records. Re-entrant: an
+   *  interrupted migration simply re-runs on the next idle registration. */
+  maybeMigrateRoom(room: string): boolean {
+    if (room !== this.roomId) {
+      // The relay binds one room per local socket, so a non-live room
+      // cannot be seeded from this connection. It migrates when its own
+      // session's pi next connects (design section 5 keeps it plaintext
+      // and labelled until then).
+      log("房间", room, "有明文存量待迁移，将在该会话的 pi 下次连接时迁移");
+      return false;
+    }
+    if (this.migrationPending && this.migrationPending.roomId === room) return false;
+    if (!this.contentReady()) {
+      log("房间", room, "有明文存量，但当前未持有 ACK 或 relay 未声明 crypto.content，本轮不迁移");
+      return false;
+    }
+    if (this.busy || this.pendingDelta || this.pendingTools.size || this.pendingDeliveries.length) {
+      log("房间", room, "有明文存量待迁移，但当前有实时写入在飞，本轮跳过（空闲后的注册/探测会重试）");
+      return false;
+    }
+    const L = this.mirror();
+    if (!L) {
+      log("房间", room, "迁移跳过：本机镜像不可用");
+      return false;
+    }
+    const entry = this.ensureRoomKey(room);
+    if (!entry) {
+      log("房间", room, "迁移跳过：无 ACK 可生成房间钥");
+      return false;
+    }
+    const envs = L.map((m) => sealBody(entry.rck, shrinkImagesWithBudget(m)));
+    const lastHash = envs.length ? envs[envs.length - 1].h : "";
+    this.migrationPending = { roomId: room, msgCount: envs.length, lastHash };
+    this.migrationTrailerSent = false;
+    log(
+      "开始迁移房间", room, "的明文存量：", envs.length,
+      "条将加密为新世代（msgCount " + envs.length + "，lastHash " + lastHash + "），relay 校验通过前保留明文世代",
+    );
+    this.bumpEpoch("crypto-migration");
+    return true;
+  }
+
+  /** An ACK arrived (or changed) mid-connection: refresh cached room key
+   *  wraps under the current ACK, then give a still-plain live room its
+   *  chance to turn enc (empty room: re-register with meta; room with
+   *  relay-side plaintext history: try migration, idle-gated inside). */
+  maybeContentBecameReady() {
+    const ack = this.accountAck();
+    if (!ack) return;
+    const fp = contentKeyFingerprint(ack);
+    const key = this.deviceKey;
+    for (const [roomId, entry] of this.roomKeyCache) {
+      if (entry.ackFp !== fp) {
+        entry.rckWrap = wrapRoomKey(ack, entry.rck);
+        entry.ackFp = fp;
+        if (key && key.filePath) storeRoomKeyInKeyFile(key, roomId, entry.rckWrap);
+        log("房间", roomId, "的 rckWrap 已按新 ACK 重新包裹（ackFp", fp + "）");
+      }
+    }
+    if (!this.roomId || this.confirmedRoom !== this.roomId || !this.contentReady()) return;
+    if (this.plainHistoryRooms.has(this.roomId)) {
+      this.maybeMigrateRoom(this.roomId);
+      return;
+    }
+    if (!this.roomKeyCache.has(this.roomId)) this.requestSync("content-ready", true);
+  }
+
+  /** FIFO-match a superseding user message against echoes sent for this
+   *  room and return the echo's h (for the envelope's echoH), consuming the
+   *  echo entry. Mirrors the relay's plaintext rule exactly: earliest
+   *  unmatched echo whose text remoteEchoMatches the user text. */
+  consumeRemoteEcho(userMessage: any): string | null {
+    if (!this.pendingRemoteEchoes.length) return null;
+    const userText = msgText(userMessage);
+    const i = this.pendingRemoteEchoes.findIndex((p) => remoteEchoMatchesText(p.text, userText));
+    if (i < 0) return null;
+    const hit = this.pendingRemoteEchoes.splice(i, 1)[0];
+    return hit && typeof hit.h === "string" ? hit.h : null;
+  }
+
+  /** Seal one outgoing event for the live enc room. Only body-carrying
+   *  event shapes are touched; dialog / ext_notify / ext_status and all
+   *  other frames stay plaintext by design (tier b, section 4.1). */
+  encryptEventForRoom(ev: any): any {
+    const entry = this.encEntry(this.roomId);
+    if (!entry || !ev || typeof ev.type !== "string") return ev;
+    const rck: Buffer = entry.rck;
+    switch (ev.type) {
+      case "message_start":
+      case "message_end": {
+        if (!ev.message || typeof ev.message !== "object") return ev;
+        const shrunk = shrinkImagesWithBudget(ev.message);
+        const env = sealBody(rck, shrunk);
+        if (ev.type === "message_end" && shrunk && shrunk.role === "user") {
+          const echoH = this.consumeRemoteEcho(shrunk);
+          if (echoH) env.echoH = echoH;
+        }
+        return { ...ev, message: env };
+      }
+      case "message_update": {
+        const a = ev.assistantMessageEvent;
+        let out = ev;
+        if (a && (a.type === "text_delta" || a.type === "thinking_delta") && typeof a.delta === "string") {
+          out = { ...out, assistantMessageEvent: { ...a, delta: encryptTextCt(rck, a.delta), enc: 1 } };
+        }
+        if (out.message && typeof out.message === "object") {
+          out = { ...out, message: sealBody(rck, shrinkImagesWithBudget(out.message)) };
+        }
+        return out;
+      }
+      case "tool_execution_update":
+      case "tool_execution_end": {
+        const field = ev.type === "tool_execution_update" ? "partialResult" : "result";
+        if (ev[field] && typeof ev[field] === "object") {
+          const sealed = encryptTextBlocksDeep(rck, ev[field]);
+          if (sealed !== ev[field]) return { ...ev, [field]: sealed };
+        }
+        return ev;
+      }
+      case "bash_execution_update": {
+        if (typeof ev.output === "string" && ev.output) {
+          return { ...ev, output: encryptTextCt(rck, ev.output), enc: 1 };
+        }
+        return ev;
+      }
+      default:
+        return ev;
+    }
+  }
+
   /** 镜像消息 = 当前分支路径（mirrorMessages）；runtime 失效时 getter 会抛 */
   mirror(): any[] | null {
     const sm = this.ctx && this.ctx.sessionManager;
@@ -5355,7 +6057,11 @@ class Bridge {
    *  relay 回 room_registered {msgCount, firstHash, lastHash} 后由 syncSnapshot 决定发什么。
    *  旧版 relay 不回：超时兜底推全量。 */
   requestSync(reason: string, register = false) {
-    if (!this.roomId || !this.connected) return;
+    // Pre-auth calls must not emit room_register/sync either: until
+    // auth_result ok the relay has not accepted this connection (the
+    // post-auth catch-up in onAuthSuccess re-registers the current room,
+    // so nothing is lost by waiting).
+    if (!this.roomId || !this.connected || !this.authed) return;
     this.flushPending();
     if (register || !this.relayV3) this.send({ type: "room_register", room: this.roomPayload() }, { essential: true });
     else this.send({ type: "sync", room: this.roomId }, { essential: true });
@@ -5384,12 +6090,12 @@ class Bridge {
    *  首尾 hash 都要对上；relay 带了 tailHashes（最近若干条）时整段逐条对上。
    *  只看首尾时，同内容的 custom/摘要会把另一段误认成已同步，补尾部会把中间消息再追加一遍。
    *  常见情况 j = n-1（relay 存的就是前 n 条）；relay 用截断快照 seed 过时区间从中间开始。 */
-  alignTail(L: any[], info: any): number {
+  alignTail(L: any[], info: any, hashFn: (m: any) => string = hashOf): number {
     const n = Number(info.msgCount) || 0;
     if (n <= 0 || L.length < n || !info.lastHash || !info.firstHash) return -1;
     const tail = Array.isArray(info.tailHashes) ? info.tailHashes.filter((h: any) => typeof h === "string" && h) : [];
     const hashes: string[] = new Array(L.length);
-    const hAt = (i: number) => (hashes[i] !== undefined ? hashes[i] : (hashes[i] = hashOf(L[i])));
+    const hAt = (i: number) => (hashes[i] !== undefined ? hashes[i] : (hashes[i] = hashFn(L[i])));
     const fits = (j: number) => {
       if (j - n + 1 < 0 || hAt(j) !== info.lastHash || hAt(j - n + 1) !== info.firstHash) return false;
       if (tail.length && j - tail.length + 1 < 0) return false;
@@ -5406,16 +6112,36 @@ class Bridge {
       if (!this.roomId) return;
       const L = this.mirror();
       if (!L) return;
-      const n = Number(info.msgCount) || 0;
+      // Phase 3: for an enc room the relay anchors on envelope h values,
+      // not hashOf. Accept both field spellings (lastHash/firstHash with
+      // hashOf values in plaintext mode; lastH/firstH/tailHs with h values
+      // in enc mode) and align with the matching hash function.
+      const enc = this.encEntry(this.roomId);
+      const norm = {
+        ...info,
+        msgCount: Number(info.msgCount) || 0,
+        lastHash: info.lastH ?? info.lastHash,
+        firstHash: info.firstH ?? info.firstHash,
+        tailHashes: info.tailHs ?? info.tailHashes,
+      };
+      const n = norm.msgCount;
       if (n === 0) {
         if (L.length) this.pushSnapshot("seed", L);
         return;
       }
-      const j = this.alignTail(L, info);
+      const j = this.alignTail(L, norm, enc ? (m: any) => contentHashOf(enc.rck, m) : undefined);
       if (j >= 0) {
         const tail = L.slice(j + 1);
         if (!tail.length) return;
-        const payload = this.serializeSnapshot(tail.map((m) => shrinkDeep(m)), { mode: "append", base: { count: n, hash: info.lastHash } });
+        const payload = enc
+          ? this.serializeSnapshot(
+              tail.map((m) => sealBody(enc.rck, shrinkImagesWithBudget(m))),
+              { mode: "append", base: { count: n, hash: norm.lastHash }, enc: 1 },
+              false,
+              undefined,
+              true,
+            )
+          : this.serializeSnapshot(tail.map((m) => shrinkDeep(m)), { mode: "append", base: { count: n, hash: norm.lastHash } });
         if (payload) {
           this.sendRaw(payload.json, { essential: true }, "snapshot");
           log("镜像补尾部:", tail.length, "条");
@@ -5437,7 +6163,7 @@ class Bridge {
   /** 逐条序列化一次，从尾部往前装到预算为止（O(n)；旧实现每丢一条就整包重新 stringify，O(n²)）。
    *  单条超过 1/4 预算的消息先截断长字符串（头部保留 ⇒ hash 不变）。
    *  allowDrop=false（append）时装不下直接返回 null，由调用方退回全量。 */
-  serializeSnapshot(msgs: any[], extra: any, allowDrop = false, roomId?: string): { json: string; dropped: number } | null {
+  serializeSnapshot(msgs: any[], extra: any, allowDrop = false, roomId?: string, preEnveloped = false): { json: string; dropped: number } | null {
     const budget = FRAME_MAX_BYTES - 64 * 1024;
     const parts: string[] = new Array(msgs.length);
     const sizes: number[] = new Array(msgs.length);
@@ -5448,7 +6174,10 @@ class Bridge {
       } catch {
         s = JSON.stringify({ role: msgs[i] && msgs[i].role, timestamp: msgs[i] && msgs[i].timestamp, content: [{ type: "text", text: "[消息无法序列化]" }] });
       }
-      if (s.length * 3 > budget / 4 && Buffer.byteLength(s, "utf8") > budget / 4) {
+      // Pre-enveloped items (Phase 3) skip the oversize string truncation:
+      // truncating a ciphertext string would corrupt the envelope. Size
+      // budgeting below still applies at whole-envelope granularity.
+      if (!preEnveloped && s.length * 3 > budget / 4 && Buffer.byteLength(s, "utf8") > budget / 4) {
         s = JSON.stringify({ ...truncateStringsDeep(msgs[i], OVERSIZE_STRING_KEEP), truncated: true });
       }
       parts[i] = s;
@@ -5475,8 +6204,46 @@ class Bridge {
     try {
       const room = roomId || this.roomId;
       if (!room) return;
+      // Snapshots are business frames too: they wait for auth_result ok.
+      // Every caller is reachable post-auth (post room_registered, relay
+      // snapshot requests, the -- auth-gated -- requestSync fallback).
+      if (!this.authed) return;
       const L = pre || this.mirror();
       if (!L) return;
+      // Phase 3: for the live enc room the snapshot carries envelopes, not
+      // bodies (seed/sync path, design sections 4.1/7). A pending migration
+      // adds its verification trailer (msgCount + lastHash of the sealed
+      // generation) so the relay can verify before deleting plaintext.
+      const enc = room === this.roomId ? this.encEntry(room) : null;
+      if (enc) {
+        if (this.encWriteRejected) {
+          log("错误：relay 已以 crypto_required 拒绝本房的加密写入，快照未发送（不会回退明文快照）");
+          return;
+        }
+        const envs = L.map((m) => sealBody(enc.rck, shrinkImagesWithBudget(m)));
+        const extra: any = { enc: 1 };
+        const migrating = !!(this.migrationPending && this.migrationPending.roomId === room);
+        if (migrating) {
+          extra.migration = { msgCount: envs.length, lastHash: envs.length ? envs[envs.length - 1].h : "" };
+          this.migrationTrailerSent = true;
+        }
+        const out = this.serializeSnapshot(envs, extra, true, room, true);
+        if (!out) return;
+        if (out.dropped) {
+          log("加密快照超预算，已从头部丢弃最旧", out.dropped, "条，剩余", envs.length - out.dropped, "条");
+          // A truncated seed cannot carry a truthful full-history trailer:
+          // if the relay verified against it and deleted the plaintext
+          // generation, the dropped head would be lost. The trailer was
+          // already serialized into this frame, so mark the migration as
+          // not-verifiable from this seed instead -- the relay sees a
+          // trailer whose msgCount exceeds the records in hand and must
+          // keep both generations (its verify step compares counts).
+          if (migrating) log("警告：迁移种子被截断，校验尾的 msgCount 大于本帧实际条数，relay 应保留双世代、本次迁移不会完成删除明文");
+        }
+        this.sendRaw(out.json, { essential: true }, "snapshot");
+        log("推全量加密快照（", reason, "）:", envs.length - out.dropped, "条");
+        return;
+      }
       const out = this.serializeSnapshot(L.map((m) => shrinkDeep(m)), {}, true, room);
       if (!out) return;
       if (out.dropped) log("快照超预算，已从头部丢弃最旧", out.dropped, "条，剩余", L.length - out.dropped, "条");
@@ -5578,7 +6345,9 @@ class Bridge {
       this.sessionName = event.name ? String(event.name) : null;
       this.nameDirty = true;
       // 改名只需要更新房间标题：发轻量 room_label，不做整包 room_register（少一次重注册+广播）
-      if (this.roomId) {
+      // Pre-auth the label send waits: the name rides the next room_register
+      // payload anyway (onAuthSuccess re-registers with the current name).
+      if (this.roomId && this.authed) {
         if (this.noRoomLabel) this.send({ type: "room_register", room: this.roomPayload() });
         else this.send({ type: "room_label", room: this.roomId, label: this.roomPayload().label });
       }
@@ -5600,7 +6369,9 @@ class Bridge {
     this.busy = b;
     if (this.roomId) {
       this.flushPending();
-      this.send({ type: "state", room: this.roomId, busy: b }, { essential: true });
+      // The busy flag itself is kept current; only the wire send waits
+      // for auth (onAuthSuccess re-sends the current value).
+      if (this.authed) this.send({ type: "state", room: this.roomId, busy: b }, { essential: true });
     }
   }
 
@@ -5644,6 +6415,30 @@ class Bridge {
     return this.usageQueue;
   }
 
+  /** Post-auth catch-up, run exactly once per connection from the
+   *  auth_result ok branch: re-register the room and re-push busy state,
+   *  usage and the session manifest. This block used to run in onopen,
+   *  right behind the auth frame -- safe for token auth (the relay
+   *  authenticates synchronously while reading the auth frame) but fatal
+   *  for key auth, whose challenge round trip leaves the connection
+   *  unauthenticated for a full RTT: the followers arrived pre-auth, the
+   *  relay treated them as an auth failure, and this bridge latched
+   *  authFailed on the strength of a frame that was never a credential
+   *  check. It must go through room_register, not the lightweight sync:
+   *  a fresh relay-side connection has no room binding yet (the relay may
+   *  have restarted), so a bare sync would be ignored. */
+  private onAuthSuccess() {
+    if (this.authReplayDone) return;
+    this.authReplayDone = true;
+    if (!this.roomId) return;
+    this.requestSync("reconnect", true);
+    this.send({ type: "state", room: this.roomId, busy: this.busy });
+    this._lastUsagePayload = "";
+    this.pushUsage("reconnect");
+    this.manifestArmed = true;
+    this.enqueueManifest({ full: true });
+  }
+
   handle(msg: any) {
     if (!msg || typeof msg.type !== "string") return;
     if (msg.type === "auth_result") {
@@ -5678,6 +6473,7 @@ class Bridge {
         if (this.relayAuth === "key") this.noteKeyAuthed(msg);
         else log("本机持有设备钥，但 relay 未走钥鉴权（auth=" + (this.relayAuth || "null") + "），按令牌连接运行，ACK 逻辑不启用");
       }
+      this.onAuthSuccess();
       return;
     }
     if (msg.type === "auth_challenge") {
@@ -5709,7 +6505,34 @@ class Bridge {
       this.answerContentKeyRequest(msg);
       return;
     }
+    if (msg.type === "migration_result") {
+      // Phase 3 (design section 5): the relay verified the migrated
+      // generation (msgCount + lastHash) and -- only on success -- deleted
+      // the plaintext generation. On failure both generations stay put and
+      // the migration may be re-entered; nothing is silently dropped here.
+      const room = typeof msg.room === "string" ? msg.room : "";
+      if (this.migrationPending && room === this.migrationPending.roomId) {
+        if (msg.ok) {
+          log("房间", room, "存量迁移完成：relay 校验通过（msgCount/lastHash 一致），明文世代已删除");
+          this.plainHistoryRooms.delete(room);
+          this.migrationPending = null;
+        } else {
+          log("错误：房间", room, "存量迁移校验未通过（", msg.reason || msg.message || "未说明", "），relay 保留双世代，未删除明文；可重入重试");
+        }
+      } else {
+        log("收到 migration_result（room", room + "，ok=" + !!msg.ok + "），当前无待确认的迁移");
+      }
+      return;
+    }
     if (msg.type === "error") {
+      if (msg.code === "crypto_required") {
+        // The relay refused an enc write (or an enc-room interaction from a
+        // non-cap end). Never retry as plaintext: stop body sends for the
+        // room on this connection and say so loudly (design section 4.1
+        // version gate + section 7 error vocabulary).
+        this.encWriteRejected = true;
+        log("错误：relay 以 crypto_required 拒绝加密房间操作（", msg.message || "", "），本连接已停止向该房间发送正文，不会回退明文");
+      }
       if (msg.code === "device_mismatch") log("relay 拒绝了与设备令牌不符的帧:", msg.message || "");
       // key_mismatch is a reconciliation warning (design section 3.5), not an
       // auth failure: warn loudly, never touch the held keys automatically.
@@ -5737,6 +6560,11 @@ class Bridge {
       this.relayV3 = true;
       this.confirmedRoom = this.roomId;
       if (this.syncTimer) { clearTimeout(this.syncTimer); this.syncTimer = null; }
+      // Phase 3: adopt a relay-carried RCK wrap / detect plaintext history
+      // and start migration. When migration starts it bumps the epoch and
+      // queues a fresh registration, so the normal alignment below must
+      // not ALSO run against this (pre-migration) reply.
+      if (this.noteRoomCrypto(msg)) return;
       this.syncSnapshot(msg);
       // sync 完成后再重发交回本机仍在开的 dialog（发现 A-5）：排在快照帧之后发出，
       // 不会被 relay 的清槽/对齐冲掉，等待卡/注意力的断粮到此补齐
@@ -6474,10 +7302,39 @@ class Bridge {
     log("注入失败:", error);
     const target = room || this.roomId;
     if (!target) return;
+    // Phase 3 (tier b): for an enc room the failure frame must not carry
+    // the plaintext either -- the relay retires the pending echo by cid /
+    // h, mirroring markRemoteFailed's cid-first discipline. The matched
+    // echo entry is consumed so a later identical user message cannot
+    // inherit its echoH.
+    const encEntry = target === this.roomId ? this.encEntry(target) : null;
+    if (encEntry) {
+      let i = -1;
+      if (cid) i = this.pendingRemoteEchoes.findIndex((p) => p.cid === cid);
+      if (i < 0) {
+        for (let j = this.pendingRemoteEchoes.length - 1; j >= 0; j--) {
+          if (remoteEchoMatchesText(this.pendingRemoteEchoes[j].text, text)) { i = j; break; }
+        }
+      }
+      const hit = i >= 0 ? this.pendingRemoteEchoes.splice(i, 1)[0] : null;
+      const extra: any = { code: code || "internal", enc: 1, h: hit ? hit.h : remoteHashOf(encEntry.rck, text) };
+      if (cid) extra.cid = cid;
+      if (target !== this.roomId) {
+        // Failure frames are business traffic too: local bookkeeping (the
+        // echo consumption above) still happens pre-auth, the wire send
+        // waits for auth_result ok.
+        if (this.authed) this.send({ type: "remote_message_failed", room: target, error, ...extra }, { essential: true });
+        return;
+      }
+      this.flushPending();
+      this.sendEvent({ type: "remote_message_failed", error, at: Date.now(), ...extra }, true);
+      return;
+    }
     const extra: any = { code: code || "internal" };
     if (cid) extra.cid = cid;
     if (target !== this.roomId) {
-      this.send({ type: "remote_message_failed", room: target, text, error, ...extra }, { essential: true });
+      // Same pre-auth wire gate as the enc branch above.
+      if (this.authed) this.send({ type: "remote_message_failed", room: target, text, error, ...extra }, { essential: true });
       return;
     }
     this.flushPending();
@@ -6488,6 +7345,21 @@ class Bridge {
   echoRemote(text: string, cid?: string) {
     if (!this.roomId) return;
     this.flushPending();
+    // Phase 3 (tier b): in an enc room the echo text never crosses the wire
+    // -- the frame carries the string envelope + h (design section 7:
+    // remote_message text becomes { enc: 1, ct, h, cid }). The plaintext is
+    // kept only in this process's FIFO so the superseding user message_end
+    // can be matched locally and stamped with echoH.
+    const entry = this.encEntry(this.roomId);
+    if (entry) {
+      const h = remoteHashOf(entry.rck, text);
+      this.pendingRemoteEchoes.push({ text, h, cid: cid || null });
+      if (this.pendingRemoteEchoes.length > 200) this.pendingRemoteEchoes.shift();
+      const ev: any = { type: "remote_message", enc: 1, ct: encryptTextCt(entry.rck, text), h, at: Date.now() };
+      if (cid) ev.cid = cid;
+      this.sendEvent(ev, true);
+      return;
+    }
     const ev: any = { type: "remote_message", text, at: Date.now() };
     if (cid) ev.cid = cid;
     this.sendEvent(ev, true);
@@ -8218,6 +9090,10 @@ class Bridge {
    *  去重：payload 与上次完全相同就不发（agent_settled 紧跟 message_end 时不重复帧）。 */
   pushUsage(_reason?: string) {
     if (!this.roomId) return;
+    // Usage frames are business traffic: nothing leaves before
+    // auth_result ok (onAuthSuccess re-pushes with a cleared dedupe
+    // payload, so the current totals still go out right after auth).
+    if (!this.authed) return;
     // 有 message_end 在等图片地址：用量帧不能插到它前面，等同一批放行后再发。
     if (this.pendingImageAddress) {
       this.pendingImageAddress.afterUsage = true;
@@ -8724,7 +9600,12 @@ export default function (pi: any) {
   const bridge = new Bridge();
   bridge.pi = pi;
 
-  if (!RELAY_URL || (!TOKEN && !HAS_DEVICE_TOKEN)) {
+  // Key-paired devices are issued no token at all (Phase 1), so a valid
+  // device key file must count as a credential at this gate too — this
+  // mirrors the Bridge.start() gate. Without it, key-only installs got a
+  // fully inert extension: no handlers registered, no log output.
+  const hasDeviceKey = !!loadDeviceKey(process.env).key;
+  if (!RELAY_URL || (!TOKEN && !HAS_DEVICE_TOKEN && !hasDeviceKey)) {
     // 未配置时扩展完全不干活，pi 行为零影响
     return;
   }
@@ -9287,5 +10168,5 @@ function usageEmptySnapshot(options: any = {}): any {
   });
 }
 
-export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile };
+export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile, canonicalJsonOf, contentHashOf, remoteHashOf, sealBody, encryptMessageBody, openBody, decryptMessageBody, encryptTextCt, decryptTextCt, wrapRoomKey, unwrapRoomKey, encryptAckText, decryptAckText, remoteEchoMatchesText, shrinkImagesWithBudget, encryptTextBlocksDeep, storeRoomKeyInKeyFile, IMAGE_TOTAL_MAX_CHARS };
 

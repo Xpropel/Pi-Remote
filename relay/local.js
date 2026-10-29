@@ -706,16 +706,28 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
    * 经 ctx 暴露给 viewer 通道（阶段 2 的观看端持钥端接入时复用同一路由）。
    */
   const routeContentKeyGrant = (accountId, toKeyFp, frame) => {
-    const hit = keyEndpoints(accountId).find((e) => e.keyFp === toKeyFp);
-    if (hit) return send(hit.ws, frame, cfg);
-    // Phase 2: keyed viewers are first-class grant targets too. The viewer channel
-    // registers its live endpoints on ctx; fall through to them when no local end
-    // holds the target fingerprint.
-    if (typeof ctx.viewerKeyEndpoints === "function") {
-      const vhit = ctx.viewerKeyEndpoints(accountId).find((e) => e.keyFp === toKeyFp);
-      if (vhit) return send(vhit.ws, frame, cfg);
+    // Deliver to EVERY endpoint holding the target fingerprint, never just the
+    // first match: one device normally holds two local connections with the
+    // same keyFp -- the attach window connection (which does not process grant
+    // frames) and the extension bridge connection (which does) -- and first-
+    // match routing silently drops the grant whenever the window connected
+    // first. Delivery is idempotent (receivers store the same ACK; non-
+    // processing connections ignore the frame). Keyed viewers are first-class
+    // targets too and always get their matching copies, not only when no local
+    // end matched. Returns true iff at least one send succeeded, so callers
+    // still answer "offline" when the target is genuinely unreachable.
+    let delivered = false;
+    for (const e of keyEndpoints(accountId)) {
+      if (e.keyFp !== toKeyFp) continue;
+      if (send(e.ws, frame, cfg)) delivered = true;
     }
-    return false;
+    if (typeof ctx.viewerKeyEndpoints === "function") {
+      for (const e of ctx.viewerKeyEndpoints(accountId)) {
+        if (e.keyFp !== toKeyFp) continue;
+        if (send(e.ws, frame, cfg)) delivered = true;
+      }
+    }
+    return delivered;
   };
   ctx.routeContentKeyGrant = routeContentKeyGrant;
   // The viewer channel needs the local endpoint list to broadcast content_key_request
@@ -959,7 +971,28 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
 
   const registered = (ws, room) => {
     const info = store.info(room.id);
-    send(ws, { type: "room_registered", room: room.id, epoch: room.epoch, rev: info.rev, seq: info.seq, msgCount: info.msgCount, firstHash: info.firstHash, lastHash: info.lastHash, tailHashes: store.tailHashes(room.id) }, cfg);
+    send(ws, { type: "room_registered", room: room.id, epoch: room.epoch, rev: info.rev, seq: info.seq, msgCount: info.msgCount, firstHash: info.firstHash, lastHash: info.lastHash, tailHashes: store.tailHashes(room.id), enc: info.enc || 0 }, cfg);
+  };
+
+  /** Enc rooms (design sections 5/7): when a room becomes encrypted (register
+   *  declaration or migration), viewers that never declared crypto.content are
+   *  evicted with a crypto_required frame — they must never receive ciphertext
+   *  snapshots, and re-subscribing hits the same gate in viewer.js. */
+  const evictIncapableViewers = (room) => {
+    for (const v of [...room.viewers]) {
+      if (hasCap(v, "crypto.content")) continue;
+      send(v, { type: "error", code: "crypto_required", retryable: false, room: room.id }, cfg);
+      room.viewers.delete(v);
+      if (v._room === room) v._room = null;
+      if (v._state) v._state.room = null;
+    }
+  };
+
+  /** Snapshot recipients for a room: everyone watching, except that enc rooms
+   *  only ever send snapshot frames to crypto.content connections. */
+  const snapViewers = (room) => {
+    if (store && store.encInfo(room.id)) return [...room.viewers].filter((v) => hasCap(v, "crypto.content"));
+    return room.viewers;
   };
 
   /** 快照落地后同步给观众：换代/seed → 全量；追加 → 增量（delta，baseSeq 对不上的 viewer 自己带 since 重订阅）。
@@ -972,12 +1005,14 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
     let full = false;
     if (r.reset || r.seeded) {
       const snap = store.snapshot(room.id, { limit: cfg.maxSnapshotRecords, maxBytes: cfg.maxSnapshotBytes });
-      broadcast(room.viewers, snapshotFrame(room, snapshotBodyFrom(snap)), cfg);
+      broadcast(snapViewers(room), snapshotFrame(room, snapshotBodyFrom(snap)), cfg);
       sent = true;
       full = true;
     } else if (r.merged) {
       const info = store.info(room.id);
-      broadcast(room.viewers, snapshotFrame(room, snapshotBodyFrom({ rev: info.rev, seq: info.seq, truncated: false, delta: true, baseSeq: r.baseSeq, items: r.items })), cfg);
+      const em = store.encInfo(room.id);
+      const encFields = em ? { enc: 1, keyInfo: { ackFp: em.ackFp || null, rckWrap: em.rckWrap || null } } : {};
+      broadcast(snapViewers(room), snapshotFrame(room, snapshotBodyFrom({ rev: info.rev, seq: info.seq, truncated: false, delta: true, baseSeq: r.baseSeq, items: r.items, ...encFields })), cfg);
       sent = true;
     }
     if (sent) {
@@ -1050,6 +1085,22 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             if (cfg.serverName) res.serverName = cfg.serverName;
             send(ws, res, cfg);
             log("local 已认证 key", pend.deviceId, helloText(s));
+            return;
+          }
+          // Key challenge in flight (the auth frame was accepted, the
+          // client still owes auth_response): business frames pipelined
+          // behind the auth frame -- an optimistic client sends
+          // room_register / state / usage in the same burst -- are dropped
+          // silently. They are never processed, but they must not be
+          // answered with an auth_result failure or kill the connection
+          // either: a legitimate auth is in flight on this socket, and the
+          // client reads that failure as a credential rejection. Logged
+          // at most once per connection.
+          if (s.keyAuth && msg.type !== "auth") {
+            if (!s.preAuthDropLogged) {
+              s.preAuthDropLogged = true;
+              log("未认证连接在钥挑战待验期间发来业务帧，已丢弃（不处理）:", msg.type, "conn=" + s.connId);
+            }
             return;
           }
           if (msg.type !== "auth" || msg.role !== "local") return fail("auth_failed", "token 不正确");
@@ -1387,6 +1438,22 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             if (epoch) room.epoch = epoch;
             if (instance) room.instance = instance;
             ws._room = room;
+            // Enc declaration at register time (design section 5): the room meta
+            // gains enc/ackFp/rckWrap. Two wire spellings are accepted — flat
+            // fields on the room object ({enc:1, ackFp, rckWrap}) and a nested
+            // enc object. Only crypto.content connections may declare it;
+            // viewers already watching without the cap are evicted.
+            const regEncDecl = msg.room && msg.room.enc
+              ? (typeof msg.room.enc === "object" ? msg.room.enc : msg.room)
+              : null;
+            if (regEncDecl && store && typeof store.setEncMeta === "function") {
+              if (!hasCap(ws, "crypto.content")) {
+                log("拒绝 enc 声明（连接未声明 crypto.content）:", room.id);
+                send(ws, { type: "error", code: "crypto_required", retryable: false, room: room.id }, cfg);
+              } else if (store.setEncMeta(room.id, regEncDecl)) {
+                evictIncapableViewers(room);
+              }
+            }
             log("房间注册:", room.id, room.label || "", "epoch", room.epoch);
             registered(ws, room);
             // O2 门控/开关补发：桥（重）连后内存状态已回默认——门控按当前订阅数重推，
@@ -1408,8 +1475,44 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
           case "event": {
             const room = ownRoom(ws, msg);
             if (!room || !msg.event || typeof msg.event !== "object") return;
-            shrinkImagesDeep(msg.event);
             const type = String(msg.event.type || "");
+            // Phase 3 gates (design sections 5/7):
+            // - An enc room only accepts traffic from crypto.content connections;
+            //   anything else is rejected per write with a crypto_required
+            //   receipt and the room data is left untouched.
+            // - A crypto-capable connection must not plant plaintext records
+            //   into an enc room (message_end / remote_message envelope forms
+            //   are mandatory there).
+            // - Encrypted traffic skips image rewriting: there is no image
+            //   inside a ct, and rewriting would break the h anchor.
+            // - Plaintext rooms honor cryptoPlaintextRooms: readonly/deny
+            //   reject record-bearing writes.
+            const roomEncMeta = store ? store.encInfo(room.id) : null;
+            if (roomEncMeta) {
+              if (!hasCap(ws, "crypto.content")) {
+                log("拒绝写入 enc 房间（连接未声明 crypto.content）:", room.id, type);
+                send(ws, { type: "error", code: "crypto_required", retryable: false, room: room.id }, cfg);
+                return;
+              }
+              if (type === "message_end" && !(msg.event.message && msg.event.message.enc === 1)) {
+                log("拒绝明文 message_end 写入 enc 房间:", room.id);
+                send(ws, { type: "error", code: "crypto_required", retryable: false, room: room.id }, cfg);
+                return;
+              }
+              if (type === "remote_message" && !(typeof msg.event.h === "string" && typeof msg.event.ct === "string")) {
+                log("拒绝明文 remote_message 写入 enc 房间:", room.id);
+                send(ws, { type: "error", code: "crypto_required", retryable: false, room: room.id }, cfg);
+                return;
+              }
+            } else {
+              if ((type === "message_end" || type === "remote_message" || type === "tool_execution_end") &&
+                  ((cfg && cfg.cryptoPlaintextRooms) || "allow") !== "allow") {
+                log("拒绝明文房间写入（cryptoPlaintextRooms =", (cfg && cfg.cryptoPlaintextRooms) || "allow", "）:", room.id, type);
+                send(ws, { type: "error", code: "unsupported", retryable: false, room: room.id, message: "plaintext room writes are disabled by the cryptoPlaintextRooms policy" }, cfg);
+                return;
+              }
+              shrinkImagesDeep(msg.event);
+            }
             if (type === "remote_message_failed") msg.event.code = failureCode(msg.event.code);
             if (REMOTE_MESSAGE_EVENTS.has(type) && "cid" in msg.event) {
               const cid = cleanCid(msg.event.cid);
@@ -1537,7 +1640,53 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             const room = ownRoom(ws, msg);
             if (!room) return;
             const messages = Array.isArray(msg.messages) ? msg.messages : [];
-            shrinkImagesDeep(messages);
+            // Phase 3 snapshot gates (design sections 5/7), same discipline as
+            // the event gate: enc rooms only take snapshot writes from
+            // crypto.content connections; declaring enc also requires the cap;
+            // plaintext-policy modes reject plaintext snapshot writes.
+            const snapEncMeta = store ? store.encInfo(room.id) : null;
+            // Enc declaration spellings (same as room_register): flat fields on
+            // the frame ({enc:1, ackFp, rckWrap}) or a nested enc object.
+            const snapEncDecl = msg.enc ? (typeof msg.enc === "object" ? msg.enc : msg) : null;
+            const declaresEnc = !!snapEncDecl;
+            if ((snapEncMeta || declaresEnc) && !hasCap(ws, "crypto.content")) {
+              log("拒绝 enc 房间快照写入（连接未声明 crypto.content）:", room.id);
+              send(ws, { type: "error", code: "crypto_required", retryable: false, room: room.id }, cfg);
+              return;
+            }
+            if (!snapEncMeta && !declaresEnc && ((cfg && cfg.cryptoPlaintextRooms) || "allow") !== "allow") {
+              log("拒绝明文房间快照写入（cryptoPlaintextRooms =", (cfg && cfg.cryptoPlaintextRooms) || "allow", "）:", room.id);
+              send(ws, { type: "error", code: "unsupported", retryable: false, room: room.id, message: "plaintext room writes are disabled by the cryptoPlaintextRooms policy" }, cfg);
+              return;
+            }
+            // Migration frames skip the standalone declaration on purpose: the
+            // declaration is part of the migration and may only take effect
+            // AFTER the trailer verifies (design section 5 — verification
+            // precedes any state change; migrateRoom applies the meta itself
+            // once verification passes). Applying it here would flip a
+            // still-plaintext room to enc on a refused migration.
+            if (declaresEnc && !msg.migration && store && typeof store.setEncMeta === "function") store.setEncMeta(room.id, snapEncDecl);
+            if (msg.migration && store && typeof store.migrateRoom === "function") {
+              // Encrypted-generation migration (design section 5): the store
+              // verifies the trailer before touching the plaintext generation;
+              // a second live writer blocks the deletion step entirely.
+              const hasLiveWriter = !!(room.busy || (room.local && room.local !== ws));
+              const res = store.migrateRoom(room.id, messages, msg.migration, snapEncDecl, { hasLiveWriter });
+              if (res.ok) {
+                log("房间迁移到加密代完成:", room.id, res.msgCount, "条");
+                evictIncapableViewers(room);
+                cancelResend(room);
+                publishSnapshot(room, { reset: true });
+                rooms.broadcastRoomList();
+              } else {
+                log("房间迁移校验失败（两代数据均保留）:", room.id, res.reason);
+              }
+              send(ws, { type: "migration_result", room: room.id, ok: res.ok, ...(res.ok ? { msgCount: res.msgCount, lastHash: res.lastHash } : { reason: res.reason }) }, cfg);
+              return;
+            }
+            // Encrypted payloads skip image rewriting (nothing readable inside a
+            // ct; rewriting would break the h anchors).
+            if (!snapEncMeta && !declaresEnc) shrinkImagesDeep(messages);
             // 全量快照为空 = 本机确认这个会话确实还没有消息。空快照也是权威快照：
             // 不处理的话，订阅者会一直停在“正在从本机拉取会话…”，直到会话里发出第一条消息。
             // append 模式为空只表示“没有新消息”，不是权威全量，仍走原来的 no-op 路径。

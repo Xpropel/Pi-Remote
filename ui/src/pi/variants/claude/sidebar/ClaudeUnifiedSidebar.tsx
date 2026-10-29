@@ -82,6 +82,7 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
           pinned: scope.pins.includes(key),
           archived: scope.archives.includes(key),
           groupId: `ws:${device.id}:${room.cwd ?? ""}`,
+          enc: room.enc,
         }
       })
       // listed sessions（未开房间的历史会话）

@@ -135,6 +135,7 @@ test("Bridge：实时 message_end 的 omit 图片在持久化后补真实 entryI
   const b = new ext.Bridge()
   b.roomId = "A"
   b.connected = true
+  b.authed = true; // business sends are gated on auth_result ok; simulate an authenticated connection
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) }, close() {} }
   const branch = []
@@ -167,6 +168,7 @@ test("Bridge：实时 message_end 找不到持久化条目时不猜地址，仍�
   const b = new ext.Bridge()
   b.roomId = "A"
   b.connected = true
+  b.authed = true;
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) }, close() {} }
   b.ctx = {
@@ -189,6 +191,7 @@ test("Bridge：没有 sessionManager 时 message_end 同步转发，不引入等
   const b = new ext.Bridge()
   b.roomId = "A"
   b.connected = true
+  b.authed = true;
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) }, close() {} }
   const message = { role: "user", content: [{ type: "image", mimeType: "image/png", data: "A".repeat(300 * 1024) }], timestamp: 1 }
@@ -213,6 +216,7 @@ test("Bridge：tool_execution_end 转发帧带终端胶囊字段，且随事件�
   const b = new ext.Bridge()
   b.roomId = "A"
   b.connected = true
+  b.authed = true;
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) }, close() {} }
   b.forward({
@@ -294,6 +298,7 @@ test("超过 50 条未确认送达时最早一条记失败；会话关闭也记�
   const b = new ext.Bridge()
   b.roomId = "A"
   b.connected = true
+  b.authed = true;
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) }, close() {} }
   for (let i = 0; i < 51; i++) b.watchDelivery("m" + i)
@@ -312,6 +317,7 @@ test("送达确认不误伤；换会话时未送达的记失败；排队命令�
   const b = new ext.Bridge()
   b.roomId = "A"
   b.connected = true
+  b.authed = true;
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) } }
   b.ctx = { sessionManager: { getEntries() { return [] }, getBranch() { return [] } } }
@@ -395,6 +401,7 @@ test("oversizeFallback：超大命令结果仍然明确报错，不静默丢", (
 test("命令结果序列化失败（循环引用）也带 code=internal", () => {
   const b = new ext.Bridge()
   b.connected = true
+  b.authed = true;
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) }, close() {} }
   const loop = { type: "command_result", room: "r", id: "c-loop", ok: true }
@@ -410,6 +417,7 @@ test("背压：关键帧超过硬上限不再硬塞，断开并按退避重连�
   const b = new ext.Bridge()
   b.roomId = "r"
   b.connected = true
+  b.authed = true;
   b.gateOpen = () => true
   const sent = []
   let closed = 0
@@ -436,6 +444,7 @@ test("流式草稿：text/thinking delta 单条与合并都按字符上限截断
   const b = new ext.Bridge()
   b.roomId = "r"
   b.connected = true
+  b.authed = true;
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) }, close() {} }
   const cap = ext.STREAM_DELTA_MAX_CHARS
@@ -695,6 +704,7 @@ test("Bridge：todo 工具结束/plan entry 落盘时发 task_list_state，非 t
   const b = new ext.Bridge()
   b.roomId = "A"
   b.connected = true
+  b.authed = true;
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) }, close() {} }
   b.forward({
@@ -730,6 +740,7 @@ test("Bridge：快照/对齐后补发分支清单（空清单也发），快照�
   const b = new ext.Bridge()
   b.roomId = "A"
   b.connected = true
+  b.authed = true;
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) }, close() {} }
   b.ctx = {
@@ -895,6 +906,7 @@ test("get_host_diag：字段齐全、attach 沿用窗口判定、错误环带 co
   process.env.PI_REMOTE_TOKEN = secret
   const b = new ext.Bridge()
   b.connected = true
+  b.authed = true;
   b.roomId = "diag-room"
   const sent = []
   b.ws = { bufferedAmount: 0, send: (s) => sent.push(JSON.parse(s)), close() {} }
@@ -1545,6 +1557,7 @@ test("命令超时只超时回包：串行队列等底层命令真正结束才�
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) } }
   b.connected = true
+  b.authed = true;
   b.roomId = "A"
   const calls = []
   let releaseFirst
@@ -1581,6 +1594,7 @@ test("排队超时语义不变：轮到执行时已过截止的命令不执行�
   const sent = []
   b.ws = { bufferedAmount: 0, send(s) { sent.push(JSON.parse(s)) } }
   b.connected = true
+  b.authed = true;
   b.roomId = "A"
   const calls = []
   let releaseFirst
@@ -1995,4 +2009,79 @@ test("G2 审批：换会话清「本会话都允许」白名单", async () => {
   b.bindSession({ sessionManager: { sessionId: "sess-2", sessionFile: null, cwd: "/tmp", getSessionName: () => null }, hasUI: false, cwd: "/tmp" })
   assert.equal(b.approvalSessionAllow.size, 0)
   b.clearTimers()
+})
+
+/* ---- Factory credential gate: a valid device key file counts as a credential ----
+ * Regression (found by real end-to-end testing of a clean keyed install):
+ * key-paired devices are issued NO token, so with only the old factory gate
+ * (!TOKEN && !HAS_DEVICE_TOKEN) the extension returned before registering
+ * any handler and mirroring never started. This file's module instance is
+ * imported with PI_REMOTE_TOKEN empty and no PI_REMOTE_DEVICE_TOKEN (see the
+ * note in extension-ask-gate.test.mjs), so the factory gate here is decided
+ * purely by the device key file presented via process.env at call time. */
+
+const nodeCrypto = require("node:crypto")
+
+function factoryStubPi() {
+  const handlers = new Map()
+  const pi = {
+    registerCommand: () => {},
+    registerTool: () => {},
+    on: (name, fn) => { if (!handlers.has(name)) handlers.set(name, []); handlers.get(name).push(fn) },
+  }
+  return { pi, handlers }
+}
+
+function factoryKeyData(deviceId) {
+  const sign = nodeCrypto.generateKeyPairSync("ed25519")
+  const box = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" })
+  const der = (k, type) => k.export({ format: "der", type }).toString("base64")
+  return {
+    v: 1,
+    deviceId,
+    createdAt: 1700000000000,
+    sign: { alg: "ed25519", pub: der(sign.publicKey, "spki"), priv: der(sign.privateKey, "pkcs8") },
+    box: { alg: "p256", pub: der(box.publicKey, "spki"), priv: der(box.privateKey, "pkcs8") },
+  }
+}
+
+function withFactoryEnv(t, vars) {
+  const keys = ["PI_REMOTE_DEVICE_KEY_FILE", "PI_REMOTE_DEVICE_ID"]
+  const previous = keys.map((k) => [k, process.env[k]])
+  t.after(() => {
+    for (const [k, v] of previous) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  })
+  for (const k of keys) delete process.env[k]
+  for (const [k, v] of Object.entries(vars)) process.env[k] = v
+}
+
+test("factory gate: no credentials at all -> returns early, registers nothing", (t) => {
+  withFactoryEnv(t, {})
+  const { pi, handlers } = factoryStubPi()
+  ext.default(pi)
+  assert.equal(handlers.has("session_start"), false, "no session_start handler without credentials")
+  assert.equal(handlers.size, 0, "no handlers at all without credentials")
+})
+
+test("factory gate: valid device key file and no tokens -> registers session_start", (t) => {
+  const dir = tempDir(t, "pi-factory-key-")
+  const keyFile = path.join(dir, "device.key.json")
+  fs.writeFileSync(keyFile, JSON.stringify(factoryKeyData("dev-factory-key")) + "\n", { mode: 0o600 })
+  withFactoryEnv(t, { PI_REMOTE_DEVICE_KEY_FILE: keyFile, PI_REMOTE_DEVICE_ID: "dev-factory-key" })
+  const { pi, handlers } = factoryStubPi()
+  ext.default(pi)
+  assert.ok((handlers.get("session_start") || []).length >= 1, "session_start registered for a key-only install")
+})
+
+test("factory gate: key file for a different deviceId -> returns early", (t) => {
+  const dir = tempDir(t, "pi-factory-key-")
+  const keyFile = path.join(dir, "device.key.json")
+  fs.writeFileSync(keyFile, JSON.stringify(factoryKeyData("dev-someone-else")) + "\n", { mode: 0o600 })
+  withFactoryEnv(t, { PI_REMOTE_DEVICE_KEY_FILE: keyFile, PI_REMOTE_DEVICE_ID: "dev-factory-key" })
+  const { pi, handlers } = factoryStubPi()
+  ext.default(pi)
+  assert.equal(handlers.has("session_start"), false, "a key file issued for another device must not open the gate")
 })

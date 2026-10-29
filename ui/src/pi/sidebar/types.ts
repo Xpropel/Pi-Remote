@@ -131,6 +131,9 @@ export interface PiSidebarSession {
   archived: boolean
   /** 分组 id（工作区/未分组）；置顶组由 model 重排 */
   groupId: string
+  /** Content encryption state from the relay roster (crypto Phase 3): true = end-to-end encrypted room,
+   *  false = legacy plaintext room (old device, bodies readable by the relay), undefined = relay did not say. */
+  enc?: boolean
 }
 
 export type PiSidebarGroupKind = "pinned" | "workspace" | "archive" | "custom"

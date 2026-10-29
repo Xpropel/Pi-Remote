@@ -28,7 +28,9 @@
  *   compatible with the device-side implementation in the extension.
  * - adminSig: signAdminFrame() signs management frames with the VIK using
  *   the pinned canonicalization (utf8("pi-remote-admin-v1") || utf8(type) ||
- *   utf8(canonicalJson(frame minus adminSig/adminToken/type))).
+ *   utf8(canonicalJson(frame minus adminSig/adminToken/type/id))). The id
+ *   field is excluded because it is a transport correlation handle: the
+ *   transports stamp it onto the frame after signing.
  *
  * Phase 2 completes the identity system only. Conversation bodies are NOT
  * encrypted yet (that is Phase 3); nothing in this module changes what the
@@ -138,13 +140,15 @@ export function canonicalJson(value: unknown): string {
 
 /**
  * adminSig signing payload for a management frame: the frame minus its
- * adminSig / adminToken / type fields, canonicalized (relay/pairing.js
- * adminPayload is the reference implementation).
+ * adminSig / adminToken / type / id fields, canonicalized (relay/pairing.js
+ * adminPayload is the reference implementation). The id is a transport
+ * correlation handle the transports add after signing, so it must not be
+ * part of the signed payload.
  */
 export function adminSignPayload(frame: Record<string, unknown>): Uint8Array {
   const rest: Record<string, unknown> = {}
   for (const key of Object.keys(frame)) {
-    if (key === "adminSig" || key === "adminToken" || key === "type") continue
+    if (key === "adminSig" || key === "adminToken" || key === "type" || key === "id") continue
     rest[key] = frame[key]
   }
   return concatBytes([
@@ -407,6 +411,12 @@ export interface AckGrantInput {
 /* The core                                                            */
 /* ------------------------------------------------------------------ */
 
+/** Failure code of a transport rejection (coded errors carry .code). */
+function errorCodeOf(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code
+  return typeof code === "string" && code ? code : "register_failed"
+}
+
 export class ViewerIdentityCore {
   private readonly platform: IdentityPlatform
   private identity: StoredIdentity | null = null
@@ -515,7 +525,17 @@ export class ViewerIdentityCore {
       boxPub: info.boxPub,
       admin: true,
     }
-    const data = (await transport.sendAdminCommand(frame)) as Record<string, unknown> | null
+    // A refused registration (e.g. admin_required when no admin token is
+    // stored yet) rejects here: the identity stays unregistered, and the
+    // failure code is kept on the snapshot so the settings surface can
+    // show the reason instead of presenting the keys as registered.
+    let data: Record<string, unknown> | null
+    try {
+      data = (await transport.sendAdminCommand(frame)) as Record<string, unknown> | null
+    } catch (error) {
+      this.lastError = errorCodeOf(error)
+      throw error
+    }
     if (this.identity) {
       this.identity.registered = true
       if (data && typeof data.admin === "boolean") this.identity.admin = data.admin
@@ -553,6 +573,7 @@ export class ViewerIdentityCore {
     this.rawAckCache.clear()
     this.pendingClientNonce = null
     this.mismatchFps = null
+    this.lastError = null
     await this.platform.store.remove(IDENTITY_RECORD_KEY)
     await this.platform.store.remove(ACK_RECORD_KEY)
   }
@@ -904,6 +925,15 @@ export const viewerIdentity = {
   async enable(): Promise<ViewerIdentityState> {
     const core = await requireCore()
     return core.enable(requireTransport())
+  },
+  /**
+   * Forget the local identity entirely (keys and ACK copies wiped), so a
+   * stuck registration state is always recoverable from the settings
+   * surface. The relay roster row, if any, is a separate admin action.
+   */
+  async forget(): Promise<void> {
+    const core = await getDefaultViewerIdentityCore()
+    if (core) await core.forget()
   },
   /** Raw ACK bytes for the passphrase-backup flow only; null when no ACK is held. */
   async exportAck(): Promise<Uint8Array | null> {

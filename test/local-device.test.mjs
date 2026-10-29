@@ -211,6 +211,7 @@ test("连上后 room_register 带账户和设备，第一次绑定发全量清�
   const bridge = new ext.Bridge();
   bridge.platform = "win32";
   bridge.connected = true;
+  bridge.authed = true; // sends are gated on auth_result ok; simulate an authenticated connection
   bridge.ws = fakeWs(sent);
   bridge.sessionLister = async () => [
     { id: "B", path: "C:/B.jsonl", name: "旧名", firstMessage: "a", created: "2026-01-01T00:00:00.000Z", modified: "2026-01-02T00:00:00.000Z", messageCount: 2, size: 11, deleted: false },
@@ -285,6 +286,7 @@ test("删除发墓碑；agent_settled 60 秒内不重复上报", async () => {
   const sent = [];
   const bridge = new ext.Bridge();
   bridge.connected = true;
+  bridge.authed = true;
   bridge.roomId = "live";
   bridge.cwd = "D:\\work\\app";
   bridge.ws = fakeWs(sent);
@@ -320,6 +322,7 @@ test("resend_snapshot 立刻重推当前房间快照，房间不符则忽略", (
   const bridge = new ext.Bridge();
   bridge.roomId = "room-1";
   bridge.connected = true;
+  bridge.authed = true;
   bridge.ws = fakeWs(sent);
   bridge.ctx = {
     sessionManager: {

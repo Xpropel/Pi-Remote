@@ -120,6 +120,9 @@ export function bodySearchErrorText(code: string, message: string): string {
   if (code === "device_offline" || code === "offline" || code === "no_device") return "设备未连接，暂时搜不了正文"
   if (code === "device_no_active_session") return "这台设备没有在运行的会话，暂时搜不了正文"
   if (code === "timeout" || code === "result_unknown") return "搜索超时，宿主没有及时回应，请重试"
+  // The room is end-to-end encrypted: the relay path holds only
+  // ciphertext, so there is nothing to search -- say that, not "old ext".
+  if (code === "encrypted") return "该房间已加密，无法在中转侧搜索"
   if (code === "unsupported" || code === "unknown_command" || code === "unknown_type") return "这台设备的扩展版本不支持正文搜索"
   return message || "正文搜索失败，请重试"
 }
@@ -138,9 +141,11 @@ export function bodySearchPartialText(page: BodySearchPage): string | null {
     const reason =
       item.code === "timeout" || item.code === "result_unknown"
         ? "没有及时回应"
-        : item.code === "unsupported" || item.code === "unknown_command" || item.code === "unknown_type"
-          ? "的扩展不支持正文搜索"
-          : "搜索失败"
+        : item.code === "encrypted"
+          ? "已加密，无法在中转侧搜索"
+          : item.code === "unsupported" || item.code === "unknown_command" || item.code === "unknown_type"
+            ? "的扩展不支持正文搜索"
+            : "搜索失败"
     const name = item.cwd.split(/[/\\]/).filter(Boolean).pop() || "一个项目"
     groups.set(reason, [...(groups.get(reason) ?? []), name])
   }

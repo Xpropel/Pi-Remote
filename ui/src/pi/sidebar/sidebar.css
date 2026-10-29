@@ -259,6 +259,7 @@
 .sb-root .sb-rowwrap:hover .sb-row-actions, .sb-root .sb-rowwrap:focus-within .sb-row-actions { opacity: 1; pointer-events: auto; }
 .sb-root .sb-row-action { display: inline-flex; align-items: center; justify-content: center; width: 19px; height: 19px; padding: 0; border: 0; background: transparent; color: var(--sb-hover-icon, var(--sb-icon, currentColor)); cursor: pointer; }
 .sb-root .sb-row-time { min-width: 34px; margin-left: 1px; color: var(--sb-t5, currentColor); font-size: 11.5px; text-align: right; }
+.sb-root .sb-row-enc { flex: none; margin-left: 6px; color: var(--sb-t5, currentColor); font-size: 10.5px; white-space: nowrap; }
 .sb-root .sb-bubble {
   position: fixed;
   z-index: 1000;

@@ -22,6 +22,7 @@ function makeBridge({ idle = false, abort } = {}) {
   const delivered = [];
   const bridge = new ext.Bridge();
   bridge.connected = true;
+  bridge.authed = true; // business sends are gated on auth_result ok; simulate an authenticated connection
   bridge.roomId = "r1";
   bridge.ws = { bufferedAmount: 0, send: (s) => sent.push(JSON.parse(s)), close() {} };
   bridge.pi = {

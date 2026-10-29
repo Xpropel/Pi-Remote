@@ -1067,12 +1067,12 @@ test("v4 握手：auth_result 回 relay 的 proto 和已实现的能力；local 
   // - agent.state 仍是协议预留位（没有生产者）；
   // - session.files / fs.browse 是 attach 声明、relay 只转发的能力（P9 B/C），
   //   设备侧能力经 room_list.devices[].features 透传，不冒充 relay 自己的能力。
-  // - crypto.content 是加密地基的协议先行位（正文加密阶段 3 才实现），仍留在本集合；
-  //   crypto.auth 已随阶段 1（设备身份：配对登记公钥/挑战鉴权/key_update/grant 透传）
-  //   落地进 RELAY_CAPS，不再是预留位。
+  // - crypto.auth 已随阶段 1（设备身份：配对登记公钥/挑战鉴权/key_update/grant 透传）
+  //   落地进 RELAY_CAPS，不再是预留位；crypto.content 已随阶段 3（正文加密：信封落盘/
+  //   版本门/迁移）落地进 RELAY_CAPS，同样不再是预留位。
   // dialog.respond 已随第 2 轮 O2 落地（relay 转发应答/门控/开关），是已实现能力（随 R2-1 更新）；
   // room.dialogs（P9 A）、session.purge（P9 B）由 relay 自己实现，必须声明。
-  const notRelayCaps = new Set(["agent.state", "session.files", "fs.browse", "crypto.content"]);
+  const notRelayCaps = new Set(["agent.state", "session.files", "fs.browse"]);
   assert.deepEqual(
     [...la.caps].sort(),
     Object.keys(PROTOCOL.caps).filter((cap) => !notRelayCaps.has(cap)).sort(),

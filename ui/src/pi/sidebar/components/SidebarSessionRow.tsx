@@ -70,6 +70,9 @@ export function SidebarSessionRow({
         <button type="button" className="sb-row-main" onClick={onOpen} aria-label={session.title}>
           <span className="sb-marker" aria-hidden data-tone={session.status.tone} />
           <span className="sb-row-title" title={session.status.label}>{session.title}</span>
+          {session.enc !== undefined ? (
+            <span className="sb-row-enc">{session.enc ? "已加密" : "未加密（旧设备）"}</span>
+          ) : null}
         </button>
         <span className="sb-row-right">
           <span className="sb-row-actions" data-p11-surface="P11-SIDE-09">

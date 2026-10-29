@@ -43,6 +43,8 @@ function defaults(): Relay {
     pendingStarts: {},
     pendingStart: null,
     commandInFlight: {},
+    roomCryptoStatus: null,
+    decryptFailureCount: 0,
     snapshotPending: false,
     listedSessions: [],
     lazySession: null,

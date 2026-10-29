@@ -209,6 +209,22 @@ function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * Crypto Phase 3: validate a manifest row's sealed preview envelope
+ * (firstMessageEnc, an ACK-level { enc:1, ct } for an <=80-char preview).
+ * Returns a normalized { enc:1, ct } copy, or null when the value is absent
+ * or malformed -- malformed values are dropped, never stored, so a buggy or
+ * hostile frame cannot park an arbitrary blob in an index row. The ct bound
+ * is generous for a sealed short preview but far below the archive cap.
+ */
+const FIRST_MESSAGE_ENC_CT_MAX = 8192;
+function cleanFirstMessageEnc(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.enc !== 1 || typeof value.ct !== "string" || !value.ct) return null;
+  if (value.ct.length > FIRST_MESSAGE_ENC_CT_MAX) return null;
+  return { enc: 1, ct: value.ct };
+}
+
 class AccountIndex {
   /**
    * @param {string} accountsDir 索引根目录（其下是 index.jsonl 与 <accountId>/）
@@ -686,14 +702,36 @@ class AccountIndex {
   _sessionFrom(prev, src, { deleted, updatedAt }) {
     const p = prev || {};
     const active = deleted ? false : (src.active == null ? !!p.active : !!src.active);
-    return {
+    // Crypto Phase 3: the preview has two mutually exclusive forms -- a
+    // plaintext firstMessage string, or a sealed firstMessageEnc envelope
+    // ({ enc:1, ct }, firstMessage nulled by the producer). They are kept
+    // in sync as a pair: a valid envelope supersedes and CLEARS any stored
+    // plaintext (a sealed session must not keep serving its old plaintext
+    // preview), a fresh plaintext string clears a stale envelope, and a
+    // frame carrying neither keeps the stored pair. An explicit
+    // firstMessageEnc:null retracts the envelope on its own.
+    // The envelope is accepted in the dedicated field, or (defensively)
+    // inside firstMessage itself, the form the web parsers read.
+    const srcEnc = cleanFirstMessageEnc(src.firstMessageEnc) || cleanFirstMessageEnc(src.firstMessage);
+    let firstMessage;
+    let firstMessageEnc = null;
+    if (srcEnc) {
+      firstMessageEnc = srcEnc;
+      firstMessage = "";
+    } else if (typeof src.firstMessage === "string") {
+      firstMessage = src.firstMessage;
+    } else {
+      firstMessage = p.firstMessage || "";
+      firstMessageEnc = src.firstMessageEnc === null ? null : (p.firstMessageEnc || null);
+    }
+    const row = {
       kind: "session",
       id: String(src.id),
       path: src.path != null ? String(src.path) : (p.path || ""),
       // name 为 null 或 "" 表示未命名，写成空字符串盖掉旧名字；缺省（undefined）沿用旧名字。
       name: src.name === null || src.name === "" ? "" : (src.name != null ? String(src.name) : (p.name || "")),
       cwd: src.cwd != null ? String(src.cwd) : (p.cwd || ""),
-      firstMessage: src.firstMessage != null ? String(src.firstMessage) : (p.firstMessage || ""),
+      firstMessage,
       // fork 谱系（R3-3 第 3 项）：父会话路径随清单行透传。口径同 name（第 3 轮审查 C-4）：
       // 帧带字符串 = 新值（空串归一为 null）；帧显式 null = 父指针已不存在，盖掉旧值；
       // 只有字段缺省（undefined，增量帧不带该行字段时）才沿用旧行。旧写法用 != null
@@ -708,6 +746,10 @@ class AccountIndex {
       active,
       deleted: !!deleted,
     };
+    // Plaintext rows keep their exact legacy shape: the envelope field is
+    // only materialized while a sealed preview is actually stored.
+    if (firstMessageEnc) row.firstMessageEnc = firstMessageEnc;
+    return row;
   }
 
   /**

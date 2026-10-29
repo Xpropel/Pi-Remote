@@ -59,6 +59,10 @@ function sendCachedCompaction(ws, room, cfg) {
  *  仍在进行中工具补发之前。单条超限则跳过该条，不断开。 */
 function sendCachedAssistant(ws, room, cfg, store) {
   if (!room || !room.online || !room.assistantDraft) return;
+  // Enc rooms never get the plaintext catch-up draft (design section 4.1): the
+  // draft body exists only as ciphertext envelopes on the encrypted path, so
+  // fabricating a plaintext-shaped message here would leak/corrupt content.
+  if (store && typeof store.encInfo === "function" && store.encInfo(room.id)) return;
   const draft = room.assistantDraft;
   if (snapshotHasAssistant(store, room, cfg, draft)) return;
   const content = assistantDraftContent(draft);
@@ -824,7 +828,11 @@ function devicesViewFor(ws, devices) {
 
 function roomsViewFor(ws, list) {
   const key = roomListCapKey(ws);
-  if (key === (1 << ROOM_LIST_CAPS.length) - 1) return list;
+  // The enc flag rides its own cap (crypto.content), outside the ROOM_LIST_CAPS
+  // mask: even a full-mask viewer without it must not learn which rooms are
+  // encrypted (design section 7 version-gate rule).
+  const keepEnc = hasCap(ws, "crypto.content");
+  if (key === (1 << ROOM_LIST_CAPS.length) - 1 && keepEnc) return list;
   const keepAttention = !!(key & 1);
   const keepDialogs = !!(key & 2);
   const keepAnswerable = !!(key & 4);
@@ -833,6 +841,10 @@ function roomsViewFor(ws, list) {
   return (list || []).map((r) => {
     if (!r) return r;
     let out = r;
+    if (!keepEnc && Object.prototype.hasOwnProperty.call(out, "enc")) {
+      out = { ...out };
+      delete out.enc;
+    }
     if (!keepAttention && Object.prototype.hasOwnProperty.call(out, "lastTurnEnd")) {
       out = { ...out };
       delete out.lastTurnEnd;
@@ -1301,7 +1313,10 @@ class Rooms {
         deviceId: r.deviceId || UNREGISTERED_DEVICE,
         label: r.label,
         name: session && session.name ? session.name : null,
-        firstMessage: session && session.firstMessage ? session.firstMessage : null,
+        // Crypto Phase 3: a sealed preview envelope stored on the index row
+        // is served inside firstMessage -- the form the web room parser
+        // reads (firstMessageEncOf); plaintext rows are unchanged.
+        firstMessage: session && session.firstMessage ? session.firstMessage : (session && session.firstMessageEnc ? session.firstMessageEnc : null),
         cwd: r.cwd,
         online: r.online,
         // 与快照/room_state 同一口径（wire.snapshotFrame 也是 online && busy）：离线房间保留的
@@ -1318,6 +1333,9 @@ class Rooms {
         ...waitingOf(r, true),
         // 定时排期清单（设计 D §3.7）：armed 全量 + 保留期内终态；由 roomsViewFor 按 room.schedule cap 裁剪
         schedules: this.schedulesOf(r),
+        // Body encryption flag (design section 7): present only in the raw list;
+        // roomsViewFor strips it for connections without crypto.content.
+        enc: this._transcriptStore && this._transcriptStore.encInfo(r.id) ? 1 : 0,
       });
     }
     return out.sort((a, b) => Number(b.online) - Number(a.online) || a.id.localeCompare(b.id));
@@ -1338,9 +1356,11 @@ class Rooms {
       const rooms = this.list();
       // P9 A 分流：按「能力组合」分组（room.attention / room.dialogs / dialog.respond / room.activity 四位，最多 16 组），
       // 每组只算一份副本（roomsViewFor），组内共用；没有声明任何 cap 的连接拿剥得最干净的那份。
-      const views = new Map(); // capKey -> 清单副本
+      const views = new Map(); // capKey(+crypto 位) -> 清单副本
       const viewFor = (ws) => {
-        const key = roomListCapKey(ws);
+        // The rooms view now also depends on crypto.content (enc flag), so the
+        // cache key must include it — same discipline as the group key below.
+        const key = roomListCapKey(ws) | (hasCap(ws, "crypto.content") ? 128 : 0);
         let view = views.get(key);
         if (!view) {
           view = roomsViewFor(ws, rooms);
@@ -1355,7 +1375,8 @@ class Rooms {
         // inbox 位用 32：roomListCapKey 已占满低 5 位（room.schedule 是第 5 位 = 16），
         // 原先的 16 位与排期 cap 位相撞，必须上移一位。
         // crypto 位用 64：设备条目的 keyFp/keyAddedAt 只给声明 crypto.auth 的组（devicesViewFor）。
-        const key = roomListCapKey(v) | (withInbox ? 32 : 0) | (hasCap(v, "crypto.auth") ? 64 : 0);
+        // crypto.content 位用 128：rooms 视图的 enc 标志随它开关，组键必须区分。
+        const key = roomListCapKey(v) | (withInbox ? 32 : 0) | (hasCap(v, "crypto.auth") ? 64 : 0) | (hasCap(v, "crypto.content") ? 128 : 0);
         let g = groups.get(key);
         if (!g) {
           g = { view: viewFor(v), devices: devicesViewFor(v, devices), inbox: withInbox, conns: [] };

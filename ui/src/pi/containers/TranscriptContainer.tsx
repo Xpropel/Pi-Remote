@@ -164,6 +164,14 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
   const own: PiTopLine[] = []
   if (lazy) own.push(...archiveTopLinesOf(archive, deviceName))
   else if (snapshotPending && liveItems.length === 0) own.push({ text: COPY.snapshotPending, spinner: true })
+  // Content decryption states (crypto Phase 3): honest, plain-language
+  // room states -- never silent blanks and never garbled content.
+  if (!lazy) {
+    if (relay.roomCryptoStatus === "waiting-ack") own.push({ text: "这个房间已加密，正在等待内容钥送达", tone: "muted" })
+    if (relay.roomCryptoStatus === "mismatch") own.push({ text: "内容钥不一致：本机持有的内容钥与这个房间的钥不是同一把，消息无法解密", tone: "error" })
+    if (relay.roomCryptoStatus === "crypto-required") own.push({ text: "这个房间已加密，当前观看端无法读取加密内容", tone: "error" })
+    if (relay.decryptFailureCount > 0) own.push({ text: `有 ${relay.decryptFailureCount} 条消息无法解密`, tone: "muted" })
+  }
   const history = lazy ? null : historyTopLineOf(relay.history, roomId)
   if (history) own.push(history)
   const lines: PiStreamTopLineItem[] = own.map((l) => ({

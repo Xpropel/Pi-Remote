@@ -529,6 +529,12 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
           if (name) body.name = String(name).slice(0, 200);
         };
       }
+      // Body search routed at an enc room answers the same explicit unsupported
+      // marker as the room-addressed path (never a silent omission).
+      if (cmdName === "search_session_bodies" && targetRoom && store.encInfo(targetRoom.id)) {
+        send(ws, ackFrame(origId, false, { error: "该会话已加密，正文搜索不支持", code: "unsupported", room: targetRoom.id, data: { unsupported: true, reason: "room_encrypted", roomId: targetRoom.id } }), cfg);
+        return;
+      }
       runCommand(ws, msg, targetRoom, local, extra);
       return;
     }
@@ -550,6 +556,11 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
       return;
     }
     rooms.touch(room);
+    // Same enc-search marker on the active-room fallback path.
+    if (cmdName === "search_session_bodies" && store.encInfo(room.id)) {
+      send(ws, ackFrame(origId, false, { error: "该会话已加密，正文搜索不支持", code: "unsupported", room: room.id, data: { unsupported: true, reason: "room_encrypted", roomId: room.id } }), cfg);
+      return;
+    }
     runCommand(ws, msg, room, room.local, { dedupeScope: deviceId, deviceId });
   }
 
@@ -903,7 +914,12 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
                   // fork 谱系（R3-3）：父指针经 AccountIndex 落盘后必须在这一跳也透传，
                   // 漏了 UI 的 parseSessionList 永远拿到 null、"源自 X"整体落空（第 3 轮审查 C-1）。
                   parentSession: s.parentSession || null,
-                  firstMessage: s.firstMessage || null,
+                  // Crypto Phase 3: a sealed preview envelope stored on the
+                  // index row is served inside firstMessage -- the form the
+                  // web session parser reads (firstMessageEncOf) -- so the
+                  // device library list can decrypt it; plaintext rows are
+                  // served exactly as before.
+                  firstMessage: s.firstMessage ? s.firstMessage : (s.firstMessageEnc || null),
                   cwd: s.cwd || "",
                   messageCount: s.messageCount || 0,
                   sizeBytes: s.sizeBytes || 0,
@@ -927,6 +943,24 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             // 真实房间 = 在注册表里，或存储有文件（离线可回看）；都不沾 → 明确报错，不建幻影房
             if (!rooms.peek(rid) && !store.exists(rid)) {
               send(ws, errorFrame("no_room", "会话不存在", { room: rid }), cfg);
+              return;
+            }
+            // Enc gate (design section 7): a viewer without crypto.content gets
+            // crypto_required and NO snapshot — ciphertext is never delivered
+            // as if it were messages. A stale pre-encryption subscription on
+            // this connection is dropped here as well.
+            const subEnc = store.encInfo(rid);
+            if (subEnc && !hasCap(ws, "crypto.content")) {
+              if (ws._room && ws._room.id === rid) {
+                ws._room.viewers.delete(ws);
+                ws._room = null;
+              }
+              send(ws, errorFrame("crypto_required", "该会话已加密，需要支持正文加密的客户端", { room: rid }), cfg);
+              return;
+            }
+            // Plaintext policy (design section 5): "deny" refuses reads too.
+            if (!subEnc && ((cfg && cfg.cryptoPlaintextRooms) || "allow") === "deny") {
+              send(ws, errorFrame("unsupported", "plaintext rooms are disabled by the cryptoPlaintextRooms policy", { room: rid }), cfg);
               return;
             }
             const room = rooms.get(rid);
@@ -1092,15 +1126,43 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
               send(ws, ackFrame(msg.id, false, { error: "会话不存在", code: "no_room" }), cfg);
               return;
             }
+            const cid = cleanCid(msg.cid);
+            if (msg.cid != null && !cid) {
+              send(ws, ackFrame(msg.id, false, { room: room.id, error: "cid 不合法", code: "bad_args" }), cfg);
+              return;
+            }
+            // Enc rooms (design sections 4.1/7): the viewer sends the envelope
+            // form {enc:{ct,h}} instead of text; the relay forwards it verbatim
+            // and never sees the plaintext. A plaintext text aimed at an enc
+            // room is rejected, as is an envelope aimed at a plaintext room.
+            if (store.encInfo(room.id)) {
+              if (!hasCap(ws, "crypto.content")) {
+                send(ws, ackFrame(msg.id, false, { room: room.id, error: "该会话已加密，需要支持正文加密的客户端", code: "crypto_required" }), cfg);
+                return;
+              }
+              // Two spellings: nested {enc:{ct, h}} or flat {enc:1, ct, h}.
+              const enc = msg.enc && typeof msg.enc === "object" ? msg.enc : (msg.enc === 1 ? msg : null);
+              if (!enc || typeof enc.ct !== "string" || !enc.ct || typeof enc.h !== "string" || !/^[0-9a-f]{64}$/.test(enc.h)) {
+                send(ws, ackFrame(msg.id, false, { room: room.id, error: "加密消息缺少合法的 enc 信封（ct/h）", code: "bad_args" }), cfg);
+                return;
+              }
+              const encFrame = { type: "message", room: room.id, enc: 1, ct: enc.ct, h: enc.h };
+              if (cid && hasCap(room.local, "msg.cid")) encFrame.cid = cid;
+              if (!forwardToLocal(ws, room, encFrame, msg, {
+                offline: "本机未连接，消息无法送达",
+                backpressure: "本机消息通道积压，消息未能送出，请稍后重试",
+              })) return;
+              send(ws, ackFrame(msg.id, true, { room: room.id }), cfg);
+              return;
+            }
+            if (msg.enc != null) {
+              send(ws, ackFrame(msg.id, false, { room: room.id, error: "该会话未加密，不能发送 enc 信封", code: "bad_args" }), cfg);
+              return;
+            }
             // 不再静默截断：截断后的半句话会被当成完整指令注入（单帧上限 maxPayloadBytes 已兜住体积）
             const text = String(msg.text ?? "");
             if (!text.trim()) {
               send(ws, ackFrame(msg.id, false, { room: room.id, error: "消息为空", code: "bad_args" }), cfg);
-              return;
-            }
-            const cid = cleanCid(msg.cid);
-            if (msg.cid != null && !cid) {
-              send(ws, ackFrame(msg.id, false, { room: room.id, error: "cid 不合法", code: "bad_args" }), cfg);
               return;
             }
             // 带上 room：会话切换窗口内旧房间仍 online，扩展可据此拒绝注入到已离开的会话
@@ -1137,6 +1199,14 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
                   if (result && result.ok) purgeSessions({ accountId, deviceId, ids: [sessionId], rooms, store, devices, index, cfg });
                 };
               }
+            }
+            // Body search over an enc room (design section 4.1): the relay cannot
+            // read ciphertext and the extension-side scan would have to decrypt
+            // per viewer — the room answers with an explicit unsupported marker
+            // instead of being silently omitted from the results.
+            if (String(msg.command || "") === "search_session_bodies" && store.encInfo(room.id)) {
+              send(ws, ackFrame(origId, false, { error: "该会话已加密，正文搜索不支持", code: "unsupported", room: room.id, data: { unsupported: true, reason: "room_encrypted", roomId: room.id } }), cfg);
+              break;
             }
             runCommand(ws, msg, room, room.local, extra);
             break;

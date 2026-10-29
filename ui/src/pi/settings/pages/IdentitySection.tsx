@@ -3,9 +3,11 @@
  *
  * Two groups mounted inside the Devices page:
  * - "Viewer identity": this browser's identity state machine (none ->
- *   waiting for the content key -> ready), the enable flow with the
- *   mandatory unrecoverable-history warning, and the passphrase backup
- *   export / import forms (section 6.2 tier 3).
+ *   not-registered error / waiting for the content key -> ready), the enable
+ *   flow with the mandatory unrecoverable-history warning, the passphrase
+ *   backup export / import forms (section 6.2 tier 3), and the recovery
+ *   actions (re-register, forget this identity) so a refused or unfinished
+ *   registration is never a dead end.
  * - "Authorized viewers": the account roster from the relay's viewer_list,
  *   with a revoke action whose confirmation states plainly that revocation
  *   removes access only -- the ACK copy stays valid until an ACK rotation.
@@ -36,9 +38,11 @@ import {
   formatFingerprintText,
   identityStateViewOf,
   isSelfViewerRow,
+  registrationErrorTextOf,
   viewerStatusTextOf,
   IDENTITY_BACKUP_RECOMMENDATION,
   IDENTITY_ENABLE_INTRO,
+  IDENTITY_NOT_REGISTERED_TEXT,
   IDENTITY_PHASE_NOTE,
   IDENTITY_UNRECOVERABLE_WARNING,
   IDENTITY_WAITING_ACK_TEXT,
@@ -50,7 +54,7 @@ import {
 import { loadIdentityBridge, type IdentityBridge } from "./identityApi"
 import { lastOnlineTextOf } from "./devicesLogic"
 
-type PanelKind = "none" | "enable" | "export" | "import"
+type PanelKind = "none" | "enable" | "export" | "import" | "forget"
 
 type RosterState =
   | { phase: "loading" }
@@ -247,6 +251,24 @@ export function IdentitySection() {
     }
   }
 
+  /* ---------------- forget (recovery) ---------------- */
+
+  const runForget = async () => {
+    if (!bridge?.forget || busy) return
+    setBusy("forget")
+    try {
+      await bridge.forget()
+      setPanel("none")
+      setJustEnabled(false)
+      await refresh(bridge)
+      act.notify("已忘记本机身份，本机密钥与内容钥副本已清除")
+    } catch (error) {
+      act.notify(`忘记本机身份失败：${errorTextOf(error)}`, "bad")
+    } finally {
+      setBusy(null)
+    }
+  }
+
   /* ---------------- revoke ---------------- */
 
   const [revokeTarget, setRevokeTarget] = useState<AuthorizedViewerRow | null>(null)
@@ -325,7 +347,7 @@ export function IdentitySection() {
           </>
         ) : null}
 
-        {phase === "waiting-ack" || phase === "ready" ? (
+        {phase === "not-registered" || phase === "waiting-ack" || phase === "ready" ? (
           <>
             <div className="settings-device-row" data-settings-identity={phase}>
               <span className="settings-device-icon" aria-hidden="true">
@@ -348,6 +370,16 @@ export function IdentitySection() {
                 ) : null}
               </span>
               <span className="settings-device-actions">
+                {phase === "not-registered" ? (
+                  <button
+                    type="button"
+                    className="settings-device-action"
+                    disabled={busy !== null}
+                    onClick={() => void enableIdentity()}
+                  >
+                    {busy === "enable" ? "正在登记…" : "重新登记"}
+                  </button>
+                ) : null}
                 {phase === "ready" ? (
                   <button
                     type="button"
@@ -366,12 +398,56 @@ export function IdentitySection() {
                 >
                   导入备份
                 </button>
+                {phase === "not-registered" || phase === "waiting-ack" ? (
+                  <button
+                    type="button"
+                    className="settings-device-action"
+                    disabled={busy !== null || !bridge?.forget}
+                    title={bridge?.forget ? undefined : "当前连接不支持忘记本机身份"}
+                    onClick={() => setPanel(panel === "forget" ? "none" : "forget")}
+                  >
+                    忘记本机身份
+                  </button>
+                ) : null}
               </span>
             </div>
+
+            {phase === "not-registered" && view ? (
+              <div className="settings-row">
+                <span className="settings-identity-error">
+                  {registrationErrorTextOf(view)}
+                  {IDENTITY_NOT_REGISTERED_TEXT}
+                </span>
+              </div>
+            ) : null}
 
             {phase === "waiting-ack" ? (
               <div className="settings-row">
                 <span className="settings-identity-waiting">{IDENTITY_WAITING_ACK_TEXT}</span>
+              </div>
+            ) : null}
+
+            {panel === "forget" ? (
+              <div className="settings-identity-panel" data-settings-identity-panel="forget">
+                <p>
+                  忘记本机身份会清掉这个浏览器里的身份密钥和内容钥副本，回到未启用状态；之后可以重新启用，生成一副全新的密钥。
+                </p>
+                <p className="settings-identity-warning">
+                  注意：如果这把内容钥没有别的副本（口令备份，或其它持有它的设备），用它加密过的历史将无法再解开。中转服务名册里若有本机的登记行，不受本操作影响，需要时在下方名册里另行撤销。
+                </p>
+                <div className="settings-identity-actions">
+                  <button type="button" className="settings-device-action" onClick={() => setPanel("none")}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-device-action is-danger"
+                    disabled={busy !== null || !bridge?.forget}
+                    onClick={() => void runForget()}
+                  >
+                    {busy === "forget" ? "正在清除…" : "确认忘记本机身份"}
+                  </button>
+                </div>
               </div>
             ) : null}
 

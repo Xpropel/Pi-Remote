@@ -247,7 +247,9 @@ async function deviceKeyAuth(relay, deviceId, keys) {
 
 /* Independent re-implementation of the pinned adminSig canonicalization:
  * payload = utf8("pi-remote-admin-v1") || utf8(frame.type) || utf8(canonical JSON of
- * the frame without adminSig/adminToken/type; object keys sorted recursively). */
+ * the frame without adminSig/adminToken/type/id; object keys sorted recursively).
+ * The id is excluded: it is a transport correlation handle the web transports
+ * stamp onto the frame after signing, not management intent. */
 function canonJson(v) {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
   if (Array.isArray(v)) return "[" + v.map(canonJson).join(",") + "]";
@@ -256,7 +258,7 @@ function canonJson(v) {
 function adminSign(frame, keys) {
   const rest = {};
   for (const k of Object.keys(frame)) {
-    if (k === "adminSig" || k === "adminToken" || k === "type") continue;
+    if (k === "adminSig" || k === "adminToken" || k === "type" || k === "id") continue;
     rest[k] = frame[k];
   }
   const payload = Buffer.concat([
@@ -418,9 +420,27 @@ test("adminSig dual track: admin viewer signs management frames; bad sig and non
   assert.equal(ack.ok, true, JSON.stringify(ack));
   assert.ok(ack.data.code, "a pair code must be issued");
 
-  // Same frame shape but the signature was made over a different id: rejected.
-  const tampered = { type: "pair_create", id: "pc-sig-2" };
-  const sigForOther = adminSign({ type: "pair_create", id: "pc-sig-other" }, adminKeys);
+  // Regression (live breakage): the web identity core signs the frame BEFORE
+  // any id exists; the transports (channel.raw / requestViewerList) stamp the
+  // request id on afterwards. The relay must still verify the signature --
+  // the id is a transport correlation handle, not signed intent.
+  const preId = { type: "pair_create", name: "signed before transport id" };
+  va.send({ ...preId, id: "pc-sig-1b", adminSig: adminSign(preId, adminKeys) });
+  const ackT = await va.type("ack", (f) => f.id === "pc-sig-1b");
+  assert.equal(ackT.ok, true, JSON.stringify(ackT));
+  assert.ok(ackT.data.code, "a pair code must be issued");
+
+  // The exact flow that broke live: list_viewers signed without an id, the
+  // transport-stamped id echoed back on the viewer_list reply.
+  const lvShape = { type: "list_viewers", adminBy: "viewer-admin" };
+  va.send({ ...lvShape, id: "lv-sig-1", adminSig: adminSign(lvShape, adminKeys) });
+  const lv = await va.type("viewer_list", (f) => f.id === "lv-sig-1");
+  assert.ok(lv.viewers.some((v) => v.viewerId === "viewer-admin"));
+
+  // Only the id sits outside the signature: a signature made over different
+  // signed content (another name) is still rejected.
+  const tampered = { type: "pair_create", id: "pc-sig-2", name: "real" };
+  const sigForOther = adminSign({ type: "pair_create", id: "pc-sig-2", name: "other" }, adminKeys);
   va.send({ ...tampered, adminSig: sigForOther });
   const bad = await va.type("ack", (f) => f.id === "pc-sig-2");
   assert.equal(bad.ok, false);
@@ -501,6 +521,101 @@ test("content key request/grant routed device<->viewer with roster stamps intact
   tok.send({ type: "content_key_grant", to: devFp, nonce, ct });
   const refused = await tok.type("error", (f) => f.code === "device_mismatch");
   assert.ok(refused);
+});
+
+test("regression: grant built by the real contentKeyGrantFrame passes the relay cleaner and reaches the device", async (t) => {
+  // Wave 3 follow-up #7, defect A: the UI builder used to emit a nested
+  // { accountId, blob: { nonce, ct } } shape that the relay's shared cleaner
+  // (top-level to/nonce/ct only) always rejected with bad_args, so a viewer's
+  // ACK answer never left the relay. This test sends the frame exactly as the
+  // web UI builds it -- the real builder imported from protocol.ts.
+  const { contentKeyGrantFrame } = require("../ui/src/relay/protocol.ts");
+  const relay = await boot();
+  t.after(() => relay.close());
+  const { conn: admin } = await authedViewer(relay);
+  t.after(() => admin.close());
+
+  const devKeys = genDeviceKeys();
+  await pairDeviceWithKeys(relay, admin, "dev-flat", devKeys);
+  const { conn: dev } = await deviceKeyAuth(relay, "dev-flat", devKeys);
+  t.after(() => dev.close());
+
+  const viewKeys = genViewerKeys();
+  await registerViewer(admin, { viewerId: "viewer-flat", keys: viewKeys, id: "reg-1" });
+  const { conn: view } = await viewerKeyAuth(relay, "viewer-flat", viewKeys);
+  t.after(() => view.close());
+
+  const devFp = keyFingerprint(devKeys.signPub);
+  const viewFp = keyFingerprint(viewKeys.signPub);
+  const nonce = crypto.randomBytes(12).toString("base64");
+  const ct = crypto.randomBytes(64).toString("base64");
+
+  const frame = contentKeyGrantFrame({ to: devFp, blob: { nonce, ct } });
+  assert.deepEqual(Object.keys(frame).sort(), ["ct", "nonce", "to", "type"], "grant frame must be the flat canonical shape");
+  view.send(frame);
+
+  const grantAtDevice = await dev.type("content_key_grant");
+  assert.equal(grantAtDevice.to, devFp);
+  assert.equal(grantAtDevice.nonce, nonce);
+  assert.equal(grantAtDevice.ct, ct);
+  assert.equal(grantAtDevice.from, viewFp);
+  assert.equal(grantAtDevice.fromBoxPub, viewKeys.boxPub);
+
+  // The sender must not be answered with bad_args (the old cleaner's verdict)
+  // or offline (routing succeeded above, so neither error may appear).
+  await sleep(150);
+  assert.equal(
+    view.frames.some((f) => f.type === "error" && (f.code === "bad_args" || f.code === "offline")),
+    false,
+    "the relay must not reject or strand a canonically shaped viewer grant",
+  );
+});
+
+test("regression: grant reaches every same-fingerprint local connection, not just the first", async (t) => {
+  // Wave 3 follow-up #7, defect B: one device normally holds two local
+  // connections with the same keyFp -- an attach window connection that does
+  // not process grant frames and the extension bridge connection that does.
+  // First-match routing silently dropped the grant whenever the window
+  // connected first. Both connections below key-auth as the same device; the
+  // first stands in for the non-consuming window, the second for the bridge.
+  const relay = await boot();
+  t.after(() => relay.close());
+  const { conn: admin } = await authedViewer(relay);
+  t.after(() => admin.close());
+
+  const devKeys = genDeviceKeys();
+  await pairDeviceWithKeys(relay, admin, "dev-dual", devKeys);
+  const { conn: windowConn } = await deviceKeyAuth(relay, "dev-dual", devKeys);
+  t.after(() => windowConn.close());
+  const { conn: bridgeConn } = await deviceKeyAuth(relay, "dev-dual", devKeys);
+  t.after(() => bridgeConn.close());
+
+  const viewKeys = genViewerKeys();
+  await registerViewer(admin, { viewerId: "viewer-dual", keys: viewKeys, id: "reg-1" });
+  const { conn: view } = await viewerKeyAuth(relay, "viewer-dual", viewKeys);
+  t.after(() => view.close());
+
+  const devFp = keyFingerprint(devKeys.signPub);
+  const nonce = crypto.randomBytes(12).toString("base64");
+  const ct = crypto.randomBytes(64).toString("base64");
+  view.send({ type: "content_key_grant", to: devFp, nonce, ct });
+
+  // The grant must arrive at BOTH connections: delivery is to every matching
+  // endpoint, so the bridge copy lands even though the window connected first.
+  const atWindow = await windowConn.type("content_key_grant");
+  assert.equal(atWindow.to, devFp);
+  assert.equal(atWindow.nonce, nonce);
+  const atBridge = await bridgeConn.type("content_key_grant");
+  assert.equal(atBridge.to, devFp);
+  assert.equal(atBridge.nonce, nonce);
+  assert.equal(atBridge.ct, ct);
+
+  await sleep(150);
+  assert.equal(
+    view.frames.some((f) => f.type === "error" && f.code === "offline"),
+    false,
+    "a delivered grant must not be answered with the offline error",
+  );
 });
 
 test("ackFp divergence triggers key_mismatch on both ends; convergence re-arms the warning", async (t) => {

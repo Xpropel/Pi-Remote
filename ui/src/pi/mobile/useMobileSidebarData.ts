@@ -136,6 +136,7 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
           pinned: scopeState.pins.includes(key),
           archived: scopeState.archives.includes(key),
           groupId: sidebarWorkspaceGroupId(cwd || listed?.cwd),
+          enc: listed?.enc,
         }
       })
       return {

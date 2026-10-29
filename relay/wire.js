@@ -14,7 +14,7 @@ const RELAY_VERSION = "4.0.0";
  * 注意：session.files / fs.browse 是 attach 声明、relay 只转发的能力，不在 relay 的
  * 能力表里（relay 通过 room_list.devices[].features 把设备侧能力透传给网页）。
  */
-const RELAY_CAPS = ["crypto.auth", "device.qr-link", "device.token", "dialog.multiselect", "dialog.observe", "dialog.respond", "err.v4", "health", "msg.cid", "prefs.sync", "room.activity", "room.attention", "room.dialogs", "room.inbox", "room.label", "room.schedule", "session.purge", "sync.v3", "usage.activity.v1"];
+const RELAY_CAPS = ["crypto.auth", "crypto.content", "device.qr-link", "device.token", "dialog.multiselect", "dialog.observe", "dialog.respond", "err.v4", "health", "msg.cid", "prefs.sync", "room.activity", "room.attention", "room.dialogs", "room.inbox", "room.label", "room.schedule", "session.purge", "sync.v3", "usage.activity.v1"];
 const CODE_RE = /^[a-z][a-z0-9_]*$/;
 
 /** 对方连接在握手里声明过这个能力（新帧/新字段只发给声明过的一方） */
@@ -180,6 +180,10 @@ function snapshotBodyFrom(snap) {
   if (!snap) return `"rev":null,"seq":0,"truncated":false,"messages":[]`;
   let s = `"rev":${JSON.stringify(snap.rev)},"seq":${snap.seq},"truncated":${!!snap.truncated}`;
   if (snap.delta) s += `,"delta":true,"baseSeq":${snap.baseSeq}`;
+  // Enc rooms (design section 7): the frame carries an enc header with the room
+  // key info. Callers are responsible for never handing an enc snapshot to a
+  // connection that did not declare crypto.content (viewer gate in viewer.js).
+  if (snap.enc === 1 && snap.keyInfo) s += `,"enc":1,"keyInfo":${JSON.stringify(snap.keyInfo)}`;
   return s + `,"messages":[${snap.items.join(",")}]`;
 }
 function snapshotFrame(room, body) {

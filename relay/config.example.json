@@ -65,5 +65,8 @@
 
   "_notify": "页面外通知（webhook 渠道，编排器 relay/notify.js）：notifyWebhookUrl 是目标地址——ntfy 接法写成 https://ntfy.sh/<话题> 或自建 ntfy 地址/<话题>（话题在 URL 路径里）。这个地址本身就是凭据：只许写在服务器侧的 relay/config.json 或环境变量 PI_REMOTE_NOTIFY_WEBHOOK_URL（env 优先），绝不要把真实地址写进仓库里的任何文件。留空 = 整渠道禁用、零行为变化。notifyEvents 是三类事件的开关，默认全关，逐个改成 true 才发（防意外轰炸）；只认布尔 true，字符串 \"true\" 会被按非法值回退。部署说明见 deploy/README.md 的“页面外通知”一节。",
   "notifyWebhookUrl": "",
-  "notifyEvents": { "turn_done": false, "turn_error": false, "dialog_waiting": false }
+  "notifyEvents": { "turn_done": false, "turn_error": false, "dialog_waiting": false },
+
+  "_crypto": "正文加密过渡期的明文房间策略（设计 A §5）：allow（默认）= 明文房间行为与从前完全一致；readonly = 明文房间拒绝新写入（事件记录与快照 seed）但可读；deny = 明文房间读写都拒。已加密（enc）房间不受此项影响。非法值告警并按 allow 处理。",
+  "cryptoPlaintextRooms": "allow"
 }

@@ -117,6 +117,21 @@ export type RoomInfo = {
   name?: string | null
   /** 会话首条用户消息，pi 未命名会话的默认标题 */
   firstMessage?: string | null
+  /**
+   * Crypto Phase 3 (design 4.1/7): the firstMessage preview arrived as an
+   * ACK-level envelope instead of text -- this holds its ct (base64) for
+   * the async decrypt-and-cache pass in useRelay. firstMessage stays null
+   * in that case; the decrypted preview is substituted before list
+   * building once it lands. Absent when the preview was plaintext.
+   */
+  firstMessageEnc?: string | null
+  /**
+   * Crypto Phase 3 (design 7): room_list carries enc:0|1 only to viewers
+   * that declared crypto.content. true = body-encrypted room, false = the
+   * relay explicitly says plaintext (legacy device room), undefined = the
+   * relay did not say (old relay) -- never guessed either way.
+   */
+  enc?: boolean
   cwd: string | null
   online: boolean
   busy: boolean
@@ -170,6 +185,8 @@ export type SessionEntry = {
   id: string
   name: string
   firstMessage: string
+  /** Crypto Phase 3: firstMessage arrived as an ACK envelope; holds its ct for the decrypt pass (see RoomInfo.firstMessageEnc). */
+  firstMessageEnc?: string | null
   path: string
   cwd: string
   messageCount: number
@@ -201,6 +218,8 @@ export type ListedSession = {
   updatedAt: number
   /** 设备已连接且这是活动会话时才能订阅打开正文 */
   openable: boolean
+  /** Crypto Phase 3: the backing room's encryption flag (RoomInfo.enc); undefined when there is no room or the relay did not say. */
+  enc?: boolean
   /** fork 谱系呈现（R3-3 第 3 项）：merge 时按父路径在同设备清单内解析——
    *  "源自 <父会话当前名>"；父已不在清单 → "源会话已删除"；非 fork 行不带此字段、不占位。 */
   parentLabel?: string
@@ -657,16 +676,30 @@ function unregisteredDevice(): Device {
   }
 }
 
+/**
+ * Crypto Phase 3: a firstMessage field in envelope form ({enc:1, ct})
+ * yields its ct; plaintext strings and anything else yield null. The
+ * envelope shape check lives here so room rows, session rows and archive
+ * rows all recognize exactly the same form.
+ */
+export function firstMessageEncOf(raw: unknown): string | null {
+  if (!isRecord(raw) || raw.enc !== 1 || typeof raw.ct !== "string" || !raw.ct) return null
+  return raw.ct
+}
+
 function parseRoom(raw: unknown): RoomInfo {
   const rec = isRecord(raw) ? raw : {}
   const waiting = parseRoomWaiting(rec.waiting)
   const waitingPrompt = parseRoomWaitingPrompt(rec.waitingPrompt)
   const lastEvent = parseRoomLastEvent(rec.lastEvent)
+  const firstMessageEnc = firstMessageEncOf(rec.firstMessage)
   return {
     id: typeof rec.id === "string" ? rec.id : "",
     label: typeof rec.label === "string" ? rec.label : null,
     name: typeof rec.name === "string" && rec.name ? rec.name : null,
     firstMessage: typeof rec.firstMessage === "string" && rec.firstMessage ? rec.firstMessage : null,
+    ...(firstMessageEnc ? { firstMessageEnc } : {}),
+    ...(rec.enc === 1 ? { enc: true } : rec.enc === 0 ? { enc: false } : {}),
     cwd: typeof rec.cwd === "string" ? rec.cwd : null,
     online: rec.online === true,
     busy: rec.busy === true,
@@ -788,10 +821,12 @@ export function parseDirList(raw: unknown): DirListResult {
 function parseSession(raw: unknown): SessionEntry | null {
   if (!isRecord(raw) || typeof raw.id !== "string" || !raw.id) return null
   if (raw.deleted === true) return null
+  const firstMessageEnc = firstMessageEncOf(raw.firstMessage)
   return {
     id: raw.id,
     name: typeof raw.name === "string" ? raw.name : "",
     firstMessage: typeof raw.firstMessage === "string" ? raw.firstMessage : "",
+    ...(firstMessageEnc ? { firstMessageEnc } : {}),
     path: typeof raw.path === "string" ? raw.path : "",
     cwd: typeof raw.cwd === "string" ? raw.cwd : "",
     messageCount: typeof raw.messageCount === "number" ? raw.messageCount : 0,
@@ -845,6 +880,9 @@ function roomRow(room: RoomInfo, openable: boolean, session?: SessionEntry | nul
     messageCount: session?.messageCount ?? 0,
     updatedAt: Math.max(session?.updatedAt || 0, room.lastActivity || 0),
     openable,
+    // Only present when the relay stated the room's encryption flag, so
+    // rows built from old relays keep their exact previous shape.
+    ...(room.enc !== undefined ? { enc: room.enc } : {}),
   }
 }
 

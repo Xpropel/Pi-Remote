@@ -7,10 +7,39 @@ const ARCHIVE_MAX_BYTES = 200 * 1024;
 // 归档只进不出会让长命 relay 的内存随打开过的会话数线性涨，按 LRU 淘汰最久没被重推的。
 const ARCHIVE_MAX_SESSIONS = 200;
 
+/**
+ * Crypto Phase 3 sealed form (design 4.1): the archive body travels as one
+ * ACK-sealed blob -- { enc:1, ct } at session level with an empty messages
+ * array outside, and firstMessage as its own { enc:1, ct } envelope. The
+ * gate mirrors the web consumer (useRelay.decryptAndStoreArchive).
+ */
+function isSealedArchive(session) {
+  return session.enc === 1 && typeof session.ct === "string" && session.ct.length > 0;
+}
+
 function sanitizeArchive(session) {
   if (!session || typeof session !== "object") return null;
   const id = typeof session.id === "string" ? session.id.trim() : "";
   if (!id || id.length > 200) return null;
+  if (isSealedArchive(session)) {
+    // Sealed passthrough: the relay holds no ACK and must not shape
+    // ciphertext, so the envelope, the firstMessage envelope and the
+    // messages array pass exactly as received -- no String() coercion, no
+    // per-message filtering. The id is validated exactly like the plaintext
+    // path, and the size cap applies to the sealed JSON as a whole:
+    // oversize is rejected (null), never truncated, because a truncated ct
+    // would be undecryptable garbage; storeSessionArchive then also evicts
+    // any stale cached copy, the same as plaintext oversize.
+    if (!Array.isArray(session.messages)) return null;
+    let bytes = 0;
+    try {
+      bytes = Buffer.byteLength(JSON.stringify(session), "utf8");
+    } catch {
+      return null;
+    }
+    if (bytes > ARCHIVE_MAX_BYTES) return null;
+    return session;
+  }
   const messages = [];
   if (Array.isArray(session.messages)) {
     for (const item of session.messages) {
@@ -95,6 +124,7 @@ function replaySessionArchives(ws, devices, cfg) {
 module.exports = {
   ARCHIVE_MAX_BYTES,
   ARCHIVE_MAX_SESSIONS,
+  isSealedArchive,
   sanitizeArchive,
   storeSessionArchive,
   broadcastSessionArchive,

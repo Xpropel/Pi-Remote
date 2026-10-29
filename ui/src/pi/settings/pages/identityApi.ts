@@ -17,6 +17,14 @@
  * then same-named methods on the relay object (in case integration exposes
  * them there). When neither exists, the bridge reports them as null and the
  * UI disables the roster with an explanation instead of faking data.
+ *
+ * Enable and forget resolve in the OPPOSITE order: the relay object's
+ * wrappers (useRelay's enableViewerIdentity / disableViewerIdentity) run
+ * the same core operation and additionally re-authenticate the live
+ * connection -- after a registration the current socket reconnects as the
+ * key viewer, which is what starts the ACK request/delivery flow. Calling
+ * the bare core facade from settings would leave the live connection
+ * token-authed and no ACK would ever be requested on it.
  */
 
 export interface IdentityBridge {
@@ -24,6 +32,11 @@ export interface IdentityBridge {
   getState: () => Promise<unknown>
   /** Generate this browser's identity keys and register them with the relay. */
   enable: () => Promise<unknown>
+  /**
+   * Forget the local identity entirely (keys and ACK copies wiped), or null
+   * when neither the relay object nor the core exposes a forget operation.
+   */
+  forget: (() => Promise<void>) | null
   /** Raw ACK bytes for backup export, or null when no ACK is held. */
   exportAck: () => Promise<Uint8Array | null>
   /** Store an ACK recovered from a backup package. */
@@ -89,9 +102,10 @@ async function loadIdentityModule(): Promise<Record<string, unknown> | null> {
 }
 
 /**
- * Build the bridge. `relayLike` is the settings host's relay object, used
- * only as a fallback roster transport; it is never assumed to have the
- * roster methods.
+ * Build the bridge. `relayLike` is the settings host's relay object: the
+ * preferred enable/forget path (its wrappers re-authenticate the live
+ * connection) and a fallback roster transport; it is never assumed to have
+ * any of these methods.
  */
 export async function loadIdentityBridge(relayLike?: unknown): Promise<IdentityBridge | null> {
   const mod = await loadIdentityModule()
@@ -99,15 +113,26 @@ export async function loadIdentityBridge(relayLike?: unknown): Promise<IdentityB
   // The core may export a singleton object, a factory, or bare functions.
   const singleton = recordOf(mod.viewerIdentity) ?? recordOf(mod.identity) ?? recordOf(mod.default)
   const source: Record<string, unknown> = singleton ?? mod
+  const relayRecord = recordOf(relayLike)
 
   const getState = fnOf(source, ["getState", "getViewerIdentityState", "getIdentityState", "viewerIdentityState", "state"])
-  const enable = fnOf(source, ["enable", "enableViewerIdentity", "enableIdentity", "createViewerIdentity", "generateViewerIdentity"])
+  // Prefer the relay object's enable wrapper: it runs the core enable and
+  // then reconnects, so the live connection re-authenticates as the key
+  // viewer and the ACK request flow can start (see header note).
+  const enable =
+    fnOf(relayRecord, ["enableViewerIdentity"]) ??
+    fnOf(source, ["enable", "enableViewerIdentity", "enableIdentity", "createViewerIdentity", "generateViewerIdentity"])
   const exportAckFn = fnOf(source, ["exportAck", "exportAckForBackup", "exportAckBytes", "getAckBytes"])
   const importAckFn = fnOf(source, ["importAck", "importAckBytes", "importAckFromBackup", "setAck"])
   if (!getState || !enable || !exportAckFn || !importAckFn) return null
 
   const markBackedUpFn = fnOf(source, ["markBackedUp", "markIdentityBackedUp", "recordBackupAt"])
-  const relayRecord = recordOf(relayLike)
+  // Same preference for forget: the relay wrapper forgets and reconnects
+  // (the connection drops back to token auth); the core facade is the
+  // fallback when no relay wrapper exists.
+  const forgetFn =
+    fnOf(relayRecord, ["disableViewerIdentity"]) ??
+    fnOf(source, ["forget", "forgetViewerIdentity", "forgetIdentity", "disableViewerIdentity"])
   const listViewersFn =
     fnOf(source, ["listViewers", "listAuthorizedViewers", "fetchViewers"]) ??
     fnOf(relayRecord, ["listViewers", "listAuthorizedViewers"])
@@ -117,6 +142,11 @@ export async function loadIdentityBridge(relayLike?: unknown): Promise<IdentityB
   return {
     getState: async () => getState(),
     enable: async () => enable(),
+    forget: forgetFn
+      ? async () => {
+          await forgetFn()
+        }
+      : null,
     exportAck: async () => ackBytesOf(await exportAckFn()),
     importAck: async (ack: Uint8Array) => {
       await importAckFn(ack as never)

@@ -17,8 +17,9 @@ import {
   indexedDbIdentityStore,
   keyFingerprintOfSpki,
   memoryIdentityStore,
+  viewerIdentity,
 } from "../ui/src/relay/viewerIdentity.ts"
-import { authFrame, pairApproveFrame, viewerAuthFrame } from "../ui/src/relay/protocol.ts"
+import { authFrame, contentKeyGrantFrame, pairApproveFrame, viewerAuthFrame } from "../ui/src/relay/protocol.ts"
 import { parsePairLookup } from "../ui/src/relay/pairLink.ts"
 
 const subtle = globalThis.crypto.subtle
@@ -104,7 +105,9 @@ test("auth payload assembly is byte-identical to the documented concatenation", 
 })
 
 test("adminSig payload: canonical JSON (recursive key sort, no whitespace) under the pinned domain", () => {
-  const frame = { type: "viewer_revoke", viewerId: "vw-b", adminSig: "x", adminToken: "y", extra: { z: 1, a: [3, { b: 2, a: 1 }] } }
+  // The id field rides along in the frame but is NOT part of the payload: it
+  // is a transport correlation handle the transports stamp on after signing.
+  const frame = { type: "viewer_revoke", id: "r-123", viewerId: "vw-b", adminSig: "x", adminToken: "y", extra: { z: 1, a: [3, { b: 2, a: 1 }] } }
   const expectedJson = '{"extra":{"a":[3,{"a":1,"b":2}],"z":1},"viewerId":"vw-b"}'
   const expected = Buffer.concat([
     Buffer.from("pi-remote-admin-v1", "utf8"),
@@ -198,6 +201,36 @@ test("forget wipes identity and ACK from memory and storage", async () => {
   const reloaded = await createViewerIdentityCore(testPlatform(store))
   assert.equal(reloaded.snapshot().hasIdentity, false)
   assert.equal(reloaded.snapshot().hasAck, false)
+})
+
+test("enable refused: a rejected registration stays unregistered and keeps the failure code", async () => {
+  const store = memoryIdentityStore()
+  const core = await createViewerIdentityCore(testPlatform(store))
+  const refused = Object.assign(new Error("需要管理员验证"), { code: "admin_required" })
+  const refusingTransport = {
+    sendAdminCommand: async () => {
+      throw refused
+    },
+    requestViewerList: async () => [],
+  }
+  await assert.rejects(core.enable(refusingTransport), (error) => error === refused)
+  const stuck = core.snapshot()
+  assert.equal(stuck.hasIdentity, true, "keys exist locally after the refused attempt")
+  assert.equal(stuck.registered, false, "a refused registration must never read as registered")
+  assert.equal(stuck.lastError, "admin_required", "the refusal code stays on the snapshot for the settings surface")
+  assert.equal(core.beginKeyAuth(), null, "an unregistered identity cannot key-auth")
+  // The persisted record must not claim registration either (reload path).
+  const reloaded = await createViewerIdentityCore(testPlatform(store))
+  assert.equal(reloaded.snapshot().registered, false)
+  // Re-registering once the admin gate passes succeeds on the SAME keys.
+  const state = await core.enable(adminTransport)
+  assert.equal(state.registered, true)
+  assert.equal(state.lastError, null)
+  assert.equal(state.viewerId, stuck.viewerId, "re-register reuses the same identity instead of minting a new one")
+})
+
+test("settings facade exposes forget (the recovery action the identity section wires)", () => {
+  assert.equal(typeof viewerIdentity.forget, "function")
 })
 
 /* ---------------- challenge-response auth ---------------- */
@@ -351,6 +384,50 @@ test("signAdminFrame signs only for a registered admin identity and the signatur
   })
   const unsigned = await plain.signAdminFrame({ type: "list_viewers" })
   assert.equal(unsigned.adminSig, undefined)
+})
+
+test("signAdminFrame: signature still verifies after the transport stamps an id (regression)", async () => {
+  const core = await registeredCore()
+  const signed = await core.signAdminFrame({ type: "list_viewers" })
+  assert.ok(signed.adminSig)
+  assert.equal(signed.id, undefined, "the core signs before any transport id exists")
+  // Simulate the transports: channel.raw / requestViewerList add the request
+  // id to the frame AFTER signing. The relay recomputes the payload over the
+  // frame as received, so verification must survive the added id.
+  const onTheWire = { ...signed, id: "vl_simulated-transport" }
+  // Test-side canonical payload, built independently of the module under
+  // test: frame minus adminSig/adminToken/type/id, keys sorted recursively.
+  const canon = (v) => {
+    if (v === null || typeof v !== "object") return JSON.stringify(v)
+    if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]"
+    return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}"
+  }
+  const rest = {}
+  for (const k of Object.keys(onTheWire)) {
+    if (k === "adminSig" || k === "adminToken" || k === "type" || k === "id") continue
+    rest[k] = onTheWire[k]
+  }
+  const payload = Buffer.concat([
+    Buffer.from("pi-remote-admin-v1", "utf8"),
+    Buffer.from("list_viewers", "utf8"),
+    Buffer.from(canon(rest), "utf8"),
+  ])
+  const verifyKey = crypto.createPublicKey({ key: Buffer.from(base64ToBytes(core.registrationInfo().signPub)), format: "der", type: "spki" })
+  assert.equal(
+    crypto.verify("sha256", payload, { key: verifyKey, dsaEncoding: "ieee-p1363" }, Buffer.from(signed.adminSig, "base64")),
+    true,
+    "the relay-side recomputation over the id-stamped frame must verify",
+  )
+  // Only the id is outside the signature: changing a signed field breaks it.
+  const tampered = Buffer.concat([
+    Buffer.from("pi-remote-admin-v1", "utf8"),
+    Buffer.from("list_viewers", "utf8"),
+    Buffer.from(canon({ ...rest, adminBy: "vw-attacker" }), "utf8"),
+  ])
+  assert.equal(
+    crypto.verify("sha256", tampered, { key: verifyKey, dsaEncoding: "ieee-p1363" }, Buffer.from(signed.adminSig, "base64")),
+    false,
+  )
 })
 
 test("revokeViewer: adminSig track names the signer in adminBy and keeps viewerId as the target", async () => {
@@ -512,6 +589,15 @@ test("frames: key auth frame carries crypto.auth and no token; token frame is un
   const token = authFrame("secret-token")
   assert.equal(token.token, "secret-token")
   assert.ok(!token.caps.includes("crypto.auth"), "token auth must stay byte-identical: no crypto.auth cap")
+})
+
+test("contentKeyGrantFrame: flat canonical shape the relay cleaner accepts", () => {
+  // Regression (Wave 3 follow-up #7): the builder used to nest the wrap under
+  // `blob` and add an accountId field; the relay's shared grant cleaner only
+  // accepts top-level { to, nonce, ct } and rejected every viewer grant with
+  // bad_args. The frame must stay flat and minimal.
+  const frame = contentKeyGrantFrame({ to: "aaaaaaaaaaaaaaaa", blob: { nonce: "bm9uY2U=", ct: "Y2lwaGVy" } })
+  assert.deepEqual(frame, { type: "content_key_grant", to: "aaaaaaaaaaaaaaaa", nonce: "bm9uY2U=", ct: "Y2lwaGVy" })
 })
 
 test("pairApproveFrame: grant is attached only when provided", () => {

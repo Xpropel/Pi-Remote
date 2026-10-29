@@ -13,10 +13,12 @@
 import { bodySearchPageOf, type BodySearchHit, type BodySearchPage, type BodySearchUnanswered } from "../shell/searchModel.ts"
 import { errorCode, RelayError, roomDeviceId, type RoomInfo } from "./devices.ts"
 
-export type BodySearchRoom = Pick<RoomInfo, "id" | "online" | "deviceId" | "cwd" | "lastActivity">
+export type BodySearchRoom = Pick<RoomInfo, "id" | "online" | "deviceId" | "cwd" | "lastActivity" | "enc">
 
 /** 按房间发（一个 cwd 一个房间），或按设备发（这台设备没有在线房间时的退路） */
-export type BodySearchTarget = { kind: "room"; roomId: string; cwd: string } | { kind: "device"; deviceId: string }
+export type BodySearchTarget =
+  | { kind: "room"; roomId: string; cwd: string; enc?: boolean }
+  | { kind: "device"; deviceId: string }
 
 /** 一个目标的回包：allSettled 的结果配上目标 */
 export type BodySearchReply = { target: BodySearchTarget; ok: true; data: unknown } | { target: BodySearchTarget; ok: false; error: unknown }
@@ -49,7 +51,7 @@ export function bodySearchTargetsOf(deviceId: string, rooms: readonly BodySearch
   if (!picks.size) return [{ kind: "device", deviceId }]
   return [...picks.values()]
     .sort((a, b) => Number(b.id === openRoomId) - Number(a.id === openRoomId) || (b.lastActivity || 0) - (a.lastActivity || 0))
-    .map((room): BodySearchTarget => ({ kind: "room", roomId: room.id, cwd: room.cwd ?? "" }))
+    .map((room): BodySearchTarget => ({ kind: "room", roomId: room.id, cwd: room.cwd ?? "", ...(room.enc !== undefined ? { enc: room.enc } : {}) }))
 }
 
 const BAD_REPLY = "正文搜索回包形状不对，请重试"
@@ -70,6 +72,7 @@ export function mergeBodySearchReplies(
   const pages: BodySearchPage[] = []
   const unanswered: BodySearchUnanswered[] = []
   let firstError: unknown = null
+  let encFailures = 0
   for (const reply of replies) {
     const cwd = reply.target.kind === "room" ? reply.target.cwd : ""
     const page = reply.ok ? bodySearchPageOf(reply.data) : null
@@ -78,10 +81,25 @@ export function mergeBodySearchReplies(
       continue
     }
     const error = reply.ok ? new RelayError("bad_reply", BAD_REPLY) : reply.error
+    // An enc room's extension refuses body search with "unsupported"
+    // because the ciphertext cannot be searched in the relay path
+    // (crypto Phase 3, design 4.1 t). Rewrite that one case to the
+    // dedicated "encrypted" code so the UI can say the room is
+    // encrypted instead of claiming the extension is too old.
+    const encUnsupported =
+      reply.target.kind === "room" && reply.target.enc === true && errorCode(error) === "unsupported"
     if (firstError === null) firstError = error ?? new RelayError("result_unknown", "命令没有回应")
-    unanswered.push({ cwd, code: errorCode(error) || (reply.ok ? "bad_reply" : "") })
+    unanswered.push({ cwd, code: encUnsupported ? "encrypted" : errorCode(error) || (reply.ok ? "bad_reply" : "") })
+    if (encUnsupported) encFailures += 1
   }
-  if (!pages.length) return { ok: false, error: firstError ?? new RelayError("bad_reply", BAD_REPLY) }
+  if (!pages.length) {
+    // Every target was an enc room refusing search: the honest headline
+    // is "encrypted", not the first target's raw unsupported error.
+    if (encFailures > 0 && encFailures === replies.length) {
+      return { ok: false, error: new RelayError("encrypted", "该房间已加密，无法在中转侧搜索") }
+    }
+    return { ok: false, error: firstError ?? new RelayError("bad_reply", BAD_REPLY) }
+  }
   const byPath = new Map<string, BodySearchHit>()
   for (const page of pages) {
     for (const hit of page.results) {
