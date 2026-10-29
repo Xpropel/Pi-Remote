@@ -117,6 +117,8 @@ function dialogWaitingText(kind: string): string {
   switch (kind) {
     case "select":
       return "等你选择"
+    case "multiselect":
+      return "等你多选"
     case "confirm":
       return "等你确认"
     case "input":

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { Button, CodeChip, InlineLink, ReceiptLine } from "@/components/kit"
 import { PiSpinner } from "@/components/pi/shared/PiSpinner"
 import { usePiStatic } from "@/components/pi/shared/layers"
-import { CircleHelp } from "@/components/kit/icons"
+import { Check, CircleHelp } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
 import { piClock, piDuration } from "@/components/pi/shared/format"
 import {
@@ -44,13 +44,14 @@ export interface PiApprovalCardProps {
   className?: string
 }
 
-/** 一份回答（= PromptWaiting 的 DialogAnswer） */
-export type PiApprovalAnswer = { action: "allow" | "submit" | "deny"; value?: string; note?: string }
+/** 一份回答（= PromptWaiting 的 DialogAnswer）；多选走 submit + values（选项原文集合） */
+export type PiApprovalAnswer = { action: "allow" | "submit" | "deny"; value?: string; values?: string[]; note?: string }
 
 /**
  * "等你回答"审批卡（PiApprovalCard；compose from kit: Button(solid-black), CodeChip, InlineLink, Spinner）。
  * 唯一常驻 dock 的卡（§1.7），放在 tray 上方、与对话列同宽，阴影比普通卡重一档（--cw-pi-approval-shadow）。整卡版式是推断。
- * select：整宽描边选项行；confirm：黑"允许" + 描边"拒绝"；input / editor：输入框 + 黑"提交"。
+ * select：整宽描边选项行；multiselect：复选行 + 已选计数 + 黑"确认"（未达最少选择数时不可点）；
+ * confirm：黑"允许" + 描边"拒绝"；input / editor：输入框 + 黑"提交"。
  * 只读观察（answerable 为空）："只能在电脑上回答"。先答为准：别处答了就收成一行灰字。
  */
 export function PiApprovalCard({
@@ -76,6 +77,8 @@ export function PiApprovalCard({
   const [denying, setDenying] = useState(false)
   const [denyNote, setDenyNote] = useState("")
   const [text, setText] = useState(() => (dialog.kind === "editor" ? dialog.prefill || "" : ""))
+  // 多选（multiselect）的勾选集：点选只改本地集，点「确认」才整份提交（区别于 select 的点即答）
+  const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set())
   const sending = state === "sending"
   const answer = (a: PiApprovalAnswer) => {
     if (!sending) onAnswer?.(a)
@@ -100,6 +103,20 @@ export function PiApprovalCard({
   const answerable = dialog.answerable === true
   const kind = dialog.kind
   const options = dialog.options ?? []
+  // 多选的选择数区间（桥侧组帧已钳制；这里再按实际选项数收一遍，防旧帧/坏帧）
+  const minSel = Math.min(Math.max(0, dialog.minSelect ?? 1), options.length)
+  const maxSel = Math.min(Math.max(minSel, dialog.maxSelect ?? options.length), options.length)
+  const toggleChecked = (opt: string) => {
+    setChecked((cur) => {
+      const next = new Set(cur)
+      if (next.has(opt)) next.delete(opt)
+      else {
+        if (next.size >= maxSel) return cur
+        next.add(opt)
+      }
+      return next
+    })
+  }
 
   return (
     <section
@@ -168,6 +185,59 @@ export function PiApprovalCard({
                 还有 {dialog.optionsTotal - options.length} 项没有传过来，请在电脑上选
               </div>
             )}
+          </div>
+        ) : kind === "multiselect" ? (
+          <div className="mt-3 flex flex-col gap-1.5" role="group" aria-label="选项（可多选）">
+            {options.map((opt) => {
+              const on = checked.has(opt)
+              const atMax = !on && checked.size >= maxSel
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  role="checkbox"
+                  aria-checked={on}
+                  disabled={state === "sending" || atMax}
+                  onClick={interactive ? () => toggleChecked(opt) : undefined}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-(--cw-radius-button) border bg-(--cw-surface) px-3 text-left text-(length:--cw-text-md) text-(--cw-text)",
+                    "hover:bg-(--cw-row-hover) disabled:text-(--cw-text-3)",
+                    on ? "border-(--cw-pi-field-focus-border)" : "border-(--cw-border)",
+                    rowH,
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "flex size-4 shrink-0 items-center justify-center rounded-[4px] border",
+                      on ? "border-(--cw-text) bg-(--cw-text) text-(--cw-surface)" : "border-(--cw-border) text-transparent",
+                    )}
+                  >
+                    <Check size={12} strokeWidth={3} />
+                  </span>
+                  <span className="min-w-0 flex-1">{opt}</span>
+                </button>
+              )
+            })}
+            {dialog.optionsTotal != null && dialog.optionsTotal > options.length && (
+              <div className={cn("text-(length:--cw-text-sm)", T_SECONDARY)}>
+                还有 {dialog.optionsTotal - options.length} 项没有传过来，请在电脑上选
+              </div>
+            )}
+            <div className="mt-1 flex items-center gap-2">
+              <span className={cn("min-w-0 flex-1 text-(length:--cw-text-sm)", T_SECONDARY)}>
+                已选 {checked.size} 项
+                {minSel > 0 ? ` · 至少选 ${minSel} 项` : ""}
+                {maxSel < options.length ? ` · 最多选 ${maxSel} 项` : ""}
+              </span>
+              <Button
+                className={cn("shrink-0", phone ? "h-11 px-4" : "")}
+                disabled={state === "sending" || checked.size < minSel}
+                onClick={interactive ? () => answer({ action: "submit", values: options.filter((o) => checked.has(o)) }) : undefined}
+              >
+                确认
+              </Button>
+            </div>
           </div>
         ) : kind === "confirm" ? (
           <div className="mt-3 flex gap-2">

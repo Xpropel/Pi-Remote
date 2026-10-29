@@ -1067,9 +1067,11 @@ test("v4 握手：auth_result 回 relay 的 proto 和已实现的能力；local 
   // - agent.state 仍是协议预留位（没有生产者）；
   // - session.files / fs.browse 是 attach 声明、relay 只转发的能力（P9 B/C），
   //   设备侧能力经 room_list.devices[].features 透传，不冒充 relay 自己的能力。
+  // - crypto.auth / crypto.content 是加密地基的协议先行位（阶段 0 只登记协议、零实现），
+  //   随阶段 1/3 实现落地时再移出本集合、进 RELAY_CAPS（同 agent.state 的预留口径）。
   // dialog.respond 已随第 2 轮 O2 落地（relay 转发应答/门控/开关），是已实现能力（随 R2-1 更新）；
   // room.dialogs（P9 A）、session.purge（P9 B）由 relay 自己实现，必须声明。
-  const notRelayCaps = new Set(["agent.state", "session.files", "fs.browse"]);
+  const notRelayCaps = new Set(["agent.state", "session.files", "fs.browse", "crypto.auth", "crypto.content"]);
   assert.deepEqual(
     [...la.caps].sort(),
     Object.keys(PROTOCOL.caps).filter((cap) => !notRelayCaps.has(cap)).sort(),
@@ -3123,6 +3125,66 @@ test("A-6 cap 门控：旧端直播/补发只收观察卡、应答直接 dialog_
   await lateCap.type("snapshot");
   const reCap = await lateCap.type("room_event", (f) => f.event.type === "dialog_open" && f.event.dialogId === "dlg-cap");
   assert.equal(reCap.event.answerable, true, "有 cap 的补发保留 answerable");
+});
+
+test("G3 多选：sendCachedDialogs 补发门控——respond+multiselect 才带 answerable，min/max 随槽保留", () => {
+  const cfg = { maxPayloadBytes: 256 * 1024 };
+  const room = { id: "r", online: true, dialogs: { m1: { type: "dialog_open", dialogId: "m1", kind: "multiselect", title: "多选", options: ["甲", "乙"], minSelect: 1, maxSelect: 2, answerable: true, startedAt: 7 } } };
+  const mk = (caps) => {
+    const frames = [];
+    const ws = { readyState: 1, bufferedAmount: 0, _state: { caps: new Set(caps) }, send(s) { frames.push(JSON.parse(s)); } };
+    sendCachedDialogs(ws, room, cfg);
+    return frames;
+  };
+  const respondOnly = mk(["dialog.respond"]);
+  assert.equal("answerable" in respondOnly[0].event, false, "只有 respond：多选槽补发剥 answerable");
+  assert.equal(respondOnly[0].event.minSelect, 1, "观察卡仍带 min/max（只读呈现靠它）");
+  assert.equal(respondOnly[0].event.maxSelect, 2);
+  const both = mk(["dialog.respond", "dialog.multiselect"]);
+  assert.equal(both[0].event.answerable, true, "两道 cap 齐：补发保留 answerable");
+  assert.equal(room.dialogs.m1.answerable, true, "缓存槽本体不被改动");
+});
+
+test("G3 多选全链：直播门控分流、values 钳制转发、无 multiselect cap 的应答回 dialog_gone", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const { c } = await local(relay);
+  t.after(() => c.close());
+  const { v: vFull } = await viewer(relay, undefined, { caps: ["dialog.respond", "dialog.multiselect"] });
+  t.after(() => vFull.close());
+  const { v: vHalf } = await viewer(relay, undefined, { caps: ["dialog.respond"] });
+  t.after(() => vHalf.close());
+  vFull.send({ type: "subscribe", room: ROOM });
+  vHalf.send({ type: "subscribe", room: ROOM });
+  await vFull.type("snapshot");
+  await vHalf.type("snapshot");
+
+  c.send({ type: "event", room: ROOM, event: { type: "dialog_open", dialogId: "dlg-m", kind: "multiselect", title: "选哪些", options: ["甲", "乙", "丙"], minSelect: 1, maxSelect: 2, answerable: true, timeout: 120000, startedAt: 1000 } });
+  const liveFull = await vFull.type("room_event", (f) => f.event.type === "dialog_open" && f.event.dialogId === "dlg-m");
+  assert.equal(liveFull.event.answerable, true, "双 cap 端收到可答多选卡");
+  assert.equal(liveFull.event.minSelect, 1);
+  assert.equal(liveFull.event.maxSelect, 2);
+  const liveHalf = await vHalf.type("room_event", (f) => f.event.type === "dialog_open" && f.event.dialogId === "dlg-m");
+  assert.equal("answerable" in liveHalf.event, false, "只有 respond 的端：多选卡剥 answerable 变只读");
+  assert.deepEqual(liveHalf.event.options, ["甲", "乙", "丙"], "只读卡本体（选项/区间）照到");
+
+  // 半 cap 端应答多选槽：直接 dialog_gone、不转发桥
+  vHalf.send({ type: "dialog_answer", id: "h1", room: ROOM, dialogId: "dlg-m", action: "submit", values: ["甲"] });
+  const eHalf = await vHalf.type("error", (f) => f.id === "h1");
+  assert.equal(eHalf.code, "dialog_gone");
+  assert.equal(c.frames.some((f) => f.type === "dialog_answer"), false, "半 cap 的多选答案不许转发给桥");
+
+  // 双 cap 端应答：values 转发时按 limits 钳制（每项 ≤80 字、最多 20 项），裁决在桥
+  const long = "长".repeat(100);
+  const many = Array.from({ length: 25 }, (_, i) => "项" + i);
+  vFull.send({ type: "dialog_answer", id: "f1", room: ROOM, dialogId: "dlg-m", action: "submit", values: [long, ...many] });
+  const fwd = await c.type("dialog_answer", (f) => f.dialogId === "dlg-m");
+  assert.equal(fwd.values.length, 20, "values 项数按 dialogOptionsMax 钳制");
+  assert.equal(fwd.values[0].length, 80, "每项按 dialogOptionChars 截断");
+  assert.equal("value" in fwd, false, "多选应答不带单值 value");
+  c.send({ type: "dialog_answer_result", aid: fwd.aid, dialogId: "dlg-m", ok: true });
+  const ack = await vFull.type("ack", (f) => f.id === "f1");
+  assert.equal(ack.ok, true);
 });
 
 test("A-3 纵深清洗：桥发来的 dialog_close note 在 relay 出口再切一刀并滤控制字符", async (t) => {

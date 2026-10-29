@@ -1755,6 +1755,145 @@ test("G1 ask：同名冲突——别家 ask_user 在场时 ours 保持未激活�
   assert.deepEqual(active2, ["bash"], "关开关同步移出 active set")
 })
 
+/* ---------------- G3 多选（design-ask-cards.md §5 路线 B） ---------------- */
+
+test("G3 多选：multiSelectRange 缺省与钳制", () => {
+  assert.deepEqual(ext.multiSelectRange(4), { min: 1, max: 4 }, "缺省 min=1、max=选项数")
+  assert.deepEqual(ext.multiSelectRange(4, 0, 2), { min: 0, max: 2 })
+  assert.deepEqual(ext.multiSelectRange(4, 3, 2), { min: 3, max: 3 }, "min>max 时 max 抬到 min")
+  assert.deepEqual(ext.multiSelectRange(4, 9, 99), { min: 4, max: 4 }, "越界钳进选项数")
+  assert.deepEqual(ext.multiSelectRange(0), { min: 0, max: 0 })
+  assert.deepEqual(ext.multiSelectRange(4, 1.5, "x"), { min: 1, max: 4 }, "非整数回落缺省")
+})
+
+test("G3 多选：validateMultiValues 过滤伪造、去重、min/max 裁决", () => {
+  const opts = ["甲", "乙", "丙"]
+  assert.deepEqual(ext.validateMultiValues(opts, ["乙", "甲"], 1, 3), { ok: true, values: ["乙", "甲"] }, "保持提交顺序")
+  assert.deepEqual(ext.validateMultiValues(opts, ["甲", "丁", "甲", 42], 1, 3), { ok: true, values: ["甲"] }, "伪造值与重复值、非字符串一并滤掉")
+  assert.equal(ext.validateMultiValues(opts, [], 1, 3).ok, false, "空选不满足 min=1")
+  assert.deepEqual(ext.validateMultiValues(opts, [], 0, 3), { ok: true, values: [] }, "min=0 时空选合法")
+  assert.equal(ext.validateMultiValues(opts, ["甲", "乙", "丙"], 1, 2).ok, false, "超 max 不合法")
+  assert.equal(ext.validateMultiValues(opts, "甲", 1, 3).ok, false, "非数组不合法")
+})
+
+test("G3 多选：本机兜底逐项 confirm——选中项成 answers，推荐项还原原文", async () => {
+  const b = new ext.Bridge()
+  const asked = []
+  const ui = {
+    select: async () => { throw new Error("多选不该调 select") },
+    confirm: async (title, message) => {
+      const m = /选择「(.+)」？/.exec(message)
+      asked.push(m[1])
+      return m[1].startsWith("甲") || m[1].startsWith("丙")
+    },
+    input: async () => "x",
+  }
+  const r = await b.executeAskUser({ question: "选哪些？", options: ["甲", "乙", "丙"], multi: true, recommended: 0 }, { hasUI: true, ui })
+  assert.deepEqual(asked, ["甲（推荐）", "乙", "丙"], "逐项问展示选项（含推荐标记，与单选同口径）")
+  assert.deepEqual(r.details.answers, ["甲", "丙"], "答案还原原文（去推荐标记）")
+  assert.equal(r.details.answer, "甲、丙")
+  assert.equal(r.details.kind, "multiselect")
+  assert.equal(r.details.cancelled, false)
+  assert.equal(r.content[0].text, "用户回答：甲、丙")
+})
+
+test("G3 多选：兜底达 maxSelect 即停问；空选且 min=1 按未作答；min=0 空选合法", async () => {
+  const b = new ext.Bridge()
+  let count = 0
+  const uiAll = { select: async () => "x", confirm: async () => { count++; return true }, input: async () => "x" }
+  const r1 = await b.executeAskUser({ question: "q", options: ["甲", "乙", "丙", "丁"], multi: true, maxSelect: 2 }, { hasUI: true, ui: uiAll })
+  assert.equal(count, 2, "选满 maxSelect 后不再逐项问")
+  assert.deepEqual(r1.details.answers, ["甲", "乙"])
+
+  const uiNone = { select: async () => "x", confirm: async () => false, input: async () => "x" }
+  const r2 = await b.executeAskUser({ question: "q", options: ["甲", "乙"], multi: true }, { hasUI: true, ui: uiNone })
+  assert.equal(r2.details.cancelled, true, "空选不满足缺省 min=1 → 未作答")
+  assert.equal(r2.content[0].text, ext.ASK_UNANSWERED_TEXT)
+
+  const r3 = await b.executeAskUser({ question: "q", options: ["甲", "乙"], multi: true, minSelect: 0 }, { hasUI: true, ui: uiNone })
+  assert.equal(r3.details.cancelled, false, "minSelect=0 时空选是合法答案")
+  assert.deepEqual(r3.details.answers, [])
+})
+
+test("G3 多选：O2 接管往返——open 带 kind/min/max/answerable，values 过滤去重后 resolve", async () => {
+  const { b, ui, frames, calls, sent } = o2Bridge()
+  await armTakeover(b)
+  const p = b.executeAskUser({ question: "选哪些？", options: ["甲", "乙", "丙"], multi: true, minSelect: 1, maxSelect: 2 }, { hasUI: true, ui })
+  const open = lastOpen(frames)
+  assert.equal(open.kind, "multiselect")
+  assert.equal(open.answerable, true)
+  assert.deepEqual(open.options, ["甲", "乙", "丙"])
+  assert.equal(open.minSelect, 1)
+  assert.equal(open.maxSelect, 2)
+  assert.equal(calls.length, 0, "接管时本机零弹窗（兜底不触发）")
+  await b.handle({ type: "dialog_answer", room: "r", dialogId: open.dialogId, action: "submit", values: ["丙", "甲", "丁", "丙"], aid: "m1" })
+  assert.deepEqual(lastResult(sent), { type: "dialog_answer_result", aid: "m1", dialogId: open.dialogId, ok: true })
+  const r = await p
+  assert.deepEqual(r.details.answers, ["丙", "甲"], "伪造值过滤、重复去重，顺序按提交")
+  assert.equal(lastClose(frames).reason, "answered")
+  b.uninstallDialogTap()
+})
+
+test("G3 多选：不满足 min/max 的应答回 bad_args 且不落定，改选后可正常提交", async () => {
+  const { b, ui, frames, sent } = o2Bridge()
+  await armTakeover(b)
+  const p = b.executeAskUser({ question: "q", options: ["甲", "乙", "丙"], multi: true, minSelect: 2, maxSelect: 2 }, { hasUI: true, ui })
+  const open = lastOpen(frames)
+  await b.handle({ type: "dialog_answer", room: "r", dialogId: open.dialogId, action: "submit", values: ["甲"], aid: "b1" })
+  assert.deepEqual(lastResult(sent), { type: "dialog_answer_result", aid: "b1", dialogId: open.dialogId, ok: false, code: "bad_args" }, "少于 minSelect 不落定")
+  await b.handle({ type: "dialog_answer", room: "r", dialogId: open.dialogId, action: "submit", values: ["甲", "乙", "丙"], aid: "b2" })
+  assert.equal(lastResult(sent).code, "bad_args", "超过 maxSelect 同样不落定")
+  await b.handle({ type: "dialog_answer", room: "r", dialogId: open.dialogId, action: "submit", value: "甲", aid: "b3" })
+  assert.equal(lastResult(sent).code, "bad_args", "单值 value 不是多选应答形状")
+  await b.handle({ type: "dialog_answer", room: "r", dialogId: open.dialogId, action: "submit", values: ["乙", "丙"], aid: "b4" })
+  assert.equal(lastResult(sent).ok, true)
+  const r = await p
+  assert.deepEqual(r.details.answers, ["乙", "丙"])
+  b.uninstallDialogTap()
+})
+
+test("G3 多选：远程拒绝（deny）与桥侧超时都规范化为未作答", async () => {
+  {
+    const { b, ui, frames } = o2Bridge()
+    await armTakeover(b)
+    const p = b.executeAskUser({ question: "q", options: ["甲", "乙"], multi: true }, { hasUI: true, ui })
+    const open = lastOpen(frames)
+    await b.handle({ type: "dialog_answer", room: "r", dialogId: open.dialogId, action: "deny", aid: "d1" })
+    const r = await p
+    assert.equal(r.details.cancelled, true)
+    assert.equal(lastClose(frames).reason, "denied")
+    b.uninstallDialogTap()
+  }
+  {
+    const { b, ui, frames } = o2Bridge()
+    await armTakeover(b)
+    const saved = ext.PROTOCOL.limits.dialogAnswerTimeoutMs
+    ext.PROTOCOL.limits.dialogAnswerTimeoutMs = 30
+    try {
+      const p = b.executeAskUser({ question: "q", options: ["甲", "乙"], multi: true }, { hasUI: true, ui })
+      const r = await p
+      assert.equal(r.details.cancelled, true, "超时按未作答")
+      assert.equal(lastClose(frames).reason, "timeout")
+    } finally {
+      ext.PROTOCOL.limits.dialogAnswerTimeoutMs = saved
+    }
+    b.uninstallDialogTap()
+  }
+})
+
+test("G3 多选：接管中途门控失效 → 交回本机兜底（逐项 confirm）完成", async () => {
+  const { b, ui, frames, calls } = o2Bridge()
+  await armTakeover(b)
+  const p = b.executeAskUser({ question: "q", options: ["甲", "乙"], multi: true }, { hasUI: true, ui })
+  const open = lastOpen(frames)
+  assert.equal(open.kind, "multiselect")
+  await b.handle({ type: "dialog_gate", hasViewers: false })
+  const r = await p
+  assert.deepEqual(r.details.answers, ["甲", "乙"], "兜底 confirm 替身恒 true、两项全选")
+  assert.ok(calls.some((c) => c[0] === "confirm"), "兜底走了本机 confirm 序列")
+  b.uninstallDialogTap()
+})
+
 /* ---------------- G2 工具审批门（design-ask-cards.md §4） ---------------- */
 
 test("G2 审批：策略纯函数三档矩阵", () => {

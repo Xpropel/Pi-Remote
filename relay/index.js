@@ -7,6 +7,8 @@
  *   data/accounts/<accountId>/devices.jsonl
  *   data/accounts/<accountId>/device-tokens.jsonl   设备令牌，只存 sha256（按 hash 合并，后行覆盖前行；
  *                                                  超阈值原子压缩，保留有效令牌 + 近期撤销记录）
+ *   data/accounts/<accountId>/viewers.jsonl          观看端名册（加密地基阶段 0 先行：只提供读写，
+ *                                                  行内 signPub/boxPub 等公钥字段原样保留，尚无调用方）
  *   data/accounts/<accountId>/sessions/<deviceId>.jsonl
  *
  * 写盘是追加；读时按 id 合并：两者都有 updatedAt 时取更新的行（相同/缺失仍按后行覆盖）。
@@ -494,6 +496,14 @@ class AccountIndex {
       firstSeenAt,
       updatedAt,
     };
+    // 加密地基（阶段 0）：设备公钥名册字段 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}}
+    // 与历史指纹 prevKeyFps[] 只做原样保留——本阶段不读、不验、不解释（登记与校验是阶段 1 的事）。
+    // 输入显式带了就以输入为准，没带就继承旧行：绝不能让一次普通 upsert 把已登记的公钥抹掉。
+    // 两边都没有时不写这两个键，老设备行的落盘形状逐字节不变。
+    if (device.keys != null) row.keys = device.keys;
+    else if (prev.keys != null) row.keys = prev.keys;
+    if (Array.isArray(device.prevKeyFps)) row.prevKeyFps = device.prevKeyFps;
+    else if (Array.isArray(prev.prevKeyFps)) row.prevKeyFps = prev.prevKeyFps;
     if (!sameJson(prev, row)) this._append(file, [row]);
     return { ok: true, stale: false, row };
   }
@@ -507,6 +517,53 @@ class AccountIndex {
   getDeviceRow(accountId, deviceId) {
     if (typeof deviceId !== "string" || !deviceId.trim()) return null;
     return this._map(this._devicesFile(accountId)).get(deviceId.trim()) || null;
+  }
+
+  _viewersFile(accountId) {
+    return path.join(this._accountDir(accountId), "viewers.jsonl");
+  }
+
+  /**
+   * 观看端名册（加密地基阶段 0）：行形状 {kind:"viewer", id, viewerId, name?, signPub, boxPub,
+   * admin, createdAt, revokedAt?}，id 与 viewerId 同值（readMap 按 id 合并，与其它名册同纪律）。
+   * 本阶段只提供读写能力、没有任何调用方：字段一律原样保留——写入时新行同名字段覆盖旧行、
+   * 未提及字段继承旧行，将来增删字段（如 keys 包裹）进出不丢、不必再改这里。
+   * 时间口径同 upsertDevice：updatedAt 夹到服务端当前时间，旧帧不覆盖新行。
+   */
+  upsertViewer(accountId, viewer, now = Date.now()) {
+    if (!viewer || typeof viewer.viewerId !== "string" || !viewer.viewerId.trim()) {
+      return { ok: false, reason: "missing_id" };
+    }
+    const id = viewer.viewerId.trim();
+    const file = this._viewersFile(accountId);
+    const prev = this._map(file).get(id) || {};
+    const updatedAt = Math.min(num(viewer.updatedAt, now), now);
+    if (Number.isFinite(Number(prev.updatedAt)) && updatedAt < Number(prev.updatedAt)) {
+      return { ok: true, stale: true, row: prev };
+    }
+    const row = {
+      ...prev,
+      ...viewer,
+      kind: "viewer",
+      id,
+      viewerId: id,
+      createdAt: num(prev.createdAt, 0) > 0 ? num(prev.createdAt, 0) : now,
+      updatedAt,
+    };
+    if (!sameJson(prev, row)) this._append(file, [row]);
+    return { ok: true, stale: false, row };
+  }
+
+  listViewers(accountId) {
+    const rows = [...this._map(this._viewersFile(accountId)).values()].filter((r) => r && r.kind === "viewer");
+    rows.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0) || String(a.id).localeCompare(String(b.id)));
+    return rows;
+  }
+
+  getViewerRow(accountId, viewerId) {
+    if (typeof viewerId !== "string" || !viewerId.trim()) return null;
+    const row = this._map(this._viewersFile(accountId)).get(viewerId.trim()) || null;
+    return row && row.kind === "viewer" ? row : null;
   }
 
   _tokensFile(accountId) {

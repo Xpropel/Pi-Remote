@@ -8,6 +8,8 @@ export const PROTO = 4
 /** 网页声明自己懂的能力（device.token：名册的 auth/paired 字段、配对与撤销；
  *  dialog.respond：O2 对话框应答面——relay 按此 cap 给应答卡保留 answerable，
  *  未声明的旧端只收只读观察卡；
+ *  dialog.multiselect：G3 多选对话框增量——UI 能渲染多选卡并回传 values 数组，
+ *  relay 只给同时声明了 dialog.respond 与本 cap 的端保留多选卡的 answerable；
  *  room.attention：R3-1 注意力恢复通道——UI 消费 room_list 条目的 lastTurnEnd
  *  摘要与 room_attention 帧，relay 按此 cap 分流，未声明的旧端不收摘要；
  *  room.dialogs：P9 A 房间等待摘要——UI 消费 room_list 条目的 waiting/waitingPrompt
@@ -30,7 +32,7 @@ export const PROTO = 4
  *  声明必须与落地同轮（第 2 轮审查 A-6）：UI 实际在用应答面却不声明，
  *  relay 一旦落 cap 门控就会把自己的应答面剥掉。
  *  room.label / sync.v3 / session.files / fs.browse 是 local / 设备通道的能力，网页不声明。 */
-export const VIEWER_CAPS = ["err.v4", "msg.cid", "device.token", "dialog.respond", "room.attention", "room.dialogs", "room.activity", "session.purge", "prefs.sync", "room.inbox", "room.schedule"] as const
+export const VIEWER_CAPS = ["err.v4", "msg.cid", "device.token", "dialog.respond", "dialog.multiselect", "room.attention", "room.dialogs", "room.activity", "session.purge", "prefs.sync", "room.inbox", "room.schedule"] as const
 
 export const CLIENT_VERSION = "4.0.0"
 
@@ -39,6 +41,7 @@ export type Cap =
   | "msg.cid"
   | "device.token"
   | "dialog.respond"
+  | "dialog.multiselect"
   | "room.attention"
   | "room.dialogs"
   | "room.activity"

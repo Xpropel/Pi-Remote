@@ -15,7 +15,7 @@ import { cx } from "../model/cx"
  * relay.dialogs / dialogReceipts / sendDialogAnswer / dismissDialogReceipt。
  */
 
-type LocalAnswer = PiLocalAnswer & { answer: { action: "allow" | "submit" | "deny"; value?: string; note?: string } }
+type LocalAnswer = PiLocalAnswer & { answer: { action: "allow" | "submit" | "deny"; value?: string; values?: string[]; note?: string } }
 type Ended = { dialog: NonNullable<PiContainerProps["relay"]["dialogs"][number]>; receipt: PiDialogReceiptView; note?: string }
 
 export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
@@ -28,6 +28,8 @@ export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
   const [denying, setDenying] = useState(false)
   const [denyNote, setDenyNote] = useState("")
   const [text, setText] = useState("")
+  // 多选（multiselect）的勾选集：点选只改本地集，底部「提交」才整份回传 values
+  const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set())
 
   // 卡关掉了：按关闭原因留回执（拒绝 / 超时 / 别处回答）
   const [seen, setSeen] = useState(dialogs)
@@ -66,7 +68,7 @@ export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
   const sendAnswer = relay.sendDialogAnswer
   const dialogId = dialog?.dialogId ?? null
   const answer = useCallback(
-    (payload: { action: "allow" | "submit" | "deny"; value?: string; note?: string }) => {
+    (payload: { action: "allow" | "submit" | "deny"; value?: string; values?: string[]; note?: string }) => {
       if (!dialogId) return
       const put = (next: LocalAnswer) => setLocal((cur) => ({ ...cur, [dialogId]: next }))
       put({ status: "sending", at: Date.now(), answer: payload })
@@ -100,8 +102,22 @@ export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
   const sending = view.state === "sending"
   const observe = view.observe
   const options = dialog.options ?? []
-  const source = dialog.kind === "confirm" ? "approval" : dialog.kind === "select" ? "choice" : "input"
-  const sourceLabel = dialog.kind === "confirm" ? "工具确认" : dialog.kind === "select" ? "选择题" : dialog.kind === "editor" ? "长文本回答" : "输入回答"
+  const source = dialog.kind === "confirm" ? "approval" : dialog.kind === "select" || dialog.kind === "multiselect" ? "choice" : "input"
+  const sourceLabel = dialog.kind === "confirm" ? "工具确认" : dialog.kind === "select" ? "选择题" : dialog.kind === "multiselect" ? "多选题" : dialog.kind === "editor" ? "长文本回答" : "输入回答"
+  // 多选的选择数区间（桥侧组帧已钳制；这里再按实际选项数收一遍）
+  const minSel = Math.min(Math.max(0, dialog.minSelect ?? 1), options.length)
+  const maxSel = Math.min(Math.max(minSel, dialog.maxSelect ?? options.length), options.length)
+  const toggleChecked = (option: string) => {
+    setChecked((cur) => {
+      const next = new Set(cur)
+      if (next.has(option)) next.delete(option)
+      else {
+        if (next.size >= maxSel) return cur
+        next.add(option)
+      }
+      return next
+    })
+  }
   const payloadJson = JSON.stringify(
     { kind: dialog.kind, title: dialog.title ?? "", message: dialog.message ?? "", options, placeholder: dialog.placeholder ?? "" },
     null,
@@ -140,6 +156,31 @@ export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
                 {option}
               </button>
             ))}
+          </div>
+        ) : null}
+
+        {!observe && dialog.kind === "multiselect" ? (
+          <div className="claude-approval-options" role="group" aria-label="选项（可多选）">
+            {options.map((option) => {
+              const on = checked.has(option)
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  role="checkbox"
+                  aria-checked={on}
+                  className="claude-approval-option"
+                  disabled={sending || (!on && checked.size >= maxSel)}
+                  onClick={() => toggleChecked(option)}
+                >
+                  {option}
+                </button>
+              )
+            })}
+            <p className="claude-approval-multicount">
+              已选 {checked.size} 项{minSel > 0 ? ` · 至少选 ${minSel} 项` : ""}
+              {maxSel < options.length ? ` · 最多选 ${maxSel} 项` : ""}
+            </p>
           </div>
         ) : null}
 
@@ -224,6 +265,15 @@ export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
           {dialog.kind === "confirm" ? (
             <ClaudeButton kind="primary" disabled={sending} onClick={() => answer({ action: "allow" })}>
               {sending ? "提交中…" : "单次批准"}
+            </ClaudeButton>
+          ) : null}
+          {dialog.kind === "multiselect" ? (
+            <ClaudeButton
+              kind="primary"
+              disabled={sending || checked.size < minSel}
+              onClick={() => answer({ action: "submit", values: options.filter((o) => checked.has(o)) })}
+            >
+              {sending ? "提交中…" : `提交（已选 ${checked.size}）`}
             </ClaudeButton>
           ) : null}
         </footer>

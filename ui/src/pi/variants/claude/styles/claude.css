@@ -3046,6 +3046,19 @@
   background: var(--claude-accent-soft);
 }
 
+/* 多选（G3）：勾中态沿 hover 的品牌色再压一档，并加粗字重区分于悬停 */
+[data-pi-ui="claude"] .claude-approval-option[aria-checked="true"] {
+  border-color: var(--claude-brand-deep);
+  background: var(--claude-accent-soft);
+  font-weight: 600;
+}
+
+[data-pi-ui="claude"] .claude-approval-multicount {
+  margin: 0;
+  color: var(--claude-text-3);
+  font-size: var(--claude-text-ui);
+}
+
 [data-pi-ui="claude"] .claude-approval-inputrow {
   display: flex;
   flex-direction: column;

@@ -2699,6 +2699,7 @@ export function useRelay() {
       if (!room) return Promise.resolve("error")
       const frame: Record<string, unknown> = { type: "dialog_answer", room, dialogId, action: answer.action }
       if (typeof answer.value === "string") frame.value = answer.value
+      if (Array.isArray(answer.values)) frame.values = answer.values
       if (answer.action === "deny" && answer.note) frame.note = answer.note
       return sendQuery(frame).then(
         () => "ok" as const,

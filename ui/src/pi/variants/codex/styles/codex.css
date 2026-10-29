@@ -3643,6 +3643,20 @@
   background: var(--codex-selected);
 }
 
+/* 多选（G3）：勾中态用选中底色 + 左侧 2px 标记条 */
+[data-pi-ui="codex"] .cx-approval-option[aria-checked="true"] {
+  background: var(--codex-selected);
+  box-shadow: inset 2px 0 0 var(--codex-accent, #2563eb);
+  font-weight: 600;
+}
+
+[data-pi-ui="codex"] .cx-approval-multicount {
+  color: var(--codex-text-2, #6b7280);
+  font-family: var(--codex-font-sans);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 [data-pi-ui="codex"] .cx-approval-input {
   min-height: 30px;
   padding: 4px 8px;

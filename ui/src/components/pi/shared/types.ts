@@ -304,11 +304,15 @@ export type PiTerminalItem = {
 
 export type PiDialogCard = {
   dialogId: string
-  /** select / confirm / input / editor */
+  /** select / confirm / input / editor / multiselect */
   kind: string
   title?: string
   options?: string[]
   optionsTotal?: number
+  /** 多选的最少选择数（缺失按 1） */
+  minSelect?: number
+  /** 多选的最多选择数（缺失按选项总数） */
+  maxSelect?: number
   message?: string
   placeholder?: string
   prefill?: string

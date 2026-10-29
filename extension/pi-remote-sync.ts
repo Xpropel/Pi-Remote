@@ -66,7 +66,8 @@ const PROTOCOL = {
     "prefs.sync": "主题偏好跨设备同步（R4-1）：同步范围只取通用外观五字段 {theme, chrome, font, size, mono}（faces/color 是皮肤内部细节、completionSound/queueSend 是本设备行为，都不入）。帧：prefs_set{subset, baseRev}（viewer→relay）/ prefs_saved{rev, updatedAt}（relay→发送端回执）/ prefs_changed{subset, rev, updatedAt}（relay→同账户其他 viewer 广播，发送端不收）；auth_result 增 prefs{subset, rev, updatedAt} | null 快照字段。冲突口径 LWW：relay 维护 per-account 单调 rev、以到达顺序裁决（不信客户端时钟），发送端 baseRev 落后不拒绝、但必须以回带 rev 对齐本地。relay per-account 存储（内存态 + 小文件落盘，落盘失败降级纯内存态）。未声明 prefs.sync 的 viewer 不收 prefs_changed、auth_result 不带 prefs 字段（只剥新面）",
     "sync.v3": "local 通道支持 room_registered / sync / snapshot{mode:append} 对齐",
     "health": "viewer 端口提供 GET /healthz",
-    "dialog.respond": "对话框应答（O2，接管语义）：开关 dialogRemoteAnswer 开 AND 房间有 viewer 在线才接管（任一假落回 O1 透传本机弹窗，fail-open）。帧：dialog_open{…,answerable:true}（接管时带）/ dialog_answer{dialogId,action:allow|submit|deny,value?,note?}（viewer→relay→桥，先答广播：首达 resolve、迟到回 dialog_gone）/ dialog_close{dialogId,outcome,reason:answered|denied|timeout|aborted,note?}（裁决后全端广播收回）/ dialog_gate{hasViewers}（relay→桥：房间 viewer 订阅数 0↔>0 推送，桥重连补发当前值）/ dialog_answer_switch{enabled}（UI→relay→桥：开关下达，桥仅内存持有、重启回默认关，桥重连由 relay 按存值重下达）/ dialog_answer_result{aid,dialogId,ok,code?}（桥→relay→答题 viewer 的回执通道）/ dialog_claim{dialogId}（可选意向提示：仅供他端显示正在作答，不承载应答权，一期未实现流程）。Deny 理由只随帧广播供 UI 呈现，不回传模型（resolve 值域装不下）同路开关帧（UI→relay→桥：relay 存当前值，桥重连时按存值重下达，桥仅内存持有、重启回默认）：ask_user_switch{enabled}（G1 ask_user 工具开关）/ approval_gate_switch{enabled,tier?,tools?}（G2 工具执行审批门：tier ∈ high-risk|all-non-readonly|list，tools 为名单制工具名数组，桥只在字段合法时采纳）。",
+    "dialog.respond": "对话框应答（O2，接管语义）：开关 dialogRemoteAnswer 开 AND 房间有 viewer 在线才接管（任一假落回 O1 透传本机弹窗，fail-open）。帧：dialog_open{…,answerable:true}（接管时带）/ dialog_answer{dialogId,action:allow|submit|deny,value?,values?,note?}（viewer→relay→桥，先答广播：首达 resolve、迟到回 dialog_gone；values 只用于 kind=multiselect 的多选应答，与 value 互斥，见 dialog.multiselect）/ dialog_close{dialogId,outcome,reason:answered|denied|timeout|aborted,note?}（裁决后全端广播收回）/ dialog_gate{hasViewers}（relay→桥：房间 viewer 订阅数 0↔>0 推送，桥重连补发当前值）/ dialog_answer_switch{enabled}（UI→relay→桥：开关下达，桥仅内存持有、重启回默认关，桥重连由 relay 按存值重下达）/ dialog_answer_result{aid,dialogId,ok,code?}（桥→relay→答题 viewer 的回执通道）/ dialog_claim{dialogId}（可选意向提示：仅供他端显示正在作答，不承载应答权，一期未实现流程）。Deny 理由只随帧广播供 UI 呈现，不回传模型（resolve 值域装不下）同路开关帧（UI→relay→桥：relay 存当前值，桥重连时按存值重下达，桥仅内存持有、重启回默认）：ask_user_switch{enabled}（G1 ask_user 工具开关）/ approval_gate_switch{enabled,tier?,tools?}（G2 工具执行审批门：tier ∈ high-risk|all-non-readonly|list，tools 为名单制工具名数组，桥只在字段合法时采纳）。",
+    "dialog.multiselect": "多选对话框（G3，dialog.respond 的增量）：dialog_open.kind 新增 multiselect，帧体带 options（复用 dialogOptionsMax/dialogOptionChars 上限）与 minSelect?/maxSelect?（缺省 minSelect=1、maxSelect=选项数，桥侧组帧时已钳制）；应答走既有 dialog_answer 帧但改带 values?: string[]（与 value 互斥），桥侧按选项表过滤伪造值、去重并按 min/maxSelect 裁决，不满足回 bad_args 且 dialog 不落定（卡留在原地可改选重交）。answerable 只发给同时声明了 dialog.respond 与 dialog.multiselect 的 viewer：未声明本能力的端收到剥掉 answerable 的只读卡（A-6 门控平移，直播/补发/等待摘要同口径），其 dialog_answer 对多选槽一律回 dialog_gone。桥侧生产者 = ask_user 工具直接登记（不经 ctx.ui，pi 无多选 dialog）；门控不满足或中途交回本机时走本机兜底（逐项 confirm 序列，仍是既有四种 dialog）。旧桥不产生 multiselect 帧，天然兼容。limits 不新增（复用 dialog* 项）",
     "dialog.observe": "对话框观察帧（O1）：dialog_open{dialogId,kind,title,options,message,placeholder,prefill,timeout,startedAt} / dialog_close{dialogId,outcome}；扩展 UI 状态帧 ext_status{statuses,widgets,title,working,tap} 与 ext_notify{message,level}。截断口径见 limits 的 dialog*/extNotify*/widget*/status* 项",
     "room.activity": "房间最近事件摘要（设计 D §2.3）：relay 在 local 事件出口旁按房维护 lastEvent{type,toolName?,at}（只记白名单事件类型 turn_start/agent_start/message_update/tool_execution_start/compaction_start，toolName 只取工具名元数据，不带任何正文/参数；回合落定 agent_settled 即清）；room_list 房间条目给声明了本能力的连接多带 lastEvent（无事件时为 null），未声明的旧端由 roomsViewFor 剥掉；不新开广播帧，lastEvent 搭 room_list 顺风车（随 busy/名册变化广播刷新）。UI 侧据它生成 busy 中的状态短语（正在执行命令/正在回复等），与 lastTurnEnd（room.attention）分工：lastEvent 管运行中、lastTurnEnd 管落定未读",
     "room.dialogs": "房间等待摘要（P9 A）：room_list 的房间条目（含 auth_result.rooms、list_rooms 回包）给声明了本能力的连接多带 waiting[] 与 waitingPrompt；waiting 只含 dialogId/kind/title/startedAt/timeout/answerable（不带 options/message/prefill），离线房间恒为空；waitingPrompt 是旧的单槽 ui_prompt 兜底信号，只在 waiting 为空时有意义；摘要变化时向设备级 viewer 连接广播 room_waiting{room,waiting,waitingPrompt}（每帧全量，不按订阅过滤，与 room_attention 的对象相同）",
@@ -76,7 +77,9 @@ const PROTOCOL = {
     "session.files": "设备级会话文件命令（P9 B，attach 声明）：attach 能按 sessionId 在设备的整个会话根目录里执行 delete_session，成功回 data{status:deleted|already_deleted,method:trash|unlink|null}",
     "fs.browse": "设备文件夹浏览（P9 C，attach 声明）：attach 能执行 list_dirs{path?,showHidden?}，只返回允许根目录内的目录名（不返回文件、不传文件内容），成功回 data{root,path,parent,entries,truncated}",
     "agent.state": "agent_state 全量快照事件能力位（子智能体胶囊预留：协议/通道先行，当前无生产者）",
-    "usage.activity.v1": "使用活动聚合（P10）：extension 只读本机 pi 会话 jsonl，聚合每日 tokens/messages/sessions、模型分布、活跃/连续天数、峰值（本地时区分天、role=user 口径、不含 cost），经本地通道上报 usage_snapshot{deviceId,requestId,snapshot}；relay 校验并按 account+device 缓存，向 viewer 提供 usage_get{deviceId,requestId,force} → usage_snapshot{available,reason?,snapshot?,receivedAt?,stale?}；快照只含聚合计数（无正文/标题/cwd/金额）。旧端兼容：无此 cap 的 relay 收到 usage_get 回 unknown_type（UI 空态），旧 extension 收到 usage_refresh 忽略/unknown_type（relay 降级 unsupported/timeout），新 relay 不向未声明 cap 的 viewer 主动发 usage 帧"
+    "usage.activity.v1": "使用活动聚合（P10）：extension 只读本机 pi 会话 jsonl，聚合每日 tokens/messages/sessions、模型分布、活跃/连续天数、峰值（本地时区分天、role=user 口径、不含 cost），经本地通道上报 usage_snapshot{deviceId,requestId,snapshot}；relay 校验并按 account+device 缓存，向 viewer 提供 usage_get{deviceId,requestId,force} → usage_snapshot{available,reason?,snapshot?,receivedAt?,stale?}；快照只含聚合计数（无正文/标题/cwd/金额）。旧端兼容：无此 cap 的 relay 收到 usage_get 回 unknown_type（UI 空态），旧 extension 收到 usage_refresh 忽略/unknown_type（relay 降级 unsupported/timeout），新 relay 不向未声明 cap 的 viewer 主动发 usage 帧",
+    "crypto.auth": "设备/观看端身份（加密地基，设计 A §3；阶段 0 仅协议登记、未实现，任何端不得据此改变行为）：声明后配对帧 pair/pair_request 可带 keys{signPub, boxPub, pop} 登记公钥（设备签名钥 DIK 为 Ed25519、观看端签名钥 VIK 为 P-256，box 钥两端均为 P-256；长度上限见 limits 的 signPubKeyBytes/boxPubKeyBytes，pop 为对裸配对码的签名），二维码核对字改绑握手记录（SAS）；auth 带 keyFp+clientNonce 时走挑战-签名：relay 回 auth_challenge{nonce, expiresAt}（nonce 长度见 authNonceBytes），端回 auth_response{sig}（签名输入为域分隔串 pi-remote-auth-v1 与身份 id、双侧 nonce 的拼接，上限见 signatureMaxBytes），验签失败/钥已撤销/身份与钥错配复用 auth_failed/device_revoked/device_mismatch，不新增码；auth_result 对钥连接增 auth:\"key\" 取值与 ackFp（本账号内容钥指纹，contentKeyFpChars 位 hex）供端上对账，不一致回 key_mismatch 警告；名册设备行可带 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}} 与 prevKeyFps[]，观看端名册另存 viewers.jsonl，均只登记公钥（公开数据）；管理帧可改带 adminSig（VIK 对帧规范化摘要的签名）替代 adminToken 字段；新帧 content_key_request/content_key_grant（ACK 包裹交付，relay 只按指纹路由透传、不落盘，包裹上限见 wrappedKeyMaxBytes）、key_update（旧 DIK 签新钥集合换登记）、viewer_revoke、list_viewer/viewer_list（观看端名册管理面）随实现阶段逐个启用",
+    "crypto.content": "正文端到端加密（加密地基，设计 A §4.1 中间档 b；阶段 0 仅协议登记、未实现，不产生任何 enc 房间；依赖 crypto.auth）：enc 房间的 msg 本体、remote text、检查点/清单 state 的 pending、流式 delta 文本、session firstMessage 预览与会话归档正文以信封 {enc:1, role?, h, ct} 承载——AES-256-GCM under 每房间一把 RCK，RCK 由账号内容主密钥 ACK 包裹（rckWrap 随房间 meta/快照 keyInfo 下发，包裹上限见 wrappedKeyMaxBytes），h 为 HMAC-SHA256(RCK, 规范化正文) 供 relay 无钥对锚与 remote 取代判定；relay 只见 seq/role/时间/字节数/toolmeta 等元数据，dialog 提示词与 ext_notify 在本档明文（已知暴露）；房间 meta 记录带 enc/ackFp/rckWrap，reset 换代继承 enc 不许洗回明文；未声明本能力的 viewer 订阅 enc 房间、或扩展向 enc 房间写明文，一律回 crypto_required 拒绝（不许把密文当明文渲染）；正文搜索命中 enc 房间回 unsupported 并标注已加密跳过；relay 永不持有 ACK/RCK"
   },
   "errors": {
     "auth_failed": {
@@ -263,6 +266,14 @@ const PROTOCOL = {
       "message": "这台设备没有开启文件夹浏览",
       "retryable": false
     },
+    "crypto_required": {
+      "message": "该房间已加密，需要支持加密的端",
+      "retryable": false
+    },
+    "key_mismatch": {
+      "message": "本账号各端内容钥指纹不一致",
+      "retryable": true
+    },
     "internal": {
       "message": "内部错误",
       "retryable": true
@@ -318,7 +329,13 @@ const PROTOCOL = {
     "usageDaysMax": 400,
     "usageModelsMax": 8,
     "usageSnapshotMaxBytes": 262144,
-    "usageRequestTimeoutMs": 8000
+    "usageRequestTimeoutMs": 8000,
+    "signPubKeyBytes": 44,
+    "boxPubKeyBytes": 128,
+    "signatureMaxBytes": 128,
+    "wrappedKeyMaxBytes": 512,
+    "authNonceBytes": 32,
+    "contentKeyFpChars": 16
   }
 } as const;
 // @@PROTOCOL_END
@@ -899,8 +916,14 @@ function buildDialogOpen(kind: string, args: any[], dialogId: string, startedAt:
     const timeout = opts && typeof opts === "object" ? opts.timeout : undefined;
     if (typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0) ev.timeout = timeout;
   }
-  if (kind === "select") Object.assign(ev, capDialogOptions(args[1]));
-  else if (kind === "confirm") {
+  if (kind === "select" || kind === "multiselect") Object.assign(ev, capDialogOptions(args[1]));
+  if (kind === "multiselect") {
+    // 多选的选择数区间随帧下发（卡面计数与确认按钮可用性靠它）：组帧时按选项数钳制一遍，
+    // 与桥侧裁决（dialogAnswerValue）同口径，消费端不必再猜缺省值
+    const range = multiSelectRange(Array.isArray(args[1]) ? args[1].length : 0, args[2]?.minSelect, args[2]?.maxSelect);
+    ev.minSelect = range.min;
+    ev.maxSelect = range.max;
+  } else if (kind === "confirm") {
     const message = dialogText(args[1], PROTOCOL.limits.dialogTextMax);
     if (message !== undefined) ev.message = message;
   } else if (kind === "input") {
@@ -916,6 +939,9 @@ function buildDialogOpen(kind: string, args: any[], dialogId: string, startedAt:
 /* ---------------- G1 ask_user 工具 / G2 工具审批门（design-ask-cards.md §3/§4） ----------------
  * 两者都是 dialog 的「生产者」：只调 ctx.ui 四种原生 dialog，全部流量走既有 tap 管道
  * （O1 观察 / O2 接管 / fail-open），本节不新增任何帧、不改协议。
+ * G3 多选（§5 路线 B）是唯一例外：pi 无多选 dialog，ask_user 的 multi 形态由桥直接向
+ * dialog 子系统登记 kind=multiselect 的持留 dialog（协议增量只有 dialog.multiselect
+ * 一个 cap + dialog_answer 的 values 字段），本机兜底仍只用既有 confirm 拼装。
  * 开关口径：默认全关，状态只存桥内存（与 dialogRemoteAnswer 同纪律，重启回默认），
  * 经 ask_user_switch / approval_gate_switch 帧下达（发送方在 relay/UI 侧另行接入）；
  * 另有环境变量 PI_REMOTE_ASK_USER=1 / PI_REMOTE_APPROVAL_GATE=1 可作本机 opt-in。
@@ -938,6 +964,9 @@ export const ASK_USER_PARAMETERS: any = {
     options: { type: "array", items: { type: "string" }, description: "可选项（2-20 项，每项 ≤80 字）。给出 options 即单选提问；不给则为自由文本提问" },
     recommended: { type: "number", description: "推荐项下标（0 起）。只加「（推荐）」标记，不预选" },
     allowFreeText: { type: "boolean", description: "单选时是否在末尾加「其他（自己输入）…」供用户自己输入（默认 true）" },
+    multi: { type: "boolean", description: "true 时 options 为多选提问（可勾选多项后统一提交）。与 kind:\"confirm\" 互斥；多选不支持「其他（自己输入）…」自由项" },
+    minSelect: { type: "number", description: "多选最少选几项（缺省 1；传 0 表示可以一项都不选）" },
+    maxSelect: { type: "number", description: "多选最多选几项（缺省为选项总数）" },
     kind: { type: "string", enum: ["confirm"], description: "传 \"confirm\" 时为二元确认提问（忽略 options），detail 作为确认说明" },
     detail: { type: "string", description: "confirm 提问的说明文本" },
     placeholder: { type: "string", description: "自由文本输入框的占位提示" },
@@ -991,8 +1020,46 @@ export function prepareAskOptions(options: string[], recommended: number, allowF
   return { display, recAt, sentinelAt };
 }
 
+/** 多选的选择数区间（§5）：minSelect 缺省 1、maxSelect 缺省选项总数；两者钳进
+ *  [0, 选项数] 且 min ≤ max。组帧（buildDialogOpen）、桥侧裁决、本机兜底共用同一口径。 */
+export function multiSelectRange(optionCount: number, minSelect?: any, maxSelect?: any): { min: number; max: number } {
+  const total = Number.isFinite(optionCount) && optionCount > 0 ? Math.floor(optionCount) : 0;
+  let min = Number.isInteger(minSelect) ? minSelect : 1;
+  let max = Number.isInteger(maxSelect) ? maxSelect : total;
+  min = Math.min(Math.max(0, min), total);
+  max = Math.min(Math.max(min, max), total);
+  return { min, max };
+}
+
+/** 多选应答校验（§5）：values 必须为字符串数组；不在选项表内的伪造值过滤掉、重复值去重
+ *  （按提交顺序保留）；过滤后的项数不满足 [min, max] 回 { ok:false }——桥侧据此回
+ *  bad_args 且不落定（卡留在原地改选重交），本机兜底产出同理按未作答收口。 */
+export function validateMultiValues(options: string[], values: any, min: number, max: number): { ok: true; values: string[] } | { ok: false } {
+  if (!Array.isArray(values)) return { ok: false };
+  const allowed = new Set(options);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    if (typeof v !== "string" || !allowed.has(v) || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  if (out.length < min || out.length > max) return { ok: false };
+  return { ok: true, values: out };
+}
+
 function askResultOk(answer: string, kind: string): any {
   return { content: [{ type: "text", text: `用户回答：${answer}` }], details: { answer, cancelled: false, kind } };
+}
+
+/** 多选的规范结果（§3.3 的多选形态）：content 为顿号连接的全文，details 同时带
+ *  answers 数组（逐项）与 answer 连接串（与单值形态同名字段，方便渲染/重建共用）。 */
+function askResultMultiOk(answers: string[]): any {
+  const joined = answers.join("、");
+  return {
+    content: [{ type: "text", text: answers.length ? `用户回答：${joined}` : "用户回答：（未选择任何项）" }],
+    details: { answer: joined, answers, cancelled: false, kind: "multiselect" },
+  };
 }
 
 function askResultUnanswered(reason?: string): any {
@@ -4086,6 +4153,16 @@ class Bridge {
     if (entry.kind === "confirm") {
       return action === "allow" ? { ok: true, value: true } : { ok: false };
     }
+    if (entry.kind === "multiselect") {
+      // 多选（G3）：应答带 values 数组（与 value 互斥）；按选项表过滤伪造值、去重并按
+      // min/maxSelect 裁决，不满足回 bad_args 不落定——resolve 值域为 string[]
+      if (action !== "submit") return { ok: false };
+      const options = Array.isArray(entry.args[1]) ? entry.args[1].map((v: any) => String(v ?? "")) : [];
+      const mopts = entry.args[2] && typeof entry.args[2] === "object" ? entry.args[2] : {};
+      const range = multiSelectRange(options.length, mopts.minSelect, mopts.maxSelect);
+      const verdict = validateMultiValues(options, msg.values, range.min, range.max);
+      return verdict.ok ? { ok: true, value: verdict.values } : { ok: false };
+    }
     if (action !== "submit") return { ok: false };
     const value = msg.value;
     if (typeof value !== "string") return { ok: false };
@@ -4203,6 +4280,7 @@ class Bridge {
       if (Array.isArray(p.options) && p.options.length) {
         const v = validateAskOptions(p.options);
         if (!v.ok) return askResultError(v.error);
+        if (p.multi === true) return await this.executeAskMulti(title, v.options, p, ui, opts);
         const { display, recAt, sentinelAt } = prepareAskOptions(v.options, typeof p.recommended === "number" ? p.recommended : -1, p.allowFreeText !== false);
         const picked = await ui.select(title, display, opts);
         if (picked === undefined) return askResultUnanswered();
@@ -4222,6 +4300,54 @@ class Bridge {
       log("ask_user dialog 异常（按未作答处理）:", e?.message);
       return askResultUnanswered();
     }
+  }
+
+  /** ask_user 多选形态（§5 路线 B）：pi 没有多选 dialog、custom() 远程不可传输——由桥
+   *  直接向 dialog 子系统登记一个 kind=multiselect 的持留 dialog（beginDialog 的持留 /
+   *  单活队列 / 超时 / settle 机器全复用，resolve 值域扩为 string[]）。
+   *  门控不满足时 beginDialog 回 null、或接管中途门控失效被交回本机时（release），都走
+   *  本机兜底 askMultiLocalFallback。应答回来的是「展示选项」（含推荐标记），在此按位还原
+   *  成选项原文再交模型，与单选的还原口径一致。取消/超时/产出不满足 minSelect 一律
+   *  规范化为未作答，与 G1 同语义、绝不抛错。 */
+  private async executeAskMulti(title: string, options: string[], p: any, ui: any, opts: any): Promise<any> {
+    const { display, recAt } = prepareAskOptions(options, typeof p.recommended === "number" ? p.recommended : -1, false);
+    const range = multiSelectRange(display.length, p.minSelect, p.maxSelect);
+    const mopts: any = { minSelect: range.min, maxSelect: range.max };
+    if (opts && typeof opts.timeout === "number") mopts.timeout = opts.timeout;
+    if (opts && opts.signal) mopts.signal = opts.signal;
+    const release = () => this.askMultiLocalFallback(ui, title, display, range.max, opts);
+    let picked: any;
+    try {
+      const held = this.beginDialog("multiselect", [title, display, mopts], release);
+      picked = held ? await held : await release();
+    } catch (e: any) {
+      log("ask_user 多选 dialog 异常（按未作答处理）:", e?.message);
+      return askResultUnanswered();
+    }
+    if (!Array.isArray(picked)) return askResultUnanswered();
+    const verdict = validateMultiValues(display, picked, range.min, range.max);
+    if (!verdict.ok) return askResultUnanswered();
+    const answers = verdict.values.map((v) => (recAt >= 0 && v === display[recAt] ? options[recAt] : v));
+    return askResultMultiOk(answers);
+  }
+
+  /** 多选本机兜底（§5）：逐项 confirm 序列——每项问一次「选择「X」？」，达到 maxSelect
+   *  即停（后面的自动不选）。选 confirm 序列而不是 ctx.ui.custom()：custom 的组件契约
+   *  依赖 TUI 组件模型、本文件零依赖口径下无可传输实现，且 RPC 形态下 custom 直接回
+   *  undefined；confirm 是既有四种 dialog 之一，本机/RPC 都可用，还顺带走 tap 管道。
+   *  confirm 的 false 无法区分「不选」与「取消/超时」（pi 语义即如此），从宽按不选处理、
+   *  序列继续；最终产出由 executeAskMulti 按 minSelect 复核，不满足按未作答收口。
+   *  返回展示选项数组（与远程 resolve 同值域）。 */
+  private async askMultiLocalFallback(ui: any, title: string, display: string[], max: number, opts: any): Promise<string[]> {
+    if (!ui || typeof ui.confirm !== "function") return [];
+    const picked: string[] = [];
+    for (const option of display) {
+      if (picked.length >= max) break;
+      let yes = false;
+      try { yes = (await ui.confirm(title, `选择「${option}」？`, opts)) === true; } catch { yes = false; }
+      if (yes) picked.push(option);
+    }
+    return picked;
   }
 
   /* ---------------- G2 工具审批门：开关 / 裁决 ---------------- */
@@ -8119,7 +8245,7 @@ export default function (pi: any) {
     pi.registerTool({
       name: ASK_USER_TOOL_NAME,
       label: "向用户提问",
-      description: "向用户提出一个需要拍板的问题并等待回答。仅在确实需要用户决定时使用，不要用它闲聊，也不要问能自行查明的事。支持单选（options，末尾可带「其他（自己输入）…」）、自由文本、二元确认（kind:\"confirm\"）；不支持多选，需要多选时拆成多个问题逐个问。用户取消或超时会返回「未作答」结果，此时请自行做出合理假设继续，并在回复中声明该假设。",
+      description: "向用户提出一个需要拍板的问题并等待回答。仅在确实需要用户决定时使用，不要用它闲聊，也不要问能自行查明的事。支持单选（options，末尾可带「其他（自己输入）…」）、多选（options + multi:true，可用 minSelect/maxSelect 约束选择数；多选没有自由输入项）、自由文本、二元确认（kind:\"confirm\"）。用户取消或超时会返回「未作答」结果，此时请自行做出合理假设继续，并在回复中声明该假设。",
       promptSnippet: "Ask the user a question (ask_user) when a decision only they can make is needed",
       exposure: "model-only",
       defaultActive: false,
@@ -8661,5 +8787,5 @@ function usageEmptySnapshot(options: any = {}): any {
   });
 }
 
-export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, approvalGateDecision, approvalSummary };
+export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary };
 

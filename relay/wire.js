@@ -14,7 +14,7 @@ const RELAY_VERSION = "4.0.0";
  * 注意：session.files / fs.browse 是 attach 声明、relay 只转发的能力，不在 relay 的
  * 能力表里（relay 通过 room_list.devices[].features 把设备侧能力透传给网页）。
  */
-const RELAY_CAPS = ["device.qr-link", "device.token", "dialog.observe", "dialog.respond", "err.v4", "health", "msg.cid", "prefs.sync", "room.activity", "room.attention", "room.dialogs", "room.inbox", "room.label", "room.schedule", "session.purge", "sync.v3", "usage.activity.v1"];
+const RELAY_CAPS = ["device.qr-link", "device.token", "dialog.multiselect", "dialog.observe", "dialog.respond", "err.v4", "health", "msg.cid", "prefs.sync", "room.activity", "room.attention", "room.dialogs", "room.inbox", "room.label", "room.schedule", "session.purge", "sync.v3", "usage.activity.v1"];
 const CODE_RE = /^[a-z][a-z0-9_]*$/;
 
 /** 对方连接在握手里声明过这个能力（新帧/新字段只发给声明过的一方） */

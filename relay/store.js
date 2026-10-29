@@ -47,7 +47,9 @@
  *      按全段总和判，到顶行为不变。
  *
  * 记录种类（每行一个 JSON）：
- *   {k:"meta", seq:0, rev, headTruncated?}  存储世代；reset/首次 seed 时写在文件首行
+ *   {k:"meta", seq:0, rev, headTruncated?, ...}  存储世代；reset/首次 seed 时写在文件首行。
+ *      标准字段之外的未知字段一律原样保留往返（加密地基阶段 0：将来的 enc/ackFp/rckWrap 住这里，
+ *      本阶段无人写、store 只保证读进来再写出去不丢）
  *   {k:"msg", seq, m}                        message_end 的权威消息 / 扩展快照里的消息
  *   {k:"remote", seq, text, at, cid?}        remote_message 回显（cid = 网页生成的消息 id）
  *   {k:"drop", seq:0, ref}                   ref 号 remote 回显注入失败，回放时过滤
@@ -700,6 +702,7 @@ class RoomStore {
       file,
       rev: null,
       metaWritten: false,
+      metaExtra: null,   // meta 行标准字段（rev/headTruncated）之外的未知字段原样保留（见文件头注）
       headTruncated: false,
       seq: 0,
       // 热缓存条目：{k, seq, json}；json = 交付给 UI 的消息 JSON 串
@@ -755,6 +758,7 @@ class RoomStore {
   _resetRoomData(r) {
     r.rev = null;
     r.metaWritten = false;
+    r.metaExtra = null; // 回到"还没读盘"的空白：随后扫描会从盘上的 meta 行重新装回
     r.headTruncated = false;
     r.seq = 0;
     r.recent = [];
@@ -989,6 +993,13 @@ class RoomStore {
         if (typeof rec.rev === "string") r.rev = rec.rev;
         r.headTruncated = !!rec.headTruncated;
         r.metaWritten = true;
+        // 标准字段之外的未知字段（含将来的 enc/ackFp/rckWrap）整份收下，下次写 meta 行时原样带回。
+        const extra = {};
+        for (const key of Object.keys(rec)) {
+          if (key === "k" || key === "seq" || key === "rev" || key === "headTruncated") continue;
+          extra[key] = rec[key];
+        }
+        r.metaExtra = Object.keys(extra).length ? extra : null;
         return;
       }
       if (rec.k === "drop") {
@@ -1783,6 +1794,7 @@ class RoomStore {
   _transplantIndex(live, staging) {
     live.rev = staging.rev;
     live.metaWritten = staging.metaWritten;
+    live.metaExtra = staging.metaExtra;
     live.headTruncated = staging.headTruncated;
     live.seq = staging.seq;
     live.recent = staging.recent;
@@ -1978,7 +1990,11 @@ class RoomStore {
     }
     if (!r.metaWritten) {
       r.metaWritten = true;
-      const metaLine = JSON.stringify({ k: "meta", seq: 0, rev: r.rev, headTruncated: r.headTruncated || undefined });
+      // metaExtra 为空时与旧写法逐字节一致；有未知字段（如 enc 世代）才追加在标准字段之后。
+      // reset() 换代不清 metaExtra：新世代的 meta 行继续带这些字段（设计 §5：不许借 reset 洗掉 enc）。
+      const metaObj = { k: "meta", seq: 0, rev: r.rev, headTruncated: r.headTruncated || undefined };
+      if (r.metaExtra) Object.assign(metaObj, r.metaExtra);
+      const metaLine = JSON.stringify(metaObj);
       r.metaLine = metaLine;
       r.buf.push(metaLine);
     }

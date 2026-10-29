@@ -1095,6 +1095,12 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
               send(ws, errorFrame("dialog_gone", undefined, { id: origId, room: room.id }), cfg);
               return;
             }
+            // 多选槽（G3）再加一道 cap：未声明 dialog.multiselect 的端从未拿到可答卡，
+            // 其应答同样按"已关闭"回绝、不转发（与 A-6 的 respond 门控同姿势）。
+            if (slot.kind === "multiselect" && !hasCap(ws, "dialog.multiselect")) {
+              send(ws, errorFrame("dialog_gone", undefined, { id: origId, room: room.id }), cfg);
+              return;
+            }
             const action = msg.action === "allow" || msg.action === "submit" || msg.action === "deny" ? msg.action : null;
             if (!action) {
               send(ws, errorFrame("bad_args", "action 只能是 allow / submit / deny", { id: origId, room: room.id }), cfg);
@@ -1102,6 +1108,11 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             }
             const frame = { type: "dialog_answer", room: room.id, dialogId, action };
             if (typeof msg.value === "string") frame.value = msg.value;
+            // 多选应答的 values 数组：按 limits 钳制后转发，逐项裁决（过滤伪造/去重/min-max）在桥
+            if (Array.isArray(msg.values)) {
+              const L = PROTOCOL.limits || {};
+              frame.values = msg.values.slice(0, L.dialogOptionsMax || 20).map((v) => String(v ?? "").slice(0, L.dialogOptionChars || 80));
+            }
             if (action === "deny" && typeof msg.note === "string" && msg.note.trim()) {
               frame.note = msg.note.slice(0, (PROTOCOL.limits && PROTOCOL.limits.dialogNoteMax) || 500);
             }

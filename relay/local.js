@@ -236,6 +236,11 @@ function cleanDialogSlot(src) {
   for (const key of ["message", "placeholder", "prefill"]) {
     if (typeof src[key] === "string") slot[key] = src[key].slice(0, L.dialogTextMax || 500);
   }
+  // 多选（G3）：选择数区间随槽保留，补发时卡面计数/确认可用性靠它；桥侧组帧已钳制，这里只认整数
+  if (kind === "multiselect") {
+    if (Number.isInteger(src.minSelect)) slot.minSelect = src.minSelect;
+    if (Number.isInteger(src.maxSelect)) slot.maxSelect = src.maxSelect;
+  }
   if (typeof src.timeout === "number" && Number.isFinite(src.timeout) && src.timeout > 0) slot.timeout = src.timeout;
   // O2 接管中的 dialog 带 answerable:true：补发（sendCachedDialogs）原样保留，剩余时限由前端按 startedAt+timeout 重算
   if (src.answerable === true) slot.answerable = true;
@@ -276,11 +281,21 @@ function cleanDialogCloseNote(event) {
 /** dialog_open 直播的 cap 门控（A-6）：answerable 是"应答面"数据，只发给握手声明了
  *  dialog.respond 的 viewer；未声明的（旧端）收到剥掉 answerable 的同一帧——观察
  *  形态的只读卡（kind/title/options 等）照常到达，不许把卡一起剥掉。dialog_close
- *  等收卡帧不走这里：旧端同样需要它摘卡，门控了只会留幽灵卡。 */
+ *  等收卡帧不走这里：旧端同样需要它摘卡，门控了只会留幽灵卡。
+ *  多选（G3）在此之上再加一道：kind=multiselect 的 answerable 还要求 dialog.multiselect。 */
 function broadcastDialogOpen(room, frame, cfg) {
+  // 多选（G3）：answerable 还要再过 dialog.multiselect 一道 cap——未声明的端只收只读卡
+  let kind = null;
+  try {
+    const parsed = JSON.parse(frame);
+    kind = parsed && parsed.event && typeof parsed.event.kind === "string" ? parsed.event.kind : null;
+  } catch {}
   const withCap = [];
   const withoutCap = [];
-  for (const v of room.viewers) (hasCap(v, "dialog.respond") ? withCap : withoutCap).push(v);
+  for (const v of room.viewers) {
+    const ok = hasCap(v, "dialog.respond") && (kind !== "multiselect" || hasCap(v, "dialog.multiselect"));
+    (ok ? withCap : withoutCap).push(v);
+  }
   if (!withoutCap.length) {
     broadcast(withCap, frame, cfg);
     return;

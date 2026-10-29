@@ -42,12 +42,16 @@ export function uiPromptAfterEvent(current: UiPrompt | null, event: UiPromptEven
 
 export type DialogCard = {
   dialogId: string
-  /** select / confirm / input / editor（custom 不会被捕获，见定版不做清单）。 */
+  /** select / confirm / input / editor / multiselect（custom 不会被捕获，见定版不做清单）。 */
   kind: string
   title?: string
   options?: string[]
   /** 选项总数（选项被协议上限截断时才有，> options.length）。 */
   optionsTotal?: number
+  /** 多选（multiselect）的最少选择数（桥侧组帧已钳制；缺失按 1）。 */
+  minSelect?: number
+  /** 多选（multiselect）的最多选择数（缺失按选项总数）。 */
+  maxSelect?: number
   message?: string
   placeholder?: string
   prefill?: string
@@ -66,6 +70,8 @@ export type DialogEvent = {
   title?: unknown
   options?: unknown
   optionsTotal?: unknown
+  minSelect?: unknown
+  maxSelect?: unknown
   message?: unknown
   placeholder?: unknown
   prefill?: unknown
@@ -95,6 +101,8 @@ export function normalizeDialogCard(event: DialogEvent, now: number): DialogCard
   if (title) card.title = title
   if (Array.isArray(event.options)) card.options = event.options.map((value) => String(value ?? ""))
   if (typeof event.optionsTotal === "number" && Number.isFinite(event.optionsTotal)) card.optionsTotal = event.optionsTotal
+  if (typeof event.minSelect === "number" && Number.isFinite(event.minSelect) && event.minSelect >= 0) card.minSelect = Math.floor(event.minSelect)
+  if (typeof event.maxSelect === "number" && Number.isFinite(event.maxSelect) && event.maxSelect >= 0) card.maxSelect = Math.floor(event.maxSelect)
   const message = textField(event.message)
   if (message) card.message = message
   const placeholder = textField(event.placeholder)
@@ -107,8 +115,9 @@ export function normalizeDialogCard(event: DialogEvent, now: number): DialogCard
 }
 
 /** 应答动作（一期决策面）：allow = Allow once / confirm 的确认；submit 带值（选项原文、输入文本）；
- * deny 带可选理由 — 理由只给人看，不回传模型（定版）。 */
-export type DialogAnswer = { action: "allow" | "submit" | "deny"; value?: string; note?: string }
+ * deny 带可选理由 — 理由只给人看，不回传模型（定版）。
+ * 多选（G3）走 submit + values 数组（选项原文集合，与 value 互斥）。 */
+export type DialogAnswer = { action: "allow" | "submit" | "deny"; value?: string; values?: string[]; note?: string }
 
 /** 应答发送结果：ok 已被桥接受；gone 弹窗已被处理（他端先答/已关闭）；error 发送层失败（可重试）。 */
 export type DialogAnswerResult = "ok" | "gone" | "error"

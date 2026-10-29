@@ -433,10 +433,13 @@ function withoutAnswerable(slot) {
 function sendCachedDialogs(ws, room, cfg) {
   if (!room || !room.online || !room.dialogs) return;
   const canAnswer = hasCap(ws, "dialog.respond");
+  const canMulti = canAnswer && hasCap(ws, "dialog.multiselect");
   for (const slot of Object.values(room.dialogs)) {
+    // 多选槽（G3）的 answerable 还要 dialog.multiselect 那道 cap，与直播门控同口径
+    const slotCanAnswer = slot.kind === "multiselect" ? canMulti : canAnswer;
     let frame;
     try {
-      frame = JSON.stringify({ type: "room_event", room: room.id, event: canAnswer ? slot : withoutAnswerable(slot) });
+      frame = JSON.stringify({ type: "room_event", room: room.id, event: slotCanAnswer ? slot : withoutAnswerable(slot) });
     } catch (e) {
       log("弹窗观察补发序列化失败，跳过:", room.id, e.message);
       continue;
@@ -759,13 +762,14 @@ function broadcastRoomAttention(rooms, room, cfg) {
 /** 房间的等待摘要：只在线房间有；canAnswer=false 时去掉 answerable。
  *  waiting 只带 6 个字段（不带 options/message/prefill 等正文面）；waitingPrompt 是
  *  旧的单槽 ui_prompt 兜底信号，只在 waiting 为空时才有意义。 */
-function waitingOf(room, canAnswer) {
+function waitingOf(room, canAnswer, canMulti = canAnswer) {
   if (!room || !room.online) return { waiting: [], waitingPrompt: null };
   const waiting = Object.values(room.dialogs || {}).map((s) => {
     const w = { dialogId: s.dialogId, kind: s.kind, startedAt: s.startedAt };
     if (s.title) w.title = s.title;
     if (s.timeout) w.timeout = s.timeout;
-    if (canAnswer && s.answerable === true) w.answerable = true;
+    // 多选槽（G3）的 answerable 还要 dialog.multiselect 那道 cap，与直播/补发同口径
+    if ((s.kind === "multiselect" ? canMulti : canAnswer) && s.answerable === true) w.answerable = true;
     return w;
   });
   const p = room.uiPrompt;
@@ -785,7 +789,7 @@ function broadcastRoomWaiting(rooms, room, cfg) {
     room._waitingScheduled = false;
     for (const v of rooms.viewers) {
       if (!hasCap(v, "room.dialogs")) continue;
-      send(v, { type: "room_waiting", room: room.id, ...waitingOf(room, hasCap(v, "dialog.respond")) }, cfg);
+      send(v, { type: "room_waiting", room: room.id, ...waitingOf(room, hasCap(v, "dialog.respond"), hasCap(v, "dialog.multiselect")) }, cfg);
     }
   });
 }
@@ -945,7 +949,13 @@ class Rooms {
     if (room.online) {
       const slots = Object.values(room.dialogs || {}).filter((s) => s && typeof s.dialogId === "string" && s.dialogId);
       let canAnswer = false;
-      for (const v of this.viewers) if (hasCap(v, "dialog.respond")) { canAnswer = true; break; }
+      let canMulti = false;
+      for (const v of this.viewers) {
+        if (hasCap(v, "dialog.respond")) {
+          canAnswer = true;
+          if (hasCap(v, "dialog.multiselect")) canMulti = true;
+        }
+      }
       for (const s of slots) {
         const key = `dialog:${s.dialogId}`;
         live.add(key);
@@ -954,7 +964,8 @@ class Rooms {
           kind: "waiting", subkind: "dialog",
           dialogKind: typeof s.kind === "string" ? s.kind : undefined,
           title: s.title || undefined,
-          answerable: canAnswer && s.answerable === true,
+          // 多选槽（G3）的账本 answerable 同样要过 dialog.multiselect 那道 cap
+          answerable: (s.kind === "multiselect" ? canMulti : canAnswer) && s.answerable === true,
           at: s.startedAt || Date.now(),
         });
       }

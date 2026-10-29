@@ -11,7 +11,8 @@
     "prefs.sync": "主题偏好跨设备同步（R4-1）：同步范围只取通用外观五字段 {theme, chrome, font, size, mono}（faces/color 是皮肤内部细节、completionSound/queueSend 是本设备行为，都不入）。帧：prefs_set{subset, baseRev}（viewer→relay）/ prefs_saved{rev, updatedAt}（relay→发送端回执）/ prefs_changed{subset, rev, updatedAt}（relay→同账户其他 viewer 广播，发送端不收）；auth_result 增 prefs{subset, rev, updatedAt} | null 快照字段。冲突口径 LWW：relay 维护 per-account 单调 rev、以到达顺序裁决（不信客户端时钟），发送端 baseRev 落后不拒绝、但必须以回带 rev 对齐本地。relay per-account 存储（内存态 + 小文件落盘，落盘失败降级纯内存态）。未声明 prefs.sync 的 viewer 不收 prefs_changed、auth_result 不带 prefs 字段（只剥新面）",
     "sync.v3": "local 通道支持 room_registered / sync / snapshot{mode:append} 对齐",
     "health": "viewer 端口提供 GET /healthz",
-    "dialog.respond": "对话框应答（O2，接管语义）：开关 dialogRemoteAnswer 开 AND 房间有 viewer 在线才接管（任一假落回 O1 透传本机弹窗，fail-open）。帧：dialog_open{…,answerable:true}（接管时带）/ dialog_answer{dialogId,action:allow|submit|deny,value?,note?}（viewer→relay→桥，先答广播：首达 resolve、迟到回 dialog_gone）/ dialog_close{dialogId,outcome,reason:answered|denied|timeout|aborted,note?}（裁决后全端广播收回）/ dialog_gate{hasViewers}（relay→桥：房间 viewer 订阅数 0↔>0 推送，桥重连补发当前值）/ dialog_answer_switch{enabled}（UI→relay→桥：开关下达，桥仅内存持有、重启回默认关，桥重连由 relay 按存值重下达）/ dialog_answer_result{aid,dialogId,ok,code?}（桥→relay→答题 viewer 的回执通道）/ dialog_claim{dialogId}（可选意向提示：仅供他端显示正在作答，不承载应答权，一期未实现流程）。Deny 理由只随帧广播供 UI 呈现，不回传模型（resolve 值域装不下）同路开关帧（UI→relay→桥：relay 存当前值，桥重连时按存值重下达，桥仅内存持有、重启回默认）：ask_user_switch{enabled}（G1 ask_user 工具开关）/ approval_gate_switch{enabled,tier?,tools?}（G2 工具执行审批门：tier ∈ high-risk|all-non-readonly|list，tools 为名单制工具名数组，桥只在字段合法时采纳）。",
+    "dialog.respond": "对话框应答（O2，接管语义）：开关 dialogRemoteAnswer 开 AND 房间有 viewer 在线才接管（任一假落回 O1 透传本机弹窗，fail-open）。帧：dialog_open{…,answerable:true}（接管时带）/ dialog_answer{dialogId,action:allow|submit|deny,value?,values?,note?}（viewer→relay→桥，先答广播：首达 resolve、迟到回 dialog_gone；values 只用于 kind=multiselect 的多选应答，与 value 互斥，见 dialog.multiselect）/ dialog_close{dialogId,outcome,reason:answered|denied|timeout|aborted,note?}（裁决后全端广播收回）/ dialog_gate{hasViewers}（relay→桥：房间 viewer 订阅数 0↔>0 推送，桥重连补发当前值）/ dialog_answer_switch{enabled}（UI→relay→桥：开关下达，桥仅内存持有、重启回默认关，桥重连由 relay 按存值重下达）/ dialog_answer_result{aid,dialogId,ok,code?}（桥→relay→答题 viewer 的回执通道）/ dialog_claim{dialogId}（可选意向提示：仅供他端显示正在作答，不承载应答权，一期未实现流程）。Deny 理由只随帧广播供 UI 呈现，不回传模型（resolve 值域装不下）同路开关帧（UI→relay→桥：relay 存当前值，桥重连时按存值重下达，桥仅内存持有、重启回默认）：ask_user_switch{enabled}（G1 ask_user 工具开关）/ approval_gate_switch{enabled,tier?,tools?}（G2 工具执行审批门：tier ∈ high-risk|all-non-readonly|list，tools 为名单制工具名数组，桥只在字段合法时采纳）。",
+    "dialog.multiselect": "多选对话框（G3，dialog.respond 的增量）：dialog_open.kind 新增 multiselect，帧体带 options（复用 dialogOptionsMax/dialogOptionChars 上限）与 minSelect?/maxSelect?（缺省 minSelect=1、maxSelect=选项数，桥侧组帧时已钳制）；应答走既有 dialog_answer 帧但改带 values?: string[]（与 value 互斥），桥侧按选项表过滤伪造值、去重并按 min/maxSelect 裁决，不满足回 bad_args 且 dialog 不落定（卡留在原地可改选重交）。answerable 只发给同时声明了 dialog.respond 与 dialog.multiselect 的 viewer：未声明本能力的端收到剥掉 answerable 的只读卡（A-6 门控平移，直播/补发/等待摘要同口径），其 dialog_answer 对多选槽一律回 dialog_gone。桥侧生产者 = ask_user 工具直接登记（不经 ctx.ui，pi 无多选 dialog）；门控不满足或中途交回本机时走本机兜底（逐项 confirm 序列，仍是既有四种 dialog）。旧桥不产生 multiselect 帧，天然兼容。limits 不新增（复用 dialog* 项）",
     "dialog.observe": "对话框观察帧（O1）：dialog_open{dialogId,kind,title,options,message,placeholder,prefill,timeout,startedAt} / dialog_close{dialogId,outcome}；扩展 UI 状态帧 ext_status{statuses,widgets,title,working,tap} 与 ext_notify{message,level}。截断口径见 limits 的 dialog*/extNotify*/widget*/status* 项",
     "room.activity": "房间最近事件摘要（设计 D §2.3）：relay 在 local 事件出口旁按房维护 lastEvent{type,toolName?,at}（只记白名单事件类型 turn_start/agent_start/message_update/tool_execution_start/compaction_start，toolName 只取工具名元数据，不带任何正文/参数；回合落定 agent_settled 即清）；room_list 房间条目给声明了本能力的连接多带 lastEvent（无事件时为 null），未声明的旧端由 roomsViewFor 剥掉；不新开广播帧，lastEvent 搭 room_list 顺风车（随 busy/名册变化广播刷新）。UI 侧据它生成 busy 中的状态短语（正在执行命令/正在回复等），与 lastTurnEnd（room.attention）分工：lastEvent 管运行中、lastTurnEnd 管落定未读",
     "room.dialogs": "房间等待摘要（P9 A）：room_list 的房间条目（含 auth_result.rooms、list_rooms 回包）给声明了本能力的连接多带 waiting[] 与 waitingPrompt；waiting 只含 dialogId/kind/title/startedAt/timeout/answerable（不带 options/message/prefill），离线房间恒为空；waitingPrompt 是旧的单槽 ui_prompt 兜底信号，只在 waiting 为空时有意义；摘要变化时向设备级 viewer 连接广播 room_waiting{room,waiting,waitingPrompt}（每帧全量，不按订阅过滤，与 room_attention 的对象相同）",
@@ -21,7 +22,9 @@
     "session.files": "设备级会话文件命令（P9 B，attach 声明）：attach 能按 sessionId 在设备的整个会话根目录里执行 delete_session，成功回 data{status:deleted|already_deleted,method:trash|unlink|null}",
     "fs.browse": "设备文件夹浏览（P9 C，attach 声明）：attach 能执行 list_dirs{path?,showHidden?}，只返回允许根目录内的目录名（不返回文件、不传文件内容），成功回 data{root,path,parent,entries,truncated}",
     "agent.state": "agent_state 全量快照事件能力位（子智能体胶囊预留：协议/通道先行，当前无生产者）",
-    "usage.activity.v1": "使用活动聚合（P10）：extension 只读本机 pi 会话 jsonl，聚合每日 tokens/messages/sessions、模型分布、活跃/连续天数、峰值（本地时区分天、role=user 口径、不含 cost），经本地通道上报 usage_snapshot{deviceId,requestId,snapshot}；relay 校验并按 account+device 缓存，向 viewer 提供 usage_get{deviceId,requestId,force} → usage_snapshot{available,reason?,snapshot?,receivedAt?,stale?}；快照只含聚合计数（无正文/标题/cwd/金额）。旧端兼容：无此 cap 的 relay 收到 usage_get 回 unknown_type（UI 空态），旧 extension 收到 usage_refresh 忽略/unknown_type（relay 降级 unsupported/timeout），新 relay 不向未声明 cap 的 viewer 主动发 usage 帧"
+    "usage.activity.v1": "使用活动聚合（P10）：extension 只读本机 pi 会话 jsonl，聚合每日 tokens/messages/sessions、模型分布、活跃/连续天数、峰值（本地时区分天、role=user 口径、不含 cost），经本地通道上报 usage_snapshot{deviceId,requestId,snapshot}；relay 校验并按 account+device 缓存，向 viewer 提供 usage_get{deviceId,requestId,force} → usage_snapshot{available,reason?,snapshot?,receivedAt?,stale?}；快照只含聚合计数（无正文/标题/cwd/金额）。旧端兼容：无此 cap 的 relay 收到 usage_get 回 unknown_type（UI 空态），旧 extension 收到 usage_refresh 忽略/unknown_type（relay 降级 unsupported/timeout），新 relay 不向未声明 cap 的 viewer 主动发 usage 帧",
+    "crypto.auth": "设备/观看端身份（加密地基，设计 A §3；阶段 0 仅协议登记、未实现，任何端不得据此改变行为）：声明后配对帧 pair/pair_request 可带 keys{signPub, boxPub, pop} 登记公钥（设备签名钥 DIK 为 Ed25519、观看端签名钥 VIK 为 P-256，box 钥两端均为 P-256；长度上限见 limits 的 signPubKeyBytes/boxPubKeyBytes，pop 为对裸配对码的签名），二维码核对字改绑握手记录（SAS）；auth 带 keyFp+clientNonce 时走挑战-签名：relay 回 auth_challenge{nonce, expiresAt}（nonce 长度见 authNonceBytes），端回 auth_response{sig}（签名输入为域分隔串 pi-remote-auth-v1 与身份 id、双侧 nonce 的拼接，上限见 signatureMaxBytes），验签失败/钥已撤销/身份与钥错配复用 auth_failed/device_revoked/device_mismatch，不新增码；auth_result 对钥连接增 auth:\"key\" 取值与 ackFp（本账号内容钥指纹，contentKeyFpChars 位 hex）供端上对账，不一致回 key_mismatch 警告；名册设备行可带 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}} 与 prevKeyFps[]，观看端名册另存 viewers.jsonl，均只登记公钥（公开数据）；管理帧可改带 adminSig（VIK 对帧规范化摘要的签名）替代 adminToken 字段；新帧 content_key_request/content_key_grant（ACK 包裹交付，relay 只按指纹路由透传、不落盘，包裹上限见 wrappedKeyMaxBytes）、key_update（旧 DIK 签新钥集合换登记）、viewer_revoke、list_viewer/viewer_list（观看端名册管理面）随实现阶段逐个启用",
+    "crypto.content": "正文端到端加密（加密地基，设计 A §4.1 中间档 b；阶段 0 仅协议登记、未实现，不产生任何 enc 房间；依赖 crypto.auth）：enc 房间的 msg 本体、remote text、检查点/清单 state 的 pending、流式 delta 文本、session firstMessage 预览与会话归档正文以信封 {enc:1, role?, h, ct} 承载——AES-256-GCM under 每房间一把 RCK，RCK 由账号内容主密钥 ACK 包裹（rckWrap 随房间 meta/快照 keyInfo 下发，包裹上限见 wrappedKeyMaxBytes），h 为 HMAC-SHA256(RCK, 规范化正文) 供 relay 无钥对锚与 remote 取代判定；relay 只见 seq/role/时间/字节数/toolmeta 等元数据，dialog 提示词与 ext_notify 在本档明文（已知暴露）；房间 meta 记录带 enc/ackFp/rckWrap，reset 换代继承 enc 不许洗回明文；未声明本能力的 viewer 订阅 enc 房间、或扩展向 enc 房间写明文，一律回 crypto_required 拒绝（不许把密文当明文渲染）；正文搜索命中 enc 房间回 unsupported 并标注已加密跳过；relay 永不持有 ACK/RCK"
   },
   "errors": {
     "auth_failed": {
@@ -208,6 +211,14 @@
       "message": "这台设备没有开启文件夹浏览",
       "retryable": false
     },
+    "crypto_required": {
+      "message": "该房间已加密，需要支持加密的端",
+      "retryable": false
+    },
+    "key_mismatch": {
+      "message": "本账号各端内容钥指纹不一致",
+      "retryable": true
+    },
     "internal": {
       "message": "内部错误",
       "retryable": true
@@ -263,6 +274,12 @@
     "usageDaysMax": 400,
     "usageModelsMax": 8,
     "usageSnapshotMaxBytes": 262144,
-    "usageRequestTimeoutMs": 8000
+    "usageRequestTimeoutMs": 8000,
+    "signPubKeyBytes": 44,
+    "boxPubKeyBytes": 128,
+    "signatureMaxBytes": 128,
+    "wrappedKeyMaxBytes": 512,
+    "authNonceBytes": 32,
+    "contentKeyFpChars": 16
   }
 }
