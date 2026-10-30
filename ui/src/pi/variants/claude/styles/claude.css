@@ -322,7 +322,9 @@
 }
 
 [data-pi-ui="claude"] .claude-switch[data-on] {
-  background: var(--claude-clay);
+  /* Switch ON is neutral (the skin ink), never the clay accent. The thumb (--claude-s2)
+     already flips per theme, so it stays legible on the ink track in both themes. */
+  background: var(--claude-text);
 }
 
 [data-pi-ui="claude"] .claude-switch-thumb {

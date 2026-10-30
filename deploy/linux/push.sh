@@ -147,6 +147,17 @@ if ! as_user tar -xf - -C "$staging" <"$tar_in"; then
   echo "FAIL extract $dir"
   exit 1
 fi
+# The kit tar preserves the sender's working-copy modes: files packed from a
+# macOS tree can land as 600 and dirs as 700, which leaves the shell entry
+# points (attach.sh, start-pi.sh, device.sh) without an exec bit. Normalize
+# the staged tree before anything runs from it: dirs 755, shell scripts and
+# already-executable files 755, plain files 644. node_modules is not touched:
+# it does not exist yet (npm ci runs below) and keeps the modes npm gives it.
+as_user find "$staging" -type d -exec chmod 755 {} + || { echo "FAIL perms $staging"; exit 1; }
+as_user find "$staging" -type f -name '*.sh' -exec chmod 755 {} + || { echo "FAIL perms $staging"; exit 1; }
+as_user find "$staging" -type f ! -name '*.sh' -perm /111 -exec chmod 755 {} + || { echo "FAIL perms $staging"; exit 1; }
+as_user find "$staging" -type f ! -name '*.sh' ! -perm /111 -exec chmod 644 {} + || { echo "FAIL perms $staging"; exit 1; }
+echo "OK perms_normalized"
 echo "OK staged $staging"
 # .env 不在压缩包里：从旧目录复制进暂存目录，切换后路径不变；失败时旧目录和旧 .env 都没动
 if [ -f "$dir/.env" ]; then
@@ -218,6 +229,7 @@ while IFS= read -r line; do
     "") ;;
     DOCTOR_BEGIN) echo "  体检（device.sh doctor）：" && in_doctor=1 ;;
     "OK staged "*) green "  暂存目录已解包：${line#OK staged }（旧版未动）" ;;
+    "OK perms_normalized") green "  权限已归一化：目录 755、脚本与可执行文件 755、普通文件 644" ;;
     "OK env_kept") green "  .env 保留，权限收紧到 600" ;;
     "OK env_absent") yellow "  还没有 .env（下面的下一步会生成）" ;;
     "OK deps") green "  依赖已装（npm ci --omit=dev，暂存目录内）" ;;
@@ -236,6 +248,7 @@ while IFS= read -r line; do
     "FAIL dir_symlink "*) red "  目标目录是符号链接，不顺着写：${line#FAIL dir_symlink }" ;;
     "FAIL staging "* | "FAIL staging_parent "*) red "  建不了暂存目录：${line#FAIL }（旧版未动）" ;;
     "FAIL extract "*) red "  解包失败：${line#FAIL extract }（旧版未动，暂存目录已清理）" ;;
+    "FAIL perms "*) red "  权限归一化失败：${line#FAIL perms }（旧版未动）" ;;
     "FAIL env_copy "* | "FAIL env_chmod "*) red "  .env 复制/收紧失败：${line}（旧版未动）" ;;
     "FAIL no_npm") red "  服务器上找不到 npm（装 node 见 deploy/README.md 第 3 节）" ;;
     "FAIL npm_ci "*) red "  npm ci 失败：在服务器上 cd ${line#FAIL npm_ci } && npm ci --omit=dev 看详情（旧版未动）" ;;

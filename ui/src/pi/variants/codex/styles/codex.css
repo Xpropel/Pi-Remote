@@ -2213,7 +2213,8 @@
 }
 
 [data-pi-ui="codex"] .cx-switch[data-on] {
-  background: var(--codex-accent);
+  /* Switch ON is neutral (the skin ink), never the accent. */
+  background: var(--codex-text);
 }
 
 [data-pi-ui="codex"] .cx-switch-thumb {
@@ -2229,6 +2230,12 @@
 
 [data-pi-ui="codex"] .cx-switch[data-on] .cx-switch-thumb {
   left: 18px;
+}
+
+/* Dark ON state: the ink track is near-white, so the thumb goes dark while ON
+   (mirrors the design mockups' verified dark-knob value). OFF rendering is unchanged. */
+:root[data-pi-theme="dark"] [data-pi-ui="codex"] .cx-switch[data-on] .cx-switch-thumb {
+  background: #131313;
 }
 
 /* ============================================================ 8. 手机壳（390×844，推导规则 §2.5） */

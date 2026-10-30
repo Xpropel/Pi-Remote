@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
 import { attentionItemsOf } from "@/relay/attention"
+import { openSessionRow, sidebarRowForKey } from "@/pi/model/sidebarSource"
 import { useNow } from "../primitives/useClaude"
 import { CLAUDE_OVERLAY } from "../overlays/ids"
 import type { PiContainerProps } from "@/pi/containers/types"
@@ -84,6 +85,7 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
           archived: scope.archives.includes(key),
           groupId: `ws:${device.id}:${room.cwd ?? ""}`,
           enc: room.enc,
+          encReason: room.encReason,
         }
       })
       // listed sessions（未开房间的历史会话）
@@ -155,11 +157,15 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
 
   const actions: PiSidebarActions = {
     selectSession: (key) => {
-      const id = key.includes("::") ? key.split("::")[1] : key
-      const room = relay.rooms.find((item) => item.id === id)
-      if (room) relay.selectRoom(id)
-      else relay.selectListedSession?.(id as never)
-      act.openSession()
+      // Resolve the merged row first: selectListedSession requires the
+      // listed-session row object. Passing the bare id string made its
+      // already-selected guard read .deviceId off a null lazy selection
+      // (both sides of the ?. comparison were undefined), throwing a
+      // TypeError on every listed-session click -- most visibly on
+      // sessions left behind by a superseded device registration.
+      const row = sidebarRowForKey(relay.devices, relay.rooms, relay.sessionsByDevice, key)
+      if (row) openSessionRow(relay, row, act.openSession)
+      else act.openSession()
     },
     newSession: () => act.newSession(),
     selectDevice: (deviceId) => {

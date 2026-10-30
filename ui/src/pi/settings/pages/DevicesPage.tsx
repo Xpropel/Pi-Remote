@@ -15,10 +15,19 @@
  *   ◌ 阻止设备睡眠、常驻托盘/菜单栏：协议没有对应字段 / 概念，保留形态并标「设计预留」。
  *
  * 不伪造延迟数字；「默认设备」只表示本机偏好，不冒充 relay 的当前设备。
+ *
+ * Phase 4 T-1: below the identity section, a plaintext-room list groups every
+ * room the relay explicitly states as plaintext (enc === false) by the
+ * relay-derived encReason, each class carrying its design-bound action:
+ * keyless host -> jump to that device's row (the key-upgrade flow lands
+ * there), keyed backlog -> jump to the host device's row (the backlog view
+ * lands there in T-2), orphan classes -> open the room itself (disposition
+ * options live on the room). Presentation only; nothing here writes room
+ * data or changes any policy.
  */
 import { useEffect, useMemo, useState } from "react"
 import { ChevronRight, Laptop, Monitor, Plus, Server } from "lucide-react"
-import { adminTokenErrorText, adminTokenReady, canRevoke, deviceErrorText, errorCode, type Device } from "@/relay/devices"
+import { adminTokenErrorText, adminTokenReady, canRevoke, deviceErrorText, ENC_FALLBACK_LABEL, ENC_REASON_LABELS, errorCode, type Device } from "@/relay/devices"
 import { useNow } from "@/pi/hooks/useNow"
 import { useSettings } from "../SettingsContext"
 import {
@@ -36,6 +45,11 @@ import {
   devicePlatformKindOf,
   deviceRoundTripTextOf,
   deviceStatusTextOf,
+  PLAINTEXT_ACTION_LABELS,
+  plaintextRoomGroupsOf,
+  plaintextRoomTitleOf,
+  type PlaintextRoomGroup,
+  type PlaintextRoomLike,
 } from "./devicesLogic"
 import { IdentitySection } from "./IdentitySection"
 import "./devices.css"
@@ -158,6 +172,35 @@ export function DevicesPage() {
     act.notify(`已将「${deviceNameOf(device)}」设为本机默认设备`)
   }
 
+  // Phase 4 T-1: plaintext rooms grouped by the relay's encReason. Rooms the
+  // relay never stated a state for (enc undefined) are not listed.
+  const plaintextGroups = useMemo(() => plaintextRoomGroupsOf(relay.rooms), [relay.rooms])
+  const deviceById = useMemo(() => new Map(devices.map((d) => [d.id, d])), [devices])
+
+  /** Deep-link to a device entry on this page: scroll it into view and flash it. */
+  const focusDevice = (deviceId: string | undefined) => {
+    if (!deviceId) return
+    const el = document.querySelector(`[data-settings-device="${deviceId.replace(/"/g, "")}"]`)
+    if (!el) return
+    el.scrollIntoView({ block: "center", behavior: "smooth" })
+    el.classList.add("is-focus")
+    window.setTimeout(() => el.classList.remove("is-focus"), 1600)
+  }
+
+  /** Deep-link to a room: select its device when it is still on the roster, open the room, leave settings. */
+  const openPlaintextRoom = (room: PlaintextRoomLike) => {
+    if (room.deviceId && room.deviceId !== relay.selectedDeviceId && deviceById.has(room.deviceId)) {
+      relay.selectDevice(room.deviceId)
+    }
+    relay.selectRoom(room.id)
+    act.back()
+  }
+
+  const runPlaintextAction = (group: PlaintextRoomGroup, room: PlaintextRoomLike) => {
+    if (group.action === "orphan_disposal") openPlaintextRoom(room)
+    else focusDevice(room.deviceId)
+  }
+
   return (
     <div className="settings-page settings-devices" data-settings-page="devices">
       <SettingsPageTitle title="设备" />
@@ -241,6 +284,50 @@ export function DevicesPage() {
       </SettingsGroup>
 
       <IdentitySection />
+
+      {plaintextGroups.length ? (
+        <SettingsGroup label="未加密会话">
+          <div className="settings-row">
+            <span className="settings-plaintext-intro">
+              以下会话的正文没有加密、在中转服务器上以明文保存。按成因分组，处理入口在每行右侧。
+            </span>
+          </div>
+          {plaintextGroups.map((group) => (
+            <div key={group.key} className="settings-plaintext-group">
+              <div className="settings-plaintext-class">
+                {group.key === "unknown" ? ENC_FALLBACK_LABEL : ENC_REASON_LABELS[group.key]}
+                <span className="settings-plaintext-count">{group.rooms.length} 个会话</span>
+              </div>
+              {group.rooms.map((room) => {
+                const host = room.deviceId ? deviceById.get(room.deviceId) : undefined
+                return (
+                  <div className="settings-plaintext-row" key={room.id}>
+                    <span className="settings-device-meta">
+                      <span className="settings-plaintext-title">{plaintextRoomTitleOf(room)}</span>
+                      <span className="settings-device-status">
+                        <span>{host ? deviceNameOf(host) : "原设备已不在名册"}</span>
+                        {room.cwd ? (
+                          <>
+                            <span className="settings-device-sep">·</span>
+                            <span className="settings-plaintext-cwd">{room.cwd}</span>
+                          </>
+                        ) : null}
+                      </span>
+                    </span>
+                    {group.action ? (
+                      <span className="settings-device-actions">
+                        <button type="button" className="settings-device-action" onClick={() => runPlaintextAction(group, room)}>
+                          {PLAINTEXT_ACTION_LABELS[group.action]}
+                        </button>
+                      </span>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+        </SettingsGroup>
+      ) : null}
 
       <SettingsGroup label="主机行为">
         <SettingsRow

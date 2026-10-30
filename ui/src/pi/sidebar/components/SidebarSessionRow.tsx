@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { encBadgeLabelOf } from "../../../relay/devices.ts"
 import { ArchiveIcon, PinIcon } from "./icons"
 import { SidebarHoverCard } from "./SidebarHoverCard"
 import type { PiSidebarSession, PiSidebarStyle } from "../types"
@@ -51,6 +52,9 @@ export function SidebarSessionRow({
     }
   }, [hover])
   useEffect(() => () => { if (closeTimer.current) window.clearTimeout(closeTimer.current) }, [])
+  // Phase 4 T-1: the badge names the plaintext reason when the relay derived
+  // one; null keeps the row badge-free (relay never stated the enc state).
+  const encBadge = encBadgeLabelOf(session.enc, session.encReason)
   return (
     <div
       ref={wrapRef}
@@ -70,9 +74,7 @@ export function SidebarSessionRow({
         <button type="button" className="sb-row-main" onClick={onOpen} aria-label={session.title}>
           <span className="sb-marker" aria-hidden data-tone={session.status.tone} />
           <span className="sb-row-title" title={session.status.label}>{session.title}</span>
-          {session.enc !== undefined ? (
-            <span className="sb-row-enc">{session.enc ? "已加密" : "未加密（旧设备）"}</span>
-          ) : null}
+          {encBadge ? <span className="sb-row-enc">{encBadge}</span> : null}
         </button>
         <span className="sb-row-right">
           <span className="sb-row-actions" data-p11-surface="P11-SIDE-09">

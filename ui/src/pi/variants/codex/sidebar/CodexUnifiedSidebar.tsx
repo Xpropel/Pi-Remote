@@ -87,6 +87,7 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
           archived: scopeState.archives.includes(key),
           groupId: sidebarWorkspaceGroupId(cwd || session?.cwd),
           enc: session?.enc,
+          encReason: session?.encReason,
         }
       })
       return { id: group.key, kind: "workspace" as const, label: group.label || sidebarWorkspaceLabel(cwd), cwd, collapsed, sessions, count: sessions.length }

@@ -402,7 +402,14 @@ function authFrame(env: any = process.env, platform: string = process.platform, 
  * 路径引用，钥料不进 .env）存在且校验通过才启用；缺失/损坏一律回退既有令牌鉴权并在
  * 日志里明示（红线：不许静默回退）。钥文件形状（§3.1）：
  *   {v:1, deviceId, createdAt, sign:{alg:"ed25519", pub, priv}, box:{alg:"p256", pub, priv},
- *    contentKeys?: {<accountId>: <ACK base64>}}
+ *    contentKeys?: {<accountId>: <ACK base64>},
+ *    contentKeysPrev?: {<accountId>: <ACK base64>}}
+ *  contentKeysPrev is the dual-key transition slot (Phase 4 slice R-1,
+ *  ACK-rotation design section 1.3): the single previous ACK per account,
+ *  kept so wraps sealed under it still open during a rotation window. It
+ *  is a sibling field on purpose -- parseDeviceKeyData validates
+ *  contentKeys values as plain strings, so the current slot's shape must
+ *  not change.
  * 公私钥均 pkcs8/spki 的 der base64。本节全部函数只在钥模式下被调用，旧路径零改动。
  * 签名输入钉死（§3.3）：utf8("pi-remote-auth-v1") ‖ utf8(deviceId) ‖ relayNonce(原字节)
  * ‖ clientNonce(原字节)，域分隔串不许挪作他用。
@@ -486,6 +493,15 @@ function parseDeviceKeyData(data: any, filePath: string): { key: any } | { error
       if (typeof v === "string" && v) contentKeys[acc] = v;
     }
   }
+  // Previous-ACK slot (Phase 4 slice R-1): same string-value discipline
+  // as contentKeys; unknown or malformed entries are dropped, never fatal.
+  const contentKeysPrev: Record<string, string> = {};
+  if (data.contentKeysPrev && typeof data.contentKeysPrev === "object") {
+    for (const acc of Object.keys(data.contentKeysPrev)) {
+      const v = data.contentKeysPrev[acc];
+      if (typeof v === "string" && v) contentKeysPrev[acc] = v;
+    }
+  }
   // Phase 3: per-room key wraps (roomId -> rckWrap base64). Only the
   // ACK-wrapped RCK is ever stored; the RCK itself never touches disk.
   const roomKeys: Record<string, string> = {};
@@ -507,6 +523,7 @@ function parseDeviceKeyData(data: any, filePath: string): { key: any } | { error
       boxPub,
       boxPubB64: String(box.pub),
       contentKeys,
+      contentKeysPrev,
       roomKeys,
     },
   };
@@ -546,6 +563,61 @@ function heldContentKey(key: any, accountId: string): Buffer | null {
   if (!key || !key.contentKeys) return null;
   const buf = b64ToBuffer(key.contentKeys[accountId]);
   return buf && buf.length === 32 ? buf : null;
+}
+
+/** The previous-slot ACK for an account (Phase 4 slice R-1 dual-key
+ *  transition storage): the key the current slot displaced most recently.
+ *  Same validity bar as heldContentKey -- only exactly 32 bytes counts. */
+function heldPrevContentKey(key: any, accountId: string): Buffer | null {
+  if (!key || !key.contentKeysPrev) return null;
+  const buf = b64ToBuffer(key.contentKeysPrev[accountId]);
+  return buf && buf.length === 32 ? buf : null;
+}
+
+/** Ordered ACK candidates for opening a wrap (Phase 4 slice R-1,
+ *  ACK-rotation design section 1.3): selection is by fingerprint -- the
+ *  candidate whose fp equals ackFpHint (the fp a room's meta/keyInfo
+ *  names) goes first; with no matching hint the current slot leads and
+ *  the previous slot follows. Each slot contributes at most one
+ *  candidate, and both slots holding the same key collapse to one. */
+function contentKeyCandidates(key: any, accountId: string, ackFpHint?: string | null): { ack: Buffer; fp: string; prev: boolean }[] {
+  const out: { ack: Buffer; fp: string; prev: boolean }[] = [];
+  const cur = heldContentKey(key, accountId);
+  if (cur) out.push({ ack: cur, fp: contentKeyFingerprint(cur), prev: false });
+  const prev = heldPrevContentKey(key, accountId);
+  if (prev) {
+    const fp = contentKeyFingerprint(prev);
+    if (!out.some((c) => c.fp === fp)) out.push({ ack: prev, fp, prev: true });
+  }
+  if (ackFpHint) {
+    const i = out.findIndex((c) => c.fp === ackFpHint);
+    if (i > 0) out.unshift(out.splice(i, 1)[0]);
+  }
+  return out;
+}
+
+/** Deterministic install plan for an incoming ACK (Phase 4 slice R-1,
+ *  ACK-rotation design section 1.3). Outcomes:
+ *    "current" -- the new key takes the current slot; a displaced current
+ *                 key with a different fingerprint is demoted into the
+ *                 previous slot instead of vanishing.
+ *    "noop"    -- the incoming key IS the held key (same fingerprint):
+ *                 nothing changes, for legacy and rotation grants alike.
+ *    "stash"   -- a rotation grant whose supersedes does not name the
+ *                 locally held key (or names nothing usable): the
+ *                 current slot is NOT switched; the new key is only
+ *                 parked in the previous slot and the divergence is
+ *                 surfaced for manual resolution.
+ *  Legacy grants (no purpose) always take "current", subject to "noop".
+ *  A rotation grant arriving while NO key is held also takes "current":
+ *  there is no local key whose claim needs protecting. */
+function planContentKeyInstall(currentFp: string | null, newFp: string, opts?: { purpose?: string | null; supersedes?: string | null }): "current" | "noop" | "stash" {
+  if (currentFp && currentFp === newFp) return "noop";
+  if (opts && opts.purpose === "rotation" && currentFp) {
+    const supersedes = typeof opts.supersedes === "string" ? opts.supersedes : "";
+    if (supersedes !== currentFp) return "stash";
+  }
+  return "current";
 }
 
 /** 挑战签名（§3.3）：Ed25519 签 utf8(域分隔串)‖utf8(deviceId)‖relayNonce‖clientNonce。
@@ -667,6 +739,78 @@ function storeAckInKeyFile(key: any, accountId: string, ack: Buffer, fsImpl: any
   }
   key.contentKeys[accountId] = ack.toString("base64");
   return true;
+}
+
+/** Install an incoming ACK under the R-1 dual-key rules (see
+ *  planContentKeyInstall) and persist it. Persistence follows the
+ *  storeAckInKeyFile discipline (read-modify-write of the on-disk JSON,
+ *  atomic tmp+rename at 0600) and touches only this account's entries in
+ *  contentKeys / contentKeysPrev -- every other field and account passes
+ *  through verbatim. The slot values themselves are computed from the
+ *  in-memory key object, which every writer in this module keeps in sync
+ *  with the file. The in-memory object is updated for every non-noop
+ *  outcome, including a failed write: a multi-slot update cannot be
+ *  half-applied by the caller the way storeAckInKeyFile's single field
+ *  could, so a failed write reports saved:false and the caller warns
+ *  that the keys live in memory only. Returns the plan outcome, the
+ *  write status, the incoming key's fingerprint, and the fingerprint of
+ *  a demoted key when one was displaced into the previous slot. */
+function installContentKeyInKeyFile(
+  key: any,
+  accountId: string,
+  ack: Buffer,
+  opts?: { purpose?: string | null; supersedes?: string | null },
+  fsImpl: any = fs,
+): { action: "current" | "noop" | "stash"; saved: boolean; fp: string; demotedFp: string | null } {
+  const fp = contentKeyFingerprint(ack);
+  const current = heldContentKey(key, accountId);
+  const currentFp = current ? contentKeyFingerprint(current) : null;
+  const action = planContentKeyInstall(currentFp, fp, opts);
+  if (action === "noop") return { action, saved: true, fp, demotedFp: null };
+  const ackB64 = ack.toString("base64");
+  const demotedFp = action === "current" && current && currentFp !== fp ? currentFp : null;
+
+  let saved = false;
+  let data: any = null;
+  try {
+    data = JSON.parse(fsImpl.readFileSync(key.filePath, "utf8"));
+  } catch {
+    data = null;
+  }
+  if (data && typeof data === "object") {
+    const cur = data.contentKeys && typeof data.contentKeys === "object" ? { ...data.contentKeys } : {};
+    const prev = data.contentKeysPrev && typeof data.contentKeysPrev === "object" ? { ...data.contentKeysPrev } : {};
+    if (action === "current") {
+      if (demotedFp && current) prev[accountId] = current.toString("base64");
+      cur[accountId] = ackB64;
+      data.contentKeys = cur;
+      if (demotedFp) data.contentKeysPrev = prev;
+    } else {
+      prev[accountId] = ackB64;
+      data.contentKeysPrev = prev;
+    }
+    const tmp = `${key.filePath}.${process.pid}.tmp`;
+    try {
+      fsImpl.rmSync(tmp, { force: true });
+      fsImpl.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+      fsImpl.chmodSync(tmp, 0o600);
+      fsImpl.renameSync(tmp, key.filePath);
+      saved = true;
+    } catch {
+      try { fsImpl.rmSync(tmp, { force: true }); } catch {}
+      saved = false;
+    }
+  }
+
+  if (!key.contentKeys || typeof key.contentKeys !== "object") key.contentKeys = {};
+  if (!key.contentKeysPrev || typeof key.contentKeysPrev !== "object") key.contentKeysPrev = {};
+  if (action === "current") {
+    if (demotedFp && current) key.contentKeysPrev[accountId] = current.toString("base64");
+    key.contentKeys[accountId] = ackB64;
+  } else {
+    key.contentKeysPrev[accountId] = ackB64;
+  }
+  return { action, saved, fp, demotedFp };
 }
 
 /** Persist one room key wrap into the device key file (read-modify-write,
@@ -3745,6 +3889,23 @@ class Bridge {
    *  be encrypted through migration (a new encrypted generation via
    *  seedOrMerge), never by silently flipping its meta to enc. */
   plainHistoryRooms = new Set<string>();
+  /** Phase 4 gate A (ACK-rotation design section 1.2): rooms that already
+   *  have a key wrap somewhere -- a key-file roomKeys entry or a relay meta
+   *  enc record -- which the currently held ACK cannot open. Minting a
+   *  fresh RCK for such a room would orphan its whole encrypted history,
+   *  so ensureRoomKey refuses and the room sits in this set instead: body
+   *  sends stop (sendEvent / pushSnapshot) and the current content key is
+   *  requested from the account's key holders (noteRoomKeyStale). A room
+   *  leaves the set when real key material for it is recovered. */
+  keyStaleRooms = new Set<string>();
+  /** Rooms the relay has reported as enc (room_registered enc / keyInfo):
+   *  the relay-side wrap source gate A consults. Monotonic within the
+   *  process -- a room never returns to plaintext once enc (generation
+   *  resets inherit enc), so entries are never removed. */
+  relayEncRooms = new Set<string>();
+  /** Rooms for which a key_stale content_key_request already went out on
+   *  this connection; re-armed by socketGone and when a room heals. */
+  staleKeyRequestsSent = new Set<string>();
   /** Remote echoes sent for enc rooms, FIFO: { text, h, cid }. Matched
    *  against the superseding user message_end so its envelope can carry
    *  echoH -- the relay retires remote records by h equality (section 4.1). */
@@ -4111,6 +4272,9 @@ class Bridge {
     // 钥模式的连接级状态一并作废：clientNonce 单次有效、ACK 请求标记按连接重计
     this.pendingClientNonce = null;
     this.ackRequestSent = false;
+    // Gate A: a key_stale room may ask for the current content key once
+    // per connection; a fresh connection re-arms that request.
+    this.staleKeyRequestsSent.clear();
     this.authReplayDone = false;
     // Grant-answer dedupe is scoped to the connection session too.
     this.ackGrantsAnswered.clear();
@@ -4339,6 +4503,13 @@ class Bridge {
     // post-auth snapshot resync and the dialog re-publish on sync
     // reconcile whatever was in flight.
     if (!this.authed) return;
+    // Phase 4 gate A: a key_stale room's history is sealed under an ACK
+    // this device cannot open, so there is no key to seal with -- and a
+    // plaintext fallback must never enter an enc room's history. Body
+    // events stop here (the same discipline as the crypto_required stop
+    // below; the transition into key_stale already logged loudly and
+    // requested the current key). Non-body frames keep flowing.
+    if (ev && typeof ev.type === "string" && this.keyStaleRooms.has(this.roomId) && BODY_EVENT_TYPES.has(ev.type)) return;
     // Phase 3 (tier b): for an enc room, body-carrying events are sealed
     // here -- the single choke point every live event passes through
     // (direct sends, coalesced deltas and queued tool updates alike). If
@@ -5676,8 +5847,9 @@ class Bridge {
 
   /** 收到 ACK 交付（content_key_grant）：只收指名给本机指纹的；交付方指纹与 box 公钥
    *  随帧带来（from / fromBoxPub，relay 转发时盖戳），缺一即无法解包、丢弃并记日志。
-   *  解出后存回钥文件（读-改-写），写失败则只留内存并告警。本机已有 ACK 时同样接受
-   *  （ACK 轮换后的新钥靠同一通道覆盖）。 */
+   *  解出后按 R-1 双钥安装规则存回钥文件（installContentKeyInKeyFile）：旧式交付覆盖
+   *  现钥槽但被覆盖的钥降入旧钥槽；purpose:"rotation" 的交付只在 supersedes 命中
+   *  本机现钥时才切换，未命中只暂存旧槽并上报分歧。写失败时钥只留内存并告警。 */
   acceptContentKeyGrant(msg: any) {
     const key = this.deviceKey;
     if (!key) return;
@@ -5703,12 +5875,31 @@ class Bridge {
       log("content_key_grant 解包失败（账号/指纹上下文对不上或密文被篡改），已丢弃");
       return;
     }
-    const saved = storeAckInKeyFile(key, accountId, ack);
-    if (!saved) key.contentKeys[accountId] = ack.toString("base64");
-    log(
-      "已收到本账号 ACK（ackFp " + contentKeyFingerprint(ack) + "）" +
-        (saved ? "并存入钥文件" : "；警告：钥文件写回失败，ACK 只在本进程内存中持有，重启后需重新交付"),
-    );
+    const heldBefore = heldContentKey(key, accountId);
+    const heldBeforeFp = heldBefore ? contentKeyFingerprint(heldBefore) : null;
+    const install = installContentKeyInKeyFile(key, accountId, ack, {
+      purpose: typeof msg.purpose === "string" ? msg.purpose : null,
+      supersedes: typeof msg.supersedes === "string" ? msg.supersedes : null,
+    });
+    if (install.action === "stash") {
+      // A rotation grant that does not supersede the locally held key:
+      // the current slot stays untouched, the incoming key is parked in
+      // the previous slot, and the divergence goes through the existing
+      // key_mismatch presentation for manual resolution (design 1.3).
+      this.noteKeyMismatch(
+        "收到轮换交付（ackFp " + install.fp + "，supersedes " + (typeof msg.supersedes === "string" && msg.supersedes ? msg.supersedes : "（缺失）") +
+          "）与本机现钥（ackFp " + String(heldBeforeFp) + "）对不上：未切换现钥，新钥仅暂存入旧钥槽" +
+          (install.saved ? "" : "；且钥文件写回失败，暂存只在本进程内存中"),
+      );
+    } else if (install.action === "noop") {
+      log("收到本账号 ACK 交付（ackFp " + install.fp + "），与本机现钥相同，无需变更");
+    } else {
+      log(
+        "已收到本账号 ACK（ackFp " + install.fp + "）" +
+          (install.demotedFp ? "，被覆盖的旧钥（ackFp " + install.demotedFp + "）已降入旧钥槽" : "") +
+          (install.saved ? "并存入钥文件" : "；警告：钥文件写回失败，ACK 只在本进程内存中持有，重启后需重新交付"),
+      );
+    }
     // A grant is the one mid-connection event that can create or replace the
     // held ACK: (re)report its fingerprint so relay-side reconciliation tracks
     // this end's current copy. reportAckFp itself no-ops unless this
@@ -5782,6 +5973,16 @@ class Bridge {
     return heldContentKey(this.deviceKey, accountId);
   }
 
+  /** Dual-key candidates for opening wraps (Phase 4 slice R-1): the
+   *  account's held ACKs ordered for a room whose meta/keyInfo names
+   *  ackFpHint (exact fingerprint first, then the current slot, then the
+   *  previous slot). Empty when this bridge holds no usable ACK. */
+  accountAckCandidates(ackFpHint?: string | null): { ack: Buffer; fp: string; prev: boolean }[] {
+    if (!this.deviceKey) return [];
+    const accountId = deviceIdentity(process.env, this.platform).accountId;
+    return contentKeyCandidates(this.deviceKey, accountId, ackFpHint);
+  }
+
   /** Content encryption may only activate when all three legs stand:
    *  key-mode auth on this connection, the relay declared crypto.content
    *  back in auth_result, and an ACK is actually held. Anything less and
@@ -5800,47 +6001,115 @@ class Bridge {
   /** Get (or create) the content key entry for a room. Creation generates a
    *  fresh random RCK, wraps it under the held ACK, and persists the wrap
    *  in the device key file, so a restart recovers the same RCK. Recovery
-   *  order: memory -> key file wrap -> (relay wrap, via adoptRoomWrap). */
+   *  order: memory -> key file wrap -> (relay wrap, via adoptRoomWrap).
+   *  Phase 4 gate A (ACK-rotation design section 1.2): the mint fallback is
+   *  reserved for rooms with no wrap anywhere. When a wrap source exists
+   *  (a key-file roomKeys entry, or a relay meta enc record for the room)
+   *  but the held ACK opens none of them, minting is forbidden -- the room
+   *  enters key_stale instead (see noteRoomKeyStale). */
   ensureRoomKey(roomId: string): any {
     if (!roomId) return null;
     const cached = this.roomKeyCache.get(roomId);
     if (cached) return cached;
-    const ack = this.accountAck();
-    if (!ack) return null;
+    // Dual-key recovery (Phase 4 slice R-1): a wrap sealed under the
+    // previous ACK still opens during a rotation window -- try the
+    // current slot first, then the previous slot. Minting below stays
+    // reserved for the current slot: a superseded key never seals new
+    // room keys.
+    const candidates = this.accountAckCandidates();
+    if (!candidates.length) return null;
     const key = this.deviceKey;
     let rck: Buffer | null = null;
     let rckWrap = "";
+    let rckFp = "";
     const stored = key && key.roomKeys ? key.roomKeys[roomId] : "";
     if (stored) {
-      rck = unwrapRoomKey(ack, stored);
-      if (rck) rckWrap = stored;
-      else log("房间", roomId, "本地保存的 rckWrap 无法用当前 ACK 解开（ACK 可能已轮换），将尝试 relay 侧包裹或重新生成");
+      for (const cand of candidates) {
+        rck = unwrapRoomKey(cand.ack, stored);
+        if (rck) {
+          rckWrap = stored;
+          rckFp = cand.fp;
+          break;
+        }
+      }
+      if (!rck && !this.keyStaleRooms.has(roomId)) {
+        log("房间", roomId, "本地保存的 rckWrap 无法用当前 ACK 解开（ACK 可能已轮换或被覆盖）");
+      }
     }
     if (!rck) {
+      if (stored || this.relayEncRooms.has(roomId)) {
+        this.noteRoomKeyStale(roomId);
+        return null;
+      }
+      const cur = candidates.find((c) => !c.prev);
+      if (!cur) return null;
       rck = crypto.randomBytes(32);
-      rckWrap = wrapRoomKey(ack, rck);
+      rckWrap = wrapRoomKey(cur.ack, rck);
+      rckFp = cur.fp;
       if (key && key.filePath && !storeRoomKeyInKeyFile(key, roomId, rckWrap)) {
         log("警告：房间", roomId, "的 rckWrap 写回钥文件失败，RCK 只在本进程内存中持有，重启后需靠 relay 房间 meta 恢复");
       }
     }
-    const entry = { rck, ackFp: contentKeyFingerprint(ack), rckWrap };
+    const entry = { rck, ackFp: rckFp, rckWrap };
     this.roomKeyCache.set(roomId, entry);
+    this.clearRoomKeyStale(roomId);
     return entry;
+  }
+
+  /** Phase 4 gate A: put a room into key_stale state. The transition is
+   *  logged loudly exactly once per episode; while stale, body sends for
+   *  the room stop (sendEvent / pushSnapshot enforce it). The current
+   *  content key is requested through the existing content_key_request
+   *  path -- one request per room per connection -- because the self-heal
+   *  for a stale room is a holder answering with the consensus ACK, after
+   *  which the room's relay wrap opens again (adoptRoomWrap) and the room
+   *  leaves this state via clearRoomKeyStale. */
+  noteRoomKeyStale(roomId: string) {
+    if (!this.keyStaleRooms.has(roomId)) {
+      this.keyStaleRooms.add(roomId);
+      log("错误：房间", roomId, "已有内容钥包裹（本机钥文件或 relay 房间 meta），但当前 ACK 解不开——已进入 key_stale 状态：停止发送正文，且禁止重新生成房间钥（造钥并改声明会让该房全部加密历史永久不可解）；将向在线持钥端索取当前内容钥");
+    }
+    if (!this.deviceKey || !this.authed || this.staleKeyRequestsSent.has(roomId)) return;
+    this.staleKeyRequestsSent.add(roomId);
+    const accountId = deviceIdentity(process.env, this.platform).accountId;
+    this.send({ type: "content_key_request", want: accountId }, { essential: true });
+    log("房间", roomId, "处于 key_stale，已发 content_key_request 向在线持钥端索取当前内容钥");
+  }
+
+  /** A room leaves key_stale once real key material for it is in hand
+   *  (key-file wrap recovered, or the relay wrap adopted). */
+  clearRoomKeyStale(roomId: string) {
+    if (!this.keyStaleRooms.delete(roomId)) return;
+    this.staleKeyRequestsSent.delete(roomId);
+    log("房间", roomId, "已取得可用房间钥，退出 key_stale 状态");
   }
 
   /** Adopt a relay-carried rckWrap for a room we hold no key for (room meta
    *  carries the wrap precisely so RCKs survive, design section 5). The
-   *  adopted wrap is also persisted into the device key file. */
-  adoptRoomWrap(roomId: string, rckWrap: any): any {
+   *  adopted wrap is also persisted into the device key file. During a
+   *  rotation window the wrap may still be sealed under the previous ACK:
+   *  candidates are tried in fingerprint order (the meta/keyInfo ackFp
+   *  first when the caller passes it, then current, then previous --
+   *  Phase 4 slice R-1). */
+  adoptRoomWrap(roomId: string, rckWrap: any, ackFpHint?: string | null): any {
     if (!roomId || typeof rckWrap !== "string" || !rckWrap) return null;
     const existing = this.roomKeyCache.get(roomId);
     if (existing) return existing;
-    const ack = this.accountAck();
-    if (!ack) return null;
-    const rck = unwrapRoomKey(ack, rckWrap);
+    let rck: Buffer | null = null;
+    let rckFp = "";
+    for (const cand of this.accountAckCandidates(ackFpHint)) {
+      rck = unwrapRoomKey(cand.ack, rckWrap);
+      if (rck) {
+        rckFp = cand.fp;
+        break;
+      }
+    }
     if (!rck) return null;
-    const entry = { rck, ackFp: contentKeyFingerprint(ack), rckWrap };
+    const entry = { rck, ackFp: rckFp, rckWrap };
     this.roomKeyCache.set(roomId, entry);
+    // Adopting the relay wrap is the key_stale self-heal landing point
+    // (Phase 4 gate A): the room has real key material again.
+    this.clearRoomKeyStale(roomId);
     const key = this.deviceKey;
     if (key && key.filePath && (!key.roomKeys || key.roomKeys[roomId] !== rckWrap)) {
       storeRoomKeyInKeyFile(key, roomId, rckWrap);
@@ -5881,10 +6150,23 @@ class Bridge {
             ? msg.keyInfo.rckWrap
             : "";
     if (wrap && !this.roomKeyCache.has(room)) {
-      if (this.adoptRoomWrap(room, wrap)) log("已从 relay 房间 meta 恢复本房 RCK（ackFp", this.roomKeyCache.get(room).ackFp + "）");
+      // The ackFp the meta/keyInfo names orders the dual-key candidates
+      // (Phase 4 slice R-1): the wrap's own key is tried first.
+      const ackFpHint =
+        msg.keyInfo && typeof msg.keyInfo.ackFp === "string"
+          ? msg.keyInfo.ackFp
+          : msg.meta && typeof msg.meta.ackFp === "string"
+            ? msg.meta.ackFp
+            : typeof msg.ackFp === "string"
+              ? msg.ackFp
+              : null;
+      if (this.adoptRoomWrap(room, wrap, ackFpHint)) log("已从 relay 房间 meta 恢复本房 RCK（ackFp", this.roomKeyCache.get(room).ackFp + "）");
     }
     const relayEnc =
       msg.enc === 1 || msg.enc === true || (msg.meta && (msg.meta.enc === 1 || msg.meta.enc === true)) || !!wrap;
+    // Gate A bookkeeping: an enc record at the relay is one of the two
+    // wrap sources that forbid minting a fresh RCK for this room.
+    if (relayEnc) this.relayEncRooms.add(room);
     const n = Number(msg.msgCount) || 0;
     if (relayEnc) {
       this.plainHistoryRooms.delete(room);
@@ -6214,6 +6496,14 @@ class Bridge {
       // Every caller is reachable post-auth (post room_registered, relay
       // snapshot requests, the -- auth-gated -- requestSync fallback).
       if (!this.authed) return;
+      // Phase 4 gate A: a key_stale room has no key to seal a snapshot
+      // with, and a plaintext snapshot must never be seeded into its
+      // encrypted relay generation. Withhold it loudly -- the same stop
+      // as the crypto_required snapshot refusal below.
+      if (this.keyStaleRooms.has(room)) {
+        log("错误：房间", room, "处于 key_stale（当前 ACK 解不开既有包裹），快照未发送（不会回退明文快照）");
+        return;
+      }
       const L = pre || this.mirror();
       if (!L) return;
       // Phase 3: for the live enc room the snapshot carries envelopes, not
@@ -10177,5 +10467,5 @@ function usageEmptySnapshot(options: any = {}): any {
   });
 }
 
-export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile, canonicalJsonOf, contentHashOf, remoteHashOf, sealBody, encryptMessageBody, openBody, decryptMessageBody, encryptTextCt, decryptTextCt, wrapRoomKey, unwrapRoomKey, encryptAckText, decryptAckText, remoteEchoMatchesText, shrinkImagesWithBudget, encryptTextBlocksDeep, storeRoomKeyInKeyFile, IMAGE_TOTAL_MAX_CHARS };
+export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, heldPrevContentKey, contentKeyCandidates, planContentKeyInstall, installContentKeyInKeyFile, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile, canonicalJsonOf, contentHashOf, remoteHashOf, sealBody, encryptMessageBody, openBody, decryptMessageBody, encryptTextCt, decryptTextCt, wrapRoomKey, unwrapRoomKey, encryptAckText, decryptAckText, remoteEchoMatchesText, shrinkImagesWithBudget, encryptTextBlocksDeep, storeRoomKeyInKeyFile, IMAGE_TOTAL_MAX_CHARS };
 

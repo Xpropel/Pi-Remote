@@ -24,6 +24,27 @@ export function sidebarSessionsOf(
   )
 }
 
+/**
+ * Resolve a sidebar session key ("<deviceId>::<sessionId>", or a bare
+ * session id as passed by the search overlay) back to its merged row.
+ * Returns null when the key names nothing currently listed (stale key,
+ * device list not loaded yet). Callers must go through this instead of
+ * handing a bare id to selectListedSession, whose contract requires the
+ * row object itself.
+ */
+export function sidebarRowForKey(
+  devices: readonly Device[],
+  rooms: readonly RoomInfo[],
+  sessionsByDevice: Readonly<Record<string, readonly SessionEntry[] | undefined>>,
+  key: string,
+): PiDeviceListedSession | null {
+  const at = key.indexOf("::")
+  const deviceId = at >= 0 ? key.slice(0, at) : null
+  const id = at >= 0 ? key.slice(at + 2) : key
+  if (!id) return null
+  return sidebarSessionsOf(devices, rooms, sessionsByDevice).find((s) => s.id === id && (!deviceId || s.deviceId === deviceId)) ?? null
+}
+
 /** 每台设备的会话数（显示选项的设备行用） */
 export function sessionCountsOf(sessions: readonly Pick<PiDeviceListedSession, "deviceId">[]): Record<string, number> {
   const out: Record<string, number> = {}

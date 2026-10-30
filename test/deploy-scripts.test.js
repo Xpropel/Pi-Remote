@@ -415,6 +415,10 @@ test("deploy-relay RESTART（.sh 与 .ps1 同一 body）：权限归一化不再
     "FAIL perms_unit_mode",
     "FAIL perms_app_owner",
     "FAIL perms_tree_owner",
+    "FAIL perms_norm_dir",
+    "FAIL perms_norm_script",
+    "FAIL perms_norm_exec",
+    "FAIL perms_norm_file",
     "FAIL perms_data_owner",
     "FAIL perms_config_mode",
   ]) {
@@ -703,4 +707,148 @@ test("linux/push.sh：暂存目录构建后原子切换，失败保留旧版", {
   assert.match(r.stdout, /OK restored /);
   assert.equal(fs.readFileSync(path.join(target, "version.txt"), "utf8"), "old\n", "扩展失败要恢复旧版");
   assert.equal(fs.readFileSync(path.join(home, "pi-remote.failed", "version.txt"), "utf8"), "new\n", "新版留在 .failed/");
+});
+
+test("deploy-relay RESTART: a 600/700 tree is normalized, node_modules untouched, scripts stay executable", { skip: process.platform === "win32" }, (t) => {
+  const body = psRelayBodies().RESTART;
+  assert.equal(body, shBodies("deploy-relay.sh").RESTART, "RESTART must stay in sync with .sh");
+  // The normalization must prune node_modules: rewriting its modes once
+  // stripped the exec bits from its .bin shims and broke the build.
+  assert.match(body, /-name node_modules/, "normalization must exclude node_modules");
+  assert.match(body, /FAIL perms_norm_dir/);
+  assert.match(body, /FAIL perms_norm_file/);
+
+  const mode = (p) => fs.statSync(p).mode & 0o777;
+  const dir = makeTemp(t, "pi-restart-norm-");
+  const app = path.join(dir, "app");
+  fs.mkdirSync(path.join(app, "data", "accounts"), { recursive: true });
+  fs.mkdirSync(path.join(app, "data", "rooms"), { recursive: true });
+  fs.mkdirSync(path.join(app, "logs"), { recursive: true });
+  fs.mkdirSync(path.join(app, "relay", "sub"), { recursive: true });
+  fs.mkdirSync(path.join(app, "node_modules", "ws"), { recursive: true });
+  fs.mkdirSync(path.join(app, "node_modules", ".bin"), { recursive: true });
+  // Simulate a tree copied from a macOS working copy: files 600, dirs 700.
+  const put = (rel, m) => {
+    const p = path.join(app, rel);
+    fs.writeFileSync(p, "x\n");
+    fs.chmodSync(p, m);
+    return p;
+  };
+  const serverJs = put(path.join("relay", "server.js"), 0o600);
+  const subDir = path.join(app, "relay", "sub");
+  const storeJs = put(path.join("relay", "sub", "store.js"), 0o600);
+  fs.chmodSync(subDir, 0o700);
+  const startSh = put("start.sh", 0o600);
+  const toolBin = put("toolbin", 0o700);
+  const pkgJson = put("package.json", 0o600);
+  const nmFile = put(path.join("node_modules", "ws", "index.js"), 0o600);
+  const nmShim = put(path.join("node_modules", ".bin", "shim"), 0o755);
+  const dataFile = put(path.join("data", "rooms", "index.json"), 0o644);
+  const cfg = path.join(app, "relay", "config.json");
+  fs.writeFileSync(cfg, '{"localToken":"x","viewerToken":"y"}\n');
+  fs.chmodSync(cfg, 0o600);
+  const envFile = path.join(dir, "pi-remote.env");
+  fs.writeFileSync(envFile, "PI_REMOTE_LOCAL_TOKEN=x\nPI_REMOTE_VIEWER_TOKEN=y\n");
+  fs.chmodSync(envFile, 0o644);
+  const unit = path.join(dir, "pi-remote.service");
+  fs.writeFileSync(unit, "[Unit]\nDescription=test\n");
+  // Fake only the account/service tools; find and chmod stay real so the
+  // normalization itself is what gets measured.
+  const bin = makeBin(dir, {
+    chown: "#!/bin/sh\nexit 0\n",
+    useradd: "#!/bin/sh\nexit 0\n",
+    id: "#!/bin/sh\nexit 1\n",
+    stat: '#!/bin/sh\nif [ "$1" = "-c" ]; then printf "600\\n"; exit 0; fi\nexec /usr/bin/stat "$@"\n',
+    systemctl: '#!/bin/sh\n[ "$1" = "is-active" ] && echo active\nexit 0\n',
+    sleep: "#!/bin/sh\nexit 0\n",
+  });
+  const env = {
+    ...process.env,
+    PATH: bin + path.delimiter + process.env.PATH,
+    PI_REMOTE_APP_DIR: app,
+    PI_REMOTE_ENV_FILE: envFile,
+    PI_REMOTE_UNIT_FILE: unit,
+    PI_REMOTE_DROPIN_FILE: path.join(dir, "no-dropin.conf"),
+  };
+  const r = runBody(body, env);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /^OK code_owned_by_root$/m);
+  assert.equal(mode(serverJs), 0o644, "600 code file must become readable (644)");
+  assert.equal(mode(storeJs), 0o644);
+  assert.equal(mode(subDir), 0o755, "700 dir must become traversable (755)");
+  assert.equal(mode(startSh), 0o755, "shell script must gain its exec bit (755)");
+  assert.equal(mode(toolBin), 0o755, "an already-executable payload keeps 755");
+  assert.equal(mode(pkgJson), 0o644);
+  assert.equal(mode(nmFile), 0o600, "node_modules is excluded: its files keep their modes");
+  assert.equal(mode(nmShim), 0o755, "node_modules .bin shims keep their exec bits");
+  assert.equal(mode(dataFile) & 0o077, 0, "data/ stays locked down (no group/other access)");
+  assert.equal(mode(cfg), 0o640, "config.json is still re-tightened to 640 by its dedicated step");
+  assert.equal(mode(envFile), 0o600, "env file still ends at 600");
+});
+
+test("linux/push.sh PUSH: a kit packed with 600/700 modes is normalized on install", { skip: process.platform === "win32" }, (t) => {
+  const body = shBodies("linux/push.sh").PUSH;
+  assert.ok(body);
+  assert.match(body, /OK perms_normalized/, "PUSH must normalize modes after extraction");
+  assert.match(body, /FAIL perms /, "normalization failure must abort before the swap");
+
+  const mode = (p) => fs.statSync(p).mode & 0o777;
+  const dir = makeTemp(t, "pi-push-norm-");
+  const home = path.join(dir, "home");
+  fs.mkdirSync(home);
+  const target = path.join(home, "pi-remote");
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(path.join(target, "version.txt"), "old\n");
+  fs.writeFileSync(path.join(target, ".env"), "PI_REMOTE_RELAY=ws://old\n");
+
+  // Build the kit, then squeeze every file to 600 and every dir to 700,
+  // like a tar packed from a macOS working copy.
+  const kit = path.join(dir, "kit");
+  const kitFile = (rel, text) => {
+    const p = path.join(kit, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, text);
+    return p;
+  };
+  kitFile("version.txt", "new\n");
+  kitFile("package.json", "{}\n");
+  kitFile("package-lock.json", "{}\n");
+  kitFile(".env.example", "PI_REMOTE_RELAY=\n");
+  kitFile(path.join("protocol", "v4.json"), "{}\n");
+  kitFile(path.join("extension", "pi-remote-sync.ts"), "// ext\n");
+  kitFile(path.join("deploy", "attach.cjs"), "// attach\n");
+  kitFile(path.join("deploy", "session-library.cjs"), "// lib\n");
+  kitFile(path.join("deploy", "attach.sh"), "#!/bin/sh\nexit 0\n");
+  kitFile(path.join("deploy", "start-pi.sh"), "#!/bin/sh\nexit 0\n");
+  kitFile(path.join("deploy", "sync-extension.sh"), "#!/bin/sh\nexit 0\n");
+  kitFile(path.join("deploy", "linux", "device.cjs"), "// stub\n");
+  kitFile(path.join("deploy", "linux", "device.sh"), "#!/bin/sh\nexit 0\n");
+  for (const rel of fs.readdirSync(kit, { recursive: true })) {
+    const p = path.join(kit, rel);
+    if (fs.statSync(p).isDirectory()) fs.chmodSync(p, 0o700);
+    else fs.chmodSync(p, 0o600);
+  }
+  const tarPath = path.join(home, "pi-remote-device-kit.tar");
+  const tar = spawnSync("tar", ["-cf", tarPath, "-C", kit, "."], { encoding: "utf8" });
+  assert.equal(tar.status, 0, tar.stderr);
+
+  const bin = makeBin(dir, {
+    npm: "#!/bin/sh\nexit 0\n",
+    node: "#!/bin/sh\nexit 0\n",
+  });
+  const user = os.userInfo().username;
+  const allowRoot = user === "root" ? "1" : "0";
+  const env = { ...process.env, HOME: home, PATH: bin + path.delimiter + process.env.PATH };
+  const r = runBody(body, env, [user, target, allowRoot]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /OK perms_normalized/);
+  assert.equal(fs.readFileSync(path.join(target, "version.txt"), "utf8"), "new\n");
+  assert.equal(mode(path.join(target, "package.json")), 0o644, "plain files land 644");
+  assert.equal(mode(path.join(target, "deploy", "attach.cjs")), 0o644);
+  assert.equal(mode(path.join(target, "deploy")), 0o755, "dirs land 755");
+  assert.equal(mode(path.join(target, "deploy", "linux")), 0o755);
+  assert.equal(mode(path.join(target, "deploy", "attach.sh")), 0o755, "shell entry points land executable");
+  assert.equal(mode(path.join(target, "deploy", "start-pi.sh")), 0o755);
+  assert.equal(mode(path.join(target, "deploy", "linux", "device.sh")), 0o755);
+  assert.equal(mode(path.join(target, ".env")), 0o600, ".env is copied in after normalization and stays 600");
 });

@@ -2226,7 +2226,10 @@ test("--pair 钥形态：keyRegistered 无令牌完成配对，.env 只写路径
   assert.ok(seen[0].keys && seen[0].keys.pop, "pair 帧带 keys+pop");
   const vars = attach.parseEnv(fs.readFileSync(envPath, "utf8"));
   assert.equal(vars.PI_REMOTE_DEVICE_ID, "dev-key-1");
-  assert.equal(vars.PI_REMOTE_DEVICE_TOKEN, "", "钥形态把旧令牌清空（relay 侧令牌行已作废）");
+  // Phase 4 K-2: this fixture presented a stale token and keys got
+  // registered, which is the recognized upgrade case — the token line is
+  // removed from .env entirely (not merely blanked).
+  assert.equal(vars.PI_REMOTE_DEVICE_TOKEN, undefined, "升级情形下旧令牌行整行删除（relay 侧令牌行已作废）");
   const keyFile = path.join(dir, "pi-remote-device.key.json");
   assert.equal(vars.PI_REMOTE_DEVICE_KEY_FILE, keyFile, ".env 只写钥文件路径");
   const keys = JSON.parse(fs.readFileSync(keyFile, "utf8"));

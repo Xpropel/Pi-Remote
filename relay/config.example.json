@@ -68,5 +68,6 @@
   "notifyEvents": { "turn_done": false, "turn_error": false, "dialog_waiting": false },
 
   "_crypto": "正文加密过渡期的明文房间策略（设计 A §5）：allow（默认）= 明文房间行为与从前完全一致；readonly = 明文房间拒绝新写入（事件记录与快照 seed）但可读；deny = 明文房间读写都拒。已加密（enc）房间不受此项影响。非法值告警并按 allow 处理。",
-  "cryptoPlaintextRooms": "allow"
+  "cryptoPlaintextRooms": "allow",
+  "cryptoOrphanDays": 30
 }

@@ -448,7 +448,7 @@ function formatPairCode(code) {
 }
 
 function parseArgs(argv) {
-  const out = { dirs: [], maxHours: DEFAULT_MAX_HOURS, viewerPort: 0, init: false, help: false, pair: "", link: false, share: false, tunnel: false, relay: "", doctor: false, env: "", allowRemote: false };
+  const out = { dirs: [], maxHours: DEFAULT_MAX_HOURS, viewerPort: 0, init: false, help: false, pair: "", upgradeToKey: "", link: false, share: false, tunnel: false, relay: "", doctor: false, env: "", allowRemote: false };
   const args = Array.isArray(argv) ? argv : [];
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i]);
@@ -457,6 +457,9 @@ function parseArgs(argv) {
     else if (a === "--help" || a === "-h") out.help = true;
     else if (a === "--pair" || a.startsWith("--pair=")) {
       out.pair = normalizePairCode(a.startsWith("--pair=") ? a.slice("--pair=".length) : args[++i]);
+    }
+    else if (a === "--upgrade-to-key" || a.startsWith("--upgrade-to-key=")) {
+      out.upgradeToKey = normalizePairCode(a.startsWith("--upgrade-to-key=") ? a.slice("--upgrade-to-key=".length) : args[++i]);
     }
     else if (a === "--link") out.link = true;
     else if (a === "--share") out.share = true;
@@ -823,6 +826,47 @@ function writeEnvVars(envPath, vars) {
   restrictEnvFileMode(envPath);
 }
 
+/**
+ * Delete whole KEY= lines from .env (the upgrade flow removes the device
+ * token line outright once the relay has revoked it — a blanked
+ * "PI_REMOTE_DEVICE_TOKEN=" line would still invite readers and tooling to
+ * treat the install as token-based). Same write discipline as writeEnvVars:
+ * BOM and newline style preserved, comment lines untouched, atomic
+ * tmp + rename, mode forced to 0600.
+ */
+function removeEnvVars(envPath, keysToRemove) {
+  if (!fs.existsSync(envPath)) return;
+  const drop = new Set(keysToRemove || []);
+  if (!drop.size) return;
+  let text = fs.readFileSync(envPath, "utf8");
+  const bom = text.startsWith("\uFEFF") ? "\uFEFF" : "";
+  if (bom) text = text.slice(1);
+  const eol = /\r\n/.test(text) ? "\r\n" : "\n";
+  const lines = text ? text.split(/\r?\n/) : [];
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const kept = lines.filter((line) => {
+    const s = line.trim();
+    if (!s || s.startsWith("#")) return true;
+    const eq = s.indexOf("=");
+    if (eq <= 0) return true;
+    return !drop.has(s.slice(0, eq).trim());
+  });
+  if (kept.length === lines.length) return;
+  const tmp = `${envPath}.${process.pid}.tmp`;
+  try {
+    fs.rmSync(tmp, { force: true });
+    fs.writeFileSync(tmp, bom + kept.join(eol) + eol, { encoding: "utf8", mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, envPath);
+  } catch (e) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {}
+    throw e;
+  }
+  restrictEnvFileMode(envPath);
+}
+
 /* ---------- 设备身份钥（加密阶段 1 · attach 侧，设计 A §3.1/§3.2/§7） ----------
  * 钥文件与 .env 同目录（pi-remote-device.key.json，0600），格式：
  *   {v:1, deviceId, createdAt, sign:{alg:"ed25519",pub,priv}, box:{alg:"p256",pub,priv}, contentKeys?}
@@ -940,6 +984,36 @@ function hasUsableDeviceKey(envPath, deviceId) {
     return false;
   }
   return !!(keys && keys.deviceId === deviceId);
+}
+
+/**
+ * The local identity-key state of one install, as a single verdict shared by
+ * the doctor posture report and the token-to-key upgrade (Phase 4, K-1/K-2):
+ * the two must never disagree about whether this install already runs in key
+ * mode, so neither re-derives it privately.
+ *  - "ok":           the key file loads and is bound to this deviceId; the
+ *                    install authenticates by challenge-response.
+ *  - "unregistered": the key file loads and is this install's own key, but it
+ *                    carries no deviceId yet (generated before pairing), so
+ *                    nothing is registered with the relay under it so far.
+ *  - "mismatch":     the key file is bound to a DIFFERENT deviceId; it must
+ *                    never be presented for this device.
+ *  - "corrupt":      the file exists but fails validation (see error).
+ *  - "missing":      no key file at all.
+ */
+function deviceKeyState(envPath, opts = {}) {
+  const file = deviceKeyFilePath(envPath, opts);
+  let keys = null;
+  try {
+    keys = loadDeviceKeys(file);
+  } catch (e) {
+    return { state: "corrupt", file, keys: null, error: e };
+  }
+  if (!keys) return { state: "missing", file, keys: null, error: null };
+  const want = typeof opts.deviceId === "string" ? opts.deviceId : "";
+  if (keys.deviceId && keys.deviceId !== want) return { state: "mismatch", file, keys, error: null };
+  if (!keys.deviceId) return { state: "unregistered", file, keys, error: null };
+  return { state: "ok", file, keys, error: null };
 }
 
 /** 生成一套新身份钥的数据对象（DIK=Ed25519 签名、DBK=P-256 协商，设计 §2.1/§3.1；编码长度与协议 limits 对齐） */
@@ -1214,6 +1288,95 @@ function requestPairing({ relay, code, deviceId, deviceName, deviceToken, device
   });
 }
 
+/**
+ * One-shot key-auth probe (Phase 4 K-2 post-upgrade verification): connect to
+ * the relay, answer its challenge with the device key, and report how the
+ * relay classified this device (auth_result.auth). It deliberately never
+ * sends device_register: auth alone does not claim the device's connection
+ * slot on the relay (that happens at register time), so probing cannot
+ * displace a running attach window. Resolves { ok, auth, code, error } and
+ * never rejects.
+ */
+function probeKeyAuth({ relay, deviceId, keys, platform = HOST_PLATFORM, WebSocketImpl, timeoutMs = PAIR_TIMEOUT_MS }) {
+  return new Promise((resolve) => {
+    let WS = WebSocketImpl;
+    if (!WS) {
+      try {
+        WS = require("ws");
+      } catch (e) {
+        resolve({ ok: false, auth: null, code: "internal", error: "无法加载 ws：" + (e && e.message ? e.message : e) });
+        return;
+      }
+    }
+    let done = false;
+    let ws;
+    const clientNonce = newClientNonce();
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        ws && ws.close();
+      } catch {}
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ ok: false, auth: null, code: "timeout", error: "relay 没有回应鉴权探测" }), timeoutMs);
+    try {
+      ws = new WS(relay);
+    } catch (e) {
+      finish({ ok: false, auth: null, code: "offline", error: "连不上 relay：" + (e && e.message ? e.message : e) });
+      return;
+    }
+    const onOpen = () => {
+      try {
+        ws.send(JSON.stringify(attachKeyAuthFrame({ deviceId, keys, platform, clientNonce })));
+      } catch (e) {
+        finish({ ok: false, auth: null, code: "offline", error: "发送鉴权帧失败：" + (e && e.message ? e.message : e) });
+      }
+    };
+    const onMessage = (data) => {
+      let msg;
+      try {
+        msg = JSON.parse(typeof data === "string" ? data : String(data));
+      } catch {
+        return;
+      }
+      if (!msg) return;
+      if (msg.type === "auth_challenge") {
+        try {
+          ws.send(JSON.stringify({ type: "auth_response", sig: signAuthResponse(keys, deviceId, msg.nonce, clientNonce) }));
+        } catch (e) {
+          finish({ ok: false, auth: null, code: "internal", error: "挑战应答失败（本机钥不可用）：" + (e && e.message ? e.message : e) });
+        }
+        return;
+      }
+      if (msg.type === "auth_result") {
+        finish(
+          msg.ok
+            ? { ok: true, auth: typeof msg.auth === "string" ? msg.auth : null, code: "", error: "" }
+            : { ok: false, auth: null, code: msg.code || "auth_failed", error: msg.error || "relay 鉴权失败" },
+        );
+        return;
+      }
+      if (msg.type === "error" && msg.code === "unknown_type") {
+        finish({ ok: false, auth: null, code: "unsupported", error: "relay 版本太旧，不支持钥鉴权（先升级服务器上的 relay）" });
+      }
+    };
+    const onClose = () => finish({ ok: false, auth: null, code: "offline", error: "relay 关闭了连接，没有给出鉴权结果" });
+    if (typeof ws.on === "function") {
+      ws.on("open", onOpen);
+      ws.on("message", onMessage);
+      ws.on("close", onClose);
+      ws.on("error", () => {});
+    } else {
+      ws.onopen = onOpen;
+      ws.onmessage = (ev) => onMessage(ev && ev.data !== undefined ? ev.data : ev);
+      ws.onclose = onClose;
+      ws.onerror = () => {};
+    }
+  });
+}
+
 function pairHint(platform = HOST_PLATFORM) {
   return platform === "win32" ? "node deploy\\attach.cjs --pair <配对码>" : "deploy/attach.sh --pair <配对码>";
 }
@@ -1226,6 +1389,11 @@ function linkHint(platform = HOST_PLATFORM) {
 /** 本机自检命令：启动失败时要指给用户看的那条 */
 function doctorHint(platform = HOST_PLATFORM) {
   return platform === "win32" ? "node deploy\\attach.cjs --doctor" : "deploy/attach.sh --doctor";
+}
+
+/** 令牌→钥一键升级命令：doctor 的姿态段与升级流互相指路用 */
+function upgradeHint(platform = HOST_PLATFORM) {
+  return platform === "win32" ? "node deploy\\attach.cjs --upgrade-to-key <配对码>" : "deploy/attach.sh --upgrade-to-key <配对码>";
 }
 
 /** macOS 的电脑名：默认设备名用 "Mac" 时，两台 Mac 在名册里分不出来 */
@@ -3350,12 +3518,14 @@ function launcherText(platform = HOST_PLATFORM) {
 function printHelp() {
   console.log(`pi-remote attach [项目目录...] [--max-hours 12] [--init]
 pi-remote attach --pair XXXX-XXXX [--relay ws://<服务器>:7001]
+pi-remote attach --upgrade-to-key XXXX-XXXX [--relay ws://<服务器>:7001]
 pi-remote attach --link [--relay ws://<服务器>:7001]
 pi-remote attach --share
 pi-remote attach --doctor
 
 开一个连接窗口：登记本机设备，窗口内扩展才连 relay。
   --pair        用网页上「添加设备」给的配对码换这台电脑自己的设备令牌，写进 .env 后退出
+  --upgrade-to-key 已用设备令牌配对的电脑改走身份钥：拿一枚新配对码运行，登记公钥并当场作废旧令牌（已是钥模式会直接说明，不做更改）
   --link        在本机出示二维码与对照码，手机扫码确认后把设备令牌写进 .env 后退出（relay 需支持扫码链接；太旧时改用 --pair）
   --share       免服务器模式：拉起本机 relay 并开公网隧道，只出示访问地址（局域网地址 + 隧道网址，各带二维码），不配对
   --tunnel      连接窗口 / --link 时顺带开 Cloudflare 公网隧道（仅免服务器模式；默认关，按需开；网址每次都会变）
@@ -3509,6 +3679,34 @@ function md5File(file) {
  * 本机自检：把"为什么连不上/为什么启动不了"变成一条条可执行的结论。
  * 只读：不连本地 relay 鉴权、不写 .env、不动状态文件。
  */
+/**
+ * Authentication posture verdict (Phase 4, K-1): folds the local credential
+ * facts into the three things the user needs to know — which auth mode the
+ * relay will see for this install, whether a now-useless device token is
+ * still lying in .env, and whether the one-command token-to-key upgrade
+ * applies. Pure function over local state plus the relay's standing rules
+ * (key auth wins when a usable key exists; the relay refuses token auth for
+ * devices with registered keys). It never opens a connection: the live
+ * "the relay really classified us as key" check belongs to --upgrade-to-key's
+ * post-verification, not to a read-only report.
+ * keyState is deviceKeyState()'s state string.
+ */
+function authPostureOf({ deviceId = "", deviceToken = "", sharedToken = "", keyState = "missing" } = {}) {
+  const hasToken = !!deviceToken;
+  const fallbackMode = hasToken ? "token" : sharedToken ? "legacy" : "none";
+  if (keyState === "ok") {
+    // leftoverToken: the token line is still on disk even though key auth
+    // has superseded it (the relay revoked the token row at registration).
+    return { mode: "key", upgrade: "not-needed", leftoverToken: hasToken };
+  }
+  if (keyState === "mismatch") return { mode: fallbackMode, upgrade: "blocked-mismatch", leftoverToken: false };
+  if (keyState === "corrupt") return { mode: fallbackMode, upgrade: "blocked-corrupt", leftoverToken: false };
+  // "missing" / "unregistered": an upgrade needs deviceId + the old token to
+  // present for the relay's anti-takeover check.
+  const upgrade = deviceId && hasToken ? "eligible" : "needs-pair";
+  return { mode: fallbackMode, upgrade, leftoverToken: false };
+}
+
 async function doctorMain(args, envPath, opts = {}) {
   const out = opts.writeOut || ((line) => console.log(line));
   const platform = opts.platform || HOST_PLATFORM;
@@ -3534,26 +3732,41 @@ async function doctorMain(args, envPath, opts = {}) {
   if (!cfg.deviceId) add("fail", "没有设备编号", "运行 " + initHint(platform) + "、" + pairHint(platform) + " 或 " + linkHint(platform));
   else add("ok", "设备编号", cfg.deviceId);
   // 设备身份钥（阶段 1）先读一次：钥设备按设计就没有设备令牌，令牌行的判定要参考它（只读，不生成）
-  const keyFile = deviceKeyFilePath(envPath, { env: opts.env || process.env });
-  let devKeys = null;
-  let keyErr = null;
-  try {
-    devKeys = loadDeviceKeys(keyFile);
-  } catch (e) {
-    keyErr = e;
-  }
+  const keyState = deviceKeyState(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+  const keyFile = keyState.file;
+  const devKeys = keyState.state === "ok" || keyState.state === "unregistered" ? keyState.keys : null;
+  const keyErr = keyState.state === "corrupt" ? keyState.error : null;
   if (cfg.deviceToken) add("ok", "设备令牌", "已配对（不会打印）");
   else if (cfg.token) add("warn", "只有共享令牌", "建议在网页「添加或管理设备」生成配对码，再运行 " + pairHint(platform) + "；或运行 " + linkHint(platform) + " 在本机出示二维码扫码链接");
-  else if (devKeys) add("ok", "设备令牌", "无（本机已改用身份钥配对，见下一行）");
+  else if (keyState.state === "ok") add("ok", "设备令牌", "无（本机已改用身份钥配对，见下一行）");
   else add("fail", "没有任何令牌", "先配对：" + pairHint(platform) + "，或扫码链接：" + linkHint(platform));
 
   // 身份钥行：只展示在不在、指纹、ACK 持仓数；私钥与 ACK 永不打印
   if (keyErr) add("fail", "设备身份钥损坏", keyErr && keyErr.message ? keyErr.message : String(keyErr));
+  else if (keyState.state === "mismatch") add("warn", "设备身份钥", `钥文件属于另一台设备（编号 ${keyState.keys.deviceId}），本机用不上：${keyFile}`);
   else if (devKeys) {
     add("ok", "设备身份钥", `指纹 ${formatFingerprint(keyFingerprint(devKeys.sign.pub))} · ${keyFile}`);
     const ackCount = devKeys.contentKeys && typeof devKeys.contentKeys === "object" ? Object.keys(devKeys.contentKeys).filter((k) => typeof devKeys.contentKeys[k] === "string" && devKeys.contentKeys[k]).length : 0;
     if (ackCount > 0) add("ok", "账号内容钥", `本机持有 ${ackCount} 个账号的 ACK（只存钥文件，从不打印）`);
+    if (keyState.state === "unregistered") add("warn", "设备身份钥", "这把钥尚未登记到 relay（钥文件里还没有设备编号）：下一次配对会登记它");
   } else add("warn", "设备身份钥", "尚未生成（配对 " + pairHint(platform) + " 或 " + linkHint(platform) + " 时自动生成）；当前仍走令牌鉴权");
+
+  // Authentication posture section (Phase 4, K-1): folds the local facts
+  // above into one verdict — how the relay will classify this device,
+  // whether a revoked token is still lying in .env, and whether the
+  // one-command upgrade applies. Read-only inference; no connection is
+  // opened here (the live check lives in --upgrade-to-key's verification).
+  const posture = authPostureOf({ deviceId: cfg.deviceId, deviceToken: cfg.deviceToken, sharedToken: cfg.token, keyState: keyState.state });
+  if (posture.mode === "key") add("ok", "鉴权姿态", "钥鉴权（auth=key）：连接走挑战-签名，relay 对已登记公钥的设备拒绝令牌降级");
+  else if (posture.mode === "token") add("warn", "鉴权姿态", "令牌鉴权（auth=token）：设备在 relay 名册里显示为令牌登录（旧）");
+  else if (posture.mode === "legacy") add("warn", "鉴权姿态", "只有共享令牌（auth=legacy）：没有本机设备身份，建议配对领取本机凭据");
+  else add("fail", "鉴权姿态", "没有任何可用凭据，relay 不会接受本机连接");
+  if (posture.leftoverToken) add("warn", ".env 残存令牌", "PI_REMOTE_DEVICE_TOKEN 还在：钥鉴权优先、它已冗余（登记钥时 relay 已作废该设备的令牌行）；删掉这一行即可，" + upgradeHint(platform) + " 也会顺带清理");
+  if (posture.upgrade === "eligible") add("info", "升级到钥模式", "可一条命令完成：" + upgradeHint(platform) + "（先在网页「添加或管理设备」生成一枚新配对码）");
+  else if (posture.upgrade === "not-needed") add("ok", "升级到钥模式", "已是钥模式，无需升级");
+  else if (posture.upgrade === "blocked-mismatch") add("warn", "升级到钥模式", "被钥文件归属挡住：先按上方身份钥一行处理那把别台设备的钥，再运行 " + upgradeHint(platform));
+  else if (posture.upgrade === "blocked-corrupt") add("warn", "升级到钥模式", "被损坏的钥文件挡住：先按上方提示处理，再运行 " + upgradeHint(platform));
+  else add("info", "升级到钥模式", "先配对一次（" + pairHint(platform) + "）：配对本身就会登记钥、停发令牌");
 
   if (cfg.relay) {
     const safety = attachRelaySafetyError(cfg.relay, { allowRemote: args.allowRemote });
@@ -3752,6 +3965,7 @@ async function main(argv) {
   if (envInfo.explicit) console.log(`[attach] env 文件：${envPath}（来源：${envInfo.source}）`);
   else console.log(`[attach] env 文件：${envPath}（来源：默认仓库根 .env；本地测试请用 --env 或 ATTACH_ENV_FILE 指向独立 env）`);
   if (args.doctor) return doctorMain(args, envPath);
+  if (args.upgradeToKey) return upgradeMain(args, envPath, { enforceSafety: true });
   if (args.pair) return pairMain(args, envPath, { enforceSafety: true });
   if (args.link) return linkMain(args, envPath, { enforceSafety: true });
   if (args.share) return shareMain(args, envPath);
@@ -3932,8 +4146,15 @@ async function pairMain(args, envPath, opts = {}) {
     return 1;
   }
   persistPairResult(args, envPath, cfg, result, keyCtx);
+  // The plain pair flow recognizes the token-to-key upgrade on its own
+  // (Phase 4 design 3.3): this install presented an old device token and the
+  // relay registered keys (revoking that token), so the token line comes out
+  // of .env entirely instead of being left blanked.
+  const pairWasUpgrade = !!(result.keyRegistered && cfg.deviceToken);
+  if (pairWasUpgrade) removeEnvVars(envPath, ["PI_REMOTE_DEVICE_TOKEN"]);
   if (result.keyRegistered) {
     out(`配对成功：设备 ${result.deviceId}，身份钥已登记（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}），本机不再使用设备令牌`);
+    if (pairWasUpgrade) out("本机原以令牌配对：已顺带完成令牌→钥升级，.env 里的设备令牌行已删除（旧令牌已在 relay 侧作废）。");
     out(`钥文件：${keyCtx.file}（0600，含私钥，切勿外传）；.env 里只写了它的路径`);
     if (accountAckOf(keyCtx.keys, result.accountId)) out("本机持有本账号的内容钥 ACK（只存钥文件，从不打印）。");
     else if (result.hasKeyHolder === true) out("本账号已有持钥设备，本机尚未持有内容钥（ACK）：上线后会自动向持钥设备索取；若那台设备已不在，请在那台设备上处理，或走重新交付。");
@@ -3942,6 +4163,145 @@ async function pairMain(args, envPath, opts = {}) {
     out(`配对成功：设备 ${result.deviceId}，令牌已写入 ${envPath}（令牌不打印，.env 权限 600）`);
     out("下一步：重启正在运行的 pi（扩展启动时读取令牌），然后运行 attach 打开连接窗口。");
   }
+  return 0;
+}
+
+/* ---------- --upgrade-to-key: one-command token-to-key upgrade (Phase 4, K-2; design ch. 3.3) ----------
+ * The mechanics shipped in Phase 1 (a pairing that presents keys + the old
+ * token registers the keys and revokes the token row); this command is the
+ * productized flow on top: preconditions, ensure keys, one pairing round,
+ * old-relay detection, token-line removal, challenge-auth self-check. No
+ * failure path ever deletes the key file — a retry reuses the same key, so
+ * the roster never collects orphan fingerprints from aborted attempts. */
+
+/**
+ * --upgrade-to-key <code>: move this install from a device token to its
+ * identity key. Returns 0 on success (and when already in key mode, with an
+ * explanation); 1 when preconditions fail, the relay is too old, or the
+ * post-upgrade self-check does not pass.
+ */
+async function upgradeMain(args, envPath, opts = {}) {
+  const out = opts.writeOut || ((line) => console.log(line));
+  const err = opts.writeErr || ((line) => console.error(line));
+  const platform = opts.platform || HOST_PLATFORM;
+  const cfg = loadConfig(envPath, opts.env || process.env, platform);
+  const relay = args.relay || cfg.relay;
+  if (!relay) {
+    err("不知道 relay 地址：加上 --relay ws://<服务器>:7001，或先在 .env 里配 PI_REMOTE_RELAY");
+    return 1;
+  }
+  if (opts.enforceSafety === true) {
+    const relaySafety = attachRelaySafetyError(relay, { allowRemote: args.allowRemote });
+    if (relaySafety) {
+      err(relaySafety);
+      return 2;
+    }
+    if (!isLocalRelayHost(relayHostOf(relay) || "")) printRemoteRelayWarning(relay, envPath);
+  }
+
+  // Preconditions (design 3.3 step 1): the relay's anti-takeover check needs
+  // the OLD device token presented alongside the new keys, so both a
+  // deviceId and a token must be on disk; a usable key must NOT already be
+  // bound to this device (that install is done), and a key file belonging to
+  // a different device must never be presented for this one.
+  const ks = deviceKeyState(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+  if (ks.state === "corrupt") {
+    err(ks.error && ks.error.message ? ks.error.message : String(ks.error));
+    return 1;
+  }
+  if (ks.state === "mismatch") {
+    err(`钥文件属于另一台设备（编号 ${ks.keys.deviceId}），不能拿来给本机升级：${ks.file}。先备份并移走该钥文件，再重新运行本命令；本机文件未做任何更改。`);
+    return 1;
+  }
+  if (ks.state === "ok") {
+    out(`本机已是钥模式（指纹 ${formatFingerprint(keyFingerprint(ks.keys.sign.pub))}），无需升级。`);
+    if (cfg.deviceToken) {
+      // Key mode is in effect but a token line is still on disk: dead weight
+      // (the relay refuses token auth for key-registered devices) — remove
+      // the whole line, like a completed upgrade would have.
+      removeEnvVars(envPath, ["PI_REMOTE_DEVICE_TOKEN"]);
+      out("已顺带删除 .env 里残存的 PI_REMOTE_DEVICE_TOKEN 行（钥模式下它已无用）。");
+    }
+    return 0;
+  }
+  if (!cfg.deviceId) {
+    err("本机还没有设备编号：先运行 " + initHint(platform) + " 并配对一次，拿到设备编号与令牌后再升级。");
+    return 1;
+  }
+  if (!cfg.deviceToken) {
+    err("本机没有设备令牌可供出示：升级校验需要旧令牌证明这台设备归你。没有令牌就直接 " + pairHint(platform) + " 重新配对——配对本身就会登记钥。");
+    return 1;
+  }
+
+  // Step 2: ensure this install has identity keys (generated 0600 on first
+  // use). An "unregistered" own key is reused as-is; a failed run keeps the
+  // file, so a retry presents the SAME key and the roster never collects
+  // orphan fingerprints from aborted attempts (design 3.3 step 6).
+  let keyCtx = null;
+  try {
+    keyCtx = ensureDeviceKeys(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+  } catch (e) {
+    err(e && e.message ? e.message : String(e));
+    return 1;
+  }
+  out(keyCtx.created ? `已生成设备身份钥（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}），钥文件：${keyCtx.file}（0600，含私钥，切勿外传）` : `使用本机已有的身份钥（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}）`);
+
+  // Step 3: one pairing round presenting keys + the old token together.
+  out(`正在向 ${relay} 发起升级配对…`);
+  const result = await requestPairing({
+    relay,
+    code: args.upgradeToKey,
+    deviceId: cfg.deviceId,
+    deviceName: cfg.deviceName,
+    deviceToken: cfg.deviceToken,
+    deviceKeys: keyCtx.keys,
+    platform,
+    WebSocketImpl: opts.WebSocketImpl,
+    timeoutMs: opts.timeoutMs,
+  });
+  if (!result.ok) {
+    err(`升级配对失败（${result.code}）：${result.error}。钥文件已保留，修好后重跑本命令会复用同一把钥。`);
+    return 1;
+  }
+  if (!result.keyRegistered) {
+    // Step 4, old-relay detection: the relay ignored the keys field and
+    // issued a fresh token instead of registering the keys. The upgrade did
+    // NOT happen — say so loudly, keep the freshly issued token on disk so
+    // the device stays online exactly as before, and leave the key file in
+    // place for the retry after the relay is upgraded.
+    persistPairResult(args, envPath, cfg, result, keyCtx);
+    err("relay 版本太旧：它忽略了本机的钥登记请求，仍按令牌模式签发（升级未完成）。本机未做任何更改，设备仍以设备令牌在线；先升级服务器上的 relay，再重新运行本命令。");
+    return 1;
+  }
+
+  // Step 5: keys are registered and the relay has revoked the token row.
+  // Persist, then remove the token line outright (not blanked), then verify
+  // live: a fresh challenge-response auth must come back classified "key".
+  persistPairResult(args, envPath, cfg, result, keyCtx);
+  removeEnvVars(envPath, ["PI_REMOTE_DEVICE_TOKEN"]);
+  const freshCfg = loadConfig(envPath, opts.env || process.env, platform);
+  const freshKeys = loadDeviceKeys(keyCtx.file) || keyCtx.keys;
+  const probe = await (opts.probeKeyAuth || probeKeyAuth)({
+    relay,
+    deviceId: result.deviceId,
+    keys: freshKeys,
+    platform,
+    WebSocketImpl: opts.WebSocketImpl,
+    timeoutMs: opts.timeoutMs,
+  });
+  if (freshCfg.deviceToken) {
+    err("自检未过：.env 里仍读得到设备令牌（落盘可能被改回）。升级登记已在 relay 侧完成，请手动删掉 PI_REMOTE_DEVICE_TOKEN 这一行后运行 " + doctorHint(platform) + " 复查。");
+    return 1;
+  }
+  if (!probe.ok || probe.auth !== "key") {
+    err(`自检未过：钥已登记、令牌行已删，但向 relay 做的挑战-签名鉴权没有按钥模式通过（${probe.code || "auth=" + String(probe.auth)}${probe.error ? "：" + probe.error : ""}）。请运行 ${doctorHint(platform)} 查看鉴权姿态，或重跑本命令。`);
+    return 1;
+  }
+  out(`升级完成：设备 ${result.deviceId} 已切换为钥模式（指纹 ${formatFingerprint(keyFingerprint(freshKeys.sign.pub))}）。`);
+  out("旧设备令牌已在 relay 侧作废，.env 里的令牌行已删除；自检通过：relay 按挑战-签名认这台设备（auth=key）。");
+  if (accountAckOf(freshKeys, result.accountId)) out("本机持有本账号的内容钥 ACK（只存钥文件，从不打印）。");
+  else if (result.hasKeyHolder === true) out("本账号已有持钥设备，本机尚未持有内容钥（ACK）：上线后会自动向持钥设备索取。");
+  out("下一步：重启正在运行的 pi（扩展启动时读取钥文件），然后运行 attach 打开连接窗口。");
   return 0;
 }
 
@@ -4746,8 +5106,14 @@ async function linkMain(args, envPath, opts = {}) {
       if (result.ok) {
         persistPairResult(args, envPath, cfg, result, keyCtx);
         state.phase = "done";
+        // Same auto-recognition as --pair (design 3.3): an old device token
+        // was presented and keys got registered, so this link was also the
+        // token-to-key upgrade — drop the token line instead of blanking it.
+        const linkWasUpgrade = !!(result.keyRegistered && cfg.deviceToken);
+        if (linkWasUpgrade) removeEnvVars(envPath, ["PI_REMOTE_DEVICE_TOKEN"]);
         if (result.keyRegistered) {
           out(`链接成功：设备 ${result.deviceId}，身份钥已登记（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}），本机不再使用设备令牌`);
+          if (linkWasUpgrade) out("本机原以令牌配对：已顺带完成令牌→钥升级，.env 里的设备令牌行已删除（旧令牌已在 relay 侧作废）。");
           out(`钥文件：${keyCtx.file}（0600，含私钥，切勿外传）；.env 里只写了它的路径`);
           if (accountAckOf(keyCtx.keys, result.accountId)) out("本机持有本账号的内容钥 ACK（只存钥文件，从不打印）。");
           else if (result.hasKeyHolder === true) out("本账号已有持钥设备，本机尚未持有内容钥（ACK）：上线后会自动向持钥设备索取；若那台设备已不在，请在那台设备上处理，或走重新交付。");
@@ -5817,6 +6183,12 @@ module.exports = {
   START_PI,
   normalizePairCode,
   writeEnvVars,
+  removeEnvVars,
+  deviceKeyState,
+  authPostureOf,
+  probeKeyAuth,
+  upgradeMain,
+  upgradeHint,
   attachAuthFrame,
   attachKeyAuthFrame,
   signAuthResponse,

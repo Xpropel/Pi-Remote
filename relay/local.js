@@ -20,6 +20,28 @@ const { purgeSessions } = require("./purge");
 /** attach 声明的能力里 relay 关心的子集（P9 B/C）：决定设备级 session.files 命令与目录浏览是否可用 */
 const DEVICE_FEATURES = ["session.files", "fs.browse"];
 
+/** Phase 4 gate B (ACK-rotation design section 1.2): does an enc-meta
+ *  declaration (room_register room object / snapshot frame) try to move a
+ *  room's stored ackFp to a different value? Such transitions are refused
+ *  at both declaration intakes (and again inside store.setEncMeta): the
+ *  stored rckWrap is the room's only key pointer, and re-pointing it at
+ *  another ACK would orphan the room's whole encrypted history. The
+ *  legitimate transition channels are migration (store.migrateRoom) and
+ *  the future room_key_rewrap frame — never a plain re-declaration. A
+ *  stored meta without an ackFp (the store's _markEncUnknown safety net)
+ *  may still be completed by a declaration, so only a change between two
+ *  concrete fingerprints counts. */
+function encDeclChangesAckFp(existingMeta, decl) {
+  return !!(
+    existingMeta &&
+    typeof existingMeta.ackFp === "string" &&
+    existingMeta.ackFp &&
+    decl &&
+    typeof decl.ackFp === "string" &&
+    decl.ackFp !== existingMeta.ackFp
+  );
+}
+
 /** 深拷贝队列一侧，和刚收到的事件对象分开，避免之后改事件把缓存带跑。 */
 function cloneQueueSide(value) {
   if (value === undefined) return undefined;
@@ -1446,9 +1468,17 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             const regEncDecl = msg.room && msg.room.enc
               ? (typeof msg.room.enc === "object" ? msg.room.enc : msg.room)
               : null;
+            const regEncExisting = regEncDecl && store && typeof store.encInfo === "function" ? store.encInfo(room.id) : null;
             if (regEncDecl && store && typeof store.setEncMeta === "function") {
               if (!hasCap(ws, "crypto.content")) {
                 log("拒绝 enc 声明（连接未声明 crypto.content）:", room.id);
+                send(ws, { type: "error", code: "crypto_required", retryable: false, room: room.id }, cfg);
+              } else if (encDeclChangesAckFp(regEncExisting, regEncDecl)) {
+                // Phase 4 gate B: an ackFp transition may not ride a plain
+                // re-registration. Refuse the declaration (the stored meta
+                // stays authoritative and is what room_registered reports
+                // back), but let the registration itself proceed.
+                log("拒绝 enc 声明（ackFp 变迁守卫 gate B）:", room.id, regEncExisting.ackFp, "->", regEncDecl.ackFp);
                 send(ws, { type: "error", code: "crypto_required", retryable: false, room: room.id }, cfg);
               } else if (store.setEncMeta(room.id, regEncDecl)) {
                 evictIncapableViewers(room);
@@ -1657,6 +1687,19 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             if (!snapEncMeta && !declaresEnc && ((cfg && cfg.cryptoPlaintextRooms) || "allow") !== "allow") {
               log("拒绝明文房间快照写入（cryptoPlaintextRooms =", (cfg && cfg.cryptoPlaintextRooms) || "allow", "）:", room.id);
               send(ws, { type: "error", code: "unsupported", retryable: false, room: room.id, message: "plaintext room writes are disabled by the cryptoPlaintextRooms policy" }, cfg);
+              return;
+            }
+            // Phase 4 gate B: the same ackFp-transition guard as
+            // room_register. A snapshot whose declaration would move the
+            // room's stored ackFp is refused wholesale (crypto_required),
+            // like this path's other crypto refusals — its records were
+            // sealed under the declaring end's divergent key state and
+            // must not land in the room. Migration frames are exempt:
+            // their meta is applied by store.migrateRoom after
+            // verification, one of the two legitimate transition channels.
+            if (declaresEnc && !msg.migration && encDeclChangesAckFp(snapEncMeta, snapEncDecl)) {
+              log("拒绝 enc 快照声明（ackFp 变迁守卫 gate B）:", room.id, snapEncMeta.ackFp, "->", snapEncDecl.ackFp);
+              send(ws, { type: "error", code: "crypto_required", retryable: false, room: room.id }, cfg);
               return;
             }
             // Migration frames skip the standalone declaration on purpose: the

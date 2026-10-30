@@ -36,6 +36,7 @@ const { PAIR_FAIL_WINDOW_MS, requestSource } = require("./pairing");
 const { commandTimeoutMs, pruneDedupe } = require("./commands");
 const { normalizePlatform, normPath, cwdAllowed, cleanProjects, buildDeviceList } = require("./devices");
 const { cancelResend, Rooms, shrinkImagesDeep } = require("./rooms");
+const { ackTrackerOf } = require("./acktrack");
 const { InboxStore } = require("./inbox");
 const { ScheduleStore, ScheduleEngine } = require("./schedule");
 const { startLocalServer } = require("./local");
@@ -240,6 +241,9 @@ function startRelay(overrides = {}) {
     // pairCodes：码 → {accountId, name, expiresAt}，只在内存；二维码链接（pair_request）申请的条目
     // 多带 pending:{ws, device, deviceToken?}，绑定申请连接、连接断开即删码；pairFailures：来源 → 它最近配对失败的时间戳
     const ctx = { index, devices, pairCodes: new Map(), pairFailures: new Map(), startedAt: Date.now(), usage: null };
+    // Phase 4 T-1: room_list encReason derivation reads the account ackFp
+    // consensus from the same tracker the local/viewer channels reconcile on.
+    rooms.ackFpLookup = (accountId) => ackTrackerOf(ctx).knownAckFp(accountId);
     const usageBroker = new UsageBroker({ cfg, index, devices, rooms });
     ctx.usage = usageBroker;
 

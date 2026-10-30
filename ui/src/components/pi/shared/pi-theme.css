@@ -235,6 +235,13 @@
   --cw-switch-thumb: #f2f2f2;
 }
 
+/* Kit Switch ON thumb in dark: the ON track is now --cw-text (near-white in dark), so the
+   thumb goes dark while checked or it would sit white-on-white. OFF rendering is unchanged. */
+:root:root[data-pi-theme="dark"] [data-slot="switch"][data-state="checked"] [data-slot="switch-thumb"],
+[data-pi-root][data-pi-theme="dark"] [data-slot="switch"][data-state="checked"] [data-slot="switch-thumb"] {
+  background: #131313;
+}
+
 /*
  * ---------- 2b. 词级高亮（P3 a 线，carryover #10 余项） ----------
  * kit 的词级高亮 span（[data-slot="diff-word"]，底色 --cw-diff-add-word / --cw-diff-del-word）里，语法色在高亮底上不到 4.5

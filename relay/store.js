@@ -2964,13 +2964,26 @@ class RoomStore {
    *  rides the generation's next meta line — appended right away when the
    *  current generation already has one (the scanner honors the latest meta
    *  line), otherwise the first write of the generation carries it. rckWrap is
-   *  stored verbatim and never parsed or logged (opaque to the relay). */
+   *  stored verbatim and never parsed or logged (opaque to the relay).
+   *  Phase 4 gate B (ACK-rotation design section 1.2): an ackFp TRANSITION
+   *  through this declaration path is refused — the stored wrap is the
+   *  room's only key pointer, and re-pointing it at another ACK orphans
+   *  the room's whole encrypted history. Legitimate transitions never come
+   *  through here: migration assigns metaExtra itself inside migrateRoom,
+   *  and the future room_key_rewrap channel must land its own store entry
+   *  point rather than weaken this guard. A stored meta without an ackFp
+   *  (the _markEncUnknown safety net) may still be completed by a
+   *  declaration, and same-ackFp re-declarations keep working as before. */
   setEncMeta(roomId, meta) {
     const clean = cleanEncMeta(meta);
     if (!clean) return false;
     const r = this._room(roomId, { create: true });
     if (!r) return false;
     const prev = encMetaOf(r.metaExtra);
+    if (prev && prev.ackFp && prev.ackFp !== clean.ackFp) {
+      console.warn(`[store] refused enc meta ackFp transition (gate B): room=${roomId} ${prev.ackFp} -> ${clean.ackFp}`);
+      return false;
+    }
     r.metaExtra = { ...(r.metaExtra || {}), ...clean };
     this._encProbeCache.delete(roomId);
     if (prev && prev.ackFp === clean.ackFp && prev.rckWrap === clean.rckWrap) return true;

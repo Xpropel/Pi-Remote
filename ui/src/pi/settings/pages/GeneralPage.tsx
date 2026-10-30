@@ -8,9 +8,14 @@
  *     保存后需重启 pi 生效，成功提示带 reloadHint；
  *   ● 连接状态 / 服务器地址 / 自动重连 / 重新配对：接真实 relay；自动重连机制常开，不伪造可关。
  *   ◌ 本页没有预留项。
+ *   (Conversation group: local preferences, but not the v2 settings store —
+ *    read/written via cShared useSettingsPrefs/usePrefsWriter, the same dual
+ *    PiPrefs + legacy-style path the composer settings popover uses.)
  */
 import { useEffect, useMemo, useState } from "react"
 import { serverDisplayName } from "@/pi/model/serverName"
+import { usePrefsWriter, useSettingsPrefs } from "@/pi/containers/cShared"
+import type { PiApprovalGateTier } from "@/pi/model/prefs"
 import { useSettings } from "../SettingsContext"
 import {
   SETTINGS_AUTO_ARCHIVE,
@@ -68,6 +73,12 @@ const LANGUAGE_OPTIONS = SETTINGS_LANGUAGES.map((language) => ({ value: language
   value: SettingsLanguage
   label: string
 }[]
+
+const APPROVAL_TIER_OPTIONS = [
+  { value: "high-risk", label: "只问高危操作" },
+  { value: "all-non-readonly", label: "所有非只读操作都问" },
+  { value: "list", label: "只问名单里的工具" },
+] as const satisfies readonly { value: PiApprovalGateTier; label: string }[]
 
 const MICROPHONE_SYSTEM = "system"
 
@@ -134,6 +145,11 @@ function hostname(): string {
 export function GeneralPage() {
   const { p, prefs, act } = useSettings()
   const { relay } = p
+  // Conversation trio (ask / remote answer / approval gate): read and written
+  // through the exact same cShared path as the composer settings popover, so
+  // both surfaces always show and change one shared set of preferences.
+  const conversation = useSettingsPrefs(p)
+  const writeConversation = usePrefsWriter(p)
   const document = useSettingsDocument(relay)
   const writer = useSettingsWriter(relay)
   const audioInputs = useAudioInputs()
@@ -238,6 +254,40 @@ export function GeneralPage() {
         </SettingsRow>
       </SettingsGroup>
       <SettingsWriteNote feedback={writer.feedback} fallback={writeHint} />
+
+      <SettingsGroup
+        label="对话"
+        description="本机偏好，改完立即生效；与输入框旁会话设置里的同名开关是同一组设置。"
+      >
+        <SettingsRow title="允许智能体向我提问" description="开启后，智能体可以用 ask_user 工具发来选择题或填空，在网页上作答；关掉后它不会问你">
+          <SettingsSwitch
+            label="允许智能体向我提问"
+            checked={conversation.askUser}
+            onChange={(checked) => writeConversation({ askUser: checked })}
+          />
+        </SettingsRow>
+        <SettingsRow title="在网页上回答电脑上的确认框" description="关掉后，确认框只能在电脑终端里回答">
+          <SettingsSwitch
+            label="在网页上回答电脑上的确认框"
+            checked={conversation.dialogRemote}
+            onChange={(checked) => writeConversation({ dialogRemote: checked })}
+          />
+        </SettingsRow>
+        <SettingsRow title="工具执行审批门" description="开启后，智能体执行工具前先弹窗等你批准；与上面的确认框应答是两个独立开关">
+          <SettingsSwitch
+            label="工具执行审批门"
+            checked={conversation.approvalGate}
+            onChange={(checked) => writeConversation({ approvalGate: checked })}
+          />
+        </SettingsRow>
+        <SettingsRadioGroup
+          label="审批门问哪些工具"
+          description="名单制时，名单在电脑端桥的配置里维护"
+          value={conversation.approvalGateTier}
+          options={APPROVAL_TIER_OPTIONS}
+          onChange={(value) => writeConversation({ approvalGateTier: value })}
+        />
+      </SettingsGroup>
 
       <SettingsGroup label="语音输入">
         <SettingsSelect

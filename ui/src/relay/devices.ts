@@ -110,6 +110,48 @@ export type RoomLastEvent = { type: string; toolName?: string; at: number }
 /** room_list 房间条目里等待摘要的上限（协议 limits.dialogSlotsMax = 8）。 */
 export const ROOM_WAITING_MAX = 8
 
+/**
+ * Crypto Phase 4 T-1 (phase-4 design 2.5): the plaintext-reason classes the
+ * relay can derive for a room_list entry. "no_source" is part of the
+ * vocabulary from the start (the device backlog report that produces it
+ * lands in slice T-2); a relay that never sends it simply never triggers
+ * that label.
+ */
+export type RoomEncReason = "sealed" | "host_keyless" | "awaiting_key" | "no_source" | "orphan"
+
+const ROOM_ENC_REASONS: ReadonlySet<string> = new Set(["sealed", "host_keyless", "awaiting_key", "no_source", "orphan"])
+
+/** Wire value -> RoomEncReason; anything unknown yields undefined (never guessed). */
+export function parseEncReason(raw: unknown): RoomEncReason | undefined {
+  return typeof raw === "string" && ROOM_ENC_REASONS.has(raw) ? (raw as RoomEncReason) : undefined
+}
+
+/** 会话行徽标文案（阶段 4 设计 §2.5 状态表，逐字定版）。 */
+export const ENC_REASON_LABELS: Record<RoomEncReason, string> = {
+  sealed: "已加密",
+  host_keyless: "未加密（设备未启用密钥）",
+  awaiting_key: "未加密（等内容钥/待迁移）",
+  no_source: "未加密（本机历史缺失）",
+  orphan: "未加密（设备已离线）",
+}
+
+/** 旧 relay / 无法判定时的缺省徽标（阶段 4 设计 §2.5 缺省行：维持现标签）。 */
+export const ENC_FALLBACK_LABEL = "未加密（旧设备）"
+
+/**
+ * The session-row encryption badge text. null = no badge at all (the relay
+ * never stated the room's enc state). A plaintext room shows its reason
+ * label when the relay derived one; "sealed" on a plaintext room is a
+ * contradiction and falls back rather than claiming a reason that cannot
+ * hold.
+ */
+export function encBadgeLabelOf(enc: boolean | undefined, encReason: RoomEncReason | undefined): string | null {
+  if (enc === undefined) return null
+  if (enc) return ENC_REASON_LABELS.sealed
+  if (encReason && encReason !== "sealed") return ENC_REASON_LABELS[encReason]
+  return ENC_FALLBACK_LABEL
+}
+
 export type RoomInfo = {
   id: string
   label: string | null
@@ -132,6 +174,14 @@ export type RoomInfo = {
    * relay did not say (old relay) -- never guessed either way.
    */
   enc?: boolean
+  /**
+   * Crypto Phase 4 T-1 (phase-4 design 2.5): WHY the room is in its enc
+   * state, derived by the relay from roster/consensus facts and carried
+   * under the same crypto.content gate as enc. Absent when the relay could
+   * not determine a class (old relay, or keyed host with no account ACK
+   * evidence yet) -- the UI then keeps the legacy fallback label.
+   */
+  encReason?: RoomEncReason
   cwd: string | null
   online: boolean
   busy: boolean
@@ -229,6 +279,8 @@ export type ListedSession = {
   openable: boolean
   /** Crypto Phase 3: the backing room's encryption flag (RoomInfo.enc); undefined when there is no room or the relay did not say. */
   enc?: boolean
+  /** Crypto Phase 4 T-1: the backing room's plaintext reason (RoomInfo.encReason); undefined when the relay did not say. */
+  encReason?: RoomEncReason
   /** fork 谱系呈现（R3-3 第 3 项）：merge 时按父路径在同设备清单内解析——
    *  "源自 <父会话当前名>"；父已不在清单 → "源会话已删除"；非 fork 行不带此字段、不占位。 */
   parentLabel?: string
@@ -702,6 +754,7 @@ function parseRoom(raw: unknown): RoomInfo {
   const waitingPrompt = parseRoomWaitingPrompt(rec.waitingPrompt)
   const lastEvent = parseRoomLastEvent(rec.lastEvent)
   const firstMessageEnc = firstMessageEncOf(rec.firstMessage)
+  const encReason = parseEncReason(rec.encReason)
   return {
     id: typeof rec.id === "string" ? rec.id : "",
     label: typeof rec.label === "string" ? rec.label : null,
@@ -709,6 +762,7 @@ function parseRoom(raw: unknown): RoomInfo {
     firstMessage: typeof rec.firstMessage === "string" && rec.firstMessage ? rec.firstMessage : null,
     ...(firstMessageEnc ? { firstMessageEnc } : {}),
     ...(rec.enc === 1 ? { enc: true } : rec.enc === 0 ? { enc: false } : {}),
+    ...(encReason ? { encReason } : {}),
     cwd: typeof rec.cwd === "string" ? rec.cwd : null,
     online: rec.online === true,
     busy: rec.busy === true,
@@ -895,6 +949,7 @@ function roomRow(room: RoomInfo, openable: boolean, session?: SessionEntry | nul
     // Only present when the relay stated the room's encryption flag, so
     // rows built from old relays keep their exact previous shape.
     ...(room.enc !== undefined ? { enc: room.enc } : {}),
+    ...(room.encReason !== undefined ? { encReason: room.encReason } : {}),
   }
 }
 

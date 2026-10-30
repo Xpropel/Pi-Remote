@@ -17,7 +17,7 @@
  * a non-extractable CryptoKey (viewerIdentity.ackCryptoKey) and RCKs are
  * imported non-extractable and held in memory only.
  */
-import { base64ToBytes } from "./viewerIdentity.ts"
+import { base64ToBytes, bytesToBase64 } from "./viewerIdentity.ts"
 import type { AgentMessage, AssistantEvent } from "./transcript.ts"
 
 export interface ContentEnvelope {
@@ -148,6 +148,30 @@ export async function unwrapRoomKey(ackKey: CryptoKey, rckWrapB64: string, subtl
 }
 
 /**
+ * Seal raw room-key bytes under an ACK key -- the symmetric counterpart
+ * of unwrapRoomKey (Phase 4 slice R-1; the web side previously had
+ * unwrap only). Produces the same rckWrap shape the extension's
+ * wrapRoomKey produces: base64( nonce(12) || AES-256-GCM(ACK, RCK) ||
+ * tag(16) ). Only exactly-32-byte input seals; anything else returns
+ * null rather than a wrap no peer could ever open.
+ */
+export async function sealRoomKey(ackKey: CryptoKey, rckRaw: Uint8Array, subtle?: SubtleCrypto): Promise<string | null> {
+  if (!rckRaw || rckRaw.length !== ROOM_KEY_BYTES) return null
+  const nonce = globalThis.crypto.getRandomValues(new Uint8Array(GCM_NONCE_BYTES))
+  try {
+    const ct = new Uint8Array(
+      await defaultSubtle(subtle).encrypt({ name: "AES-GCM", iv: nonce as BufferSource }, ackKey, rckRaw as BufferSource),
+    )
+    const blob = new Uint8Array(nonce.length + ct.length)
+    blob.set(nonce, 0)
+    blob.set(ct, nonce.length)
+    return bytesToBase64(blob)
+  } catch {
+    return null
+  }
+}
+
+/**
  * In-memory RCK cache keyed by (room, ackFp, rckWrap): a re-wrapped room
  * (new rckWrap under the same or a rotated ACK) unwraps afresh, an
  * unchanged wrap is never opened twice. Failed unwraps are cached too --
@@ -156,6 +180,7 @@ export async function unwrapRoomKey(ackKey: CryptoKey, rckWrapB64: string, subtl
  */
 export class RoomKeyCache {
   private readonly entries = new Map<string, Promise<CryptoKey | null>>()
+  private readonly candidateEntries = new Map<string, Promise<CryptoKey | null>>()
 
   roomKey(roomId: string, ackFp: string, rckWrap: string, ackKey: CryptoKey, subtle?: SubtleCrypto): Promise<CryptoKey | null> {
     const cacheKey = `${roomId}\n${ackFp}\n${rckWrap}`
@@ -167,8 +192,40 @@ export class RoomKeyCache {
     return pending
   }
 
+  /**
+   * Resolve a room key by trying ACK candidates in order (Phase 4 slice
+   * R-1 dual-key selection): during a rotation window a wrap may still
+   * be sealed under the previous ACK, so the caller passes the ordered
+   * candidates (fingerprint-matched first, then current, then previous
+   * -- see ViewerIdentityCore.ackKeyCandidates) and the first one that
+   * opens the wrap wins. The outcome is a fact about (roomId, rckWrap)
+   * alone -- the RCK is the same whichever candidate opened it -- so it
+   * is cached under that pair, independently of the per-key cache.
+   */
+  roomKeyFromCandidates(
+    roomId: string,
+    rckWrap: string,
+    ackKeys: readonly CryptoKey[],
+    subtle?: SubtleCrypto,
+  ): Promise<CryptoKey | null> {
+    const cacheKey = `${roomId}\n${rckWrap}`
+    let pending = this.candidateEntries.get(cacheKey)
+    if (!pending) {
+      pending = (async () => {
+        for (const ackKey of ackKeys) {
+          const key = await unwrapRoomKey(ackKey, rckWrap, subtle)
+          if (key) return key
+        }
+        return null
+      })()
+      this.candidateEntries.set(cacheKey, pending)
+    }
+    return pending
+  }
+
   clear(): void {
     this.entries.clear()
+    this.candidateEntries.clear()
   }
 }
 

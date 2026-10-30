@@ -4,7 +4,9 @@ import { cn } from "@/lib/utils"
 import { focusRing, type Forced } from "./shared"
 
 export interface SwitchProps extends ComponentProps<typeof SwitchPrimitive.Root> {
-  /** 打开态颜色：blue = --cw-blue（#18 Select Multiple，默认）；green = --cw-green-solid（#19 MAX Mode） */
+  /** ON-state color: blue = neutral ink --cw-text (product ruling 2026-10-30: the accent never
+   * fills a switch; this is the tone every shipped product surface uses, default);
+   * green = --cw-green-solid (#19 MAX Mode semantic, kept for the kit gallery; unused by product surfaces) */
   tone?: "blue" | "green"
   /** sm：轨道 26×14.5（#18，默认）；md：28×17（#19，估计）；lg：51×31、圆点 27（iOS 尺寸，pi c 手机设置页） */
   size?: "sm" | "md" | "lg"
@@ -24,7 +26,7 @@ export function Switch({ tone = "blue", size = "sm", forced, className, ...rest 
       data-forced={forced}
       className={cn(
         "relative inline-flex shrink-0 items-center rounded-(--cw-radius-pill) bg-(--cw-border-strong) p-0 disabled:opacity-50",
-        tone === "blue" ? "data-[state=checked]:bg-(--cw-blue)" : "data-[state=checked]:bg-(--cw-green-solid)",
+        tone === "blue" ? "data-[state=checked]:bg-(--cw-text)" : "data-[state=checked]:bg-(--cw-green-solid)",
         size === "sm" ? "h-[14.5px] w-[26px]" : size === "md" ? "h-[17px] w-[28px]" : "h-[31px] w-[51px]",
         focusRing,
         className,

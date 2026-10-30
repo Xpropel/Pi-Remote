@@ -30,15 +30,20 @@
   /* 由下方 22 个六套色位派生的组件语义；不引入新的基色。 */
   --st-card-bg: color-mix(in srgb, var(--st-menu-bg) 88%, transparent);
   --st-field-bg: color-mix(in srgb, var(--st-menu-bg) 78%, transparent);
-  /* A11Y-04：关闭态轨道用不透明中性灰（浅色 54% / 深色 38% 明度混合），对卡底 ≥3:1；
-     开启态轨道见各深色块（深色下与白 thumb ≥3:1）。 */
-  --st-switch-on: var(--st-accent-strong);
+  /* A11Y-04: the OFF track is an opaque neutral gray (54% light / 38% dark mix), >=3:1 on cards.
+     Switch ON is neutral by ruling (2026-10-30): the track takes the skin ink (--st-text-1) in
+     every skin, never the accent. --st-switch-knob-on is the thumb color while ON: white on the
+     dark ink track in light skins; the dark blocks override it with a dark knob so it never sits
+     white-on-white on the near-white dark track. */
+  --st-switch-on: var(--st-text-1);
   --st-switch-off: color-mix(in srgb, var(--st-text-1) 54%, var(--st-menu-bg));
   --st-switch-knob: #ffffff;
+  --st-switch-knob-on: #ffffff;
   --st-focus-ring: color-mix(in srgb, var(--st-accent) 55%, transparent);
   /* A11Y-02：select / 滑杆的键盘焦点环走中性色（不用浏览器蓝 / 品牌蓝），对卡底 ≥3:1。 */
   --st-field-focus-ring: color-mix(in srgb, var(--st-text-1) 72%, var(--st-menu-bg));
-  /* 非文字强调（滑杆填充 / 手机开启态 thumb）：默认跟强调色；Claude 浅色单独加深到 ≥3:1。 */
+  /* Non-text accent (slider fill): follows the accent by default; Claude light deepens it to >=3:1.
+     Switches no longer read this token (their ON state is neutral, see --st-switch-on above). */
   --st-accent-strong: var(--st-accent);
   --st-slider-accent: var(--st-accent-strong);
   /* 徽标文字：等待色压深一档，浅色卡底上 ≥4.5:1（深色下自动变亮）。 */
@@ -95,7 +100,8 @@
   --st-accent: #a78bfa;
   --st-accent-soft: rgba(167, 139, 250, 0.20);
   --st-switch-off: color-mix(in srgb, var(--st-text-1) 38%, var(--st-menu-bg));
-  --st-switch-on: color-mix(in srgb, var(--st-accent) 88%, var(--st-menu-bg));
+  --st-switch-on: var(--st-text-1);
+  --st-switch-knob-on: #131313;
   --st-online: #3fb96f;
   --st-wait: #e0a63f;
   --st-error: #ff6764;
@@ -153,6 +159,7 @@
   --st-accent: #cc6b49;
   --st-accent-soft: rgba(204, 107, 73, 0.18);
   --st-switch-off: color-mix(in srgb, var(--st-text-1) 38%, var(--st-menu-bg));
+  --st-switch-knob-on: var(--st-selected-bg);
   --st-online: #3fb96f;
   --st-wait: #e0a63f;
   --st-error: #ff6764;
@@ -210,7 +217,8 @@
   --st-accent: #6cb0ee;
   --st-accent-soft: rgba(108, 176, 238, 0.18);
   --st-switch-off: color-mix(in srgb, var(--st-text-1) 38%, var(--st-menu-bg));
-  --st-switch-on: color-mix(in srgb, var(--st-accent) 80%, var(--st-menu-bg));
+  --st-switch-on: var(--st-text-1);
+  --st-switch-knob-on: #131313;
   --st-online: #3fb96f;
   --st-wait: #e0a63f;
   --st-error: #ff6764;

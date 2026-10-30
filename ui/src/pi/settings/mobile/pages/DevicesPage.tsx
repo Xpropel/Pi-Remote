@@ -10,8 +10,8 @@
  *   ○ 新会话自动连上默认设备：本机偏好，即时生效；
  *   ◌ 阻止睡眠 / 常驻托盘：设计预留，不可用。
  */
-import { useState } from "react"
-import { deviceErrorText, errorCode, type Device } from "@/relay/devices"
+import { useMemo, useState } from "react"
+import { deviceErrorText, ENC_FALLBACK_LABEL, ENC_REASON_LABELS, errorCode, type Device } from "@/relay/devices"
 import { useSettings } from "../../SettingsContext.tsx"
 import { SettingsStatusDot } from "../../ui.tsx"
 import {
@@ -19,6 +19,11 @@ import {
   deviceLatencyTextOf,
   deviceNameOf,
   deviceRoundTripTextOf,
+  PLAINTEXT_ACTION_LABELS,
+  plaintextRoomGroupsOf,
+  plaintextRoomTitleOf,
+  type PlaintextRoomGroup,
+  type PlaintextRoomLike,
 } from "../../pages/devicesLogic.ts"
 import {
   MobileActionRow,
@@ -79,6 +84,35 @@ export function DevicesPage() {
     act.notify(`已将「${deviceNameOf(device)}」设为本机默认设备`)
   }
 
+  // Phase 4 T-1: plaintext rooms grouped by the relay's encReason (same
+  // derivation and bound actions as the desktop devices page).
+  const plaintextGroups = useMemo(() => plaintextRoomGroupsOf(relay.rooms), [relay.rooms])
+  const deviceById = useMemo(() => new Map(devices.map((d) => [d.id, d])), [devices])
+
+  /** Deep-link to a device entry on this page: scroll it into view and flash it. */
+  const focusDevice = (deviceId: string | undefined) => {
+    if (!deviceId) return
+    const el = document.querySelector(`[data-settings-device="${deviceId.replace(/"/g, "")}"]`)
+    if (!el) return
+    el.scrollIntoView({ block: "center", behavior: "smooth" })
+    el.classList.add("is-focus")
+    window.setTimeout(() => el.classList.remove("is-focus"), 1600)
+  }
+
+  /** Deep-link to a room: select its device when it is still on the roster, open the room, leave settings. */
+  const openPlaintextRoom = (room: PlaintextRoomLike) => {
+    if (room.deviceId && room.deviceId !== relay.selectedDeviceId && deviceById.has(room.deviceId)) {
+      relay.selectDevice(room.deviceId)
+    }
+    relay.selectRoom(room.id)
+    p.act.openSession()
+  }
+
+  const runPlaintextAction = (group: PlaintextRoomGroup, room: PlaintextRoomLike) => {
+    if (group.action === "orphan_disposal") openPlaintextRoom(room)
+    else focusDevice(room.deviceId)
+  }
+
   /** 真的等一次命令回包再算往返；离线设备不发。 */
   const probeDevice = (device: Device) => {
     if (!device.online || probingId) return
@@ -131,7 +165,7 @@ export function DevicesPage() {
               const isDefault = prefs.defaultDeviceId === device.id
               const probe = probes[device.id]
               return (
-                <div key={device.id} className="sm-device">
+                <div key={device.id} className="sm-device" data-settings-device={device.id}>
                   <div className="sm-device-head">
                     <SettingsStatusDot tone={device.online ? "online" : "offline"} />
                     <span className="sm-device-name">{device.name}</span>
@@ -188,6 +222,41 @@ export function DevicesPage() {
           <MobileActionRow title="添加设备" description="在新设备浏览器打开后，输入这里显示的配对码" onClick={act.openPairing} />
         </MobileCard>
       </MobileGroup>
+
+      {plaintextGroups.length ? (
+        <MobileGroup label="未加密会话" stacked>
+          <MobileCard>
+            <div className="sm-plaintext-intro">以下会话的正文没有加密、在中转服务器上以明文保存。按成因分组，处理入口在每行右侧。</div>
+            {plaintextGroups.map((group) => (
+              <div key={group.key} className="sm-plaintext-group">
+                <div className="sm-plaintext-class">
+                  {group.key === "unknown" ? ENC_FALLBACK_LABEL : ENC_REASON_LABELS[group.key]}
+                  <span className="sm-plaintext-count">{group.rooms.length} 个会话</span>
+                </div>
+                {group.rooms.map((room) => {
+                  const host = room.deviceId ? deviceById.get(room.deviceId) : undefined
+                  return (
+                    <div key={room.id} className="sm-plaintext-row">
+                      <div className="sm-plaintext-meta">
+                        <span className="sm-plaintext-title">{plaintextRoomTitleOf(room)}</span>
+                        <span className="sm-plaintext-sub">
+                          {host ? deviceNameOf(host) : "原设备已不在名册"}
+                          {room.cwd ? ` · ${room.cwd}` : ""}
+                        </span>
+                      </div>
+                      {group.action ? (
+                        <button type="button" className="sm-device-action" onClick={() => runPlaintextAction(group, room)}>
+                          {PLAINTEXT_ACTION_LABELS[group.action]}
+                        </button>
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
+          </MobileCard>
+        </MobileGroup>
+      ) : null}
 
       <MobileGroup label="主机行为">
         <MobileRow title="长任务运行时阻止设备睡眠" description="在被控设备上生效，长任务过夜跑不会被系统睡眠打断" status="reserved">

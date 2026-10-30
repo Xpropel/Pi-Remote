@@ -138,6 +138,7 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
           archived: scopeState.archives.includes(key),
           groupId: sidebarWorkspaceGroupId(cwd || listed?.cwd),
           enc: listed?.enc,
+          encReason: listed?.encReason,
         }
       })
       return {

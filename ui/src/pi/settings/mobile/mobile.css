@@ -382,13 +382,14 @@
 }
 
 [data-pi-settings-mobile] .sm-switch.is-on .sm-switch-track {
-  background: var(--st-accent-soft);
+  /* Switch ON is neutral (same tokens as the desktop settings switch). */
+  background: var(--st-switch-on);
 }
 
 [data-pi-settings-mobile] .sm-switch.is-on .sm-switch-thumb {
   left: 21px;
-  /* A11Y-04：强调 thumb 在 --st-accent-soft 轨道上 ≥3:1；Claude 浅色用加深一档的强调色。 */
-  background: var(--st-accent-strong);
+  /* A11Y-04: the ON thumb (--st-switch-knob-on) keeps >=3:1 against the ON track in every skin. */
+  background: var(--st-switch-knob-on);
 }
 
 [data-pi-settings-mobile] .sm-switch:disabled .sm-switch-track {
@@ -956,6 +957,68 @@
 [data-pi-settings-mobile] .sm-device-action:disabled {
   color: var(--st-text-3);
   opacity: 0.55;
+}
+
+[data-pi-settings-mobile] .sm-device.is-focus {
+  border-radius: 10px;
+  background: var(--st-tile-bg);
+}
+
+/* Phase 4 T-1: plaintext-room list (mirrors the desktop devices page). */
+
+[data-pi-settings-mobile] .sm-plaintext-intro {
+  padding: 12px 14px 4px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+[data-pi-settings-mobile] .sm-plaintext-class {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 14px 2px;
+  color: var(--st-text-2);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+[data-pi-settings-mobile] .sm-plaintext-count {
+  color: var(--st-text-4);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+[data-pi-settings-mobile] .sm-plaintext-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+}
+
+[data-pi-settings-mobile] .sm-plaintext-meta {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+[data-pi-settings-mobile] .sm-plaintext-title {
+  overflow: hidden;
+  color: var(--st-text-1);
+  font-size: 14px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-pi-settings-mobile] .sm-plaintext-sub {
+  overflow: hidden;
+  color: var(--st-text-4);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 [data-pi-settings-mobile] .sm-device-action--danger {

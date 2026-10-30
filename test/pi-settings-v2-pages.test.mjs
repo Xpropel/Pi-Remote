@@ -483,3 +483,84 @@ test("文案常量集中：模型 / 审批的设计文案集中在可测的 data
   assert.doesNotMatch(MODEL_DATA_SOURCE, COLOR_RE)
   assert.doesNotMatch(APPROVAL_DATA_SOURCE, COLOR_RE)
 })
+
+/* ------------------------------------------------------------------ */
+/* §3 通用 · 对话组（问答三开关补进正式设置）                            */
+/* ------------------------------------------------------------------ */
+
+// The conversation trio used to exist only in the composer settings popover
+// and variant-private pages; the shared settings now surface them on the
+// general page (the one page allowed to write local preferences).
+
+const settingsView = await import("../ui/src/pi/model/settingsView.ts")
+const prefsModel = await import("../ui/src/pi/model/prefs.ts")
+
+test("通用页「对话」组：三开关与审批档位齐全，文案与会话设置弹窗逐字一致", () => {
+  const source = stripComments(PAGES.general)
+  for (const copy of [
+    "对话",
+    "本机偏好，改完立即生效；与输入框旁会话设置里的同名开关是同一组设置。",
+    "允许智能体向我提问",
+    "开启后，智能体可以用 ask_user 工具发来选择题或填空，在网页上作答；关掉后它不会问你",
+    "在网页上回答电脑上的确认框",
+    "关掉后，确认框只能在电脑终端里回答",
+    "工具执行审批门",
+    "开启后，智能体执行工具前先弹窗等你批准；与上面的确认框应答是两个独立开关",
+    "审批门问哪些工具",
+    "名单制时，名单在电脑端桥的配置里维护",
+    "只问高危操作",
+    "所有非只读操作都问",
+    "只问名单里的工具",
+  ]) {
+    assert.ok(source.includes(copy), `通用页「对话」组缺文案：${copy}`)
+  }
+})
+
+test("通用页「对话」组：与弹窗同一套读写口径（cShared），页面不直碰偏好存储键", () => {
+  const source = stripComments(PAGES.general)
+  assert.match(source, /from "@\/pi\/containers\/cShared"/)
+  assert.match(source, /useSettingsPrefs\(p\)/)
+  assert.match(source, /usePrefsWriter\(p\)/)
+  assert.match(source, /checked=\{conversation\.askUser\}/)
+  assert.match(source, /checked=\{conversation\.dialogRemote\}/)
+  assert.match(source, /checked=\{conversation\.approvalGate\}/)
+  assert.match(source, /value=\{conversation\.approvalGateTier\}/)
+  assert.match(source, /writeConversation\(\{ askUser: checked \}\)/)
+  assert.match(source, /writeConversation\(\{ dialogRemote: checked \}\)/)
+  assert.match(source, /writeConversation\(\{ approvalGate: checked \}\)/)
+  assert.match(source, /writeConversation\(\{ approvalGateTier: value \}\)/)
+  // No direct storage access and no second set of defaults on the page.
+  assert.doesNotMatch(source, /pi_remote_pi_prefs|pi_remote_style/, "页面不得直读偏好键，读写走 cShared 口径")
+})
+
+test("对话三项口径：默认值不漂移（提问开 / 审批门关 / 网页应答关 / 只问高危），旧键优先", () => {
+  const view = settingsView.settingsPrefsOf(prefsModel.DEFAULT_PI_PREFS, {}, "steer")
+  assert.equal(view.askUser, true)
+  assert.equal(view.approvalGate, false)
+  assert.equal(view.approvalGateTier, "high-risk")
+  assert.equal(view.dialogRemote, false)
+  // The legacy key is what useRelay actually reads when sending the switches,
+  // so a stored legacy value wins over the new-key value.
+  const overridden = settingsView.settingsPrefsOf(prefsModel.DEFAULT_PI_PREFS, { askUserEnabled: false, dialogRemoteAnswer: true }, "steer")
+  assert.equal(overridden.askUser, false)
+  assert.equal(overridden.dialogRemote, true)
+})
+
+test("对话三项口径：每一项都双写（新键 PiPrefs + 旧键 legacy），与弹窗写出的形状一致", () => {
+  assert.deepEqual(settingsView.settingsWritesOf({ askUser: false }), [
+    { kind: "pref", key: "askUserEnabled", value: false },
+    { kind: "legacy", patch: { askUserEnabled: false } },
+  ])
+  assert.deepEqual(settingsView.settingsWritesOf({ dialogRemote: true }), [
+    { kind: "pref", key: "dialogRemoteAnswer", value: true },
+    { kind: "legacy", patch: { dialogRemoteAnswer: true } },
+  ])
+  assert.deepEqual(settingsView.settingsWritesOf({ approvalGate: true }), [
+    { kind: "pref", key: "approvalGateEnabled", value: true },
+    { kind: "legacy", patch: { approvalGateEnabled: true } },
+  ])
+  assert.deepEqual(settingsView.settingsWritesOf({ approvalGateTier: "list" }), [
+    { kind: "pref", key: "approvalGateTier", value: "list" },
+    { kind: "legacy", patch: { approvalGateTier: "list" } },
+  ])
+})

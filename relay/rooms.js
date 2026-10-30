@@ -826,6 +826,46 @@ function devicesViewFor(ws, devices) {
   });
 }
 
+/* ---------------- Phase 4 T-1: honest plaintext-reason derivation ----------------
+ * encReason explains WHY a room is not body-encrypted, derived only from
+ * facts the relay already holds (the room's enc meta, the device roster, the
+ * account ackFp consensus). Pure presentation: nothing here changes room
+ * data, migration, or the cryptoPlaintextRooms policy. Classes follow the
+ * phase-4 design section 2.5:
+ *   sealed       -- the room carries enc meta;
+ *   host_keyless -- the host device is on the roster without a registered
+ *                   identity key (token-era device: it cannot hold an ACK, so
+ *                   its rooms are plaintext by construction);
+ *   awaiting_key -- the host is keyed and the account is known to have an
+ *                   ACK (the live ackFp consensus, or a sealed room's meta
+ *                   on the same account), so this room is migration backlog.
+ *                   A room whose migration was attempted and failed is
+ *                   indistinguishable from never-attempted backlog with
+ *                   relay-side facts alone (migrateRoom is atomic and keeps
+ *                   no failure marker), so both surface as awaiting_key;
+ *   orphan       -- the host is not on the roster at all, or has not
+ *                   attached within cfg.cryptoOrphanDays (default 30).
+ * "no_source" is deliberately NOT derived here: per the design it is known
+ * only from the device's migration backlog report (the slice T-2 frame),
+ * which does not exist yet. When no class can be determined the field is
+ * omitted and the UI keeps its legacy fallback label. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function orphanThresholdMsOf(cfg) {
+  const days = cfg && Number.isSafeInteger(cfg.cryptoOrphanDays) && cfg.cryptoOrphanDays > 0 ? cfg.cryptoOrphanDays : 30;
+  return days * DAY_MS;
+}
+
+function encReasonOf({ encMeta, host, accountAckKnown, now, orphanThresholdMs }) {
+  if (encMeta) return "sealed";
+  if (!host) return "orphan";
+  const lastAttachAt = Number(host.lastAttachAt) || 0;
+  if (!host.online && lastAttachAt > 0 && now - lastAttachAt > orphanThresholdMs) return "orphan";
+  if (!host.keyFp) return "host_keyless";
+  if (accountAckKnown) return "awaiting_key";
+  return undefined;
+}
+
 function roomsViewFor(ws, list) {
   const key = roomListCapKey(ws);
   // The enc flag rides its own cap (crypto.content), outside the ROOM_LIST_CAPS
@@ -844,6 +884,13 @@ function roomsViewFor(ws, list) {
     if (!keepEnc && Object.prototype.hasOwnProperty.call(out, "enc")) {
       out = { ...out };
       delete out.enc;
+    }
+    // encReason rides the same crypto.content gate as enc (phase-4 design
+    // section 2.5): a connection that must not learn the enc flag must not
+    // learn the plaintext reason either.
+    if (!keepEnc && Object.prototype.hasOwnProperty.call(out, "encReason")) {
+      if (out === r) out = { ...r };
+      delete out.encReason;
     }
     if (!keepAttention && Object.prototype.hasOwnProperty.call(out, "lastTurnEnd")) {
       out = { ...out };
@@ -895,6 +942,10 @@ class Rooms {
     this.dedupe = new Map();         // `${room}|${dedupeKey}` -> CommandEntry
     this.viewerQueries = new Map();  // queryKey(ws,id) -> {ws, timer}
     this.deviceSnapshot = () => [];
+    // Phase 4 T-1: account ackFp consensus lookup (acktrack.knownAckFp),
+    // injected by server.js like deviceSnapshot; null = no live consensus
+    // source, the derivation then relies on sealed-room meta evidence only.
+    this.ackFpLookup = null;
     // 进程实例 id：去重表只活在本进程内存里，viewer 断线重连后只有 boot 相同才能安全重发有副作用的命令
     this.boot = crypto.randomBytes(6).toString("hex");
     // 收件箱账本（设计 D §1）：server 装配时 bindInbox 注入 InboxStore；未注入时全部账本动作静默跳过。
@@ -1297,7 +1348,18 @@ class Rooms {
    *  每条带 lastActivity：同 cwd 多房间时前端据此挑最新的，不靠 id 排序猜。 */
   list({ includeOffline = true } = {}) {
     const cutoff = Date.now() - this.cfg.roomIdleEvictMs;
-    const out = [];
+    const now = Date.now();
+    // Phase 4 T-1: the encReason derivation needs the host roster and the
+    // per-account ACK evidence for the whole list, so entries are assembled
+    // in two passes (facts first, entries second). The roster snapshot is
+    // the same buildDeviceList output the broadcast attaches as `devices`.
+    const hosts = new Map();
+    try {
+      for (const d of this.deviceSnapshot()) if (d && d.id) hosts.set(String(d.id), d);
+    } catch {}
+    const orphanThresholdMs = orphanThresholdMsOf(this.cfg);
+    const metaAckAccounts = new Set();
+    const facts = [];
     for (const r of this.map.values()) {
       if (!r.online) {
         if (!includeOffline) continue;
@@ -1307,10 +1369,30 @@ class Rooms {
       const session = this.sessionLookup
         ? this.sessionLookup(r.accountId || DEFAULT_ACCOUNT, r.deviceId || UNREGISTERED_DEVICE, r.id)
         : null;
-      out.push({
+      const encMeta = this._transcriptStore && typeof this._transcriptStore.encInfo === "function"
+        ? this._transcriptStore.encInfo(r.id)
+        : null;
+      if (encMeta && encMeta.ackFp) metaAckAccounts.add(r.accountId || DEFAULT_ACCOUNT);
+      facts.push({ r, session, encMeta });
+    }
+    const ackKnownCache = new Map();
+    const accountAckKnown = (accountId) => {
+      if (!ackKnownCache.has(accountId)) {
+        let known = metaAckAccounts.has(accountId);
+        if (!known && typeof this.ackFpLookup === "function") {
+          try { known = !!this.ackFpLookup(accountId); } catch {}
+        }
+        ackKnownCache.set(accountId, known);
+      }
+      return ackKnownCache.get(accountId);
+    };
+    const out = facts.map(({ r, session, encMeta }) => {
+      const accountId = r.accountId || DEFAULT_ACCOUNT;
+      const deviceId = r.deviceId || UNREGISTERED_DEVICE;
+      const entry = {
         id: r.id,
-        accountId: r.accountId || DEFAULT_ACCOUNT,
-        deviceId: r.deviceId || UNREGISTERED_DEVICE,
+        accountId,
+        deviceId,
         label: r.label,
         name: session && session.name ? session.name : null,
         // Crypto Phase 3: a sealed preview envelope stored on the index row
@@ -1335,9 +1417,21 @@ class Rooms {
         schedules: this.schedulesOf(r),
         // Body encryption flag (design section 7): present only in the raw list;
         // roomsViewFor strips it for connections without crypto.content.
-        enc: this._transcriptStore && this._transcriptStore.encInfo(r.id) ? 1 : 0,
+        enc: encMeta ? 1 : 0,
+      };
+      // Phase 4 T-1: honest plaintext reason (design section 2.5). Present
+      // only in the raw list and stripped with enc by roomsViewFor; omitted
+      // entirely when no class can be determined from relay-side facts.
+      const encReason = encReasonOf({
+        encMeta,
+        host: hosts.get(String(deviceId)),
+        accountAckKnown: accountAckKnown(accountId),
+        now,
+        orphanThresholdMs,
       });
-    }
+      if (encReason !== undefined) entry.encReason = encReason;
+      return entry;
+    });
     return out.sort((a, b) => Number(b.online) - Number(a.online) || a.id.localeCompare(b.id));
   }
   /** 按连接 cap 的清单视图：auth_result / list_rooms 单发与广播都走这里，不许各写一份。
@@ -1539,4 +1633,4 @@ function clearSessionState(room) {
   return hadTurnEnd;
 }
 
-module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor, devicesViewFor };
+module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor, devicesViewFor, encReasonOf };

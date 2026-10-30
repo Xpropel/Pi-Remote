@@ -173,6 +173,7 @@ function paletteOf(key) {
     text4: pick("--st-text-4"),
     switchOff: pick("--st-switch-off"),
     switchOn: pick("--st-switch-on"),
+    switchKnobOn: pick("--st-switch-knob-on"),
     sliderAccent: pick("--st-slider-accent"),
     accentStrong: pick("--st-accent-strong"),
     accentSoft: over(parseColor(vars.get("--st-accent-soft"), vars), card),
@@ -311,22 +312,24 @@ test("A11Y-04 六皮肤开关：关闭态轨道 / 白 thumb ≥3；深色开启�
       assert.ok(thumbOff >= 3, `${key} 关闭态 thumb/轨道 ${thumbOff.toFixed(2)}:1`)
       const onCard = contrast(p.switchOn, p.card)
       assert.ok(onCard >= 3, `${key} 开启态轨道/卡底 ${onCard.toFixed(2)}:1`)
-      const thumbOn = contrast({ r: 255, g: 255, b: 255, a: 1 }, p.switchOn)
+      const thumbOn = contrast(p.switchKnobOn, p.switchOn)
       assert.ok(thumbOn >= 3, `${key} 开启态 thumb/轨道 ${thumbOn.toFixed(2)}:1`)
     }
   }
 })
 
-test("A11Y-04 手机开关开启态 thumb / 软色轨道 ≥3", () => {
+test("A11Y-04 手机开关开启态 thumb / 中性轨道 ≥3", () => {
   for (const style of STYLES) {
     for (const theme of THEMES) {
       const key = `${style}-${theme}`
       const p = paletteOf(key)
-      const ratio = contrast(p.accentStrong, p.accentSoft)
+      const ratio = contrast(p.switchKnobOn, p.switchOn)
       assert.ok(ratio >= 3, `${key} 手机开启态 thumb/轨道 ${ratio.toFixed(2)}:1`)
     }
   }
-  assert.match(stripComments(read("ui/src/pi/settings/mobile/mobile.css")), /background: var\(--st-accent-strong\)/, "手机开启态 thumb 未用加深强调色")
+  const mobileCss = stripComments(read("ui/src/pi/settings/mobile/mobile.css"))
+  assert.match(mobileCss, /\.sm-switch\.is-on \.sm-switch-track \{[^}]*background: var\(--st-switch-on\)/, "手机开启态轨道未用中性开启色")
+  assert.match(mobileCss, /\.sm-switch\.is-on \.sm-switch-thumb \{[^}]*background: var\(--st-switch-knob-on\)/, "手机开启态 thumb 未用开启态圆点色")
 })
 
 test("A11Y-04 六皮肤滑杆强调 / 卡底 ≥3；Claude 浅色单独加深", () => {

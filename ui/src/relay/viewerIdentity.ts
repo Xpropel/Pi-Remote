@@ -329,6 +329,19 @@ interface StoredIdentity {
   createdAt: number
 }
 
+/**
+ * The previous-slot ACK (Phase 4 slice R-1 dual-key transition storage):
+ * the ACK the current slot displaced most recently, kept so room wraps
+ * sealed under it still open during a rotation window. Only the
+ * fingerprint and the storage-local sealed copy are persisted -- the
+ * same ACK_STORE_INFO sealing sealAck produces; the CryptoKey form is
+ * re-derived on demand (ackCryptoKeyForFp) and cached in memory only.
+ */
+interface StoredPrevAck {
+  ackFp: string
+  sealed: { epk: string; nonce: string; ct: string }
+}
+
 interface StoredAckEntry {
   key: CryptoKey
   fp: string
@@ -338,6 +351,8 @@ interface StoredAckEntry {
   sealedCt: string
   backedUpAt: number | null
   updatedAt: number
+  /** Previous-slot ACK (Phase 4 slice R-1); absent/null when none is held. */
+  prev?: StoredPrevAck | null
 }
 
 interface StoredAckBook {
@@ -405,6 +420,46 @@ export interface AckGrantInput {
   /** Account the ACK belongs to; defaults to the bound account. */
   accountId?: string
   blob: { nonce?: unknown; ct?: unknown }
+  /**
+   * Rotation marker (Phase 4 slice R-1, ACK-rotation design section 1.3):
+   * the exact string "rotation" makes the install rules check supersedes
+   * before switching the current slot; anything else is a legacy grant.
+   */
+  purpose?: string
+  /** Fingerprint of the ACK a rotation grant supersedes (16 hex chars). */
+  supersedes?: string
+}
+
+/** Outcome of a dual-key ACK install (Phase 4 slice R-1). */
+export type AckInstallAction = "current" | "noop" | "stash"
+
+/**
+ * Deterministic install plan for an incoming ACK (Phase 4 slice R-1,
+ * ACK-rotation design section 1.3) -- the same rules the device side
+ * applies (extension planContentKeyInstall):
+ *   "current" -- the new key takes the current slot; a displaced current
+ *                key with a different fingerprint is demoted into the
+ *                previous slot instead of vanishing.
+ *   "noop"    -- the incoming key IS the held key (same fingerprint).
+ *   "stash"   -- a rotation grant whose supersedes does not name the
+ *                locally held key: the current slot is NOT switched; the
+ *                new key is only parked in the previous slot and the
+ *                divergence is surfaced for manual resolution.
+ * Legacy grants (no purpose) always take "current", subject to "noop";
+ * a rotation grant arriving while NO key is held also takes "current"
+ * (there is no local key whose claim needs protecting).
+ */
+export function planAckInstall(
+  currentFp: string | null,
+  newFp: string,
+  opts?: { purpose?: string | null; supersedes?: string | null },
+): AckInstallAction {
+  if (currentFp && currentFp === newFp) return "noop"
+  if (opts && opts.purpose === "rotation" && currentFp) {
+    const supersedes = typeof opts.supersedes === "string" ? opts.supersedes : ""
+    if (supersedes !== currentFp) return "stash"
+  }
+  return "current"
 }
 
 /* ------------------------------------------------------------------ */
@@ -423,6 +478,9 @@ export class ViewerIdentityCore {
   private ackBook: StoredAckBook = { v: 1, byAccount: {} }
   /** Raw ACK bytes, memory only; repopulated by unsealing on demand. */
   private readonly rawAckCache = new Map<string, Uint8Array>()
+  /** Imported CryptoKey forms of previous-slot ACKs, memory only (the
+   *  persisted prev slot holds fingerprint + sealed copy, never a key). */
+  private readonly prevKeyCache = new Map<string, CryptoKey>()
   /** Client nonce of the in-flight key-auth attempt (single use). */
   private pendingClientNonce: Uint8Array | null = null
   private mismatchFps: string[] | null = null
@@ -571,6 +629,7 @@ export class ViewerIdentityCore {
     this.identity = null
     this.ackBook = { v: 1, byAccount: {} }
     this.rawAckCache.clear()
+    this.prevKeyCache.clear()
     this.pendingClientNonce = null
     this.mismatchFps = null
     this.lastError = null
@@ -669,6 +728,62 @@ export class ViewerIdentityCore {
     return this.ackBook.byAccount[accountId]?.key ?? null
   }
 
+  /** Fingerprint of the previous-slot ACK for an account, or null (R-1). */
+  prevAckFpFor(accountId: string): string | null {
+    return this.ackBook.byAccount[accountId]?.prev?.ackFp ?? null
+  }
+
+  /**
+   * The ACK CryptoKey whose fingerprint is ackFp -- current slot on an
+   * exact match, else the previous slot (unsealed and imported on first
+   * use, then memory-cached). Null when neither slot holds that key.
+   * This is the by-fingerprint selection half of the R-1 dual-key rule:
+   * room unwrapping asks for the key the room's keyInfo names, not
+   * blindly for whichever key happens to be current.
+   */
+  async ackCryptoKeyForFp(accountId: string, ackFp: string): Promise<CryptoKey | null> {
+    const entry = this.ackBook.byAccount[accountId]
+    if (!entry || !ackFp) return null
+    if (entry.fp === ackFp) return entry.key
+    const prev = entry.prev
+    if (!prev || prev.ackFp !== ackFp) return null
+    const cacheId = accountId + "\n" + ackFp
+    const hit = this.prevKeyCache.get(cacheId)
+    if (hit) return hit
+    const raw = await this.unsealSealedAck(accountId, prev.sealed)
+    if (!raw) return null
+    try {
+      const key = await this.platform.subtle.importKey("raw", raw as BufferSource, { name: "AES-GCM" }, false, ["encrypt", "decrypt"])
+      this.prevKeyCache.set(cacheId, key)
+      return key
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Ordered ACK key candidates for opening a wrap (Phase 4 slice R-1):
+   * the candidate whose fingerprint equals ackFpHint goes first; with no
+   * matching hint the current slot leads and the previous slot follows.
+   * Mirrors the device side's contentKeyCandidates ordering exactly.
+   */
+  async ackKeyCandidates(accountId: string, ackFpHint?: string | null): Promise<CryptoKey[]> {
+    const entry = this.ackBook.byAccount[accountId]
+    if (!entry) return []
+    const out: CryptoKey[] = []
+    if (ackFpHint) {
+      const hinted = await this.ackCryptoKeyForFp(accountId, ackFpHint)
+      if (hinted) out.push(hinted)
+    }
+    if (entry.fp !== ackFpHint) out.push(entry.key)
+    const prevFp = entry.prev?.ackFp
+    if (prevFp && prevFp !== ackFpHint && prevFp !== entry.fp) {
+      const prevKey = await this.ackCryptoKeyForFp(accountId, prevFp)
+      if (prevKey) out.push(prevKey)
+    }
+    return out
+  }
+
   /**
    * Wrap key for the storage-local sealed copy: ECDH between a fresh
    * ephemeral key pair and one of this viewer's own box keys, HKDF with
@@ -707,13 +822,19 @@ export class ViewerIdentityCore {
     return { epk: bytesToBase64(epk), nonce: bytesToBase64(nonce), ct: bytesToBase64(new Uint8Array(ct)) }
   }
 
-  private async unsealAck(accountId: string, entry: StoredAckEntry): Promise<Uint8Array | null> {
+  /**
+   * Open one storage-local sealed ACK copy (the {epk, nonce, ct} shape
+   * sealAck produces). Split out of unsealAck so the previous slot's
+   * sealed copy reuses the exact same ACK_STORE_INFO mechanism
+   * (Phase 4 slice R-1).
+   */
+  private async unsealSealedAck(accountId: string, sealed: { epk: string; nonce: string; ct: string }): Promise<Uint8Array | null> {
     const identity = this.identity
     if (!identity) return null
     const { subtle } = this.platform
-    const epkBytes = base64ToBytes(entry.sealedEphemeralPub)
-    const nonce = base64ToBytes(entry.sealedNonce)
-    const ct = base64ToBytes(entry.sealedCt)
+    const epkBytes = base64ToBytes(sealed.epk)
+    const nonce = base64ToBytes(sealed.nonce)
+    const ct = base64ToBytes(sealed.ct)
     if (!epkBytes || !nonce || !ct) return null
     try {
       const ephemeralPub = await subtle.importKey("spki", epkBytes as BufferSource, { name: "ECDH", namedCurve: "P-256" }, false, [])
@@ -724,6 +845,14 @@ export class ViewerIdentityCore {
     } catch {
       return null
     }
+  }
+
+  private async unsealAck(accountId: string, entry: StoredAckEntry): Promise<Uint8Array | null> {
+    return this.unsealSealedAck(accountId, {
+      epk: entry.sealedEphemeralPub,
+      nonce: entry.sealedNonce,
+      ct: entry.sealedCt,
+    })
   }
 
   /** Persist an ACK for an account: key form + sealed raw copy + fingerprint. */
@@ -747,6 +876,70 @@ export class ViewerIdentityCore {
     await this.platform.store.put(ACK_RECORD_KEY, this.ackBook)
     this.rawAckCache.set(accountId, new Uint8Array(ackRaw))
     return fp
+  }
+
+  /**
+   * Install an incoming ACK (a grant delivery) under the R-1 dual-key
+   * rules (see planAckInstall):
+   *   "current" -- the new entry replaces the current slot; a displaced
+   *                entry's sealed copy moves into the prev slot verbatim
+   *                (no re-seal: the storage-local wrap stays valid), and
+   *                the new key starts un-backed-up, like any fresh key.
+   *   "noop"    -- the held entry already is this key; nothing is
+   *                written and the prev slot is untouched.
+   *   "stash"   -- the current entry is left fully untouched; the
+   *                incoming key is sealed into the prev slot only, and
+   *                the divergence is surfaced through the existing
+   *                keyMismatch state for manual resolution.
+   * storeAck/importAck deliberately keep the plain overwrite semantics:
+   * the backup-restore slotting rules are a separate slice (R-5).
+   */
+  async installAck(
+    accountId: string,
+    ackRaw: Uint8Array,
+    opts?: { purpose?: string | null; supersedes?: string | null },
+  ): Promise<{ fp: string; action: AckInstallAction }> {
+    if (ackRaw.length !== CONTENT_KEY_BYTES) throw new Error("内容钥长度不对（应为 32 字节）")
+    if (!this.identity) throw new Error("尚未生成观看端身份，无法存放内容钥")
+    const { subtle } = this.platform
+    const fp = await ackFingerprintOf(ackRaw, subtle)
+    const existing = this.ackBook.byAccount[accountId]
+    const action = planAckInstall(existing?.fp ?? null, fp, opts)
+    if (action === "noop") return { fp, action }
+    if (action === "stash") {
+      // planAckInstall returns "stash" only when an entry is held.
+      if (!existing) return { fp, action }
+      const sealed = await this.sealAck(accountId, ackRaw)
+      existing.prev = { ackFp: fp, sealed }
+      await this.platform.store.put(ACK_RECORD_KEY, this.ackBook)
+      this.noteKeyMismatch([existing.fp, fp])
+      return { fp, action }
+    }
+    const key = await subtle.importKey("raw", ackRaw as BufferSource, { name: "AES-GCM" }, false, ["encrypt", "decrypt"])
+    const sealed = await this.sealAck(accountId, ackRaw)
+    this.ackBook.byAccount[accountId] = {
+      key,
+      fp,
+      sealedEphemeralPub: sealed.epk,
+      sealedNonce: sealed.nonce,
+      sealedCt: sealed.ct,
+      backedUpAt: null,
+      updatedAt: Date.now(),
+      prev:
+        existing && existing.fp !== fp
+          ? {
+              ackFp: existing.fp,
+              sealed: {
+                epk: existing.sealedEphemeralPub,
+                nonce: existing.sealedNonce,
+                ct: existing.sealedCt,
+              },
+            }
+          : (existing?.prev ?? null),
+    }
+    await this.platform.store.put(ACK_RECORD_KEY, this.ackBook)
+    this.rawAckCache.set(accountId, new Uint8Array(ackRaw))
+    return { fp, action }
   }
 
   /** Store an ACK recovered from a passphrase backup (same path as a grant). */
@@ -809,9 +1002,18 @@ export class ViewerIdentityCore {
    * Wrap the held ACK to a recipient's box public key (the deliverer side
    * of the Phase 1 contract; used for pair_approve's contentKeyGrant and
    * for answering content_key_request). Returns the {to, nonce, ct} blob,
-   * or null when no ACK is held for the account.
+   * or null when no ACK is held for the account. The optional rotation
+   * fields (Phase 4 slice R-1) are attached verbatim when the caller
+   * supplies them -- this is the generation half of the grant extension;
+   * receivers apply the install rules in installAck. Plain answers to
+   * content_key_request pass no opts and stay byte-identical to before.
    */
-  async wrapAckGrant(accountId: string, recipientFp: string, recipientBoxPubB64: string): Promise<{ to: string; nonce: string; ct: string } | null> {
+  async wrapAckGrant(
+    accountId: string,
+    recipientFp: string,
+    recipientBoxPubB64: string,
+    opts?: { purpose?: string; supersedes?: string },
+  ): Promise<{ to: string; nonce: string; ct: string; purpose?: string; supersedes?: string } | null> {
     const identity = this.identity
     if (!identity?.registered) return null
     const peerSpki = base64ToBytes(recipientBoxPubB64)
@@ -821,14 +1023,25 @@ export class ViewerIdentityCore {
     const wrapKey = await this.ackWrapKey(peerSpki, accountId, identity.keyFp, recipientFp)
     const nonce = this.platform.randomBytes(12)
     const ct = await this.platform.subtle.encrypt({ name: "AES-GCM", iv: nonce as BufferSource }, wrapKey, ack as BufferSource)
-    return { to: recipientFp, nonce: bytesToBase64(nonce), ct: bytesToBase64(new Uint8Array(ct)) }
+    const blob: { to: string; nonce: string; ct: string; purpose?: string; supersedes?: string } = {
+      to: recipientFp,
+      nonce: bytesToBase64(nonce),
+      ct: bytesToBase64(new Uint8Array(ct)),
+    }
+    if (opts && typeof opts.purpose === "string" && opts.purpose) blob.purpose = opts.purpose
+    if (opts && typeof opts.supersedes === "string" && opts.supersedes) blob.supersedes = opts.supersedes
+    return blob
   }
 
   /**
    * Accept a grant addressed to this viewer: unwrap with the VBK private
-   * key under the Phase 1 contract and store the ACK. Any inconsistency
-   * (wrong recipient, bad blob, GCM tag failure, wrong length) is a plain
-   * false -- grants are never partially applied.
+   * key under the Phase 1 contract and install the ACK under the R-1
+   * dual-key rules (installAck: demote-on-overwrite for legacy grants,
+   * supersedes-checked switch for rotation grants, stash-and-report on
+   * a divergent rotation grant). Any inconsistency (wrong recipient,
+   * bad blob, GCM tag failure, wrong length) is a plain false -- grants
+   * are never partially applied. A stashed grant still returns true:
+   * the key material was accepted and stored, just not switched to.
    */
   async acceptAckGrant(grant: AckGrantInput): Promise<boolean> {
     const identity = this.identity
@@ -844,7 +1057,10 @@ export class ViewerIdentityCore {
       const plain = await this.platform.subtle.decrypt({ name: "AES-GCM", iv: nonce as BufferSource }, wrapKey, ct as BufferSource)
       const ack = new Uint8Array(plain)
       if (ack.length !== CONTENT_KEY_BYTES) return false
-      await this.storeAck(accountId, ack)
+      await this.installAck(accountId, ack, {
+        purpose: typeof grant.purpose === "string" ? grant.purpose : null,
+        supersedes: typeof grant.supersedes === "string" ? grant.supersedes : null,
+      })
       return true
     } catch {
       return false

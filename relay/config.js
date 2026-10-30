@@ -98,6 +98,11 @@ const DEFAULT_CONFIG = {
   // "readonly" = plaintext rooms reject NEW writes but stay readable;
   // "deny" = plaintext rooms reject reads and writes. Enc rooms are unaffected.
   cryptoPlaintextRooms: "allow",
+  // Phase 4 slice T-1 (honest plaintext labels): a plaintext room whose host
+  // device has not attached for longer than this many days is presented as an
+  // orphan room ("device offline"), whatever its original plaintext class.
+  // Presentation only -- no room data or policy behavior depends on it.
+  cryptoOrphanDays: 30,
 };
 
 /**
@@ -132,6 +137,7 @@ const NUMERIC_CONFIG_FIELDS = {
   harnessStartTimeoutMs: { min: 1 },
   resendSnapshotWaitMs: { min: 1 },
   pairCodeTtlMs: { min: 1 },
+  cryptoOrphanDays: { min: 1 },
 };
 
 /** 只接受 config.json 里的 JSON 数字：字符串/对象/NaN/小数/负数/越界都不算合法，避免隐式转换。 */

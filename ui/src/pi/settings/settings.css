@@ -454,6 +454,8 @@
 
 .settings-switch.is-on .settings-switch-thumb {
   left: 18px;
+  /* ON thumb color follows --st-switch-knob-on (dark skins use a dark knob on the light ink track). */
+  background: var(--st-switch-knob-on);
 }
 
 .settings-switch:disabled {

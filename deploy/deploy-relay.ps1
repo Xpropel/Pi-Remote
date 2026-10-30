@@ -203,6 +203,18 @@ chown root:root "$app" || { echo "FAIL perms_app_owner $app"; exit 1; }
 chmod 755 "$app" || { echo "FAIL perms_app_mode $app"; exit 1; }
 find "$app" -mindepth 1 -maxdepth 1 ! -name data ! -name logs -exec chown -R root:root {} + || { echo "FAIL perms_tree_owner $app"; exit 1; }
 find "$app" -mindepth 1 -maxdepth 1 ! -name data ! -name logs -exec chmod -R go-w {} + || { echo "FAIL perms_tree_mode $app"; exit 1; }
+# Uploads can carry macOS working-copy modes (files 600, dirs 700) through scp,
+# and the go-w pass above only strips write bits: a 600 file stays unreadable
+# for the service user (EACCES crash-loop). Normalize explicitly: dirs 755,
+# shell scripts and already-executable files 755, plain files 644.
+# node_modules is excluded on purpose: it is installed on the server, and
+# rewriting its modes once stripped the exec bits from its .bin shims.
+# data/ and logs/ are pruned here (locked down by the steps below), and
+# config.json is re-tightened to 640 by its dedicated step further down.
+find "$app" -mindepth 1 \( -path "$app/data" -o -path "$app/logs" -o -name node_modules \) -prune -o -type d -exec chmod 755 {} + || { echo "FAIL perms_norm_dir $app"; exit 1; }
+find "$app" -mindepth 1 \( -path "$app/data" -o -path "$app/logs" -o -name node_modules \) -prune -o -type f -name '*.sh' -exec chmod 755 {} + || { echo "FAIL perms_norm_script $app"; exit 1; }
+find "$app" -mindepth 1 \( -path "$app/data" -o -path "$app/logs" -o -name node_modules \) -prune -o -type f ! -name '*.sh' -perm /111 -exec chmod 755 {} + || { echo "FAIL perms_norm_exec $app"; exit 1; }
+find "$app" -mindepth 1 \( -path "$app/data" -o -path "$app/logs" -o -name node_modules \) -prune -o -type f ! -name '*.sh' ! -perm /111 -exec chmod 644 {} + || { echo "FAIL perms_norm_file $app"; exit 1; }
 chown -R pi-remote:pi-remote "$app/data" "$app/logs" || { echo "FAIL perms_data_owner $app/data $app/logs"; exit 1; }
 # 索引含设备名/项目路径/会话标题：旧文件补一次收紧（新文件由 systemd UMask=0077 兜底）
 chmod -R go-rwx "$app/data" "$app/logs" || { echo "FAIL perms_data_mode $app/data $app/logs"; exit 1; }

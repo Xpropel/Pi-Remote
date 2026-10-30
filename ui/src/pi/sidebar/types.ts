@@ -10,6 +10,7 @@
  * Surface：P11-SIDE-01..14（实现挂 data-p11-surface）；验证/截图按 data-p11-surface + data-pi-sidebar-style。
  */
 import type { ReactNode } from "react"
+import type { RoomEncReason } from "../../relay/devices.ts"
 
 /** 三套视觉风格；与 PiUiVariant 一一对应（drift 由 test/pi-p11-framework 断言）。 */
 export const PI_SIDEBAR_STYLES = ["cursor", "claude", "codex"] as const
@@ -134,6 +135,9 @@ export interface PiSidebarSession {
   /** Content encryption state from the relay roster (crypto Phase 3): true = end-to-end encrypted room,
    *  false = legacy plaintext room (old device, bodies readable by the relay), undefined = relay did not say. */
   enc?: boolean
+  /** Plaintext reason from the relay roster (crypto Phase 4 T-1): why a plaintext room is
+   *  plaintext (keyless host / migration backlog / orphan); undefined = relay did not say. */
+  encReason?: RoomEncReason
 }
 
 export type PiSidebarGroupKind = "pinned" | "workspace" | "archive" | "custom"

@@ -4227,7 +4227,11 @@ export function useRelay() {
       return
     }
     const selected = lazySessionRef.current
-    if (selected?.id === row.id && selected.deviceId === device.id) return
+    // Never dereference `selected` after a `?.` comparison: with no lazy
+    // selection (selected === null) and a row whose id is undefined, both
+    // sides were undefined, the comparison passed, and reading
+    // selected.deviceId threw on null.
+    if (selected && selected.id === row.id && selected.deviceId === device.id) return
     cancelLazySend(false)
     clearLazyTimers()
     const selection: LazySelection = { ...row, deviceId: device.id }
