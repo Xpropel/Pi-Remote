@@ -181,6 +181,35 @@ export function modelChoicesOf(data: unknown): MobileModelChoice[] {
   return choices
 }
 
+export interface MobileModelGroup {
+  label: string
+  options: { value: string; label: string }[]
+}
+
+/**
+ * Groups for the default-model select (F7, same fix as the desktop page):
+ * one group per provider in first-seen order instead of one flat list
+ * mixing every catalog; a provider the auth payload does not report as
+ * configured is marked in its group label. Options stay selectable.
+ */
+export function modelGroupsOf(choices: readonly MobileModelChoice[], providers: readonly MobileProviderRow[]): MobileModelGroup[] {
+  const byId = new Map(providers.map((provider) => [provider.id, provider]))
+  const groups: MobileModelGroup[] = []
+  const index = new Map<string, MobileModelGroup>()
+  for (const choice of choices) {
+    let group = index.get(choice.provider)
+    if (!group) {
+      const row = byId.get(choice.provider)
+      const name = row?.name ?? choice.provider
+      group = { label: row && !row.configured ? `${name}（未配置凭据）` : name, options: [] }
+      index.set(choice.provider, group)
+      groups.push(group)
+    }
+    group.options.push({ value: choice.key, label: choice.label })
+  }
+  return groups
+}
+
 /** `get_settings` 里的默认模型键（provider/model）；任一缺失返回 null。 */
 export function defaultModelKeyOf(settings: unknown): string | null {
   const provider = settingText(settings, ["defaultProvider"], "")

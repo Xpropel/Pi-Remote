@@ -10,6 +10,7 @@ import { CodexPhonePanel } from "../phone/CodexPhonePanel"
 import { CodexPhoneComposer } from "../phone/CodexPhoneComposer"
 import { CodexPhoneBar } from "../chrome/CodexTitleBar"
 import { CodexNewSession } from "../pages/CodexNewSession"
+import { CodexInboxPage } from "../pages/CodexInboxPage"
 import { CodexPlugins } from "../pages/CodexPlugins"
 import { CodexAutomations } from "../pages/CodexAutomations"
 import { CodexPullRequests } from "../pages/CodexPullRequests"
@@ -138,6 +139,7 @@ export function CodexPhone(props: VariantAppProps) {
     closeSearch: () => act.setSearch(null),
     setSearchQuery: (query) => act.setSearch(query),
     openSettings: actions.onOpenSettings,
+    openInbox: act.openInbox,
     resize: () => undefined,
     toggleCollapse: () => undefined,
     selectLocalPage: (pageId) => setLocalPage(pageId as CodexLocalPage),
@@ -208,6 +210,14 @@ export function CodexPhone(props: VariantAppProps) {
         <div data-p4-surface="CX-PHONE-SETTINGS" data-p4-ready="">
           <MobileSettingsPage p={codexSettingsHostProps(props, "phone", () => patchOverlay({ pairing: true }))} />
         </div>
+      ) : null}
+      {page === "inbox" ? (
+        <>
+          <CodexPhoneBar title="待答" onBack={() => act.openSession()} />
+          <div className="cx-phone-scroll">
+            <CodexInboxPage p={props} phone />
+          </div>
+        </>
       ) : null}
       {page === "pane" ? <CodexPhonePanel p={props} onBack={() => act.setPane(null)} /> : null}
       <CodexOverlayHost p={props} state={overlay} onChange={patchOverlay} />

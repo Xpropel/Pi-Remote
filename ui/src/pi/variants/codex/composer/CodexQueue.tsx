@@ -29,7 +29,7 @@ export function CodexQueue({
   if (count <= 0) return null
   return (
     <div className="cx-queue" data-p4-surface="CX-COMP-05" data-p4-ready="">
-      <button type="button" className="cx-queue-line" aria-expanded={open} data-p4-action="toggle-queue" onClick={() => setOpen((value) => !value)}>
+      <button type="button" className="cx-queue-line" title="排队中的消息，点开可编辑或取消" aria-expanded={open} data-p4-action="toggle-queue" onClick={() => setOpen((value) => !value)}>
         已排队 {count} 条 · 按顺序发送
         <span className="cx-queue-caret" aria-hidden>
           {open ? "▾" : "▸"}

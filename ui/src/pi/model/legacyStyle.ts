@@ -56,7 +56,10 @@ export function legacyStyleWrite(raw: string | null | undefined, patch: PiLegacy
  *  不并入 legacyStyleOf：那三项的形状有逐项对照测试钉死，这里单独一个读者，互不影响。 */
 export type PiAskGatePrefs = { askUserEnabled: boolean; approvalGateEnabled: boolean; approvalGateTier: PiApprovalGateTier }
 
-export const ASK_GATE_DEFAULTS: Readonly<PiAskGatePrefs> = Object.freeze({ askUserEnabled: false, approvalGateEnabled: false, approvalGateTier: "high-risk" })
+// askUserEnabled defaults ON (fix wave 2026-10-30, ruling D): it must agree
+// with the device-side gate default, because useRelay re-sends this value on
+// every room entry. A stored explicit false still wins in askGatePrefsOf.
+export const ASK_GATE_DEFAULTS: Readonly<PiAskGatePrefs> = Object.freeze({ askUserEnabled: true, approvalGateEnabled: false, approvalGateTier: "high-risk" })
 
 /** 旧键的原始字符串 → G1/G2 三项的生效值（校验口径同 legacyStyleOf：不是布尔 / 不是合法档位的值落默认） */
 export function askGatePrefsOf(raw: string | null | undefined): PiAskGatePrefs {

@@ -44,7 +44,7 @@ export const IDENTITY_BACKUP_RECOMMENDATION =
 
 /** State copy while the identity exists but no content key has been delivered yet. */
 export const IDENTITY_WAITING_ACK_TEXT =
-  "本机身份已登记，但还没有拿到账号内容钥（ACK）。任一持钥设备在线时会自动交付；保持连接稍候即可。等不及也可以在下方导入一份口令备份，直接恢复内容钥。"
+  "本机身份已登记，但还没有拿到账号内容钥（ACK）。持钥设备在线时，系统会自动向它请求交付，但送达时间不确定，可能要等上一会儿；长时间没到，可以打开任意一个加密房间再触发一次请求，或在下方导入一份口令备份，直接恢复内容钥。"
 
 /** Honest notice attached to the viewer revoke confirmation. */
 export const VIEWER_REVOKE_ACK_NOTICE =

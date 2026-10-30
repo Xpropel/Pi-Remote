@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import type { VariantAppProps } from "@/pi/variants/types"
+import { CodexInboxPage } from "../pages/CodexInboxPage"
 import { SettingsPage, settingsStyleOf } from "@/pi/settings"
 import { codexSettingsHostProps } from "./settingsHost"
 import { bootInputOf, bootViewOf } from "@/pi/model/boot"
@@ -231,6 +232,11 @@ export function CodexDesktop(props: VariantAppProps) {
   const main =
     ui.view === "new" ? (
       <CodexNewSession p={props} onOpenPairing={() => patchOverlay({ pairing: true })} />
+    ) : ui.view === "inbox" ? (
+      // Pending-answer inbox (design D section 1): this shell used to have
+      // no route for the inbox view at all, so the surface was unreachable.
+      // The variant is self-contained, so it renders its own inbox page.
+      <CodexInboxPage p={props} />
     ) : ui.view === "settings" && !localPage ? (
       settings
     ) : localPage === "plugins" ? (

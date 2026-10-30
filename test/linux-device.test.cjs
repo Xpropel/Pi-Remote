@@ -489,7 +489,10 @@ test("start：拉起形状与 attach 一致（/bin/bash start-pi.sh，--session 
   const name = c[c.indexOf("-s") + 1];
   assert.match(name, /^pi-a_b_-[a-z0-9]+$/);
   const piExit = attach.exitCodePath(name, box.home);
-  assert.deepEqual(c.slice(4), ["-c", path.join(box.work, "a b\\;"), "/usr/bin/env", `PI_REMOTE_EXIT_FILE=${piExit}`, "/bin/bash", path.join(box.kit, "deploy", "start-pi.sh"), "--session", "0199abcd", ";", "set-option", "-w", "-t", `=${name}:`, "remain-on-exit", "failed"]);
+  // The pane also carries the kit .env's resolved config (attach.piChildEnv):
+  // a pi started here must see the same PI_REMOTE_* values attach resolves.
+  const kitEnv = attach.parseEnv(fs.readFileSync(box.envPath, "utf8"));
+  assert.deepEqual(c.slice(4), ["-c", path.join(box.work, "a b\\;"), "/usr/bin/env", `PI_REMOTE_RELAY=${kitEnv.PI_REMOTE_RELAY}`, `PI_REMOTE_DEVICE_TOKEN=${kitEnv.PI_REMOTE_DEVICE_TOKEN}`, `PI_REMOTE_DEVICE_ID=${kitEnv.PI_REMOTE_DEVICE_ID}`, `PI_REMOTE_PROJECTS=${kitEnv.PI_REMOTE_PROJECTS}`, `PI_REMOTE_PI_ENV_FILE=${box.envPath}`, `PI_REMOTE_EXIT_FILE=${piExit}`, "/bin/bash", path.join(box.kit, "deploy", "start-pi.sh"), "--session", "0199abcd", ";", "set-option", "-w", "-t", `=${name}:`, "remain-on-exit", "failed"]);
   assert.match(s.text(), /不在 PI_REMOTE_PROJECTS 里/);
   assert.match(s.text(), /连接窗口没开/);
 

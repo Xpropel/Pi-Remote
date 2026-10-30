@@ -27,6 +27,8 @@ import {
 import { COPY } from "@/relay/devices"
 import type { Item } from "@/relay/transcript"
 import { openPiDialog, PI_UI_IDS, type PiContainerProps, type PiSessionExtras } from "./types"
+import { C_IDS, commandErrorText, useLegacyStyle } from "./cShared"
+import { sharedSendNowLock } from "@/components/pi/composer/queueGuard"
 
 /**
  * 对话流（plan §7.2 conversation / conversation-streaming / stream-errors / session-archived，P5.4 b 线）。
@@ -87,6 +89,27 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
   )
   const items = useMemo(() => (outboxItems.length > 0 ? [...piItems, ...outboxItems] : piItems), [piItems, outboxItems])
 
+  // F4: mark the bubbles that are remote-queue entries still waiting to be
+  // injected (matched by cid), so the bubble itself can offer queue actions
+  // instead of sitting as a dead "sending" bubble.
+  const remoteQueue = relay.remoteQueue
+  const markedItems = useMemo(() => {
+    const pendingByCid = new Map<string, string>()
+    for (const entry of remoteQueue.items) {
+      if (entry.status === "pending" && entry.cid) pendingByCid.set(entry.cid, entry.id)
+    }
+    if (!pendingByCid.size) return items
+    let changed = false
+    const next = items.map((item) => {
+      if (item.kind !== "user" || !item.cid) return item
+      const queueId = pendingByCid.get(item.cid)
+      if (!queueId || (item.queued && item.queueId === queueId)) return item
+      changed = true
+      return { ...item, queued: true, queueId }
+    })
+    return changed ? next : items
+  }, [items, remoteQueue])
+
   // 有卡在等你（审批卡 / 旧式确认框信号）：等待只在卡上表达，流末尾不放运行行（§5）
   const waiting = relay.dialogs.length > 0 || relay.uiPrompt != null
   const busy = relay.busy && !lazy
@@ -137,11 +160,39 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
   const retryReady = relay.retryReady
   const sendText = relay.sendText
   const notify = relay.notify
+  const queueSendNow = relay.queueSendNow
+  const queueCancel = relay.queueCancel
+  const legacy = useLegacyStyle()
+  const legacyRef = useRef(legacy)
+  legacyRef.current = legacy
   const actions = useMemo<PiTranscriptActions>(
     () => ({
       openFile: (path) => act.openFile(path),
       retrySend: (item: PiUserItem) => {
         if (retryReady) void sendText(item.text, item.key)
+      },
+      // F4: queued-bubble actions. Send-now shares the queue panel's lock
+      // and honors the same "send-now behavior" preference; cancel drops
+      // the bubble via the relay's queue-drop path; edit opens the queue
+      // panel, whose editor owns full-text fetch and conflict handling.
+      queueSendNow: (item: PiUserItem) => {
+        const id = item.queueId
+        if (!id || !sharedSendNowLock.begin(id)) return
+        void queueSendNow(id, legacyRef.current.queueSend === "interrupt").then(
+          () => sharedSendNowLock.end(id),
+          (error) => {
+            sharedSendNowLock.end(id)
+            notify(commandErrorText(error, "排队操作失败"), "bad")
+          },
+        )
+      },
+      queueCancel: (item: PiUserItem) => {
+        if (!item.queueId) return
+        void queueCancel(item.queueId).catch((error) => notify(commandErrorText(error, "排队操作失败"), "bad"))
+      },
+      queueEdit: () => {
+        if (variant === "phone") act.openSheet({ id: C_IDS.queue })
+        else act.openMenu({ id: C_IDS.queue })
       },
       regenerate: () => openPiDialog({ act, variant }, { id: PI_UI_IDS.regenerate, arg: roomId }),
       copyReply: async (item) => {
@@ -155,7 +206,7 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
         return ref ? loadMap[imageKey(ref)] : undefined
       },
     }),
-    [act, variant, roomId, retryReady, sendText, notify, loadImage, loadMap, itemsRef],
+    [act, variant, roomId, retryReady, sendText, notify, loadImage, loadMap, itemsRef, queueSendNow, queueCancel],
   )
 
   // 流顶一行：外壳的说明 + 本机记录 / 正在拉快照 + 补拉状态
@@ -199,7 +250,7 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
     <>
       <PiTranscript
         ref={stickRef}
-        items={items}
+        items={markedItems}
         variant={variant}
         density={ui.prefs.density}
         now={now}

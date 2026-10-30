@@ -47,8 +47,10 @@ function makeContext(opts = {}) {
     deviceSh: path.join(kit, "deploy", "linux", "device.sh"),
     extSrc: path.join(kit, "extension", "pi-remote-sync.ts"),
     extDst: path.join(env.PI_CODING_AGENT_DIR ? path.resolve(env.PI_CODING_AGENT_DIR) : agentHome, "extensions", "pi-remote-sync.ts"),
-    // 与 attach.cjs、扩展同一个位置：都按家目录找，PI_REMOTE_ATTACH_FILE 可改
-    stateFile: env.PI_REMOTE_ATTACH_FILE && String(env.PI_REMOTE_ATTACH_FILE).trim() ? path.resolve(String(env.PI_REMOTE_ATTACH_FILE).trim()) : path.join(agentHome, "remote-attach.json"),
+    // Same window-state file attach itself resolves: the kit .env may carry
+    // the PI_REMOTE_ATTACH_FILE override, not just this process's env —
+    // reading only the env here made status/up look at the wrong device file.
+    stateFile: attach.resolveAttachFile(path.join(kit, ".env"), env, path.join(agentHome, "remote-attach.json")),
     logFile: env.PI_REMOTE_LOG || path.join(agentHome, "pi-remote-sync.log"),
     nodeBin: opts.nodeBin || process.execPath,
     piFallbacks: opts.piFallbacks || piFallbacks(home, env),
@@ -794,6 +796,9 @@ function cmdStart(ctx, o = {}) {
     keepFailed: tv.keepFailed,
     // 和网页拉起同一契约：start-pi.sh 把退出码落盘，sessions / clean 读不到窗格字段时回落
     exitHome: ctx.home,
+    // Same propagation contract as attach-launched pi: the pane gets the kit
+    // .env's resolved config, not whatever env the tmux server happened to have.
+    childEnv: attach.piChildEnv(ctx.envPath, ctx.env),
   });
   const name = spec.tmuxSession;
   const r = runTmux(ctx, spec.args);

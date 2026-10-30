@@ -183,7 +183,7 @@ export function DevicesPage() {
                     {isDefault ? <span className="settings-device-default">默认设备</span> : null}
                   </span>
                   <span className="settings-device-status">
-                    <SettingsStatusDot tone={device.online ? "online" : "offline"} />
+                    <SettingsStatusDot tone={device.online ? (device.bridgeOnline === false ? "waiting" : "online") : "offline"} />
                     <span>{deviceStatusTextOf(device, current, now)}</span>
                     {device.online ? (
                       <>

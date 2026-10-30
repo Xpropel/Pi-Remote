@@ -7,7 +7,10 @@
  *   flow with the mandatory unrecoverable-history warning, the passphrase
  *   backup export / import forms (section 6.2 tier 3), and the recovery
  *   actions (re-register, forget this identity) so a refused or unfinished
- *   registration is never a dead end.
+ *   registration is never a dead end. Both recovery actions are also
+ *   offered in the ready state: re-register repairs a drifted roster entry
+ *   in place, and forget goes through the same confirmation panel whose
+ *   warning states that an unbacked-up ACK copy is lost with the identity.
  * - "Authorized viewers": the account roster from the relay's viewer_list,
  *   with a revoke action whose confirmation states plainly that revocation
  *   removes access only -- the ACK copy stays valid until an ACK rotation.
@@ -135,6 +138,31 @@ export function IdentitySection() {
       cancelled = true
     }
   }, [refresh])
+
+  // A3-F2 / A3-F3: state and roster used to be read only on mount and after
+  // this section's own actions. Enabling identity reconnects the socket for
+  // key auth, so the immediate post-enable read raced the reconnect and its
+  // error stuck for the whole session; an ACK delivered later never updated
+  // the page either. Re-read whenever the relay reports a new auth or
+  // identity state. The mount load above covers the first signal.
+  const relayIdentity = p.relay.viewerIdentity
+  const identitySignal = [
+    p.relay.authed ? "authed" : "unauthed",
+    relayIdentity?.registered ? "registered" : "unregistered",
+    relayIdentity?.hasAck ? "ack" : "no-ack",
+    relayIdentity?.ackFp ?? "",
+    relayIdentity?.keyFp ?? "",
+  ].join("|")
+  const seenSignalRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (seenSignalRef.current === null) {
+      seenSignalRef.current = identitySignal
+      return
+    }
+    if (seenSignalRef.current === identitySignal) return
+    seenSignalRef.current = identitySignal
+    if (bridge) void refresh(bridge)
+  }, [identitySignal, bridge, refresh])
 
   const phase = bridge === undefined ? "loading" : bridge === null ? "unavailable" : (view?.phase ?? "none")
 
@@ -370,7 +398,10 @@ export function IdentitySection() {
                 ) : null}
               </span>
               <span className="settings-device-actions">
-                {phase === "not-registered" ? (
+                {/* Re-register stays available in the ready state too: a
+                    registration that drifted (relay rebuilt, roster lost)
+                    must be repairable without forgetting the identity. */}
+                {phase === "not-registered" || phase === "ready" ? (
                   <button
                     type="button"
                     className="settings-device-action"
@@ -398,7 +429,11 @@ export function IdentitySection() {
                 >
                   导入备份
                 </button>
-                {phase === "not-registered" || phase === "waiting-ack" ? (
+                {/* Forget is offered in every live phase, ready included:
+                    the shared confirmation panel below carries the
+                    ACK-loss warning, so the ready state needs no weaker
+                    path to the same destructive action. */}
+                {phase === "not-registered" || phase === "waiting-ack" || phase === "ready" ? (
                   <button
                     type="button"
                     className="settings-device-action"

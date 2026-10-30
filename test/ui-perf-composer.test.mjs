@@ -201,7 +201,10 @@ describe("源码契约：中-2 接线与中-6 的行内行为", () => {
   })
 
   test("立即发送先抢在飞锁，成功 / 失败都解锁", () => {
-    assert.match(composer, /const \[sendNowLock\] = useState\(createSendNowLock\)/)
+    // F4 (fix wave 2026-10-30): the lock is the module-level shared one, so
+    // the queue panel and the queued bubbles' send-now buttons guard each
+    // other -- a per-component lock would let the two surfaces double-send.
+    assert.match(composer, /const sendNowLock = sharedSendNowLock/)
     assert.match(composer, /if \(!sendNowLock\.begin\(id\)\) return/)
     assert.match(composer, /\(\) => sendNowLock\.end\(id\)/)
     assert.match(composer, /sendNowLock\.end\(id\)\s*\n\s*fail\(error\)/)

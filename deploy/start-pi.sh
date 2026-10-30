@@ -16,7 +16,11 @@ while [ -L "$self" ]; do
   esac
 done
 script_dir=$(cd "$(dirname "$self")" && pwd)
-env_file="$script_dir/../.env"
+# Env file: attach injects PI_REMOTE_PI_ENV_FILE when it launches pi, so a pi
+# started via `attach --env <file>` reads that same file instead of silently
+# falling back to the install-root .env (defect F2). Manual runs keep the
+# default: the .env one level above this script.
+env_file="${PI_REMOTE_PI_ENV_FILE:-$script_dir/../.env}"
 
 # 去首尾空白，结果写进第一个参数指名的变量：printf -v 不开子 shell（bash 3.1 起支持）
 trim_to() {

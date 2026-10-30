@@ -204,12 +204,21 @@ export function effectiveSettingsIntOf(data: unknown, applied: SettingsApplied, 
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
+/** pi's built-in default for both delivery modes when settings.json carries
+ *  no explicit value (the extension resolves unset steeringMode /
+ *  followUpMode to "one-at-a-time"). */
+export const SETTINGS_DELIVERY_MODE_DEFAULT: SettingsDeliveryMode = "one-at-a-time"
+
 export function effectiveSettingsDeliveryModeOf(
   data: unknown,
   applied: SettingsApplied,
   path: "steeringMode" | "followUpMode",
-): SettingsDeliveryMode | null {
-  return deliveryModeOf(effectiveSettingsValue(data, applied, path))
+): SettingsDeliveryMode {
+  // F6: with no explicit value the radio groups used to render with nothing
+  // selected, hiding the mode pi is actually using. Fall back to pi's own
+  // default so the effective mode is always shown as selected; the fallback
+  // is display-only -- nothing is written until the user picks a mode.
+  return deliveryModeOf(effectiveSettingsValue(data, applied, path)) ?? SETTINGS_DELIVERY_MODE_DEFAULT
 }
 
 export function effectiveProjectTrustOf(data: unknown, applied: SettingsApplied): SettingsProjectTrust | null {

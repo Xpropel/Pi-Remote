@@ -49,7 +49,7 @@ import { closePiDialog, PI_UI_IDS, piDialogOf, piLayoutOf, type PiContainerProps
  * 打开：piDialogOf(p)?.id 是 PI_UI_IDS 里的弹窗家族 id（arg = 会话 id）。桌面在外壳 overlay 槽，手机在 sheet 槽（PiDialog 390 = 全高 sheet）。
  */
 
-/* ======================= 用量与费用（PI_UI_IDS.usage） ======================= */
+/* ======================= Usage dialog (PI_UI_IDS.usage; no fees, per the owner's rule) ======================= */
 
 function UsageDialogContainer(props: PiContainerProps) {
   const { relay } = props

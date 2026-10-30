@@ -406,6 +406,7 @@ export function MobileSelect<T extends string>({
   label,
   value,
   options,
+  groups,
   onChange,
   disabled,
   status,
@@ -413,6 +414,9 @@ export function MobileSelect<T extends string>({
   label: string
   value: T
   options: readonly { value: T; label: string }[]
+  /** Optional grouped options, rendered as <optgroup> after the flat ones
+   *  (F7: the default-model select groups models by provider). */
+  groups?: readonly { label: string; options: readonly { value: T; label: string }[] }[]
   onChange?: (value: T) => void
   disabled?: boolean
   status?: SettingsItemStatus
@@ -434,6 +438,15 @@ export function MobileSelect<T extends string>({
             <option key={option.value} value={option.value}>
               {option.label}
             </option>
+          ))}
+          {groups?.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.options.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
         <ChevronRight size={16} strokeWidth={2} aria-hidden="true" className="sm-chevron" />

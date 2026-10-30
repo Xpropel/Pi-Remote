@@ -46,7 +46,7 @@ export const COMMANDS: readonly SlashCommandRow[] = [
   { key: "fork", name: "/fork", desc: "从一条用户消息分叉", kind: "command", menu: "forks", dialog: "fork" },
   { key: "clone", name: "/clone", desc: "把当前分支复制成新会话", kind: "command", command: "clone", dialog: "clone" },
   { key: "tree", name: "/tree", desc: "跳到会话树的某个节点", kind: "command", menu: "tree", dialog: "tree" },
-  { key: "stats", name: "/stats", desc: "消息数、token 和费用", kind: "command", command: "get_session_stats", dialog: "stats" },
+  { key: "stats", name: "/stats", desc: "消息数和 token 用量", kind: "command", command: "get_session_stats", dialog: "stats" },
   { key: "usage", name: "/usage", desc: "上下文占用", kind: "command", command: "get_context_usage", dialog: "usage" },
   { key: "tools", name: "/tools", desc: "管理启用的工具", kind: "command", arg: true, command: "get_active_tools", dialog: "tools" },
   { key: "commands", name: "/commands", desc: "打开命令中心", kind: "command", menu: "commands", dialog: "commands" },

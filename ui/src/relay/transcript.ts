@@ -207,6 +207,11 @@ export type UserItem = {
   from?: "local" | "remote"
   cid?: string
   status?: SendStatus
+  /** View-layer mark (F4): this bubble is a remote-queue entry still waiting
+   *  to be injected; queueId is that entry's id. The reducer never sets
+   *  these -- thread views derive them from relay.remoteQueue by cid. */
+  queued?: boolean
+  queueId?: string
 }
 
 export type Item =

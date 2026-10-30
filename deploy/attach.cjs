@@ -643,6 +643,97 @@ function loadConfig(envPath, environ = process.env, platform = HOST_PLATFORM) {
 }
 
 /**
+ * Env file the launched pi must read (consumed by start-pi.sh / start-pi.cmd).
+ * Deliberately NOT PI_REMOTE_ENV_FILE: that name already means the relay
+ * server's systemd env file in deploy/deploy-relay.sh.
+ */
+const PI_ENV_FILE_VAR = "PI_REMOTE_PI_ENV_FILE";
+
+/**
+ * Keys the pi extension resolves from its own process env (see the header of
+ * extension/pi-remote-sync.ts). Every pi attach launches must see the SAME
+ * values attach itself resolved, or the extension stays inert / binds to the
+ * wrong device and nothing anywhere reports it (defects F2 / A3-F1).
+ */
+const PI_CHILD_ENV_KEYS = [
+  "PI_REMOTE_RELAY",
+  "PI_REMOTE_TOKEN",
+  "PI_REMOTE_DEVICE_TOKEN",
+  "PI_REMOTE_ACCOUNT",
+  "PI_REMOTE_DEVICE_ID",
+  "PI_REMOTE_DEVICE_NAME",
+  "PI_REMOTE_DEVICE_KEY_FILE",
+  "PI_REMOTE_PROJECTS",
+  "PI_REMOTE_LABEL",
+  "PI_REMOTE_ATTACH_FILE",
+  "PI_REMOTE_ALWAYS_ONLINE",
+];
+
+/**
+ * Attach window state file with loadConfig's precedence: env file (non-empty)
+ * > process env > default path. A relative value from the env file resolves
+ * against that file's directory (same rule as deviceKeyFilePath: the path
+ * must not drift with the launch cwd); a relative process-env value resolves
+ * against the cwd. defaultPath replaces only the built-in default location
+ * (deploy/linux/device.cjs resolves its agent home through injected options).
+ */
+function resolveAttachFile(envPath, environ = process.env, defaultPath = "") {
+  let fileVars = {};
+  if (envPath && fs.existsSync(envPath)) {
+    try {
+      fileVars = parseEnv(fs.readFileSync(envPath, "utf8"));
+    } catch {}
+  }
+  const fromFile = typeof fileVars.PI_REMOTE_ATTACH_FILE === "string" ? fileVars.PI_REMOTE_ATTACH_FILE.trim() : "";
+  if (fromFile) return path.resolve(path.dirname(envPath), fromFile);
+  const fromEnv = environ && typeof environ.PI_REMOTE_ATTACH_FILE === "string" ? environ.PI_REMOTE_ATTACH_FILE.trim() : "";
+  if (fromEnv) return path.resolve(fromEnv);
+  if (defaultPath) return path.resolve(defaultPath);
+  return defaultAttachFile(environ);
+}
+
+/**
+ * The environment attach hands to every pi it launches, resolved from the
+ * same sources with the same precedence as loadConfig (env file non-empty
+ * wins, then the process env). Two entries are normalized beyond the raw
+ * sources so attach and pi cannot drift apart:
+ *  - PI_REMOTE_PI_ENV_FILE points start-pi at the very env file attach
+ *    loaded; without it start-pi reads the install-root .env and overwrites
+ *    the propagated values with that file's (F2).
+ *  - PI_REMOTE_DEVICE_KEY_FILE / PI_REMOTE_ATTACH_FILE are absolutized:
+ *    the key path may come from attach's fallback chain (a default beside
+ *    the env file) that pi cannot reproduce on its own, and a relative
+ *    attach-file override must not depend on pi's cwd (A3-F1).
+ * Values are non-empty strings only; an empty result means "nothing to
+ * propagate" (default install-root layout, start-pi reads the same file).
+ */
+function piChildEnv(envPath, environ = process.env) {
+  let fileVars = {};
+  if (envPath && fs.existsSync(envPath)) {
+    try {
+      fileVars = parseEnv(fs.readFileSync(envPath, "utf8"));
+    } catch {}
+  }
+  const pick = (key) => {
+    const fromFile = fileVars[key];
+    if (fromFile != null && String(fromFile).trim() !== "") return String(fromFile).trim();
+    const fromEnv = environ ? environ[key] : "";
+    if (fromEnv != null && String(fromEnv).trim() !== "") return String(fromEnv).trim();
+    return "";
+  };
+  const out = {};
+  for (const key of PI_CHILD_ENV_KEYS) {
+    const value = pick(key);
+    if (value) out[key] = value;
+  }
+  if (envPath && fs.existsSync(envPath)) out[PI_ENV_FILE_VAR] = path.resolve(envPath);
+  const keyPath = deviceKeyFilePath(envPath, { env: environ });
+  if (out[DEVICE_KEY_PATH_VAR] || fs.existsSync(keyPath)) out[DEVICE_KEY_PATH_VAR] = keyPath;
+  if (out.PI_REMOTE_ATTACH_FILE) out.PI_REMOTE_ATTACH_FILE = resolveAttachFile(envPath, environ);
+  return out;
+}
+
+/**
  * .env 里有共享令牌或设备令牌：统一 0600。
  * 收紧失败时直接报错，不能留下同机其他用户可读的令牌文件。
  */
@@ -1597,18 +1688,29 @@ function probeTmux(spawnSyncImpl = spawnSync) {
   return { version, keepFailed: !m || Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2]) >= 2) };
 }
 
-function buildSpawnSpec({ cwd, sessionPath, startPi, platform = HOST_PLATFORM, launcher, terminalApp, scriptDir, keepFailed = false, exitHome = "", exitFile = "" }) {
+function buildSpawnSpec({ cwd, sessionPath, startPi, platform = HOST_PLATFORM, launcher, terminalApp, scriptDir, keepFailed = false, exitHome = "", exitFile = "", childEnv = null }) {
   const piArgs = sessionPath ? ["--session", sessionPath] : [];
+  // childEnv carries attach's resolved PI_REMOTE_* config into the pi process
+  // (piChildEnv). Only well-formed keys with non-empty string values pass;
+  // anything else is dropped instead of breaking the spawn.
+  const envEntries =
+    childEnv && typeof childEnv === "object"
+      ? Object.entries(childEnv).filter(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof v === "string" && v !== "")
+      : [];
   if (platform === "win32") {
+    const options = {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+      cwd,
+    };
+    // `start` opens the new console with the env cmd.exe was spawned with, so
+    // the values must be merged into the spawn env itself.
+    if (envEntries.length) options.env = { ...process.env, ...Object.fromEntries(envEntries) };
     return {
       file: "cmd.exe",
       args: ["/c", "start", "", "/D", cwd, startPi, ...piArgs],
-      options: {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: false,
-        cwd,
-      },
+      options,
     };
   }
   const mode = resolveLauncher(launcher, platform).launcher;
@@ -1616,9 +1718,13 @@ function buildSpawnSpec({ cwd, sessionPath, startPi, platform = HOST_PLATFORM, l
     // 命令拆成多个参数：tmux 直接 exec，不经 sh -c，路径里的空格、引号、$ 都不会被再解析（只有末尾的 ; 要转义）
     const session = tmuxSessionName(cwd, platform);
     // tmux 3.4 约四成概率丢 #{pane_dead_status}：拉起时把退出码落盘文件注入 start-pi.sh，读侧再按"窗格优先、落盘回落"
+    // A tmux pane inherits the tmux server's env, not attach's: every
+    // propagated value rides the /usr/bin/env wrapper, like the exit file.
     const codeFile = exitFile || (exitHome ? exitCodePath(session, exitHome) : "");
-    const command = codeFile
-      ? ["/usr/bin/env", `PI_REMOTE_EXIT_FILE=${codeFile}`, "/bin/bash", startPi, ...piArgs]
+    const assignments = envEntries.map(([k, v]) => `${k}=${v}`);
+    if (codeFile) assignments.push(`PI_REMOTE_EXIT_FILE=${codeFile}`);
+    const command = assignments.length
+      ? ["/usr/bin/env", ...assignments, "/bin/bash", startPi, ...piArgs]
       : ["/bin/bash", startPi, ...piArgs];
     const args = ["new-session", "-d", "-s", session, "-c", cwd, ...command].map(tmuxArg);
     // 同一条命令里设，pi 再快退出也赶得上：失败退出的窗格留着（tmux attach 看得到原因），正常退出照常收掉
@@ -1638,6 +1744,9 @@ function buildSpawnSpec({ cwd, sessionPath, startPi, platform = HOST_PLATFORM, l
     'rm -f -- "$0"',
     `cd -- ${shellQuote(cwd)} || exit 1`,
   ];
+  // A .command script runs under Terminal's env, not attach's: export the
+  // propagated values explicitly before exec.
+  for (const [k, v] of envEntries) lines.push(`export ${k}=${shellQuote(v)}`);
   if (exitFile) lines.push(`export PI_REMOTE_EXIT_FILE=${shellQuote(exitFile)}`);
   lines.push(`exec /bin/bash ${[startPi, ...piArgs].map(shellQuote).join(" ")}`, "");
   return {
@@ -1786,6 +1895,9 @@ class AttachController {
     this.libraryRescanMs = Number.isFinite(rescanRaw) && rescanRaw > 0 ? Math.max(LIBRARY_RESCAN_MIN_MS, rescanRaw) : LIBRARY_RESCAN_MS;
     this.dirs = Array.isArray(opts.dirs) ? opts.dirs.slice() : [];
     this.attachFile = opts.attachFile || defaultAttachFile();
+    // Env handed to every pi this window launches (piChildEnv); empty in the
+    // default layout, where start-pi reads the same env file attach did.
+    this.childEnv = opts.childEnv && typeof opts.childEnv === "object" ? { ...opts.childEnv } : {};
     this.maxHours = Number(opts.maxHours) > 0 ? Number(opts.maxHours) : DEFAULT_MAX_HOURS;
     this.startedAt = now;
     this.expiresAt = now + Math.round(this.maxHours * 3600 * 1000);
@@ -3021,6 +3133,7 @@ class AttachController {
       scriptDir: this.scriptDir,
       keepFailed: !!(tmux && tmux.keepFailed),
       exitHome: this.exitHome,
+      childEnv: this.childEnv,
     });
     if (spec.script) {
       // wx：同名文件已存在就失败，不顺着别人放的符号链接写
@@ -3479,7 +3592,9 @@ async function doctorMain(args, envPath, opts = {}) {
     else add("ok", "pi 扩展", extFile);
   }
 
-  const stateFile = defaultAttachFile(opts.env || process.env);
+  // Same resolution as the window itself: an override that lives only in the
+  // --env file must not make doctor report "no window" for a running window.
+  const stateFile = resolveAttachFile(envPath, opts.env || process.env);
   let state = null;
   try {
     state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
@@ -3647,6 +3762,23 @@ async function main(argv) {
     return 0;
   }
   const cfg = loadConfig(envPath);
+  // The pi sessions this window launches must resolve the SAME config from
+  // piChildEnv (F2 / A3-F1). Both sides read the same sources, so a mismatch
+  // here means the propagation contract itself broke: stop loudly instead of
+  // starting a window whose pi children would silently bind elsewhere.
+  const childEnv = piChildEnv(envPath);
+  if (
+    (cfg.relay && childEnv.PI_REMOTE_RELAY !== cfg.relay) ||
+    (cfg.deviceId && childEnv.PI_REMOTE_DEVICE_ID !== cfg.deviceId)
+  ) {
+    console.error(
+      "配置传播不一致：attach 解析出的 relay/设备编号与要传给 pi 的不一致，已停止启动（否则 pi 会静默连错目标）。relay=" +
+        (childEnv.PI_REMOTE_RELAY || "(空)") +
+        " deviceId=" +
+        (childEnv.PI_REMOTE_DEVICE_ID || "(空)"),
+    );
+    return 1;
+  }
   if (!cfg.deviceId) {
     console.error("缺少 PI_REMOTE_DEVICE_ID。请先配对：" + pairHint() + "，或扫码链接：" + linkHint() + "（或 " + initHint() + "）");
     return 1;
@@ -3726,7 +3858,8 @@ async function main(argv) {
           keeper.stop();
         }
       : undefined,
-    attachFile: defaultAttachFile(),
+    attachFile: resolveAttachFile(envPath),
+    childEnv,
     bindSignals: true,
     exit: (code) => process.exit(code),
   });
@@ -5665,6 +5798,8 @@ module.exports = {
   defaultSessionLookup,
   listSessionsCached,
   buildSpawnSpec,
+  piChildEnv,
+  resolveAttachFile,
   probeTmux,
   tmuxArg,
   resolveLauncher,

@@ -12,6 +12,7 @@ export interface DeviceLike {
   name?: string | null
   platform?: string | null
   online?: boolean
+  bridgeOnline?: boolean
   lastAttachAt?: number | null
   latencyMs?: number | null
 }
@@ -82,7 +83,14 @@ export function lastOnlineTextOf(at: number | null | undefined, now: number): st
 
 /** 设备行状态：`在线 · 当前设备` / `离线 · 上次在线 昨天 21:40`。 */
 export function deviceStatusTextOf(device: DeviceLike, current: boolean, now: number): string {
-  if (device.online === true) return current ? "在线 · 当前设备" : "在线"
+  if (device.online === true) {
+    // Attach window connected but no pi bridge (extension) authenticated:
+    // the device cannot mirror or deliver anything, so it must not read as
+    // plainly online (A3-F1). Old relays omit bridgeOnline; only an explicit
+    // false is the degraded state.
+    if (device.bridgeOnline === false) return current ? "仅远程窗口在线 · 当前设备" : "仅远程窗口在线"
+    return current ? "在线 · 当前设备" : "在线"
+  }
   const last = lastOnlineTextOf(device.lastAttachAt, now)
   return last ? `离线 · 上次在线 ${last}` : "离线"
 }

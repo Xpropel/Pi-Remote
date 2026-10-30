@@ -1,7 +1,7 @@
 import type { ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { InlineLink, MenuSurface } from "@/components/kit"
-import { Activity, Box, CircleDollarSign, Folder, GitBranch, Hash } from "@/components/kit/icons"
+import { Activity, Box, Database, Folder, GitBranch, Hash } from "@/components/kit/icons"
 import { PiContextRing, PiPlatformIcon, piPercent, piShortId, piTokens, type PiDevice, type PiUsageState } from "@/components/pi/shared"
 import { cacheHitOf } from "@/pi/model/sessionInfo"
 
@@ -45,7 +45,7 @@ function cacheHit(usage: PiUsageState): number | null {
 
 /**
  * 会话信息（design B06 / K09 / E13；compose from kit: MenuSurface(elevation popover), InlineLink；参照 ch2/SessionHoverCard + PiContextRing）。
- * 比 Cursor 的悬停卡多设备、费用、会话 id 三行。桌面 = 标题悬停卡（宽 320）；手机 = sheet 里的同样各行（行高 44）。
+ * Adds device, cache-hit and session-id rows over the Cursor hover card. Desktop = title hover card (320 wide); phone = the same rows inside a sheet (44 row height).
  * 数据缺失的行整行不出现（§1.9）。
  */
 export function PiSessionInfoCard({ variant, title, device, branch, cwd, model, usage, sessionId, statusLine, onUsage, className }: PiSessionInfoCardProps) {
@@ -75,11 +75,13 @@ export function PiSessionInfoCard({ variant, title, device, branch, cwd, model, 
         : `上下文 ${c.tokens != null ? piTokens(c.tokens) : "—"} tokens`,
     })
   }
-  if (usage.cost != null) {
+  // Fees are never shown on any usage surface (owner's ruling); the row
+  // carries the cache-hit rate instead and appears only when it is known.
+  if (hit != null) {
     rows.push({
-      key: "cost",
-      icon: <CircleDollarSign size={iconSize} strokeWidth={1.5} />,
-      text: hit != null ? `$${usage.cost.toFixed(2)} · 缓存命中 ${hit}%` : `$${usage.cost.toFixed(2)}`,
+      key: "cache",
+      icon: <Database size={iconSize} strokeWidth={1.5} />,
+      text: `缓存命中 ${hit}%`,
     })
   }
   rows.push({ key: "session", icon: <Hash size={iconSize} strokeWidth={1.5} />, text: `会话 ${piShortId(sessionId)}` })

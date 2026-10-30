@@ -267,7 +267,7 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
 
         <div className="claude-composer-tools-right">
           {queueCount > 0 ? (
-            <button type="button" className="claude-composer-queuepill" onClick={() => setQueueOpen((v) => !v)} aria-expanded={queueOpen}>
+            <button type="button" className="claude-composer-queuepill" title="排队中的消息，点开可编辑、取消或立即发送" onClick={() => setQueueOpen((v) => !v)} aria-expanded={queueOpen}>
               队列 {queueCount}
             </button>
           ) : null}

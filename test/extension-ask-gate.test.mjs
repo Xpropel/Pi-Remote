@@ -93,8 +93,42 @@ test("Bridge 开关初始值读 env：ask/gate/tier/tools 名单", () => {
     delete process.env.PI_REMOTE_APPROVAL_GATE_TOOLS
   }
   const plain = new ext.Bridge()
-  assert.equal(plain.askUserEnabled, false)
+  // ask_user defaulted ON by the 2026-10-30 ruling (丁）; the approval gate
+  // stays opt-in and its fail-closed behavior is untouched.
+  assert.equal(plain.askUserEnabled, true)
   assert.equal(plain.approvalGateEnabled, false)
   assert.equal(plain.approvalGateTier, "high-risk")
   plain.clearTimers()
+})
+
+test("Bridge 初始值：PI_REMOTE_ASK_USER=0 显式退出默认开", () => {
+  process.env.PI_REMOTE_ASK_USER = "0"
+  try {
+    const b = new ext.Bridge()
+    assert.equal(b.askUserEnabled, false)
+    b.clearTimers()
+  } finally {
+    delete process.env.PI_REMOTE_ASK_USER
+  }
+})
+
+test("默认配置下 ask_user 在会话绑定时进入 active set；开关关掉即移除", () => {
+  let active = ["read", "bash", "edit", "write"]
+  const b = new ext.Bridge()
+  b.pi = {
+    getAllTools: () => [{ name: "ask_user", sourceInfo: { path: "/x/pi-remote-sync.ts" } }],
+    getActiveTools: () => active.slice(),
+    setActiveTools: (next) => { active = next.slice() },
+  }
+  try {
+    b.syncAskUserActivation()
+    assert.deepEqual(active, ["read", "bash", "edit", "write", "ask_user"], "默认开：ask_user 应被加进 active set")
+    b.setAskUserEnabled(false)
+    assert.deepEqual(active, ["read", "bash", "edit", "write"], "开关关闭：ask_user 应被移出 active set")
+    b.setAskUserEnabled(true)
+    assert.deepEqual(active, ["read", "bash", "edit", "write", "ask_user"], "开关重开：ask_user 应回到 active set")
+  } finally {
+    b.pi = null
+    b.clearTimers()
+  }
 })

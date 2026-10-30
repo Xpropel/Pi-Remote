@@ -99,6 +99,7 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       uiPrompt: relay.uiPrompt,
       turnEnd: relay.turnEnd,
       roomTurnEnds: relay.roomTurnEnds,
+      inbox: relay.inbox,
       selectedDevice: relay.selectedDevice,
     })
     const sortedDevices = sidebarDeviceRows(
@@ -160,6 +161,9 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       selectedDeviceId: relay.selectedDeviceId ?? null,
       deviceMenuOpen: input.deviceMenuOpen,
       groups: overlaid.filter((group) => group.sessions.length > 0 || group.kind === "pinned"),
+      // Pending-answer count (design D section 1): without it the drawer
+      // never renders the inbox row on any phone shell.
+      inboxCount: base.attention.filter((item) => item.kind === "waiting" || item.kind === "error" || item.kind === "done").length,
       localPages: input.localPages,
       newSessionLabel: "新会话",
       width: clampSidebarWidth(p.ui.prefs.sidebarWidth),

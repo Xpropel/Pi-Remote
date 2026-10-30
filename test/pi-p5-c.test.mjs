@@ -354,7 +354,9 @@ describe("设置 / 显示选项：偏好读写口径（三项读旧键、两边�
       busyDelivery: "follow_up",
       sendNow: "after_tool",
       dialogRemote: true,
-      askUser: false,
+      // No stored value in either store -> the ask_user default is ON
+      // (fix wave 2026-10-30, ruling D); the approval gate stays OFF.
+      askUser: true,
       approvalGate: false,
       approvalGateTier: "high-risk",
       sound: true,
@@ -481,7 +483,7 @@ describe("旧键 pi_remote_style 的三项（model/legacyStyle.ts；P7 B4 前对
   })
   test("G1/G2 开关住同一个旧键：askGatePrefsOf 单独读、legacyStyleWrite 合并写入且不伤旧三项", async () => {
     const { ASK_GATE_DEFAULTS, askGatePrefsOf, legacyStyleOf, legacyStyleWrite } = await import("../ui/src/pi/model/legacyStyle.ts")
-    assert.deepEqual({ ...ASK_GATE_DEFAULTS }, { askUserEnabled: false, approvalGateEnabled: false, approvalGateTier: "high-risk" })
+    assert.deepEqual({ ...ASK_GATE_DEFAULTS }, { askUserEnabled: true, approvalGateEnabled: false, approvalGateTier: "high-risk" })
     for (const raw of [null, "{", "[]", JSON.stringify({ askUserEnabled: "yes", approvalGateTier: "bogus" })]) {
       assert.deepEqual(askGatePrefsOf(raw), { ...ASK_GATE_DEFAULTS }, String(raw))
     }

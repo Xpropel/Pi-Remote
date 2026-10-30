@@ -36,12 +36,23 @@ function CodexTurnImpl({
   onOpenImage: (image: { src: string; alt?: string }) => void
 }) {
   const lastAssistant = useMemo(() => [...turn.rest].reverse().find((item) => item.kind === "assistant"), [turn.rest])
+  // F4: the turn's user bubble may be a remote-queue entry still waiting to
+  // be injected (matched by cid) -- the bubble then offers queue actions.
+  const queueEntry = turn.user?.cid ? p.relay.remoteQueue.items.find((entry) => entry.status === "pending" && entry.cid === turn.user?.cid) : undefined
   const copyText = turn.rest
     .flatMap((item) => (item.kind === "assistant" ? item.blocks.filter((b) => b.kind === "text").map((b) => (b.kind === "text" ? b.text : "")) : []))
     .join("\n\n")
   return (
     <section className="cx-turn" data-p4-ready="" data-pi-ui-part="thread">
-      {turn.user ? <CodexUserBubble item={turn.user} phone={phone} /> : null}
+      {turn.user ? (
+        <CodexUserBubble
+          item={turn.user}
+          phone={phone}
+          queueId={queueEntry?.id}
+          onQueueSendNow={queueEntry ? () => void p.relay.queueSendNow(queueEntry.id) : undefined}
+          onQueueCancel={queueEntry ? () => void p.relay.queueCancel(queueEntry.id).catch(() => p.relay.notify("取消失败", "warn")) : undefined}
+        />
+      ) : null}
       {!running ? <CodexWorkedRow text={codexWorkedText(workedMs)} /> : null}
       {turn.rest.map((item) => {
         // 真实 pi 历史里还有 summary / bash / custom 三类条目（mock 不覆盖）；按变体语言渲染，不静默丢内容

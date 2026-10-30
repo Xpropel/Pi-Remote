@@ -59,7 +59,7 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
   const data = useMemo<PiSidebarData>(() => {
     const base = sidebarDataOf({
       devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, roomId: relay.roomId,
-      dialogs: relay.dialogs, uiPrompt: relay.uiPrompt, turnEnd: relay.turnEnd, roomTurnEnds: relay.roomTurnEnds, selectedDevice: relay.selectedDevice,
+      dialogs: relay.dialogs, uiPrompt: relay.uiPrompt, turnEnd: relay.turnEnd, roomTurnEnds: relay.roomTurnEnds, inbox: relay.inbox, selectedDevice: relay.selectedDevice,
     })
     const devices: PiSidebarDevice[] = sidebarDeviceRows(
       base.devices.map((d) => ({ id: d.id, name: d.name, online: d.online, platform: d.platform, current: d.id === relay.selectedDeviceId })),
@@ -102,6 +102,10 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
       deviceMenuOpen,
       groups: overlaid.filter((g) => g.sessions.length > 0 || g.kind === "pinned"),
       localPages,
+      // Pending-answer count (design D section 1): attention waiting +
+      // error + done, the same single counting exit as the other shells.
+      // Without it the shared sidebar never renders the inbox row here.
+      inboxCount: base.attention.filter((item) => item.kind === "waiting" || item.kind === "error" || item.kind === "done").length,
       newSessionLabel: "新会话",
       width: clampSidebarWidth(ui.prefs.sidebarWidth),
       collapsed: ui.prefs.sidebarCollapsed,
@@ -128,6 +132,7 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
     closeSearch: () => act.setSearch(null),
     setSearchQuery: (query) => act.setSearch(query),
     openSettings: () => codexActions.onOpenSettings(),
+    openInbox: act.openInbox,
     resize: (width) => act.setPref("sidebarWidth", clampSidebarWidth(width)),
     toggleCollapse: () => act.setPref("sidebarCollapsed", !ui.prefs.sidebarCollapsed),
     selectLocalPage: (id) => codexActions.onOpenLocalPage(id as CodexLocalPage),

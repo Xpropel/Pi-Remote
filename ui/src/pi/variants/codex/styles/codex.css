@@ -4184,6 +4184,15 @@
   pointer-events: none;
 }
 
+/* Phone (A3-F4): inside the phone page the stack renders between the phone
+   bar and the thread. The absolute slot above anchors to the app root and
+   lands on top of the bar, covering the back button's tap area -- keep the
+   phone stack in flow so it can never cover navigation controls. */
+[data-pi-ui="codex"] .cx-phone-page .cx-notice-slot {
+  position: static;
+  padding: 8px 14px 0;
+}
+
 [data-pi-ui="codex"] .cx-notice {
   display: flex;
   align-items: flex-start;
@@ -7493,4 +7502,88 @@
 /* P11：设置页移动端分组内嵌 MobileNavSetting（共享组件自包含卡片） */
 [data-pi-ui="codex"] .cx-settings-mobile-nav {
   padding: 10px 12px 6px;
+}
+
+/* Pending-answer inbox page (design D section 1.5) */
+[data-pi-ui="codex"] .cx-inbox {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+[data-pi-ui="codex"] .cx-inbox-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--codex-text);
+}
+[data-pi-ui="codex"] .cx-inbox-empty {
+  margin-top: 24px;
+  color: var(--codex-text-3);
+  font-size: var(--codex-font-sm);
+}
+[data-pi-ui="codex"] .cx-inbox-group {
+  margin-top: 24px;
+}
+[data-pi-ui="codex"] .cx-inbox-group-title {
+  margin: 0 0 8px;
+  font-size: var(--codex-font-sm);
+  font-weight: 500;
+  color: var(--codex-text-2);
+}
+[data-pi-ui="codex"] .cx-inbox-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-pi-ui="codex"] .cx-inbox-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+[data-pi-ui="codex"] .cx-inbox-row:hover {
+  background: var(--codex-hover);
+}
+[data-pi-ui="codex"] .cx-inbox-row-main {
+  flex: 1;
+  min-width: 0;
+}
+[data-pi-ui="codex"] .cx-inbox-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--codex-font-sm);
+  color: var(--codex-text);
+}
+[data-pi-ui="codex"] .cx-inbox-row-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--codex-font-xs);
+  color: var(--codex-text-3);
+}
+[data-pi-ui="codex"] .cx-inbox-row-time {
+  flex-shrink: 0;
+  font-size: var(--codex-font-xs);
+  color: var(--codex-text-3);
+}
+[data-pi-ui="codex"] .cx-inbox-action {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: var(--codex-font-xs);
+  font-weight: 500;
+  color: var(--codex-text);
+  cursor: pointer;
+}
+[data-pi-ui="codex"] .cx-inbox-action:hover {
+  background: var(--codex-hover);
+}
+[data-pi-ui="codex"] .cx-inbox-action-deny {
+  color: var(--codex-danger, #e5484d);
 }

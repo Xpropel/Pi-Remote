@@ -19,6 +19,7 @@ import {
   availableModelCountOf,
   hostSettingsOf,
   modelChoicesOf,
+  modelGroupsOf,
   modelThinkingRowsOf,
   providersOf,
   settingBool,
@@ -115,11 +116,11 @@ export function ModelPage() {
     }
     return choices
   }, [modelsData, defaultProvider, defaultModel, defaultModelKey])
+  // F7: the default-model options render grouped by provider (see
+  // modelGroupsOf in ../model.ts); the flat list keeps only the placeholder.
+  const modelGroups = useMemo(() => modelGroupsOf(modelChoices, providers), [modelChoices, providers])
   const modelOptions = modelChoices.length
-    ? [
-        ...(defaultModelKey ? [] : [{ value: "", label: "未设置（按 pi 兜底）" }]),
-        ...modelChoices.map((choice) => ({ value: choice.key, label: choice.label })),
-      ]
+    ? [...(defaultModelKey ? [] : [{ value: "", label: "未设置（按 pi 兜底）" }])]
     : [{ value: "", label: "读不到可选模型" }]
   const thinkingOptions = [
     { value: "", label: "未设置（按模型兜底）" },
@@ -159,6 +160,7 @@ export function ModelPage() {
           label="默认模型"
           value={defaultModelKey ?? ""}
           options={modelOptions}
+          groups={modelChoices.length ? modelGroups : undefined}
           disabled={writeDisabled || modelChoices.length === 0}
           onChange={(value) => {
             const choice = modelChoices.find((item) => item.key === value)

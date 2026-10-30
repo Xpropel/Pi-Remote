@@ -6,25 +6,47 @@
  */
 import { cwdInProjects, folderAllowed, pickDefaultDevice, roomDeviceId, type Device, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
 
+/** Comparison key for folder exclusion sets: separators and trailing
+ *  slashes do not count, case-insensitive (same rule as the folder browser). */
+export function folderKeyOf(value: string): string {
+  return String(value || "")
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .toLowerCase()
+}
+
+function excludedKeysOf(exclude?: ReadonlySet<string>): ReadonlySet<string> | null {
+  if (!exclude || exclude.size === 0) return null
+  return new Set([...exclude].map(folderKeyOf))
+}
+
 /**
  * 预选：已选中的设备在线就用它，否则 pickDefaultDevice（最近有活动的在线设备）。
  * 目录 = 这台设备最近用过、且没有在线运行会话的目录（同目录已有在线房间时 attach 回 already_running，不另起；联动测试 10）；
  * 最近用过的目录都有运行会话（或没有最近目录）时退回原规则：最近会话的目录（在允许的目录里），没有就是第一个允许的目录
  * （P9 C：没有白名单目录时退回第一个浏览根目录，也就是设备用户的家目录）。
+ * `exclude` (F3): folders proven missing on the device (see
+ * folderExistence.ts) are never preselected -- the allow-list check alone
+ * cannot tell a deleted folder from a live one.
  */
-export function newSessionDefaultsOf(input: {
-  devices: readonly Device[]
-  rooms: readonly Pick<RoomInfo, "online" | "deviceId" | "lastActivity" | "cwd">[]
-  sessionsByDevice: Readonly<Record<string, readonly SessionEntry[]>>
-  selectedDeviceId: string | null
-}): { deviceId: string | null; folder: string | null } {
+export function newSessionDefaultsOf(
+  input: {
+    devices: readonly Device[]
+    rooms: readonly Pick<RoomInfo, "online" | "deviceId" | "lastActivity" | "cwd">[]
+    sessionsByDevice: Readonly<Record<string, readonly SessionEntry[]>>
+    selectedDeviceId: string | null
+  },
+  exclude?: ReadonlySet<string>,
+): { deviceId: string | null; folder: string | null } {
   const selected = input.devices.find((d) => d.id === input.selectedDeviceId)
   const deviceId = selected?.online ? selected.id : (pickDefaultDevice([...input.devices], [...input.rooms]) ?? selected?.id ?? input.devices[0]?.id ?? null)
   const device = input.devices.find((d) => d.id === deviceId)
   if (!device) return { deviceId, folder: null }
-  const recent = recentFoldersOf(input.sessionsByDevice[device.id] ?? [], device, Infinity)
+  const excluded = excludedKeysOf(exclude)
+  const kept = (cwd: string | undefined): cwd is string => !!cwd && !(excluded && excluded.has(folderKeyOf(cwd)))
+  const recent = recentFoldersOf(input.sessionsByDevice[device.id] ?? [], device, Infinity, exclude)
   const idle = recent.find((cwd) => !hasRunningRoom(input.rooms, device.id, cwd))
-  return { deviceId, folder: idle ?? recent[0] ?? device.projects[0] ?? device.browseRoots?.[0] ?? null }
+  return { deviceId, folder: idle ?? recent[0] ?? device.projects.find(kept) ?? device.browseRoots?.find(kept) ?? null }
 }
 
 /** 这台设备在这个目录上有没有在线房间（attach 的 findOnline 同一口径：同目录在线 = already_running） */
@@ -42,12 +64,15 @@ function allowedByScope(scope: FolderScope, cwd: string): boolean {
   return Array.isArray(scope) ? cwdInProjects(scope, cwd) : folderAllowed(scope, cwd)
 }
 
-/** "最近"：这台设备会话的目录，按 updatedAt 倒序去重，只留这台设备能用的目录（folderAllowed） */
-export function recentFoldersOf(sessions: readonly Pick<SessionEntry, "cwd" | "updatedAt">[], scope: FolderScope, limit = 5): string[] {
+/** "最近"：这台设备会话的目录，按 updatedAt 倒序去重，只留这台设备能用的目录（folderAllowed）；
+ *  `exclude`（F3）里已证不存在的目录同样剔除。 */
+export function recentFoldersOf(sessions: readonly Pick<SessionEntry, "cwd" | "updatedAt">[], scope: FolderScope, limit = 5, exclude?: ReadonlySet<string>): string[] {
+  const excluded = excludedKeysOf(exclude)
   const sorted = [...sessions].filter((s) => !!s.cwd).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
   const out: string[] = []
   for (const s of sorted) {
     if (out.includes(s.cwd) || !allowedByScope(scope, s.cwd)) continue
+    if (excluded && excluded.has(folderKeyOf(s.cwd))) continue
     out.push(s.cwd)
     if (out.length >= limit) break
   }
@@ -61,14 +86,18 @@ export function sessionCountsOf(sessionsByDevice: Readonly<Record<string, readon
   return out
 }
 
-/** 换设备后目录还在它允许的范围里（白名单或浏览根目录）就留着，否则换成它的第一个目录（没有白名单目录时是第一个浏览根目录） */
+/** 换设备后目录还在它允许的范围里（白名单或浏览根目录）就留着，否则换成它的第一个目录（没有白名单目录时是第一个浏览根目录）；
+ *  `exclude`（F3）里已证不存在的目录视同不在范围内，回退时也跳过。 */
 export function folderForDevice(
   device: Pick<Device, "projects" | "browseRoots" | "platform"> | null | undefined,
   folder: string | null,
+  exclude?: ReadonlySet<string>,
 ): string | null {
   if (!device) return null
-  if (folder && folderAllowed(device, folder)) return folder
-  return device.projects[0] ?? device.browseRoots?.[0] ?? null
+  const excluded = excludedKeysOf(exclude)
+  const kept = (cwd: string | undefined): cwd is string => !!cwd && !(excluded && excluded.has(folderKeyOf(cwd)))
+  if (folder && kept(folder) && folderAllowed(device, folder)) return folder
+  return device.projects.find(kept) ?? device.browseRoots?.find(kept) ?? null
 }
 
 /** 平台的中文名（P9 D9）：Relay 归一后的 macos / windows / linux；旧数据里还有 darwin / win32 别名 */

@@ -218,6 +218,10 @@ export type PiUserItem = {
   status?: PiSendStatus
   /** 展示用：离线时进了本页 outbox（§1.12），卡下灰字"等重连后发送" */
   outbox?: boolean
+  /** View-layer mark (F4): this bubble is a remote-queue entry still waiting
+   *  to be injected; queueId is that entry's id (set together). */
+  queued?: boolean
+  queueId?: string
 }
 
 export type PiAssistantItem = {

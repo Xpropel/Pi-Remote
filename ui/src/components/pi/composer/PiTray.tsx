@@ -10,6 +10,9 @@ export interface PiTrayItem {
   kind: "tasks" | "queue" | "terminal" | "changes"
   /** pill 文字："任务 2/4"、"排队 2"、"排队 1 · 等重连"、"终端 1"、"改动" */
   label: string
+  /** Native tooltip (title attr): says what clicking the pill does (F4 --
+   *  the queue pill gave no hint it was clickable at all). */
+  title?: string
   /** 行首半圆 spinner（终端运行中） */
   running?: boolean
   /** 改动 pill 的 +N / −M（Review +54 −5 的版式，full-window-idle-cloud#7） */
@@ -65,6 +68,7 @@ export function PiTray({ variant, items, scrollDown, newCount, static: staticPro
             variant="outline"
             data-cw-id={`pi-tray-${item.kind}`}
             data-active={item.active ? "" : undefined}
+            title={item.title}
             aria-pressed={isStatic || !PANEL_KINDS.has(item.kind) ? item.active : undefined}
             aria-expanded={!isStatic && PANEL_KINDS.has(item.kind) ? !!item.active : undefined}
             onClick={isStatic ? undefined : () => onItemClick?.(item.kind)}
@@ -73,6 +77,9 @@ export function PiTray({ variant, items, scrollDown, newCount, static: staticPro
               "shrink-0",
               // 点击区 44：absolute 的 ::after 以内边距盒为准，pill 有 1px 描边，所以上下外扩 7（= 6 + 描边 1）
               phone ? "relative h-8 px-3.5 text-[14px] after:absolute after:inset-x-0 after:-inset-y-[7px] after:content-['']" : "h-[30px]",
+              // Panel-toggle pills are buttons: give them a visibly stronger
+              // hover border so they read as clickable (F4).
+              PANEL_KINDS.has(item.kind) && "hover:border-(--cw-border-strong) hover:text-(--cw-text)",
               item.active && "border-(--cw-border-strong) bg-(--cw-row-selected) text-(--cw-text)",
             )}
           >

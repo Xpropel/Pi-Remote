@@ -61,11 +61,15 @@ export interface PiUsageDialogProps extends PiOverlayControl {
 
 
 /**
- * 用量与费用（G05 G06，/stats + /usage 合并）：三格统计 → 上下文圆环 → token 键值行 → 按模型 → 刷新 / 完成。
- * 数据：get_session_stats（totalMessages、userMessages / assistantMessages、toolCalls / toolResults）+ usage_state
- * （token、费用、costByModel、contextUsage）；三格的分法照现有 ui/src/chat/dialogs.tsx 的 stats 弹窗；不再用绿色进度条。
- * 桌面 = PiDialog 480 居中；手机 = PiDialog 自动变成全高 PiSheet。
- * P4 可交互：PiDialog 的可交互分支（焦点进主按钮"完成"、Tab 圈在卡里、Esc / 点遮罩 / × / 完成关闭，关闭回打开前的焦点）。
+ * Session usage (G05 G06, /stats + /usage merged): three stat cells ->
+ * context ring -> token rows -> refresh / done.
+ * Data: get_session_stats (totalMessages, userMessages / assistantMessages,
+ * toolCalls / toolResults) + usage_state (tokens, contextUsage). Fees are
+ * never shown on any usage surface (owner's ruling): the cost fields the
+ * protocol still carries are deliberately not rendered here.
+ * Desktop = PiDialog 480 centered; phone = PiDialog becomes a full-height PiSheet.
+ * P4 interactive: focus lands on the primary "done" button, Tab stays inside,
+ * Esc / backdrop / x / done closes and returns focus to the opener.
  */
 export function PiUsageDialog({
   viewport,
@@ -108,7 +112,7 @@ export function PiUsageDialog({
   const count = (n: number | undefined) => (n != null ? String(n) : "—")
   return (
     <PiDialog
-      title="用量与费用"
+      title="用量"
       subtitle={subtitle ?? undefined}
       viewport={viewport}
       width={480}
@@ -122,7 +126,7 @@ export function PiUsageDialog({
         <div className="flex gap-2">
           <Stat label="消息" value={count(stats?.totalMessages)} sub={stats ? `你 ${stats.userMessages} · pi ${stats.assistantMessages}` : undefined} />
           <Stat label="工具调用" value={count(stats?.toolCalls)} sub={stats ? `结果 ${stats.toolResults}` : undefined} />
-          <Stat label="费用" value={usage.cost != null ? `$${usage.cost.toFixed(2)}` : "—"} sub={hit != null ? `缓存命中 ${hit}%` : undefined} />
+          <Stat label="缓存命中" value={hit != null ? `${hit}%` : "—"} sub={t.cacheRead != null ? `缓存读取 ${piTokens(t.cacheRead)}` : undefined} />
         </div>
         <Section title="上下文">
           <div className="flex min-h-11 items-center gap-3">
@@ -142,11 +146,6 @@ export function PiUsageDialog({
           <KV label="缓存读取" value={t.cacheRead != null ? piTokens(t.cacheRead) : "—"} />
           <KV label="缓存写入" value={t.cacheWrite != null ? piTokens(t.cacheWrite) : "—"} />
           <KV label="合计" value={t.total != null ? piTokens(t.total) : "—"} />
-        </Section>
-        <Section title="按模型">
-          {Object.entries(usage.costByModel ?? {}).map(([model, cost]) => (
-            <KV key={model} label={model} value={`$${cost.toFixed(2)}`} mono />
-          ))}
         </Section>
       </div>
     </PiDialog>

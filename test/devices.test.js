@@ -357,6 +357,29 @@ test("device_revoke：作废令牌、断开这台设备的窗口和扩展，旧�
   assert.equal((await v.type("ack", (f) => f.id === "r3")).code, "bad_args");
 });
 
+test("bridgeOnline：窗口在线但桥没连时名册为 false，桥登记后变 true，桥断开后回到 false（A3-F1）", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const v = await authedViewer(relay);
+  t.after(() => v.close());
+  const win = await authedLocal(relay);
+  t.after(() => win.close());
+  registerDevice(win);
+  const devOf = (f) => (f.devices || []).find((d) => d.id === DEV);
+  const first = await v.type("room_list", (f) => devOf(f) && devOf(f).online);
+  assert.equal(devOf(first).bridgeOnline, false, "只有 attach 窗口在线：bridgeOnline 必须为 false（网页据此显示降级态）");
+
+  const ext = await authedLocal(relay);
+  ext.send({ type: "room_register", room: { id: ROOM, label: "A", cwd: "D:\\work", deviceId: DEV } });
+  await ext.type("room_registered");
+  const second = await v.type("room_list", (f) => devOf(f) && devOf(f).bridgeOnline === true);
+  assert.equal(devOf(second).online, true);
+
+  ext.close();
+  const third = await v.type("room_list", (f) => devOf(f) && devOf(f).online && devOf(f).bridgeOnline === false);
+  assert.equal(devOf(third).bridgeOnline, false, "桥断开后名册必须回到降级态");
+});
+
 test("配对码过期回 pair_expired；一分钟内猜错 10 次后暂停配对", async (t) => {
   const relay = await boot({ pairCodeTtlMs: 30 });
   t.after(() => relay.close());
@@ -1196,6 +1219,38 @@ test("buildDeviceList：latencyMs 在内存名册分支同样下发；0ms（本�
   const withUnreg = buildDeviceList({ listDevices: () => [], hasDeviceToken: () => false }, new Map(), rooms, "admin");
   const unreg = withUnreg.find((device) => device.id === "未登记设备");
   assert.deepEqual(unreg, { id: "未登记设备", online: true }, "契约 §4.2 的固定形状不能被新字段撑开");
+});
+
+test("buildDeviceList：bridgeOnline 只认挂着活桥的房间；窗口在线但无桥为 false（A3-F1）", () => {
+  const rows = [
+    { id: "bridged", name: "Bridged", platform: "linux", projects: [] },
+    { id: "window-only", name: "Window Only", platform: "linux", projects: [] },
+    { id: "stale-room", name: "Stale Room", platform: "linux", projects: [] },
+  ];
+  const devices = new Map([
+    ["bridged", { accountId: "admin", online: true }],
+    ["window-only", { accountId: "admin", online: true }],
+    ["stale-room", { accountId: "admin", online: true }],
+  ]);
+  const rooms = { map: new Map([
+    ["r1", { id: "r1", deviceId: "bridged", local: { fake: "live bridge socket" } }],
+    // Room still known but its bridge socket is gone (local cleared on close).
+    ["r2", { id: "r2", deviceId: "stale-room", local: null }],
+    ["r3", { id: "r3", deviceId: "other-device", local: {} }],
+  ]) };
+  const index = { listDevices: () => rows, hasDeviceToken: () => false };
+  const list = buildDeviceList(index, devices, rooms, "admin");
+  const byId = Object.fromEntries(list.map((device) => [device.id, device]));
+  assert.equal(byId.bridged.bridgeOnline, true);
+  assert.equal(byId["window-only"].bridgeOnline, false, "窗口在线但没有任何桥：降级态");
+  assert.equal(byId["stale-room"].bridgeOnline, false, "房间在但桥已断：仍算无桥");
+  assert.equal(byId.bridged.online, true, "online 的语义不变（attach 窗口连接）");
+
+  // The memory-only roster branch reports it the same way.
+  const mem = new Map([["mem-dev", { accountId: "admin", online: true }]]);
+  const memRooms = { map: new Map([["r9", { id: "r9", deviceId: "mem-dev", local: {} }]]) };
+  const memList = buildDeviceList({ listDevices: () => [], hasDeviceToken: () => false }, mem, memRooms, "admin");
+  assert.equal(memList[0].bridgeOnline, true);
 });
 
 test("fork 谱系（R3-3）：清单行 parentSession 经 _sessionFrom 白名单落盘透传；增量帧缺字段沿用旧值", () => {

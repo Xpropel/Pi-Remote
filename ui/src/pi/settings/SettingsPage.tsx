@@ -80,8 +80,17 @@ export interface SettingsPageProps {
   onBack?: () => void
 }
 
+/**
+ * Last active settings tab, kept at module level. Switching the UI style
+ * (Cursor / Claude / Codex) swaps the whole variant shell, which remounts
+ * this page and used to reset the tab to "general" (F1); theme (light/dark)
+ * switches never remounted, so only style switches bounced. An explicit
+ * `page` / `initialPage` from a host still wins over the remembered tab.
+ */
+let lastSettingsPage: SettingsPageId | null = null
+
 export function SettingsPage({ p, style, theme, page, initialPage, onPageChange, onBack }: SettingsPageProps) {
-  const [innerPage, setInnerPage] = useState<SettingsPageId>(() => settingsPageIdOf(page ?? initialPage ?? "general"))
+  const [innerPage, setInnerPage] = useState<SettingsPageId>(() => settingsPageIdOf(page ?? initialPage ?? lastSettingsPage ?? "general"))
   const [documentTheme] = useState<SettingsTheme>(themeFromDocument)
   const activePage = settingsPageIdOf(page ?? innerPage)
   const activeStyle = settingsStyleOf(style ?? p.ui.prefs.ui)
@@ -90,6 +99,9 @@ export function SettingsPage({ p, style, theme, page, initialPage, onPageChange,
 
   const setPage = useCallback(
     (next: SettingsPageId) => {
+      // Remember every tab the user lands on so a variant-shell remount
+      // (style switch) restores it instead of bouncing back to "general".
+      lastSettingsPage = next
       if (page === undefined) setInnerPage(next)
       onPageChange?.(next)
     },

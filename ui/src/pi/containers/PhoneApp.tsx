@@ -121,6 +121,7 @@ function CursorMobileShell({
     closeSearch: () => act.setSearch(null),
     setSearchQuery: (query) => act.setSearch(query),
     openSettings: act.openSettings,
+    openInbox: act.openInbox,
     resize: () => undefined,
     toggleCollapse: () => undefined,
   }

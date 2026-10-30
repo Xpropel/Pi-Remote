@@ -154,6 +154,39 @@ test("start-pi.sh：PATH 里没有 node（tmux / launchd 拉起）也能起 pi�
   }
 });
 
+test("start-pi.sh：PI_REMOTE_PI_ENV_FILE 指向 --env 文件时读那一份，仓库根 .env 的值不掺和（F2）", { skip: process.platform === "win32" }, () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-startsh-alt-")));
+  try {
+    fs.mkdirSync(path.join(root, "deploy"), { recursive: true });
+    fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+    fs.copyFileSync(SRC, path.join(root, "deploy", "start-pi.sh"));
+    const out = path.join(root, "pi-seen.json");
+    fs.writeFileSync(
+      path.join(root, "bin", "pi"),
+      [
+        "#!/usr/bin/env node",
+        "const env = {}; for (const k of ['PI_REMOTE_RELAY', 'PI_REMOTE_DEVICE_ID']) env[k] = process.env[k] === undefined ? null : process.env[k];",
+        `require('fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify(env), 'utf8');`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    // Root .env belongs to another device; the --env file is the live one.
+    fs.writeFileSync(path.join(root, ".env"), "PI_REMOTE_RELAY=ws://127.0.0.1:7001\nPI_REMOTE_DEVICE_ID=dev-root\n", "utf8");
+    const alt = path.join(root, "kit-b", ".env");
+    fs.mkdirSync(path.dirname(alt), { recursive: true });
+    fs.writeFileSync(alt, "PI_REMOTE_RELAY=ws://127.0.0.1:7111\nPI_REMOTE_DEVICE_ID=dev-b\n", "utf8");
+    const env = { HOME: root, PATH: path.join(root, "bin") + path.delimiter + process.env.PATH, PI_REMOTE_PI_ENV_FILE: alt };
+    const r = spawnSync("/bin/bash", [path.join(root, "deploy", "start-pi.sh")], { cwd: root, env, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const seen = JSON.parse(fs.readFileSync(out, "utf8"));
+    assert.equal(seen.PI_REMOTE_RELAY, "ws://127.0.0.1:7111");
+    assert.equal(seen.PI_REMOTE_DEVICE_ID, "dev-b");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("start-pi.sh 被软链到别处也能找到自己的 .env", { skip: process.platform === "win32" }, () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-startsh-link-")));
   try {

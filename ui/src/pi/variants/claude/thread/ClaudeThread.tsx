@@ -328,6 +328,10 @@ function ItemViewBase({
 }) {
   const [copied, setCopied] = useState(false)
   if (item.kind === "user") {
+    // F4: a bubble whose cid matches a pending remote-queue entry is queued,
+    // not "sending" -- say so and give it send-now / cancel right here (the
+    // queue panel above the composer keeps edit and the full list).
+    const queueEntry = item.cid ? relay.remoteQueue.items.find((entry) => entry.status === "pending" && entry.cid === item.cid) : undefined
     return (
       <div className="claude-turn-user">
         <div className="claude-bubble">
@@ -339,6 +343,16 @@ function ItemViewBase({
             发送失败
             <button type="button" className="claude-link-btn" onClick={() => void relay.sendText(item.text)}>
               重试
+            </button>
+          </p>
+        ) : queueEntry ? (
+          <p className="claude-bubble-status">
+            排队中
+            <button type="button" className="claude-link-btn" onClick={() => void relay.queueSendNow(queueEntry.id)}>
+              立即发送
+            </button>
+            <button type="button" className="claude-link-btn" onClick={() => void relay.queueCancel(queueEntry.id).catch(() => relay.notify("取消失败", "warn"))}>
+              取消
             </button>
           </p>
         ) : item.status === "sending" ? (

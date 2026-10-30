@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { attentionItemsOf } from "@/relay/attention"
 import { useNow } from "../primitives/useClaude"
 import { CLAUDE_OVERLAY } from "../overlays/ids"
 import type { PiContainerProps } from "@/pi/containers/types"
@@ -123,6 +124,19 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
         })
       }
     }
+    // Pending-answer count (design D section 1): the same single counting
+    // exit as the other shells -- attention items of kind waiting / error /
+    // done. Without it the shared sidebar never renders the inbox row here.
+    const inboxCount = attentionItemsOf({
+      currentRoomId: relay.roomId,
+      rooms: relay.rooms,
+      dialogs: relay.dialogs,
+      uiPrompt: relay.uiPrompt,
+      turnEnd: relay.turnEnd,
+      roomTurnEnds: relay.roomTurnEnds,
+      inbox: relay.inbox,
+      selectedDevice: relay.selectedDevice,
+    }).filter((item) => item.kind === "waiting" || item.kind === "error" || item.kind === "done").length
     return {
       style: "claude",
       theme: document.documentElement.dataset.piTheme === "light" ? "light" : "dark",
@@ -132,6 +146,7 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
       selectedDeviceId: relay.selectedDeviceId ?? null,
       deviceMenuOpen,
       groups: sidebarGroupsWithOverlay({ groups, pins: scope.pins, archives: scope.archives, archiveView }),
+      inboxCount,
       width,
       collapsed,
       search: { open: searchOpen, query: ui.search ?? "" },
@@ -171,6 +186,7 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
     closeSearch: () => setSearchOpen(false),
     setSearchQuery: (query) => act.setSearch?.(query),
     openSettings: act.openSettings,
+    openInbox: act.openInbox,
     resize: (next) => act.setPref("sidebarWidth", next),
     toggleCollapse: () => act.setPref("sidebarCollapsed", !collapsed),
   }

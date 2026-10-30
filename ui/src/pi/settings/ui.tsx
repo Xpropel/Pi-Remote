@@ -445,6 +445,7 @@ export function SettingsSelect<T extends string>({
   description,
   value,
   options,
+  groups,
   onChange,
   disabled,
   status,
@@ -453,11 +454,19 @@ export function SettingsSelect<T extends string>({
   description?: ReactNode
   value: T
   options: readonly SettingsOption<T>[]
+  /** Optional grouped options, rendered as <optgroup> after the flat ones
+   *  (F7: the default-model select groups hundreds of models by provider). */
+  groups?: readonly { label: string; options: readonly SettingsOption<T>[] }[]
   onChange?: (value: T) => void
   disabled?: boolean
   status?: SettingsItemStatus
 }) {
   const inert = settingsItemInert(status, disabled)
+  const renderOption = (option: SettingsOption<T>) => (
+    <option key={option.value} value={option.value} disabled={option.disabled}>
+      {option.label}
+    </option>
+  )
   return (
     <SettingsRow title={label} description={description} status={status} disabled={disabled}>
       <span className="settings-select-wrap">
@@ -470,10 +479,11 @@ export function SettingsSelect<T extends string>({
             if (!inert) onChange?.(event.target.value as T)
           }}
         >
-          {options.map((option) => (
-            <option key={option.value} value={option.value} disabled={option.disabled}>
-              {option.label}
-            </option>
+          {options.map(renderOption)}
+          {groups?.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.options.map(renderOption)}
+            </optgroup>
           ))}
         </select>
         <ChevronRight size={14} strokeWidth={2} aria-hidden="true" className="settings-select-chevron" />

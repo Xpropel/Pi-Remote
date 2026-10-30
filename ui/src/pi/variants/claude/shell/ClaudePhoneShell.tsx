@@ -11,6 +11,7 @@ import { phonePageOf, type PiPhonePageKey } from "@/pi/model/phoneRoute"
 import { ClaudePhoneList } from "../phone/ClaudePhoneList"
 import { ClaudePhoneChat } from "../phone/ClaudePhoneChat"
 import { ClaudeNewSession } from "../pages/ClaudeNewSession"
+import { ClaudeInboxPage } from "../pages/ClaudeInboxPage"
 import { ClaudePaneColumn } from "../panels/ClaudeStatusRail"
 import { ClaudeOverlayHost } from "../overlays/ClaudeOverlayHost"
 import { ClaudeIconButton } from "../primitives/ClaudePrimitives"
@@ -137,6 +138,7 @@ function PhonePages({
     closeSearch: () => act.setSearch?.(null),
     setSearchQuery: (query) => act.setSearch?.(query),
     openSettings: act.openSettings,
+    openInbox: act.openInbox,
     resize: () => {},
     toggleCollapse: () => {},
   }
@@ -144,6 +146,7 @@ function PhonePages({
   // 设置页 v2 是独立系统（自己的顶栏 + 返回），不再套 PushPage；默认返回即回原会话。
   if (page === "settings") return <MobileSettingsPage p={claudeSettingsHostProps(p)} />
   if (page === "new") return <PushPage p={p} title="新建会话" onBack={() => act.openSession()} content={<ClaudeNewSession p={p} phone />} />
+  if (page === "inbox") return <PushPage p={p} title="待答" onBack={() => act.openSession()} content={<ClaudeInboxPage p={p} />} />
   if (workspace !== "chat") return <PhoneModePage p={p} mode={workspace} />
   if (page === "pane")
     return (

@@ -48,7 +48,11 @@ export type PiPrefs = {
   completionSound: boolean
   /** 对话框远程应答（O2），默认关 */
   dialogRemoteAnswer: boolean
-  /** G1 ask_user 工具开关（经 ask_user_switch 下达桥），默认关 */
+  /** G1 ask_user tool switch (sent to the bridge via ask_user_switch).
+   *  Default ON since the fix wave of 2026-10-30 (ruling D): the device-side
+   *  gate defaults on too, and this pref is re-sent on every room entry, so
+   *  an off default here would mask the device default end to end. A stored
+   *  explicit false still wins -- only the fallback changed. */
   askUserEnabled: boolean
   /** G2 工具执行审批门开关（经 approval_gate_switch 下达桥），默认关 */
   approvalGateEnabled: boolean
@@ -76,7 +80,7 @@ export const DEFAULT_PI_PREFS: PiPrefs = {
   delivery: "steer",
   completionSound: false,
   dialogRemoteAnswer: false,
-  askUserEnabled: false,
+  askUserEnabled: true,
   approvalGateEnabled: false,
   approvalGateTier: "high-risk",
   sidebarWidth: 272,

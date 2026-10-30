@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { ChevronDown, Folder, Monitor, Plus, Sparkles } from "lucide-react"
 import type { PiContainerProps } from "@/pi/containers/types"
 import { deviceScopeLabel, folderForDevice, newSessionDefaultsOf, offlineReasonOf, sessionCountsOf, startingText } from "@/pi/model/newSession"
+import { useMissingFolders } from "@/pi/model/folderExistence"
 import { initialBrowsePathOf } from "@/pi/model/folderBrowser"
 import { HARNESS_START_TIMEOUT_MS } from "@/relay/devices"
 import { newSessionDraftOf, setNewSessionDraft, subscribeNewSessionDraft } from "@/relay/drafts"
@@ -22,7 +23,9 @@ import { ClaudeBoot } from "./ClaudeBoot"
 
 const SUGGESTIONS = ["看看测试为什么失败", "解释这个目录的结构", "列出代码里的 TODO"]
 
-type Starting = { deviceId: string; cwd: string; text: string; prevRoomId: string; at: number; phase: "select" | "start" | "send" }
+/** knownRoomIds (F3): rooms that existed when the start was issued; a
+ *  switch to one of them is the already-running room, not the new room. */
+type Starting = { deviceId: string; cwd: string; text: string; prevRoomId: string; at: number; phase: "select" | "start" | "send"; knownRoomIds: readonly string[] }
 const START_IDLE_FAIL_MS = 600
 
 export function ClaudeNewSession({ p, phone = false }: { p: PiContainerProps; phone?: boolean }) {
@@ -45,7 +48,12 @@ export function ClaudeNewSession({ p, phone = false }: { p: PiContainerProps; ph
   const hour = new Date().getHours()
   const greeting = hour < 6 ? "夜深了" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好"
   const currentDeviceName = device?.name ?? relay.selectedDeviceId ?? "未选择设备"
-  const currentFolder = folderForDevice(device, folder ?? defaults.folder)
+  // F3: probe the folder that would be preselected; folders proven missing
+  // on the device are excluded from the defaults and the effective folder.
+  const provisionalFolder = folderForDevice(device, folder ?? defaults.folder)
+  const missing = useMissingFolders(relay, device, provisionalFolder)
+  const effectiveDefaults = missing.size ? newSessionDefaultsOf({ devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, selectedDeviceId: relay.selectedDeviceId }, missing) : defaults
+  const currentFolder = missing.size ? folderForDevice(device, folder ?? effectiveDefaults.folder, missing) : provisionalFolder
   const sessions = device ? (relay.sessionsByDevice[device.id] ?? []) : []
   const counts = useMemo(() => sessionCountsOf(relay.sessionsByDevice, relay.devices), [relay.sessionsByDevice, relay.devices])
   const scopeLabel = device ? deviceScopeLabel(device, relay.devices) : ""
@@ -55,7 +63,7 @@ export function ClaudeNewSession({ p, phone = false }: { p: PiContainerProps; ph
     const text = draft.trim()
     if (!device || !currentFolder || !text || !online || starting || building) return
     setError("")
-    setStarting({ deviceId: device.id, cwd: currentFolder, text, prevRoomId: relay.roomId, at: Date.now(), phase: "select" })
+    setStarting({ deviceId: device.id, cwd: currentFolder, text, prevRoomId: relay.roomId, at: Date.now(), phase: "select", knownRoomIds: relay.rooms.map((room) => room.id) })
     if (relay.selectedDeviceId !== device.id) relay.selectDevice(device.id)
   }
 
@@ -92,6 +100,13 @@ export function ClaudeNewSession({ p, phone = false }: { p: PiContainerProps; ph
     }
     if (starting.phase === "start") {
       if (relay.roomId && relay.roomId !== starting.prevRoomId) {
+        // F3: a switch to a room that already existed at start time is the
+        // already-running room -- the createSession promise path handles it
+        // (draft into its composer, nothing sent). Only a genuinely new
+        // room may advance to "send"; treating any room change as the new
+        // room raced the promise and silently delivered the prompt into
+        // the existing session.
+        if (starting.knownRoomIds.includes(relay.roomId)) return
         const next: Starting = { ...starting, phase: "send" }
         setStarting(next)
         return
@@ -175,7 +190,7 @@ export function ClaudeNewSession({ p, phone = false }: { p: PiContainerProps; ph
                 hint={item.online ? undefined : "设备未连接"}
                 onClick={() => {
                   setDeviceId(item.id)
-                  setFolder(folderForDevice(item, folder))
+                  setFolder(folderForDevice(item, folder, missing))
                 }}
               >
                 {item.name}

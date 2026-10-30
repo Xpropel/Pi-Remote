@@ -18,6 +18,11 @@ export type SendNowLock = {
   has(id: string): boolean
 }
 
+/** Shared send-now lock: the queue panel and the in-transcript queued-bubble
+ *  actions (F4) are two surfaces for the same command, so both use this one
+ *  instance instead of per-component locks that cannot see each other. */
+export const sharedSendNowLock: SendNowLock = createSendNowLock()
+
 export function createSendNowLock(): SendNowLock {
   const inFlight = new Set<string>()
   return {

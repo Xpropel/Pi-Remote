@@ -107,8 +107,16 @@ export interface MobileSettingsPageProps {
   onExit?: () => void
 }
 
+/**
+ * Last active mobile settings page, kept at module level for the same
+ * reason as the desktop SettingsPage (F1): a UI style switch swaps the
+ * whole variant shell and remounts this page, which used to reset it to
+ * the index. An explicit `page` / `initialPage` still wins.
+ */
+let lastMobileSettingsPage: MobileSettingsPageId | null = null
+
 export function MobileSettingsPage({ p, style, theme, page, initialPage, onPageChange, onExit }: MobileSettingsPageProps) {
-  const [innerPage, setInnerPage] = useState<MobileSettingsPageId>(() => mobilePageIdOf(page ?? initialPage ?? "index"))
+  const [innerPage, setInnerPage] = useState<MobileSettingsPageId>(() => mobilePageIdOf(page ?? initialPage ?? lastMobileSettingsPage ?? "index"))
   const [previewStyle, setPreviewStyle] = useState<SettingsStyle | null>(null)
   const [previewTheme, setPreviewTheme] = useState<SettingsThemePref | null>(null)
   const [prefs, prefActions] = useSettingsLocalState()
@@ -129,6 +137,8 @@ export function MobileSettingsPage({ p, style, theme, page, initialPage, onPageC
 
   const navigate = useCallback(
     (next: MobileSettingsPageId) => {
+      // Remember the page so a variant-shell remount restores it (F1).
+      lastMobileSettingsPage = next
       if (page === undefined) setInnerPage(next)
       onPageChange?.(next)
     },

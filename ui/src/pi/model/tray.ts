@@ -12,7 +12,7 @@ export type PiLocalQueue = { steering: readonly unknown[]; followUp: readonly un
 
 export type PiTrayKind = "tasks" | "queue" | "terminal" | "changes"
 /** 与 components/pi/composer 的 PiTrayItem 同形 */
-export type PiTrayItem = { kind: PiTrayKind; label: string; running?: boolean; added?: number; removed?: number; active?: boolean }
+export type PiTrayItem = { kind: PiTrayKind; label: string; running?: boolean; added?: number; removed?: number; active?: boolean; title?: string }
 
 export type PiTrayInput = {
   /** relay.taskList */
@@ -60,7 +60,8 @@ export function trayItemsOf(input: PiTrayInput): PiTrayItem[] {
   const queued = queueCountOf(input)
   if (queued > 0) {
     const suffix = (input.outbox?.length ?? 0) > 0 && waitingForLink(input.linkOk, input.deviceOnline) ? " · 等重连" : ""
-    items.push({ kind: "queue", label: `排队 ${queued}${suffix}` })
+    // F4: the pill is the only way into the queue panel -- say so on hover.
+    items.push({ kind: "queue", label: `排队 ${queued}${suffix}`, title: "排队中的消息，点开可编辑、取消或立即发送" })
   }
   const terminals = input.terminals ?? []
   if (terminals.length > 0) {

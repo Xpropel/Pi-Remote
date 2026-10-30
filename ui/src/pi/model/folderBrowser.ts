@@ -79,17 +79,21 @@ export function breadcrumbOf(path: string, root: string): FolderCrumb[] {
 export function knownFoldersOf(
   device: Pick<Device, "projects" | "browseRoots" | "platform">,
   sessions: readonly Pick<SessionEntry, "cwd" | "updatedAt">[],
+  exclude?: ReadonlySet<string>,
 ): string[] {
+  // F3: folders proven missing on the device are not offered in the picker.
+  const excluded = exclude && exclude.size ? new Set([...exclude].map((path) => folderKey(path))) : null
   const out: string[] = []
   const seen = new Set<string>()
   const push = (path: string) => {
     const key = folderKey(path)
     if (!key || seen.has(key)) return
+    if (excluded && excluded.has(key)) return
     seen.add(key)
     out.push(path)
   }
   for (const path of device.projects || []) push(path)
-  for (const path of recentFoldersOf(sessions, device, Infinity)) push(path)
+  for (const path of recentFoldersOf(sessions, device, Infinity, exclude)) push(path)
   return out
 }
 

@@ -61,7 +61,7 @@ export const PI_UI_CAPABILITIES: readonly PiUiCapabilityMeta[] = [
   meta("code-review-comments", "代码审查评论", "workflow", "代码审查评论：行内评论、回复与解决。", "extension", "simulated"),
   meta("background-tasks", "后台任务", "workflow", "后台任务：任务看板、进度与取消。", "builtin", "available"),
   meta("mcp-tools", "MCP 工具", "integration", "MCP 工具：服务与工具列表、入参表单与审批。", "builtin", "available"),
-  meta("context-usage", "上下文用量", "content", "上下文用量：用量卡片、百分比与费用。", "builtin", "available"),
+  meta("context-usage", "上下文用量", "content", "上下文用量：用量卡片与百分比。", "builtin", "available"),
   meta("model-menu", "模型 / 强度菜单", "content", "模型与思考强度选择。", "builtin", "available"),
   meta("file-editor", "文件编辑器", "content", "文件编辑器：在应用内编辑与保存文件。", "extension", "unavailable", "pi 的网页端目前只读文件；扩展提供编辑接口后启用。"),
   meta("file-preview", "文件查看", "content", "文件查看：文本与图片预览。", "builtin", "available"),

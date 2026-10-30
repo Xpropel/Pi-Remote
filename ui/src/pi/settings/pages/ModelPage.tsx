@@ -27,6 +27,7 @@ import {
   MODEL_THINKING_LEVELS,
   MODEL_THINKING_LEVEL_LABELS,
   MODEL_THINKING_LEVELS_COPY,
+  defaultModelGroupsOf,
   modelSettingsOf,
   providerModelOverflowOf,
   providerRowsOf,
@@ -183,7 +184,10 @@ export function ModelPage() {
   const reserveTokens = effectiveSettingsIntOf(settingsDoc.data, writer.applied, "compaction.reserveTokens")
   const keepRecentTokens = effectiveSettingsIntOf(settingsDoc.data, writer.applied, "compaction.keepRecentTokens")
 
-  // 默认模型下拉：以本机认证可用的模型清单为准；当前默认值不在清单里时补一项（仍可原样保留）。
+  // Default-model select (F7): options are grouped by provider instead of
+  // one flat list mixing every catalog; a provider without credentials is
+  // marked in its group label. A stored value missing from the catalog
+  // keeps its own group (defaultModelGroupsOf) so it stays selectable.
   const modelChoices = useMemo(() => {
     const choices: { key: string; provider: string; modelId: string; label: string }[] = []
     for (const provider of providers) {
@@ -196,11 +200,9 @@ export function ModelPage() {
     }
     return choices
   }, [providers, defaultProvider, defaultModel, defaultModelKey])
+  const modelGroups = useMemo(() => defaultModelGroupsOf(providers, defaultModelKey), [providers, defaultModelKey])
   const defaultModelOptions = modelChoices.length
-    ? [
-        ...(defaultModelKey ? [] : [{ value: "", label: "未设置（按 pi 兜底）" }]),
-        ...modelChoices.map((choice) => ({ value: choice.key, label: choice.label })),
-      ]
+    ? [...(defaultModelKey ? [] : [{ value: "", label: "未设置（按 pi 兜底）" }])]
     : [{ value: "", label: "读不到可选模型" }]
   const defaultModelFeedback = settingsFeedbackFor(writer.feedback, DEFAULT_MODEL_WRITE_IDS)
   const compactionFeedback = settingsFeedbackFor(writer.feedback, COMPACTION_WRITE_IDS)
@@ -232,6 +234,7 @@ export function ModelPage() {
           description="成对保存 defaultProvider + defaultModel；只影响新会话"
           value={defaultModelKey}
           options={defaultModelOptions}
+          groups={modelChoices.length ? modelGroups : undefined}
           disabled={writeDisabled || modelChoices.length === 0}
           onChange={(value) => {
             const choice = modelChoices.find((item) => item.key === value)

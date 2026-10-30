@@ -179,6 +179,19 @@ function buildDeviceList(index, devices, rooms, accountId = DEFAULT_ACCOUNT) {
       return false;
     }
   };
+  // Bridge (extension) presence, per device: a room counts only while its
+  // local end is a live, post-auth bridge socket (room.local is set solely by
+  // the room_register handler after auth, and cleared on close). "online"
+  // alone only proves the attach window is connected; a device whose pi
+  // processes never brought a bridge up looks online yet cannot mirror or
+  // deliver anything (defect A3-F1), so the roster exposes the distinction
+  // and the UI renders it as a degraded state.
+  const bridgeIds = new Set();
+  if (rooms && rooms.map) {
+    for (const r of rooms.map.values()) {
+      if (r && r.deviceId && r.local) bridgeIds.add(String(r.deviceId));
+    }
+  }
   // 设备身份钥（加密设计 §3.5）：指纹与登记时间只来自索引行（公钥是公开数据），
   // 无钥设备不带这两个键。是否下发由发送侧按连接的 crypto.auth cap 裁剪
   // （rooms.devicesViewFor）——未声明 cap 的旧端设备条目逐字节不变。
@@ -209,6 +222,7 @@ function buildDeviceList(index, devices, rooms, accountId = DEFAULT_ACCOUNT) {
       trash: trashOf(mem),
       browseRoots: browseRootsOf(mem),
       latencyMs: latencyOf(mem),
+      bridgeOnline: bridgeIds.has(String(row.id)),
     };
     const keyFp = keyFpOf(row);
     if (keyFp) {
@@ -236,6 +250,7 @@ function buildDeviceList(index, devices, rooms, accountId = DEFAULT_ACCOUNT) {
       trash: trashOf(mem),
       browseRoots: browseRootsOf(mem),
       latencyMs: latencyOf(mem),
+      bridgeOnline: bridgeIds.has(String(id)),
     });
   }
   let unreg = false;

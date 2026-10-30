@@ -4,6 +4,7 @@ import type { VariantAppProps } from "@/pi/variants/types"
 import { modelPillName } from "@/pi/model/models"
 import { browseAccessOf, initialBrowsePathOf, knownFoldersOf } from "@/pi/model/folderBrowser"
 import { deviceScopeLabel, folderForDevice, newSessionDefaultsOf, offlineReasonOf, recentFoldersOf, sessionCountsOf, startingText } from "@/pi/model/newSession"
+import { useMissingFolders } from "@/pi/model/folderExistence"
 import { HARNESS_START_TIMEOUT_MS } from "@/relay/devices"
 import { newSessionDraftOf, setNewSessionDraft, subscribeNewSessionDraft } from "@/relay/drafts"
 import { useNow } from "../hooks/useCodex"
@@ -15,7 +16,9 @@ import { CodexRunLocation, type CodexRunMode, type CodexRunLocationValue } from 
 
 const SUGGESTIONS = ["看看测试为什么失败", "解释这个目录的结构", "列出代码里的 TODO"]
 type Phase = "select" | "start" | "send" | "existing"
-type Starting = { deviceId: string; cwd: string; text: string; prevRoomId: string; at: number; phase: Phase; roomId?: string }
+/** knownRoomIds (F3): rooms that existed when the start was issued; a
+ *  switch to one of them is the already-running room, not the new room. */
+type Starting = { deviceId: string; cwd: string; text: string; prevRoomId: string; at: number; phase: Phase; roomId?: string; knownRoomIds: readonly string[] }
 
 /**
  * Codex 新建会话（[X-图4][X-图5] / X-05 / P9 C）：
@@ -41,9 +44,14 @@ export function CodexNewSession({ p, phone = false, onOpenPairing }: { p: Varian
   const [runMode, setRunMode] = useState<CodexRunMode>("local")
   const imageInput = useRef<HTMLInputElement>(null)
   const device = relay.devices.find((d) => d.id === (deviceId ?? defaults.deviceId)) ?? null
-  const cwd = folderForDevice(device, folder ?? defaults.folder)
-  const recent = device ? recentFoldersOf(relay.sessionsByDevice[device.id] ?? [], device) : []
-  const known = device ? knownFoldersOf(device, relay.sessionsByDevice[device.id] ?? []) : []
+  // F3: probe the folder that would be preselected; folders proven missing
+  // on the device are excluded from the defaults, the lists and the folder.
+  const provisionalCwd = folderForDevice(device, folder ?? defaults.folder)
+  const missing = useMissingFolders(relay, device, provisionalCwd)
+  const effectiveDefaults = missing.size ? newSessionDefaultsOf({ devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, selectedDeviceId: relay.selectedDeviceId }, missing) : defaults
+  const cwd = missing.size ? folderForDevice(device, folder ?? effectiveDefaults.folder, missing) : provisionalCwd
+  const recent = device ? recentFoldersOf(relay.sessionsByDevice[device.id] ?? [], device, 5, missing) : []
+  const known = device ? knownFoldersOf(device, relay.sessionsByDevice[device.id] ?? [], missing) : []
   const scopeLabel = device ? deviceScopeLabel(device, relay.devices) : ""
   const browse = device ? browseAccessOf(device) : null
   const counts = sessionCountsOf(relay.sessionsByDevice, relay.devices)
@@ -53,13 +61,13 @@ export function CodexNewSession({ p, phone = false, onOpenPairing }: { p: Varian
   const pickDevice = (id: string) => {
     const next = relay.devices.find((d) => d.id === id)
     setDeviceId(id)
-    setFolder(next ? folderForDevice(next, folder ?? cwd) : null)
+    setFolder(next ? folderForDevice(next, folder ?? cwd, missing) : null)
     setDeviceOpen(false)
   }
   const start = () => {
     if (!device || !cwd || !draft.trim() || !device.online || starting) return
     setError(null)
-    setStarting({ deviceId: device.id, cwd, text: draft.trim(), prevRoomId: relay.roomId, at: Date.now(), phase: "select" })
+    setStarting({ deviceId: device.id, cwd, text: draft.trim(), prevRoomId: relay.roomId, at: Date.now(), phase: "select", knownRoomIds: relay.rooms.map((room) => room.id) })
     if (relay.selectedDeviceId !== device.id) relay.selectDevice(device.id)
   }
   // 发送键偏好：默认 Enter 发送（与旧行为一致）；Ctrl 发送模式时 Enter 换行、Ctrl/Cmd+Enter 发送。
@@ -98,6 +106,15 @@ export function CodexNewSession({ p, phone = false, onOpenPairing }: { p: Varian
     }
     if (s.phase === "start") {
       if (relay.roomId && relay.roomId !== s.prevRoomId) {
+        // F3: a switch to a room that already existed at start time is the
+        // already-running room -- route it to the existing-room path (the
+        // draft lands in its composer, nothing is sent). Treating any room
+        // change as the new room raced the createSession promise and
+        // silently delivered the prompt into the existing session.
+        if (s.knownRoomIds.includes(relay.roomId)) {
+          setStarting({ ...s, phase: "existing", roomId: relay.roomId })
+          return
+        }
         setStarting({ ...s, phase: "send" })
         return
       }

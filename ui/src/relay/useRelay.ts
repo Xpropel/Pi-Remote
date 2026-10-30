@@ -1207,30 +1207,55 @@ export function useRelay() {
       },
       requestViewerList: (frame) =>
         new Promise((resolve, reject) => {
-          const ws = wsRef.current
-          if (!ws || ws.readyState !== WebSocket.OPEN || !authedRef.current) {
-            reject(new Error("尚未连接中转服务，无法读取观看端名册"))
-            return
+          // A3-F2: enabling the viewer identity reconnects the socket for
+          // key auth, so a roster read issued in that window used to fail
+          // instantly with "not connected" -- and the settings section kept
+          // showing that error for the whole session. While a (re)connect
+          // is in flight, wait for auth inside the same 10s budget instead
+          // of failing at once; the not-connected error is only reported
+          // when the budget runs out still unauthed, so it stays accurate.
+          const startedAt = Date.now()
+          const attempt = () => {
+            if (keyAuthBlockedFpRef.current) {
+              reject(new Error("密钥登录被中转服务拒绝，无法读取观看端名册"))
+              return
+            }
+            const ws = wsRef.current
+            if (!ws || ws.readyState !== WebSocket.OPEN || !authedRef.current) {
+              if (Date.now() - startedAt >= 10000) {
+                reject(
+                  new Error(
+                    typeof navigator !== "undefined" && navigator.onLine === false
+                      ? "浏览器处于离线状态，无法读取观看端名册"
+                      : "尚未连接中转服务，无法读取观看端名册",
+                  ),
+                )
+                return
+              }
+              window.setTimeout(attempt, 250)
+              return
+            }
+            const id = `vl_${newCid()}`
+            const timer = window.setTimeout(() => {
+              viewerListWaitersRef.current.delete(id)
+              reject(new Error("读取观看端名册超时，请重试"))
+            }, Math.max(1000, 10000 - (Date.now() - startedAt)))
+            viewerListWaitersRef.current.set(id, { resolve, reject, timer })
+            try {
+              // Same dual track as sendAdminCommand: a list_viewers frame the
+              // identity could not sign (not registered yet, or not an admin
+              // viewer) must still carry the saved admin token. Without it
+              // the relay refuses the frame with an ack frame, which the
+              // roster waiter never sees, so the read hangs until the
+              // timeout above fires.
+              ws.send(JSON.stringify({ ...frameWithAdminToken(frame, adminTokenRef.current), id }))
+            } catch {
+              window.clearTimeout(timer)
+              viewerListWaitersRef.current.delete(id)
+              reject(new Error("连接已断开，无法读取观看端名册"))
+            }
           }
-          const id = `vl_${newCid()}`
-          const timer = window.setTimeout(() => {
-            viewerListWaitersRef.current.delete(id)
-            reject(new Error("读取观看端名册超时，请重试"))
-          }, 10000)
-          viewerListWaitersRef.current.set(id, { resolve, reject, timer })
-          try {
-            // Same dual track as sendAdminCommand: a list_viewers frame the
-            // identity could not sign (not registered yet, or not an admin
-            // viewer) must still carry the saved admin token. Without it
-            // the relay refuses the frame with an ack frame, which the
-            // roster waiter never sees, so the read hangs until the
-            // timeout above fires.
-            ws.send(JSON.stringify({ ...frameWithAdminToken(frame, adminTokenRef.current), id }))
-          } catch {
-            window.clearTimeout(timer)
-            viewerListWaitersRef.current.delete(id)
-            reject(new Error("连接已断开，无法读取观看端名册"))
-          }
+          attempt()
         }),
     })
     return () => setViewerIdentityTransport(null)
@@ -5044,6 +5069,43 @@ export function useRelay() {
     }
     await channel.raw(pairApproveFrame(code, secret, grant), "没有收到回应，链接结果未知，请到设备列表确认")
   }, [channel, ensureIdentityReady])
+
+  // ACK delivery retry (A3-F3): the post-auth step asks the account's keyed
+  // ends for a wrapped ACK exactly once per connection. If no holder was
+  // ready at that instant (bridge still starting, device came online
+  // later), nothing ever asked again until a room snapshot happened to
+  // trigger it -- the devices page sat at "waiting" for minutes with the
+  // holder online. While this viewer is registered and holds no ACK,
+  // re-ask whenever the set of online paired devices changes, plus a slow
+  // heartbeat re-ask, so delivery no longer depends on opening a room.
+  // Duplicate requests are harmless: holders wrap and send another grant,
+  // and accepting a grant for the ACK already held is a no-op re-store.
+  const ackAskAtRef = useRef(0)
+  const keyedOnlineSig = devices
+    .filter((device) => device.online && device.paired)
+    .map((device) => device.id)
+    .sort()
+    .join(",")
+  const waitingAck = viewerIdentity.hasIdentity && viewerIdentity.registered && !viewerIdentity.hasAck
+  useEffect(() => {
+    if (!waitingAck || !authed) return
+    const ask = () => {
+      if (authModeRef.current !== "key" || !authedRef.current) return
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      ackAskAtRef.current = Date.now()
+      try {
+        ws.send(JSON.stringify(contentKeyRequestFrame()))
+      } catch {
+        /* the close path handles a dead socket */
+      }
+    }
+    ask()
+    const timer = window.setInterval(() => {
+      if (Date.now() - ackAskAtRef.current >= 30000) ask()
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [waitingAck, authed, keyedOnlineSig])
 
   /**
    * Viewer identity enable (crypto Phase 2, settings surface): generate the

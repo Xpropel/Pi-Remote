@@ -27,7 +27,7 @@ import { frequentSlashNames, loadSlashUsage, noteSlashCommandUsed, SLASH_USAGE_E
 import { useNow } from "@/pi/hooks/useNow"
 import { useTranscriptStick } from "@/pi/hooks/useTranscriptStick"
 import { changesOfSessionCached, createChangesCache } from "@/components/pi/composer/sessionChanges"
-import { createSendNowLock, queueEditInvalidationOf } from "@/components/pi/composer/queueGuard"
+import { queueEditInvalidationOf, sharedSendNowLock } from "@/components/pi/composer/queueGuard"
 import { composerTriggerOf, slashMenuGroups } from "@/pi/model/composerInput"
 import { composerViewOf, PI_SLOW_ACK_MS } from "@/pi/model/composerView"
 import { modelContextWindowOf, modelExplainerOf } from "@/pi/model/models"
@@ -253,8 +253,9 @@ function useQueue(relay: Relay) {
   const patch = (id: string, next: Partial<QueueEditing> | null) =>
     setEditing((cur) => (!cur || cur.id !== id ? cur : next === null ? null : { ...cur, ...next }))
   const fetchFull = (id: string) => relay.queueFetchFullText(id)
-  // "立即发送"按 id 的在飞锁（UI·perf 中-6）：连点只下发一帧，上一帧有结果（或失败）后才解锁
-  const [sendNowLock] = useState(createSendNowLock)
+  // "立即发送"按 id 的在飞锁（UI·perf 中-6）：连点只下发一帧，上一帧有结果（或失败）后才解锁。
+  // F4: the in-transcript queued-bubble actions share this same lock instance.
+  const sendNowLock = sharedSendNowLock
   // 条目离开 pending（被注入 / 发了 / 失败 / 别处取消）：编辑稿已经无落点，作废并明确告知，
   // 不让它静默消失（UI·perf 中-6：可编辑检查原来只在打开编辑器时查一次）
   const editingId = editing?.id ?? null

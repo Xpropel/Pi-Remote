@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import type { PiContainerProps } from "@/pi/containers/types"
+import { ClaudeInboxPage } from "../pages/ClaudeInboxPage"
 import { SettingsPage, settingsStyleOf, type SettingsTheme } from "@/pi/settings"
 import { claudeSettingsHostProps } from "./settingsHost"
 import { bootViewOfRelay } from "../model/view"
@@ -93,6 +94,11 @@ export function ClaudeDesktopShell({ p, theme }: { p: PiContainerProps; theme?: 
     settings
   ) : ui.view === "new" ? (
     <ClaudeNewSession p={p} />
+  ) : ui.view === "inbox" ? (
+    // Pending-answer inbox (design D section 1): this shell used to have no
+    // route for the inbox view at all, so the surface was unreachable here.
+    // The variant is self-contained, so it renders its own inbox page.
+    <ClaudeInboxPage p={p} />
   ) : !ready ? (
     <ClaudeBoot p={p} />
   ) : !chatMode ? (

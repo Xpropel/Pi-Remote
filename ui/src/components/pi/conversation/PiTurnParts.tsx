@@ -193,11 +193,41 @@ export function PiUserTurn({
     )
   } else if (item.outbox) {
     status = <span className={T_SECONDARY}>等重连后发送</span>
+  } else if (item.queued) {
+    // F4: a queued prompt used to sit here as a dead "sending" bubble. It
+    // now says it is queued and carries its own actions -- revealed on
+    // hover / focus on fine pointers, always visible on touch.
+    const queueAction = (fn?: (item: PiUserItem) => void, label?: string) =>
+      fn && label ? (
+        <button
+          key={label}
+          type="button"
+          className={cn("cursor-pointer text-inherit underline-offset-2 hover:underline", TOUCH_44_TEXT)}
+          onClick={() => fn(item)}
+        >
+          {label}
+        </button>
+      ) : null
+    const buttons = [
+      queueAction(actions?.queueSendNow, "立即发送"),
+      queueAction(actions?.queueEdit, "编辑"),
+      queueAction(actions?.queueCancel, "取消"),
+    ].filter(Boolean)
+    status = (
+      <span className={cn("inline-flex items-center gap-2", T_SECONDARY)}>
+        <span>排队中</span>
+        {buttons.length > 0 && (
+          <span className="inline-flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+            {buttons}
+          </span>
+        )}
+      </span>
+    )
   } else if (item.status === "sending") {
     status = <span className={T_SECONDARY}>发送中…</span>
   }
   return (
-    <div data-pi-part="user-turn" data-status={item.failed ? "failed" : item.outbox ? "outbox" : item.status}>
+    <div data-pi-part="user-turn" className="group" data-status={item.failed ? "failed" : item.outbox ? "outbox" : item.queued ? "queued" : item.status}>
       <UserMessage variant="card" className={cn(status != null && "mb-1")}>
         <div className={cn(remote && "pr-5")}>
           {item.text && <div className="whitespace-pre-wrap">{item.text}</div>}

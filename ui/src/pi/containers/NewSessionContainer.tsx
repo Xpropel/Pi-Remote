@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils"
 import { useNow } from "@/pi/hooks/useNow"
 import { browseAccessOf, initialBrowsePathOf, knownFoldersOf } from "@/pi/model/folderBrowser"
 import { deviceScopeLabel, folderForDevice, newSessionDefaultsOf, offlineReasonOf, recentFoldersOf, sessionCountsOf, startingText } from "@/pi/model/newSession"
+import { useMissingFolders } from "@/pi/model/folderExistence"
 import { HARNESS_START_TIMEOUT_MS } from "@/relay/devices"
 import { newSessionDraftOf, setNewSessionDraft, subscribeNewSessionDraft } from "@/relay/drafts"
 import { C_IDS, modelPillOf, useModelData } from "./cShared"
@@ -34,8 +35,12 @@ const SUGGESTIONS = [
   { key: "todo", label: "列出代码里的 TODO" },
 ]
 
-/** phase existing：同目录已有会话（already_running），roomId = 那个会话的房间 */
-type Starting = { deviceId: string; cwd: string; text: string; prevRoomId: string; at: number; phase: "select" | "start" | "send" | "existing"; roomId?: string }
+/** phase existing：同目录已有会话（already_running），roomId = 那个会话的房间。
+ *  knownRoomIds (F3): every room id that existed when the start was issued.
+ *  The start phase may only treat a room change as "the new room is ready"
+ *  when the room is NOT in this set -- a switch to a pre-existing room is
+ *  the already-running room, never a freshly created one. */
+type Starting = { deviceId: string; cwd: string; text: string; prevRoomId: string; at: number; phase: "select" | "start" | "send" | "existing"; roomId?: string; knownRoomIds: readonly string[] }
 /** `draft` 只是旧 store 形状的兼容字段：真正的草稿源是 @/relay/drafts 的共享 store（切皮肤保留），
  *  经 setStore({ draft }) 写入时同步过去；读取一律用 useSyncExternalStore 的共享快照。 */
 type NewState = { deviceId: string | null; folder: string | null; draft: string; starting: Starting | null; error: string | null; browsing: boolean }
@@ -67,16 +72,22 @@ function useNewState(): NewState {
 
 /** 当前要用的设备与目录（没手选过就用预选；目录不在设备允许的范围里时换成第一个） */
 function useSelection(relay: Relay, state: NewState) {
-  const defaults = useMemo(
-    () => newSessionDefaultsOf({ devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, selectedDeviceId: relay.selectedDeviceId }),
+  const defaultsInput = useMemo(
+    () => ({ devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, selectedDeviceId: relay.selectedDeviceId }),
     [relay.devices, relay.rooms, relay.sessionsByDevice, relay.selectedDeviceId],
   )
-  const device = relay.devices.find((d) => d.id === (state.deviceId ?? defaults.deviceId)) ?? null
-  const folder = folderForDevice(device, state.folder ?? defaults.folder)
+  const provisional = useMemo(() => newSessionDefaultsOf(defaultsInput), [defaultsInput])
+  const device = relay.devices.find((d) => d.id === (state.deviceId ?? provisional.deviceId)) ?? null
+  // F3: probe the folder that would be preselected; folders proven missing
+  // on the device are excluded and the defaults are recomputed without them.
+  const provisionalFolder = folderForDevice(device, state.folder ?? provisional.folder)
+  const missing = useMissingFolders(relay, device, provisionalFolder)
+  const defaults = missing.size ? newSessionDefaultsOf(defaultsInput, missing) : provisional
+  const folder = missing.size ? folderForDevice(device, state.folder ?? defaults.folder, missing) : provisionalFolder
   const sessions = device ? (relay.sessionsByDevice[device.id] ?? []) : []
   // P9 C：这台设备自己的文件夹——最近用过的、白名单 + 最近（去重）、作用域说法、能不能打开浏览器
-  const recent = device ? recentFoldersOf(sessions, device) : []
-  const knownFolders = device ? knownFoldersOf(device, sessions) : []
+  const recent = device ? recentFoldersOf(sessions, device, 5, missing) : []
+  const knownFolders = device ? knownFoldersOf(device, sessions, missing) : []
   const scopeLabel = device ? deviceScopeLabel(device, relay.devices) : ""
   const browse = browseAccessOf(device)
   return { device, folder, recent, knownFolders, scopeLabel, browse }
@@ -134,6 +145,16 @@ function useStartFlow(p: PiContainerProps, state: NewState) {
     if (s.phase === "start") {
       if (relay.roomId && relay.roomId !== s.prevRoomId) {
         idleSince.current = null
+        // F3: a switch to a room that already existed when the start was
+        // issued is the already-running room for this folder, not the new
+        // room -- the first message must NOT be sent into it. (This used to
+        // race the createSession promise: when the relay's room switch was
+        // rendered before the promise resolved, the prompt was silently
+        // delivered into the existing session.)
+        if (s.knownRoomIds.includes(relay.roomId)) {
+          setStore({ starting: { ...s, phase: "existing", roomId: relay.roomId } })
+          return
+        }
         setStore({ starting: { ...s, phase: "send" } })
         return
       }
@@ -217,7 +238,7 @@ function NewComposer(p: PiContainerProps) {
   const start = () => {
     const text = draft.trim()
     if (!device || !folder || !text || !device.online || starting) return
-    setStore({ error: null, starting: { deviceId: device.id, cwd: folder, text, prevRoomId: relay.roomId, at: Date.now(), phase: "select" } })
+    setStore({ error: null, starting: { deviceId: device.id, cwd: folder, text, prevRoomId: relay.roomId, at: Date.now(), phase: "select", knownRoomIds: relay.rooms.map((room) => room.id) } })
     if (relay.selectedDeviceId !== device.id) relay.selectDevice(device.id)
   }
   // 框下：启动中 / 失败 + 重试 / 设备离线的原因；都没有时桌面放建议 pill

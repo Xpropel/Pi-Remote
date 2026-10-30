@@ -395,6 +395,128 @@ test("macOS Terminal：一次性 .command 脚本先删自己，路径单引号�
   assert.deepEqual(fs.readFileSync(out, "utf8").split("\n").slice(0, 3), [cwd, "--session", sessionPath]);
 });
 
+test("piChildEnv：--env 文件优先于进程环境，窗口文件与钥路径都解析成绝对路径（F2/A3-F1）", () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, "kit-b", ".env");
+  fs.mkdirSync(path.dirname(envPath), { recursive: true });
+  fs.writeFileSync(envPath, "PI_REMOTE_RELAY=ws://127.0.0.1:7111\nPI_REMOTE_DEVICE_ID=dev-b\nPI_REMOTE_TOKEN=file-tok\nPI_REMOTE_DEVICE_NAME=\n");
+  const environ = {
+    PI_REMOTE_RELAY: "ws://127.0.0.1:7001",
+    PI_REMOTE_DEVICE_ID: "dev-a",
+    PI_REMOTE_TOKEN: "env-tok",
+    PI_REMOTE_DEVICE_NAME: "env-name",
+    PI_REMOTE_ATTACH_FILE: "relative/window.json",
+  };
+  const child = attach.piChildEnv(envPath, environ);
+  assert.equal(child.PI_REMOTE_RELAY, "ws://127.0.0.1:7111", "env 文件的非空值胜出");
+  assert.equal(child.PI_REMOTE_DEVICE_ID, "dev-b");
+  assert.equal(child.PI_REMOTE_TOKEN, "file-tok");
+  assert.equal(child.PI_REMOTE_DEVICE_NAME, "env-name", "文件里留空的键回落进程环境");
+  assert.equal(child.PI_REMOTE_ATTACH_FILE, path.resolve("relative/window.json"), "只在 attach 进程环境里设置的窗口文件也必须传给 pi 并绝对化");
+  assert.equal(child.PI_REMOTE_PI_ENV_FILE, envPath, "start-pi 必须读同一份 env 文件，而不是仓库根 .env");
+});
+
+test("resolveAttachFile：env 文件覆盖 > 进程环境 > defaultPath；文件里的相对路径按文件所在目录解析", () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, "kit", ".env");
+  fs.mkdirSync(path.dirname(envPath), { recursive: true });
+  fs.writeFileSync(envPath, "PI_REMOTE_ATTACH_FILE=win/from-file.json\n");
+  assert.equal(
+    attach.resolveAttachFile(envPath, { PI_REMOTE_ATTACH_FILE: "/env/window.json" }, "/dflt/window.json"),
+    path.join(dir, "kit", "win", "from-file.json"),
+    "文件里的相对路径按 .env 所在目录解析，不随 cwd 漂移",
+  );
+  const barePath = path.join(dir, "bare", ".env");
+  fs.mkdirSync(path.dirname(barePath), { recursive: true });
+  fs.writeFileSync(barePath, "PI_REMOTE_RELAY=ws://127.0.0.1:7111\n");
+  assert.equal(attach.resolveAttachFile(barePath, { PI_REMOTE_ATTACH_FILE: "rel/window.json" }, "/dflt/window.json"), path.resolve("rel/window.json"), "进程环境的相对路径按 cwd 解析");
+  assert.equal(attach.resolveAttachFile(barePath, {}, "/dflt/window.json"), path.resolve("/dflt/window.json"), "都没有覆盖时才用 defaultPath");
+});
+
+test("piChildEnv：钥文件按 attach 的回落链解析（env 文件同目录缺省名 / 显式配置）", () => {
+  const dir = tmpDir();
+  const envPath = path.join(dir, ".env");
+  fs.writeFileSync(envPath, "PI_REMOTE_RELAY=ws://127.0.0.1:7111\nPI_REMOTE_DEVICE_ID=dev-k\n");
+  const noKey = attach.piChildEnv(envPath, {});
+  assert.equal(noKey.PI_REMOTE_DEVICE_KEY_FILE, undefined, "没有钥文件、也没有显式配置时不下发该键");
+  const keyPath = path.join(dir, "pi-remote-device.key.json");
+  fs.writeFileSync(keyPath, "{}");
+  const withKey = attach.piChildEnv(envPath, {});
+  assert.equal(withKey.PI_REMOTE_DEVICE_KEY_FILE, keyPath, "缺省钥文件存在时，pi 必须被指向同一路径");
+  const explicit = attach.piChildEnv(envPath, { PI_REMOTE_DEVICE_KEY_FILE: "custom/key.json" });
+  assert.equal(explicit.PI_REMOTE_DEVICE_KEY_FILE, path.resolve("custom/key.json"), "显式配置即使文件尚不存在也下发（解析口径同 deviceKeyFilePath）");
+});
+
+test("buildSpawnSpec：childEnv 三种拉起方式都带上（tmux env 包装 / Terminal export / Windows spawn env）", () => {
+  const childEnv = { PI_REMOTE_RELAY: "ws://127.0.0.1:7111", PI_REMOTE_ATTACH_FILE: "/tmp/w 'x'.json", BAD: "", "1BAD": "x" };
+  const tmuxSpec = attach.buildSpawnSpec({ cwd: "/srv/app", startPi: "/k/start-pi.sh", platform: "linux", childEnv });
+  const envAt = tmuxSpec.args.indexOf("/usr/bin/env");
+  assert.ok(envAt > 0, tmuxSpec.args.join(" "));
+  assert.deepEqual(tmuxSpec.args.slice(envAt + 1, envAt + 3), ["PI_REMOTE_RELAY=ws://127.0.0.1:7111", "PI_REMOTE_ATTACH_FILE=/tmp/w 'x'.json"]);
+  assert.equal(tmuxSpec.args[envAt + 3], "/bin/bash", "空值与非法键名被丢弃，不进窗格命令");
+
+  const termSpec = attach.buildSpawnSpec({ cwd: "/srv/app", startPi: "/k/start-pi.sh", platform: "darwin", scriptDir: tmpDir(), childEnv });
+  assert.match(termSpec.script.text, /export PI_REMOTE_RELAY='ws:\/\/127\.0\.0\.1:7111'/);
+  assert.match(termSpec.script.text, /export PI_REMOTE_ATTACH_FILE='\/tmp\/w '\\''x'\\''\.json'/);
+  assert.doesNotMatch(termSpec.script.text, /1BAD|export BAD=/);
+
+  const winSpec = attach.buildSpawnSpec({ cwd: "C:\\app", startPi: "C:\\k\\start-pi.cmd", platform: "win32", childEnv });
+  assert.equal(winSpec.options.env.PI_REMOTE_RELAY, "ws://127.0.0.1:7111");
+  assert.equal(winSpec.options.env.PI_REMOTE_ATTACH_FILE, "/tmp/w 'x'.json");
+  assert.equal(winSpec.options.env.BAD, undefined);
+});
+
+test("F2 回归：attach --env 拉起的 pi 读到的是 --env 文件的配置，不是仓库根 .env", { skip: process.platform === "win32" }, () => {
+  const root = fs.realpathSync.native(tmpDir());
+  fs.mkdirSync(path.join(root, "deploy"), { recursive: true });
+  fs.mkdirSync(path.join(root, "work"), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, "..", "deploy", "start-pi.sh"), path.join(root, "deploy", "start-pi.sh"));
+  // 仓库根 .env 是另一台设备的旧配置：pi 若读到它，就会像实测那样静默失联
+  fs.writeFileSync(path.join(root, ".env"), "PI_REMOTE_RELAY=ws://127.0.0.1:7001\nPI_REMOTE_DEVICE_ID=dev-root\nPI_REMOTE_TOKEN=root-tok\n");
+  const out = path.join(root, "pi-seen.json");
+  const fakePi = path.join(root, "fake-pi");
+  const keys = ["PI_REMOTE_RELAY", "PI_REMOTE_DEVICE_ID", "PI_REMOTE_TOKEN", "PI_REMOTE_ATTACH_FILE", "PI_REMOTE_PI_ENV_FILE"];
+  fs.writeFileSync(
+    fakePi,
+    [
+      "#!/usr/bin/env node",
+      `const keys = ${JSON.stringify(keys)};`,
+      "const env = {}; for (const k of keys) env[k] = process.env[k] === undefined ? null : process.env[k];",
+      `require('fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify(env), 'utf8');`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const altEnv = path.join(root, "kit-b", ".env");
+  fs.mkdirSync(path.dirname(altEnv), { recursive: true });
+  fs.writeFileSync(altEnv, `PI_REMOTE_RELAY=ws://127.0.0.1:7111\nPI_REMOTE_DEVICE_ID=dev-b\nPI_REMOTE_TOKEN=b-tok\nPI_REMOTE_PI_BIN=${fakePi}\n`);
+  // PI_REMOTE_ATTACH_FILE 只存在于 attach 自己的进程环境（A3-F1 的确切形状）
+  const attachWindowFile = path.join(root, "window-b.json");
+  const environ = { PI_REMOTE_ATTACH_FILE: attachWindowFile };
+  const childEnv = attach.piChildEnv(altEnv, environ);
+  const spec = attach.buildSpawnSpec({
+    cwd: path.join(root, "work"),
+    startPi: path.join(root, "deploy", "start-pi.sh"),
+    platform: "linux",
+    childEnv,
+  });
+  // 直接执行 tmux 窗格命令（绕过 tmux 本身）：/usr/bin/env K=V ... /bin/bash start-pi.sh
+  const envAt = spec.args.indexOf("/usr/bin/env");
+  assert.ok(envAt > 0, spec.args.join(" "));
+  const run = require("node:child_process").spawnSync(spec.args[envAt], spec.args.slice(envAt + 1), {
+    cwd: path.join(root, "work"),
+    env: { PATH: process.env.PATH, HOME: root, PI_REMOTE_ATTACH_FILE: attachWindowFile },
+    encoding: "utf8",
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const seen = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.equal(seen.PI_REMOTE_RELAY, "ws://127.0.0.1:7111", "pi 必须连 --env 文件里的 relay");
+  assert.equal(seen.PI_REMOTE_DEVICE_ID, "dev-b", "pi 必须用 --env 文件里的设备编号");
+  assert.equal(seen.PI_REMOTE_TOKEN, "b-tok");
+  assert.equal(seen.PI_REMOTE_ATTACH_FILE, attachWindowFile, "pi 与 attach 必须看同一个窗口文件");
+  assert.equal(seen.PI_REMOTE_PI_ENV_FILE, altEnv);
+});
+
 test("macOS harness_start：写脚本交给 open；open 失败时删脚本、清占用、可重试", async () => {
   const scriptDir = tmpDir();
   const children = [];

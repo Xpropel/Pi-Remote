@@ -1525,9 +1525,11 @@ function buildDialogOpen(kind: string, args: any[], dialogId: string, startedAt:
  * G3 多选（§5 路线 B）是唯一例外：pi 无多选 dialog，ask_user 的 multi 形态由桥直接向
  * dialog 子系统登记 kind=multiselect 的持留 dialog（协议增量只有 dialog.multiselect
  * 一个 cap + dialog_answer 的 values 字段），本机兜底仍只用既有 confirm 拼装。
- * 开关口径：默认全关，状态只存桥内存（与 dialogRemoteAnswer 同纪律，重启回默认），
- * 经 ask_user_switch / approval_gate_switch 帧下达（发送方在 relay/UI 侧另行接入）；
- * 另有环境变量 PI_REMOTE_ASK_USER=1 / PI_REMOTE_APPROVAL_GATE=1 可作本机 opt-in。
+ * Switch defaults: ask_user ON (2026-10-30 ruling; PI_REMOTE_ASK_USER=0 opts
+ * out), approval gate OFF (PI_REMOTE_APPROVAL_GATE=1 opts in). State lives in
+ * bridge memory only (same discipline as dialogRemoteAnswer; a restart
+ * returns to these defaults) and changes at runtime via ask_user_switch /
+ * approval_gate_switch frames.
  * 审批门是本节唯一的 fail-closed 点：需要问而问不到（超时/取消/拒绝/无 UI）一律 block，
  * 那是审批语义本身（§7），其余路径维持 fail-open 红线。 */
 
@@ -3696,9 +3698,13 @@ class Bridge {
    * 门控 = 开关开 AND relay 推送的 viewer 在线状态（dialog_gate 帧）为真，两条同真才接管。 */
   dialogAnswerEnabled = false;
   dialogGateHasViewers = false;
-  /* ---------------- G1/G2 生产者状态（开关仅内存、默认关，口径见文件 G1/G2 节） ----------------
-   * 环境变量只决定初始值：PI_REMOTE_ASK_USER=1 / PI_REMOTE_APPROVAL_GATE=1（+ _TIER / _TOOLS）。 */
-  askUserEnabled = process.env.PI_REMOTE_ASK_USER === "1";
+  /* ---------------- G1/G2 producer state (in-memory only; see the G1/G2 section) ----------------
+   * Env vars only seed the initial value. ask_user is ON by default (2026-10-30
+   * ruling: the tool must be in the model's default tool set or the ask flow
+   * can never start); PI_REMOTE_ASK_USER=0 is the explicit opt-out. The
+   * approval gate stays opt-in: PI_REMOTE_APPROVAL_GATE=1 (+ _TIER / _TOOLS).
+   * Runtime changes still arrive via ask_user_switch / approval_gate_switch. */
+  askUserEnabled = process.env.PI_REMOTE_ASK_USER !== "0";
   /** registerTool 抛错（如同名冲突由宿主拒绝）后置真：ask 永远保持未激活 */
   askUserRegisterFailed = false;
   _askConflictLogged = false;
@@ -9620,8 +9626,11 @@ export default function (pi: any) {
     log("注册 pi-remote 命令失败:", e?.message);
   }
 
-  // G1：ask_user 工具（design-ask-cards.md §3）。model-only 曝光（官方 ask 类口径），
-  // 注册但默认不激活（defaultActive:false）：开关打开且无同名冲突时才进 active set（§3.1/§3.4）。
+  // G1: the ask_user tool (design-ask-cards.md §3), model-only exposure.
+  // Registered with defaultActive:false on purpose: membership in the active
+  // set is driven by syncAskUserActivation, which adds the tool at session
+  // bind whenever the gate is on (the default) and no foreign same-name tool
+  // is registered (§3.1/§3.4).
   try {
     pi.registerTool({
       name: ASK_USER_TOOL_NAME,

@@ -53,7 +53,7 @@ export function ClaudeSessionInfoSheet({ p }: { p: PiContainerProps }) {
         {tokens?.total != null ? (
           <div className="claude-sessinfo-row">
             <span className="claude-sessinfo-label">用量</span>
-            <span className="claude-sessinfo-value">{tokens.total} tok{usage?.cost != null ? ` · $${usage.cost.toFixed(3)}` : ""}</span>
+            <span className="claude-sessinfo-value">{tokens.total} tok</span>
           </div>
         ) : null}
         {relay.roomId ? <ClaudeCopyField value={relay.roomId} label="复制会话 ID" /> : null}
@@ -123,9 +123,7 @@ export function ClaudeSessionHoverCard({ p }: { p: PiContainerProps }) {
         {tokens?.total != null ? (
           <div className="claude-sessinfo-row">
             <span className="claude-sessinfo-label">用量</span>
-            <span className="claude-sessinfo-value">
-              {tokens.total} tok{relay.usage?.cost != null ? ` · $${relay.usage.cost.toFixed(3)}` : ""}
-            </span>
+            <span className="claude-sessinfo-value">{tokens.total} tok</span>
           </div>
         ) : null}
       </div>

@@ -24,7 +24,9 @@ if defined PI_REMOTE_OLDCP set "PI_REMOTE_OLDCP=%PI_REMOTE_OLDCP: =%"
 if defined PI_REMOTE_OLDCP set "PI_REMOTE_OLDCP=%PI_REMOTE_OLDCP:.=%"
 chcp 65001 >nul
 
-set "PI_REMOTE_ENV=%~dp0..\.env"
+REM attach injects PI_REMOTE_PI_ENV_FILE when it launches pi, so a pi started
+REM via "attach --env <file>" reads that same file instead of the default one.
+if defined PI_REMOTE_PI_ENV_FILE (set "PI_REMOTE_ENV=%PI_REMOTE_PI_ENV_FILE%") else (set "PI_REMOTE_ENV=%~dp0..\.env")
 if not exist "%PI_REMOTE_ENV%" echo [warn] %PI_REMOTE_ENV% not found, run: node deploy\setup.cjs
 if exist "%PI_REMOTE_ENV%" for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%PI_REMOTE_ENV%") do (
   set "_K=%%A"

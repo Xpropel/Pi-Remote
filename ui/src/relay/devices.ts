@@ -173,6 +173,15 @@ export type Device = {
    */
   latencyMs: number | null
   /**
+   * Whether any pi bridge (extension) of this device is currently connected
+   * and authenticated at the relay. `online` alone only proves the attach
+   * window is connected; online && !bridgeOnline is the degraded state the
+   * device list renders as 「仅远程窗口在线」. Optional for hand-written
+   * literals; the roster mapper defaults it to true when an old relay does
+   * not send the field, so old relays never trigger a false degraded badge.
+   */
+  bridgeOnline?: boolean
+  /**
    * P9 B：这台设备在线连接声明的文件类能力（session.files / fs.browse 的交集；离线或旧 relay 为 []）。
    * 可选是为了兼容手写字面量（画廊 fixture 等）；业务读法统一 `device.features ?? []`。
    */
@@ -794,6 +803,9 @@ function parseDevice(raw: unknown): Device | null {
       typeof raw.latencyMs === "number" && Number.isFinite(raw.latencyMs) && raw.latencyMs >= 0
         ? Math.round(raw.latencyMs)
         : null,
+    // Bridge presence from the relay roster; an old relay omits the field
+    // and must not read as "bridge missing", so only an explicit false counts.
+    bridgeOnline: raw.bridgeOnline !== false,
     features,
     trash: raw.trash === true,
   }

@@ -380,7 +380,7 @@ const ATTACH_ROWS = [
   { key: "text", icon: <FileText />, name: "文本文件…", desc: "64 KB 以内的 UTF-8 文本，插进输入框" },
 ] as const
 
-/** "+" 菜单（E05 E06 E07）：图片… / 文本文件… —— 命令… / 用量与费用 —— 脚注 */
+/** "+" menu (E05 E06 E07): image... / text file... -- commands... / usage -- footnote. (Fees are not shown anywhere, per the owner's rule.) */
 export function PiAttachMenu({ variant, commandsDisabled, bare, onPick, className, ...rest }: PiAttachMenuProps) {
   // + 菜单是锚定菜单（design §4.7）：打开时焦点进第一个可用项，↑↓ 让焦点在 menuitem 之间移动（N7，和 R2-C-m2 同一条），
   // 不用 aria-activedescendant（指向 menuitem 时读屏不报选中）。行和 kit MenuItem 一样 tabIndex=-1：可以聚焦、不进 Tab 序列；
@@ -445,7 +445,7 @@ export function PiAttachMenu({ variant, commandsDisabled, bare, onPick, classNam
         />,
         commandsDisabled,
       )}
-      {item("usage", <PiMenuRow key="usage" tabIndex={-1} variant={variant} icon={<ChartColumn />} name="用量与费用" {...pickProps("usage")} />)}
+      {item("usage", <PiMenuRow key="usage" tabIndex={-1} variant={variant} icon={<ChartColumn />} name="用量" {...pickProps("usage")} />)}
     </>
   )
   const footer = "@ 可以引用这个会话里出现过的文件"

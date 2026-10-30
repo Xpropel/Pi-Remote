@@ -250,6 +250,40 @@ export function providerRowsOf(
   })
 }
 
+export interface DefaultModelGroup {
+  label: string
+  options: { value: string; label: string }[]
+}
+
+/**
+ * Groups for the default-model select (F7). The flat list used to mix every
+ * provider's catalog into one long list of near-duplicate model ids;
+ * grouping by provider keeps each id unambiguous, and a provider the device
+ * has no credentials for says so in its group label. Options stay
+ * selectable -- this is marking, not blocking. A current value missing from
+ * the catalog keeps a group of its own at the top so it can stay selected
+ * exactly as stored.
+ */
+export function defaultModelGroupsOf(providers: readonly ProviderRow[], currentKey: string): DefaultModelGroup[] {
+  const groups: DefaultModelGroup[] = []
+  const seen = new Set<string>()
+  if (currentKey && !providers.some((provider) => provider.models.some((model) => model.key === currentKey))) {
+    groups.push({ label: currentKey.split("/")[0] || currentKey, options: [{ value: currentKey, label: currentKey }] })
+    seen.add(currentKey)
+  }
+  for (const provider of providers) {
+    const options = provider.models
+      .filter((model) => !seen.has(model.key))
+      .map((model) => {
+        seen.add(model.key)
+        return { value: model.key, label: model.label }
+      })
+    if (!options.length) continue
+    groups.push({ label: provider.configured === false ? `${provider.name}（未配置凭据）` : provider.name, options })
+  }
+  return groups
+}
+
 /** 供应商卡只列前几个模型（设计稿一行一个模型），其余数量单独一行。 */
 export const MODEL_PROVIDER_MODEL_LIMIT = 3
 

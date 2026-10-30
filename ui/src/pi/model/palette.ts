@@ -18,7 +18,7 @@ export const PI_PALETTE_COMMANDS: readonly PiPaletteCommand[] = [
   { key: "compact", label: "压缩上下文", icon: "compact" },
   { key: "regenerate", label: "重新回答", icon: "regenerate" },
   { key: "tree", label: "会话树", icon: "tree" },
-  { key: "usage", label: "用量与费用", icon: "usage" },
+  { key: "usage", label: "用量", icon: "usage" },
   { key: "inspect", label: "检视本机信息", icon: "inspect" },
   { key: "settings", label: "设置", icon: "settings" },
 ]

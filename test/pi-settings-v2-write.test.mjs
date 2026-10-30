@@ -159,6 +159,14 @@ test("get_settings 解析：{settings} 与裸对象；点号路径；读不到�
   assert.equal(write.effectiveSettingsBoolOf(wrapped, {}, "images.autoResize"), false)
   assert.equal(write.effectiveSettingsIntOf(wrapped, {}, "compaction.keepRecentTokens"), 20000)
   assert.equal(write.effectiveSettingsDeliveryModeOf(wrapped, {}, "steeringMode"), "all")
+  // F6: with no explicit value anywhere, the effective default is pi's own
+  // "one-at-a-time" -- the radios must render it as selected instead of
+  // showing nothing selected.
+  assert.equal(write.effectiveSettingsDeliveryModeOf({ settings: {} }, {}, "steeringMode"), "one-at-a-time")
+  assert.equal(write.effectiveSettingsDeliveryModeOf({ settings: {} }, {}, "followUpMode"), "one-at-a-time")
+  assert.equal(write.effectiveSettingsDeliveryModeOf(null, {}, "steeringMode"), "one-at-a-time")
+  assert.equal(write.effectiveSettingsDeliveryModeOf({ settings: { followUpMode: "bogus" } }, {}, "followUpMode"), "one-at-a-time")
+  assert.equal(write.SETTINGS_DELIVERY_MODE_DEFAULT, "one-at-a-time")
   assert.equal(write.effectiveProjectTrustOf(wrapped, {}), "always")
   assert.equal(write.effectiveSettingsBoolOf(wrapped, {}, "missing"), null)
   assert.equal(write.effectiveSettingsIntOf(wrapped, {}, "compaction.reserveTokens"), 16384)

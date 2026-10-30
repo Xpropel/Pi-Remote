@@ -22,6 +22,13 @@ export interface PiTranscriptActions {
   openFile?: (path: string) => void
   /** 用户卡"发送失败 · 重试" */
   retrySend?: (item: PiUserItem) => void
+  /** Queued-bubble actions (F4): the item is a remote-queue entry still
+   *  waiting to be injected (item.queued / item.queueId). Send-now and
+   *  cancel act on the queue entry directly; edit opens the queue panel,
+   *  whose editor owns the full-text fetch and conflict handling. */
+  queueSendNow?: (item: PiUserItem) => void
+  queueCancel?: (item: PiUserItem) => void
+  queueEdit?: (item: PiUserItem) => void
   /** 回合出错的"重新回答"、操作行的 ↻ */
   regenerate?: () => void
   /** 操作行的"复制回复"：resolve true = 已复制（✓ 1.2 秒） */
