@@ -42,10 +42,10 @@ export function CodexCommitDialog({ p, onClose }: { p: VariantAppProps; onClose:
         <div className="cx-dialog-actions-inline">
           <CodexButton kind="outline" disabled={disabled} data-p4-action="commit-only" onClick={() => run("commit")}>
             <GitCommitHorizontal aria-hidden size={13} strokeWidth={1.5} />
-            Commit
+            提交
           </CodexButton>
           <CodexButton kind="outline" disabled={disabled} data-p4-action="commit-and-push" onClick={() => run("push")}>
-            Commit and push
+            提交并推送
           </CodexButton>
         </div>
         <p className="cx-dialog-text">

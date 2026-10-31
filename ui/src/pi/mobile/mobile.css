@@ -314,6 +314,14 @@
   bottom: 0;
   display: flex;
   width: 148px;
+  /* Hidden at rest: the row surface (--sb-bg) is translucent in most skins,
+     so a merely covered tray ghosts through the row. The tray is only shown
+     while the row is being dragged or is snapped open. */
+  visibility: hidden;
+}
+.pm-swipe[data-open] .pm-swipe-actions,
+.pm-swipe[data-dragging] .pm-swipe-actions {
+  visibility: visible;
 }
 .pm-swipe-btn {
   display: flex;

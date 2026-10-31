@@ -1162,8 +1162,11 @@
 
 [data-pi-ui="codex"] .cx-env-row {
   display: flex;
+  /* Wrap so an over-long value drops to its own right-aligned line instead of squeezing the label. */
+  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
+  row-gap: 2px;
   width: 100%;
   min-height: 26px;
   padding: 0 4px;
@@ -1191,6 +1194,9 @@
 }
 
 [data-pi-ui="codex"] .cx-env-label {
+  /* Labels never shrink or wrap: a CJK label must not split mid-word. */
+  flex: none;
+  white-space: nowrap;
   color: var(--codex-text-2);
 }
 
@@ -1198,9 +1204,12 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
   margin-left: auto;
   color: var(--codex-text);
   font-variant-numeric: tabular-nums;
+  /* Keep CJK value text unbreakable mid-word; breaks stay at spaces. */
+  word-break: keep-all;
 }
 
 [data-pi-ui="codex"] .cx-env-value-muted {
@@ -1225,7 +1234,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 4px;
+  /* Extra right padding so the 46px ring is not flush with the card edge. */
+  padding: 0 10px 0 4px;
 }
 
 [data-pi-ui="codex"] .cx-env-progress-count {

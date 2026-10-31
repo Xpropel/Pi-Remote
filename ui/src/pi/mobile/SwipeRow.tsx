@@ -60,7 +60,7 @@ export function SwipeRow({
   }
 
   return (
-    <div className="pm-swipe" data-open={open ? "" : undefined} data-pi-mobile-surface="P11-MOB-08">
+    <div className="pm-swipe" data-open={open ? "" : undefined} data-dragging={dragging ? "" : undefined} data-pi-mobile-surface="P11-MOB-08">
       <div className="pm-swipe-actions" aria-hidden={!open}>
         <button
           type="button"

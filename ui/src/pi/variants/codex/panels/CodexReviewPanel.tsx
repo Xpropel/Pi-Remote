@@ -67,12 +67,12 @@ export function CodexReviewPanel({ p, phone = false, onClose, onOpenTerminal }: 
   const repoPath = gitCommit.data?.repos?.[0]?.repoPath ?? null
   const explain = (what: string) => relay.notify(`${what}：本机 pi 未提供对应能力${gitStage.view ? `（见 ${gitStage.view.docsPath}）` : ""}`, "warn")
   const commitNow = (push: boolean) => {
-    if (!gitCommit.interactive || !gitCommit.actions?.commit || !repoPath) return explain("Commit")
+    if (!gitCommit.interactive || !gitCommit.actions?.commit || !repoPath) return explain("提交")
     gitCommit.actions.commit(repoPath, "Codex UI commit")
     if (push) gitCommit.actions.push?.(repoPath)
   }
   const createPr = () => {
-    if (!gitCommit.interactive || !gitCommit.actions?.createPr || !repoPath) return explain("Create PR")
+    if (!gitCommit.interactive || !gitCommit.actions?.createPr || !repoPath) return explain("创建 PR")
     gitCommit.actions.createPr(repoPath)
   }
   const scopeChips = SCOPES.map((item) => {

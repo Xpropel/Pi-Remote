@@ -391,9 +391,16 @@ export function IdentitySection() {
                   <span className="settings-device-status">
                     <span>内容钥指纹</span>
                     <span className="settings-identity-fp">{formatFingerprintText(view?.ackFp)}</span>
-                    <span className="settings-device-sep">·</span>
-                    <span>{backupStatusTextOf(view as IdentityStateView)}</span>
-                    {view?.backedUpAt ? <span>（{lastOnlineTextOf(view.backedUpAt, now)}）</span> : null}
+                    {/* The separator belongs to the backup status after it:
+                        keep both in one unbreakable flex item so a wrap
+                        moves the whole group to the next line instead of
+                        stranding the separator at the end of the
+                        fingerprint line. */}
+                    <span className="settings-identity-backup">
+                      <span className="settings-device-sep">·</span>
+                      <span>{backupStatusTextOf(view as IdentityStateView)}</span>
+                      {view?.backedUpAt ? <span>（{lastOnlineTextOf(view.backedUpAt, now)}）</span> : null}
+                    </span>
                   </span>
                 ) : null}
               </span>

@@ -270,7 +270,7 @@ const OUTBOX_REQUEUE_CODES = new Set(["offline", "room_offline", "device_offline
 
 /** 提示的稳定类别：清提示按 category 判断，不把文案正则当唯一判据（文案会改，错误文本也可能碰巧命中）。 */
 type NoticeCode = "connectivity" | "progress" | "truncated" | "compaction" | "summarization" | "lazy-send"
-type Notice = { text: string; tone: "warn" | "bad"; codes?: NoticeCode[] } | null
+type Notice = { text: string; tone: "warn" | "bad"; codes?: NoticeCode[]; scope?: string } | null
 type Queue = { steering: AgentMessage[]; followUp: AgentMessage[] }
 /** 一次助手回合的完成信号：seq 单调递增供 UI 只消费一次；error 区分成功/错误角标。 */
 export type TurnEnd = { seq: number; at: number; roomId: string; error: boolean }
@@ -641,6 +641,7 @@ export function useRelay() {
   const noticeStack = useNotices()
   const pushNotice = noticeStack.push
   const clearNoticeStack = noticeStack.clear
+  const retractNoticeStack = noticeStack.retract
   /** 兼容 132 个既有 setNotice 调用点：只按稳定 code 分通道，不改文案、不改匹配。 */
   const setNotice = useCallback(
     (next: Notice | ((prev: Notice) => Notice)) => {
@@ -654,7 +655,9 @@ export function useRelay() {
         return
       }
       if (noticeChannel(next.codes) === "stack") {
-        pushNotice({ level: noticeLevelForTone(next.tone), title: next.text })
+        // Forward the scope so room-scoped notices can be retracted when
+        // the user leaves that room (see clearRoom / PiAppBody).
+        pushNotice({ level: noticeLevelForTone(next.tone), title: next.text, scope: next.scope })
         return
       }
       setChannelNotice(next)
@@ -2988,7 +2991,10 @@ export function useRelay() {
         if (code === "crypto_required") {
           const roomId = typeof msg.room === "string" && msg.room ? msg.room : roomRef.current || ""
           if (roomId) noteRoomCryptoStatus(roomId, "crypto-required")
-          setNotice({ text: "这个房间已加密，当前观看端无法读取：需要先启用观看端身份并持有内容钥。", tone: "bad" })
+          // Room-scoped: the notice describes this room only, so it is
+          // retracted when the user leaves the room instead of staying
+          // pinned over unrelated pages.
+          setNotice({ text: "这个房间已加密，当前观看端无法读取：需要先启用观看端身份并持有内容钥。", tone: "bad", scope: roomId ? `room:${roomId}` : undefined })
           return
         }
         setNotice({ text: String(msg.message || msg.code || "出错了"), tone: "bad" })
@@ -3212,6 +3218,9 @@ export function useRelay() {
   }, [scheduleOffline, cancelOffline, checkSwitchedRoom, resync, sendResync, channel, dispatch, finishTurn, resetTurn])
 
   function clearRoom() {
+    // Room-scoped notices (e.g. the encrypted-room notice) belong to the
+    // room being torn down: retract them with it.
+    if (roomRef.current) retractNoticeStack(`room:${roomRef.current}`)
     // 草稿落盘（P3-3）：房间作废前先把草稿存回它的槽，之后草稿不再归属任何房间。
     persistDraftNow()
     draftOwnerRef.current = ""

@@ -15,11 +15,11 @@ export function CodexReplyActions({ p, text, meta }: { p: VariantAppProps; text:
     }
     setFeedback(vote)
     fork.actions?.sendFeedback?.(vote)
-    p.relay.notify(vote === "good" ? "已标记 Good（模拟演示）" : "已标记 Bad（模拟演示）")
+    p.relay.notify(vote === "good" ? "已标记好评（模拟演示）" : "已标记差评（模拟演示）")
   }
   const onFork = () => {
     if (!fork.interactive) {
-      p.relay.notify(`Fork 需要 thread-fork-feedback 扩展：${fork.view?.reason ?? "本机 pi 未提供"}${fork.view ? `（见 ${fork.view.docsPath}）` : ""}`, "warn")
+      p.relay.notify(`分叉需要 thread-fork-feedback 扩展：${fork.view?.reason ?? "本机 pi 未提供"}${fork.view ? `（见 ${fork.view.docsPath}）` : ""}`, "warn")
       return
     }
     const branch = fork.data?.fork?.branches?.[0]?.id
@@ -52,10 +52,10 @@ export function CodexReplyActions({ p, text, meta }: { p: VariantAppProps; text:
         data-p4-action="feedback-good"
         data-capability-state={fork.status}
         data-pi-capability-disabled={fork.interactive ? undefined : ""}
-        title={fork.interactive ? "标记 Good（provider）" : fork.view?.reason}
+        title={fork.interactive ? "标记好评（provider）" : fork.view?.reason}
         onClick={() => onFeedback("good")}
       >
-        Good
+        好评
       </button>
       <button
         type="button"
@@ -64,10 +64,10 @@ export function CodexReplyActions({ p, text, meta }: { p: VariantAppProps; text:
         data-p4-action="feedback-bad"
         data-capability-state={fork.status}
         data-pi-capability-disabled={fork.interactive ? undefined : ""}
-        title={fork.interactive ? "标记 Bad（provider）" : fork.view?.reason}
+        title={fork.interactive ? "标记差评（provider）" : fork.view?.reason}
         onClick={() => onFeedback("bad")}
       >
-        Bad
+        差评
       </button>
       <button
         type="button"
@@ -79,7 +79,7 @@ export function CodexReplyActions({ p, text, meta }: { p: VariantAppProps; text:
         onClick={onFork}
       >
         <GitBranch aria-hidden size={11} strokeWidth={1.5} />
-        Fork
+        分叉
       </button>
       {meta ? <span className="cx-reply-meta">{meta}</span> : null}
     </div>

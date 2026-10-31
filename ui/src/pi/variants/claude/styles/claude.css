@@ -3446,6 +3446,84 @@
   text-align: center;
 }
 
+/* New-session greeting line (F2): the page hero is a single centered block;
+   the time-of-day greeting survives only as this slim tertiary line sitting
+   directly above the page title inside the same column. */
+[data-pi-ui="claude"] .claude-newpage-greeting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  color: var(--claude-text-3);
+  font-family: var(--claude-font-sans);
+  font-size: var(--claude-text-small);
+  text-align: center;
+}
+
+/* Recent sessions (F1): these rules were missing entirely, so the cards
+   rendered as raw inline text. Card spec mirrors .claude-newpage-suggestion
+   above (s2 background, panel radius, border, brand hover). */
+[data-pi-ui="claude"] .claude-chat-recent {
+  margin-top: 24px;
+}
+
+[data-pi-ui="claude"] .claude-chat-recent-title {
+  margin: 0 0 10px;
+  color: var(--claude-text-2);
+  font-family: var(--claude-font-sans);
+  font-size: var(--claude-text-ui);
+  font-weight: 500;
+}
+
+[data-pi-ui="claude"] .claude-chat-recent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+[data-pi-ui="claude"] .claude-chat-recent-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--claude-border);
+  border-radius: var(--claude-r-panel);
+  background: var(--claude-s2);
+  font-family: var(--claude-font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-pi-ui="claude"] .claude-chat-recent-card:hover {
+  border-color: var(--claude-brand-deep);
+  background: var(--claude-accent-soft);
+}
+
+[data-pi-ui="claude"] .claude-chat-recent-name {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  color: var(--claude-text);
+  font-size: var(--claude-text-ui);
+  line-height: 20px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-pi-ui="claude"] .claude-chat-recent-meta {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  color: var(--claude-text-3);
+  font-size: var(--claude-text-small);
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* 设置页（C-06） */
 
 [data-pi-ui="claude"] .claude-settings {

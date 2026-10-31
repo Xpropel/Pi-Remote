@@ -69,7 +69,7 @@ export function CodexTitleBar({
           title={openTitle}
           onClick={onOpenEditor}
         >
-          Open
+          打开
         </button>
         <button
           type="button"
@@ -80,7 +80,7 @@ export function CodexTitleBar({
           title={commitTitle}
           onClick={onCommit}
         >
-          Commit
+          提交
         </button>
         <CodexIconButton label="命令面板 ⌘K" onClick={onCommand}>
           <Search aria-hidden size={15} strokeWidth={1.5} />

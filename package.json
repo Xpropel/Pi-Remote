@@ -1,6 +1,6 @@
 {
   "name": "pi-remote",
-  "version": "2.1.9",
+  "version": "2.1.10",
   "private": true,
   "description": "pi 多端同步：本机 pi 终端的实时镜像与远程消息注入（扩展 + 双端口中转服务器）",
   "type": "commonjs",

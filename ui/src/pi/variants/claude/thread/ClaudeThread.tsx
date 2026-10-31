@@ -65,6 +65,11 @@ export function ClaudeThread({ relay }: Pick<PiContainerProps, "relay">) {
   const atBottomRef = useRef(true)
   const [atBottom, setAtBottom] = useState(true)
   const [newCount, setNewCount] = useState(0)
+  // Listed-session preview: while the open room is an on-device session whose
+  // transcript has not loaded yet, the stream pins to the top instead of the
+  // bottom (see the scroll effects below). Mirrored into a ref because the
+  // scroll listener and the room-change effect need the current value.
+  const previewRef = useRef(false)
 
   const toggle = useCallback((key: string) => {
     setExpanded((cur) => {
@@ -88,6 +93,9 @@ export function ClaudeThread({ relay }: Pick<PiContainerProps, "relay">) {
     const el = scrollerRef.current
     if (!el) return
     const onScroll = () => {
+      // In preview state the scroll position is managed (pinned to top); the
+      // small forced overflow must not flip the stick-to-bottom state.
+      if (previewRef.current) return
       const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
       if (bottom !== atBottomRef.current) {
         atBottomRef.current = bottom
@@ -105,6 +113,9 @@ export function ClaudeThread({ relay }: Pick<PiContainerProps, "relay">) {
   const subagents = subagentsOf(relay.agentState)
   const topLine = historyTopLineOf(relay.history, roomId)
   const lazy = relay.lazySession && relay.lazySession.id === roomId ? relay.lazySession : null
+  // Preview state: a listed session is open but its transcript has not loaded.
+  const previewOnly = lazy != null && live.length === 0
+  previewRef.current = previewOnly
   const visible = useMemo<Item[]>(
     () => (live.length > 0 ? live : lazy?.firstMessage ? [{ kind: "user", key: `lazy-${lazy.id}`, text: lazy.firstMessage, images: [] }] : EMPTY_ITEMS),
     [live, lazy],
@@ -129,15 +140,32 @@ export function ClaudeThread({ relay }: Pick<PiContainerProps, "relay">) {
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
+    if (previewOnly) {
+      // Listed-session preview: keep the first line fully visible. The preview
+      // content only overflows because the review header block sits above a
+      // min-height:100% inner, so bottom-pinning would clip the top lines.
+      el.scrollTop = 0
+      return
+    }
     if (atBottomRef.current) el.scrollTop = el.scrollHeight
     else setNewCount((n) => n + 1)
-  }, [visible.length, live.length, outbox.length, relay.busy])
+  }, [visible.length, live.length, outbox.length, relay.busy, previewOnly])
 
   useEffect(() => {
-    // 换会话：收起所有块并回到底部（对新房间的纯展示重置）
+    // Room switch (display-only reset): collapse all blocks; loaded rooms go
+    // to the bottom, a listed (not-yet-loaded) session stays at the top so
+    // its first line is fully visible.
     // eslint-disable-next-line react/set-state-in-effect
     setExpanded(new Set())
-    scrollToBottom()
+    if (previewRef.current) {
+      const el = scrollerRef.current
+      if (el) el.scrollTop = 0
+      atBottomRef.current = true
+      setAtBottom(true)
+      setNewCount(0)
+    } else {
+      scrollToBottom()
+    }
   }, [roomId, scrollToBottom])
 
   let lastAssistant: Item | null = null

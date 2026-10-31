@@ -51,6 +51,14 @@
   color: var(--st-text-4);
 }
 
+/* One flex item inside .settings-device-status: never splits across a
+   wrap, so its leading separator travels with the text it introduces. */
+.settings-identity-backup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .settings-device-latency {
   color: var(--st-text-4);
 }

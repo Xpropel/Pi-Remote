@@ -62,6 +62,21 @@ export default function PiApp() {
     lastPushedNav.current = value
     relay.pushMobileNav(value)
   }, [relay.authed, relay.pushMobileNav, ui.prefs.mobileNav])
+  // Room-scoped notices (e.g. the encrypted-room notice) describe the room
+  // on screen. Leaving the session view ends that context in every shell,
+  // so retract them here, at the one root all variants share (PiAppBody
+  // only serves the cursor tree): the current room's scope, plus any
+  // room-scoped notice that landed late (a crypto_required frame from a
+  // background room restore) — swept whenever the visible notice list
+  // changes while off the session view. Unscoped (global) notices are
+  // untouched.
+  useEffect(() => {
+    if (ui.view === "session") return
+    if (relay.roomId) relay.retractNoticeScope(`room:${relay.roomId}`)
+    for (const n of relay.notices ?? []) {
+      if (n.scope && n.scope.startsWith("room:")) relay.retractNoticeScope(n.scope)
+    }
+  }, [ui.view, relay.roomId, relay.notices, relay])
   const theme = usePiTheme(ui.prefs.theme, act)
   // 首帧脚本（index.html）为避免闪 cursor，按 pi_remote_pi_prefs.ui 预写了 <html data-pi-ui> 和该变体的 S0 临时底色（Lead 裁决 Q2）。
   // React 接管后以偏好为准：__PI_UI_READY__ 让首帧脚本不再写；data-pi-ui 跟着 prefs.ui 走（<html> 上也留一份，portal 的浮层能被

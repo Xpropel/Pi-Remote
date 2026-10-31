@@ -37,6 +37,9 @@ export function PiAppBody(props: PiAppProps & { variant: PiVariant; theme?: PiTh
     handledPurgeAt.current = purge.at
     act.newSession()
   }, [relay.purgedRoom, relay.roomId, ui.view, act])
+  // Room-scoped notice dismissal on leaving the session view lives in
+  // PiApp (the one root every variant shares); this container only serves
+  // the cursor tree and the dev gallery, so the hook is not repeated here.
   if (!app.relay.token) return <LoginContainer {...props} />
   return variant === "desktop" ? <DesktopApp {...app} theme={theme} /> : <PhoneApp {...app} theme={theme} />
 }

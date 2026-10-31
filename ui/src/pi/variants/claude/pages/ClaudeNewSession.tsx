@@ -154,20 +154,14 @@ export function ClaudeNewSession({ p, phone = false }: { p: PiContainerProps; ph
   return (
     <div data-pi-ui-part="page" className="claude-newpage">
       <div className="claude-newpage-inner">
-        <section className="claude-chat-home" data-p4-surface="CL-CHAT-02" data-p4-ready="">
-          <p className="claude-chat-home-eyebrow">
-            <span className="claude-mark" aria-hidden>✳</span>
-            {greeting} · 当前设备：{currentDeviceName}
-          </p>
-          <h1 className="claude-chat-home-title">今天想让 pi 做什么？</h1>
-          <div className="claude-chat-home-chips" data-p4-surface="CL-CHAT-03" data-p4-ready="">
-            {["列出这个目录最近改动的文件", "跑一遍测试并说明失败原因", "解释这段代码的调用链", "把这次改动整理成提交说明"].map((chip) => (
-              <button key={chip} type="button" className="claude-chip" data-p4-action="example-chip" onClick={() => setNewSessionDraft(chip)}>
-                {chip}
-              </button>
-            ))}
-          </div>
-        </section>
+        {/* F2: the former standalone greeting hero is merged into the page
+            hero below -- only this slim greeting line remains above the
+            title; its duplicate suggestion chips are gone (the three cards
+            under the composer are the single suggestion set). */}
+        <p className="claude-newpage-greeting">
+          <span className="claude-mark" aria-hidden>✳</span>
+          {greeting} · 当前设备：{currentDeviceName}
+        </p>
         <h1 className="claude-newpage-title">开始一段新对话</h1>
         <p className="claude-newpage-sub">先选设备与文件夹，写第一句，pi 会在电脑上接住。</p>
 
