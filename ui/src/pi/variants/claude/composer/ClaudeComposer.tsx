@@ -59,6 +59,7 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
   const context = contextReadout((relay.usage?.contextUsage ?? null) as Parameters<typeof contextReadout>[0])
   const mayStop = relay.busy && relay.authed
   const action = stopVisible || mayStop ? "stop" : "send"
+  const statusText = blocked ? "等待授权 · 先在卡上回答" : suggestionReceipt ? suggestionReceipt : composer.state === "S2" ? "发送中…" : composer.canType === false ? placeholder : ""
   // CL-CODE-19：建议词 ghost text（capability suggestions；生产 disabled 不显示，mock simulated 显示，Tab 接受）
   const suggestionList = caps.statusOf("suggestions") === "unavailable" ? null : (caps.dataOf("suggestions")?.suggestions ?? null)
   const ghost = !suggestionReceipt && suggestionList && suggestionList.length > 0 && draft.trim().length === 0 && !blocked ? suggestionList[0] : null
@@ -380,12 +381,18 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
         </div>
       ) : null}
 
-      <div className="claude-composer-status">
-        <span className="claude-composer-status-text" role="status" data-p4-surface="CL-CODE-19" data-p4-receipt={suggestionReceipt ? "" : undefined}>
-          {blocked ? "等待授权 · 先在卡上回答" : suggestionReceipt ? suggestionReceipt : composer.state === "S2" ? "发送中…" : composer.canType === false ? placeholder : ""}
-        </span>
-        <span className="claude-composer-status-right">{relay.busy ? <LoaderCircle size={12} className="claude-spin" aria-hidden /> : null}</span>
-      </div>
+      {/* The status row renders only when it has something to show (a status
+          text or the busy spinner). An always-mounted empty row left a dead
+          band under the tools row, so the model row floated instead of
+          hugging the composer bottom. */}
+      {statusText !== "" || relay.busy ? (
+        <div className="claude-composer-status">
+          <span className="claude-composer-status-text" role="status" data-p4-surface="CL-CODE-19" data-p4-receipt={suggestionReceipt ? "" : undefined}>
+            {statusText}
+          </span>
+          <span className="claude-composer-status-right">{relay.busy ? <LoaderCircle size={12} className="claude-spin" aria-hidden /> : null}</span>
+        </div>
+      ) : null}
       {capSheet ? <ClaudeCapabilitySheet capability={capSheet} onClose={() => setCapSheet(null)} /> : null}
     </div>
   )
