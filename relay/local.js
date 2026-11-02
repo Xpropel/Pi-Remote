@@ -223,6 +223,26 @@ function clearAutoRetry(room) {
 /** 本机弹窗开始后、结束前，房间记下 reason、kind、title。
  *  三者非字符串则 null，title 超过 120 字截到 120。和原事件对象分开拷贝。没收到 ui_prompt_start 不建这份缓存。
  *  再来一条 start 就换成新的。at 是收到这条信号的时间，给 room_waiting 的 waitingPrompt 当排序/展示锚点（P9 A）。 */
+/** (b+) sealed-text envelope shape (crypto.dialog): {enc:1, ct} with ct a
+ *  non-empty string within the given length cap. The relay never decrypts
+ *  dialog text; it only validates the shape, then stores/forwards the
+ *  envelope verbatim (normalized to the two known fields). */
+function cleanTextEncEnvelope(value, maxCt) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.enc !== 1 || typeof value.ct !== "string" || !value.ct) return null;
+  if (value.ct.length > maxCt) return null;
+  return { enc: 1, ct: value.ct };
+}
+
+/** (b+): does this dialog_open event declare the sealed form? Presence of
+ *  a textEnc or titleEnc field is what counts -- an invalid envelope still
+ *  marks the frame sealed-form, so plaintext fields riding along are
+ *  stripped on every path; envelope validity only decides whether the
+ *  payload itself is stored or forwarded. */
+function hasSealedDialogFields(event) {
+  return !!(event && typeof event === "object" && (event.textEnc !== undefined || event.titleEnc !== undefined));
+}
+
 function rememberUiPrompt(room, event) {
   const L = PROTOCOL.limits || {};
   const src = event && typeof event === "object" ? event : {};
@@ -232,6 +252,16 @@ function rememberUiPrompt(room, event) {
     title: typeof src.title === "string" ? src.title.slice(0, L.dialogTitleMax || 120) : null,
     at: Date.now(),
   };
+  // (b+) sealed title (crypto.dialog): the PRESENCE of a titleEnc field
+  // marks the frame sealed-form, so the plaintext title is dropped from
+  // the cache whether or not the envelope is valid; the envelope itself
+  // is cached only when valid (the summary surfaces then carry the ct
+  // string, or no title at all for a malformed envelope).
+  if (src.titleEnc !== undefined) {
+    cached.title = null;
+    const titleEnc = cleanTextEncEnvelope(src.titleEnc, L.dialogTitleEncMax || 1024);
+    if (titleEnc) cached.titleEnc = titleEnc;
+  }
   room.uiPrompt = cloneQueueSide(cached);
 }
 
@@ -251,13 +281,36 @@ function cleanDialogSlot(src) {
   const kind = typeof src.kind === "string" ? src.kind : "";
   if (!dialogId || !kind) return null;
   const slot = { type: "dialog_open", dialogId, kind };
-  if (typeof src.title === "string") slot.title = src.title.slice(0, L.dialogTitleMax || 120);
-  if (Array.isArray(src.options)) {
-    slot.options = src.options.slice(0, L.dialogOptionsMax || 20).map((v) => String(v ?? "").slice(0, L.dialogOptionChars || 80));
+  // (b+) sealed form (crypto.dialog): the PRESENCE of a textEnc or titleEnc
+  // field marks the frame sealed-form. Any plaintext text field riding
+  // along on such a frame is dropped (never stored, never forwarded) and
+  // logged once -- a crypto.dialog device sending plaintext fields in an
+  // enc room is a producer bug, and the relay prefers a text-less card
+  // over a leak; the dialog itself is never rejected over this. Envelope
+  // validity only decides whether the payload itself enters the slot: an
+  // invalid or oversized envelope is dropped, leaving a text-less card,
+  // never a plaintext fallback. The slot records the sealed form in an
+  // internal flag (never sent upstream) so the resend / summary / ledger
+  // derivations in rooms.js apply the same presence rule.
+  const sealedForm = src.textEnc !== undefined || src.titleEnc !== undefined;
+  if (sealedForm) {
+    slot.sealed = true;
+    const textEnc = cleanTextEncEnvelope(src.textEnc, L.dialogTextEncMax || 12288);
+    if (textEnc) slot.textEnc = textEnc;
+    const titleEnc = cleanTextEncEnvelope(src.titleEnc, L.dialogTitleEncMax || 1024);
+    if (titleEnc) slot.titleEnc = titleEnc;
     if (typeof src.optionsTotal === "number" && Number.isFinite(src.optionsTotal)) slot.optionsTotal = src.optionsTotal;
-  }
-  for (const key of ["message", "placeholder", "prefill"]) {
-    if (typeof src[key] === "string") slot[key] = src[key].slice(0, L.dialogTextMax || 500);
+    const leaked = ["title", "options", "message", "placeholder", "prefill"].filter((k) => src[k] !== undefined);
+    if (leaked.length) log("密封 dialog 帧同带明文字段，已丢弃:", dialogId, leaked.join(","));
+  } else {
+    if (typeof src.title === "string") slot.title = src.title.slice(0, L.dialogTitleMax || 120);
+    if (Array.isArray(src.options)) {
+      slot.options = src.options.slice(0, L.dialogOptionsMax || 20).map((v) => String(v ?? "").slice(0, L.dialogOptionChars || 80));
+      if (typeof src.optionsTotal === "number" && Number.isFinite(src.optionsTotal)) slot.optionsTotal = src.optionsTotal;
+    }
+    for (const key of ["message", "placeholder", "prefill"]) {
+      if (typeof src[key] === "string") slot[key] = src[key].slice(0, L.dialogTextMax || 500);
+    }
   }
   // 多选（G3）：选择数区间随槽保留，补发时卡面计数/确认可用性靠它；桥侧组帧已钳制，这里只认整数
   if (kind === "multiselect") {
@@ -294,11 +347,65 @@ function forgetDialog(room, dialogId) {
  *  各端。这里在事件出口再按 limits.dialogNoteMax 切一刀并滤掉控制字符；原地改
  *  事件对象，store 落盘与广播吃到的是同一份清洗结果。清洗后为空则删字段。 */
 function cleanDialogCloseNote(event) {
-  if (!event || typeof event.note !== "string") return;
+  if (!event || typeof event !== "object") return;
+  // (b+) sealed deny reason (crypto.dialog): noteEnc is a bare ct string the
+  // bridge passed through verbatim from the answer; the relay validates the
+  // shape and length only, never the content. A malformed value is dropped.
+  if (event.noteEnc !== undefined) {
+    const encMax = (PROTOCOL.limits && PROTOCOL.limits.dialogTextEncMax) || 12288;
+    if (typeof event.noteEnc !== "string" || !event.noteEnc || event.noteEnc.length > encMax) delete event.noteEnc;
+    // Presence rule (same as the dialog_open slot cleaning): a plaintext
+    // note must not ride along on a sealed-form close, valid envelope or
+    // not -- otherwise a malformed noteEnc would silently downgrade the
+    // deny reason to plaintext on the broadcast surface.
+    delete event.note;
+  }
+  if (typeof event.note !== "string") return;
   const max = (PROTOCOL.limits && PROTOCOL.limits.dialogNoteMax) || 500;
   const cleaned = event.note.replace(/[\u0000-\u001F\u007F]/g, "").slice(0, max);
   if (cleaned) event.note = cleaned;
   else delete event.note;
+}
+
+/** (b+) sealed title on ui_prompt frames (crypto.dialog): when a titleEnc
+ *  field is present -- valid or not -- the plaintext title must not ride
+ *  along on the live frame either; the envelope itself is forwarded
+ *  (normalized to {enc, ct}) only when valid. Mutates the event in place
+ *  before broadcast; the cache-side cleaning lives in rememberUiPrompt. */
+function cleanUiPromptFrameTitle(event) {
+  if (!event || typeof event !== "object" || event.titleEnc === undefined) return;
+  delete event.title;
+  const enc = cleanTextEncEnvelope(event.titleEnc, (PROTOCOL.limits || {}).dialogTitleEncMax || 1024);
+  if (enc) event.titleEnc = enc;
+  else delete event.titleEnc;
+}
+
+/** (b+) sealed notification text (crypto.dialog): ext_notify is a pure
+ *  pass-through today (no slot, no cleaning), so the presence rule is
+ *  applied to the event in place before broadcast: when a messageEnc
+ *  field is present -- valid or not -- the plaintext message is dropped;
+ *  the envelope itself is forwarded (normalized) only when valid. */
+function cleanExtNotifySealed(event) {
+  if (!event || typeof event !== "object" || event.messageEnc === undefined) return;
+  delete event.message;
+  const enc = cleanTextEncEnvelope(event.messageEnc, (PROTOCOL.limits || {}).extNotifyEncMax || 12288);
+  if (enc) event.messageEnc = enc;
+  else delete event.messageEnc;
+}
+
+/** Serialize a copy of a room_event frame with the given event fields removed
+ *  (cap-variant builder for broadcastDialogOpen). Returns null when the frame
+ *  cannot be parsed -- the caller then skips that variant entirely rather
+ *  than risk leaking a field the variant was supposed to strip. */
+function stripDialogFrameFields(frame, keys) {
+  try {
+    const parsed = JSON.parse(frame);
+    if (parsed && parsed.event && typeof parsed.event === "object") {
+      for (const k of keys) delete parsed.event[k];
+      return JSON.stringify(parsed);
+    }
+  } catch {}
+  return null;
 }
 
 /** dialog_open 直播的 cap 门控（A-6）：answerable 是"应答面"数据，只发给握手声明了
@@ -309,31 +416,55 @@ function cleanDialogCloseNote(event) {
 function broadcastDialogOpen(room, frame, cfg) {
   // 多选（G3）：answerable 还要再过 dialog.multiselect 一道 cap——未声明的端只收只读卡
   let kind = null;
+  let sealed = false;
+  let ev = null;
   try {
     const parsed = JSON.parse(frame);
-    kind = parsed && parsed.event && typeof parsed.event.kind === "string" ? parsed.event.kind : null;
+    ev = parsed && parsed.event && typeof parsed.event === "object" ? parsed.event : null;
+    kind = ev && typeof ev.kind === "string" ? ev.kind : null;
+    sealed = hasSealedDialogFields(ev);
   } catch {}
-  const withCap = [];
-  const withoutCap = [];
+  // (b+) adds a third variant for sealed frames (crypto.dialog): connections
+  // without the cap get the downgrade card -- text envelopes and answerable
+  // stripped, structural fields only. Connections with the cap follow the
+  // existing full / answerable-stripped split. Plaintext frames never enter
+  // the downgrade variant, so their behavior is byte-identical to before.
+  // Sealed-form is decided by envelope PRESENCE, not validity (same rule as
+  // cleanDialogSlot): a sealed-form frame's base form drops any plaintext
+  // text fields riding along, and an envelope that fails validation is
+  // dropped from the live frame too -- the live path must not forward what
+  // the slot cleaning already refused to store.
+  let base = frame;
+  if (sealed) {
+    const drop = ["title", "options", "message", "placeholder", "prefill"];
+    if (!cleanTextEncEnvelope(ev.textEnc, (PROTOCOL.limits || {}).dialogTextEncMax || 12288)) drop.push("textEnc");
+    if (!cleanTextEncEnvelope(ev.titleEnc, (PROTOCOL.limits || {}).dialogTitleEncMax || 1024)) drop.push("titleEnc");
+    const cleaned = stripDialogFrameFields(frame, drop);
+    if (cleaned) base = cleaned;
+  }
+  const full = [];
+  const noAnswer = [];
+  const downgrade = [];
   for (const v of room.viewers) {
     const ok = hasCap(v, "dialog.respond") && (kind !== "multiselect" || hasCap(v, "dialog.multiselect"));
-    (ok ? withCap : withoutCap).push(v);
+    if (sealed && !hasCap(v, "crypto.dialog")) downgrade.push(v);
+    else if (ok) full.push(v);
+    else noAnswer.push(v);
   }
-  if (!withoutCap.length) {
-    broadcast(withCap, frame, cfg);
+  if (!noAnswer.length && !downgrade.length) {
+    broadcast(full, base, cfg);
     return;
   }
-  let stripped = null;
-  try {
-    const parsed = JSON.parse(frame);
-    if (parsed && parsed.event && typeof parsed.event === "object") {
-      delete parsed.event.answerable;
-      stripped = JSON.stringify(parsed);
-    }
-  } catch {}
-  broadcast(withCap, frame, cfg);
+  broadcast(full, base, cfg);
   // 剥不出来（自家序列化帧理论上不会）时宁可不发应答面，也不能把 answerable 漏给旧端
-  if (stripped) broadcast(withoutCap, stripped, cfg);
+  if (noAnswer.length) {
+    const stripped = stripDialogFrameFields(base, ["answerable"]);
+    if (stripped) broadcast(noAnswer, stripped, cfg);
+  }
+  if (downgrade.length) {
+    const stripped = stripDialogFrameFields(base, ["answerable", "textEnc", "titleEnc"]);
+    if (stripped) broadcast(downgrade, stripped, cfg);
+  }
 }
 
 /** 取走并清空全部在开 dialog 槽（宿主断开合成关闭用）。返回被清掉的槽列表。 */
@@ -1596,10 +1727,16 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
               clearAutoRetry(room);
             }
             if (type === "ui_prompt_start") {
+              // (b+) presence rule on the live frame: titleEnc in any shape
+              // strips the plaintext title before this frame is broadcast.
+              try { cleanUiPromptFrameTitle(msg.event); } catch (e) { log("本机弹窗密封清洗失败:", e.message); }
               try { rememberUiPrompt(room, msg.event); } catch (e) { log("本机弹窗缓存失败:", e.message); }
               // P9 A：等待摘要变了（waitingPrompt 出现），广播全量
               broadcastRoomWaiting(rooms, room, cfg);
             } else if (type === "ui_prompt_end") {
+              // ui_prompt_end frames carry the title too (same projection);
+              // the same presence rule applies before broadcast.
+              try { cleanUiPromptFrameTitle(msg.event); } catch (e) { log("本机弹窗密封清洗失败:", e.message); }
               clearUiPrompt(room);
               // 兜底销槽：tap 若中途失效，dialog_close 可能永不到达；以 pi 的权威 end 信号
               // 关掉最旧一槽，避免幽灵卡常驻（正常路径下 dialog_close 先到，这里无槽可关）
@@ -1617,6 +1754,11 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
               try { cleanDialogCloseNote(msg.event); } catch (e) { log("弹窗关闭理由清洗失败:", e.message); }
               try { forgetDialog(room, msg.event.dialogId); } catch (e) { log("弹窗观察销槽失败:", e.message); }
               broadcastRoomWaiting(rooms, room, cfg);
+            }
+            if (type === "ext_notify") {
+              // (b+) presence rule on the pass-through path: messageEnc in
+              // any shape strips the plaintext message before broadcast.
+              try { cleanExtNotifySealed(msg.event); } catch (e) { log("扩展通知密封清洗失败:", e.message); }
             }
             if (type === "ext_status") {
               try { rememberExtStatus(room, msg.event); } catch (e) { log("扩展状态缓存失败:", e.message); }
@@ -1644,8 +1786,9 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             const frame = seq
               ? `{"type":"room_event","room":${JSON.stringify(room.id)},"seq":${seq},"rev":${JSON.stringify(store.info(room.id).rev)},"event":${JSON.stringify(msg.event)}}`
               : `{"type":"room_event","room":${JSON.stringify(room.id)},"event":${JSON.stringify(msg.event)}}`;
-            if (type === "dialog_open" && msg.event.answerable === true) {
-              // A-6：带 answerable 的直播帧按 viewer cap 分流（旧端只收观察卡）
+            if (type === "dialog_open" && (msg.event.answerable === true || hasSealedDialogFields(msg.event))) {
+              // A-6：带 answerable 的直播帧按 viewer cap 分流（旧端只收观察卡）；
+              // (b+) 密封帧（crypto.dialog）同样走这里，未声明 cap 的端只收降级卡
               broadcastDialogOpen(room, frame, cfg);
             } else {
               broadcast(room.viewers, frame, cfg, { droppable: DROPPABLE_LOCAL_EVENTS.has(type) });

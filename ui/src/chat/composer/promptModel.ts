@@ -61,6 +61,20 @@ export type DialogCard = {
   startedAt: number
   /** O2 接管中的 dialog（dialog_open.answerable）：网页端可直接应答；观察态（undefined）只读。 */
   answerable?: boolean
+  /**
+   * (b+) this dialog arrived sealed (textEnc) and was opened here:
+   * answers to it must be sealed under the room key (valueEnc & co),
+   * never sent as plaintext.
+   */
+  sealed?: boolean
+  /**
+   * (b+) this dialog arrived sealed but cannot be read on this end:
+   * "waiting" = the content key has not arrived / is not held yet,
+   * "failed" = the keys held here will never open it. The card carries
+   * no text fields and no answer surface; it degrades to a read-only
+   * notice (no ciphertext, no invented copy).
+   */
+  sealedBlocked?: "waiting" | "failed"
 }
 
 export type DialogEvent = {
@@ -78,6 +92,13 @@ export type DialogEvent = {
   timeout?: unknown
   startedAt?: unknown
   answerable?: unknown
+  // (b+) sealed inputs: the relay chain (resolveDialogEvent) consumes
+  // these before the reducer sees the event; they are typed here so the
+  // reducer can still degrade honestly if a raw sealed event arrives
+  // untransformed (frame-gate miss).
+  textEnc?: unknown
+  sealed?: unknown
+  sealedBlocked?: unknown
   outcome?: unknown
   reason?: unknown
   note?: unknown
@@ -97,6 +118,23 @@ export function normalizeDialogCard(event: DialogEvent, now: number): DialogCard
     kind,
     startedAt: typeof event.startedAt === "number" && Number.isFinite(event.startedAt) && event.startedAt > 0 ? event.startedAt : now,
   }
+  // (b+) sealed-but-unreadable: the card keeps only its identity and
+  // timing -- no text fields, no answerable. A raw textEnc reaching this
+  // reducer means the resolve step never ran, so degrade to "failed"
+  // rather than render an empty answerable shell.
+  const blocked: DialogCard["sealedBlocked"] =
+    event.sealedBlocked === "waiting" || event.sealedBlocked === "failed"
+      ? event.sealedBlocked
+      : event.textEnc !== undefined && event.textEnc !== null
+        ? "failed"
+        : undefined
+  if (blocked) {
+    card.sealed = true
+    card.sealedBlocked = blocked
+    if (typeof event.timeout === "number" && Number.isFinite(event.timeout) && event.timeout > 0) card.timeout = event.timeout
+    return card
+  }
+  if (event.sealed === true) card.sealed = true
   const title = textField(event.title)
   if (title) card.title = title
   if (Array.isArray(event.options)) card.options = event.options.map((value) => String(value ?? ""))
@@ -238,6 +276,7 @@ const DIALOG_KIND_LABELS: Record<string, string> = {
 export function dialogKindLabel(kind: string): string {
   return DIALOG_KIND_LABELS[kind] || kind || "弹窗"
 }
+
 
 /** 单个 dialog 的计时文案：有 timeout 显示真剩余，没有显示已等待（锚点都是帧内 startedAt）。 */
 export function formatDialogTiming(dialog: DialogCard, now: number): string {

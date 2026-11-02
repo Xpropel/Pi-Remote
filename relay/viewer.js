@@ -722,7 +722,7 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
               authResult.prefs = rec ? { subset: rec.subset, rev: rec.rev, updatedAt: rec.updatedAt } : null;
             }
             if (hasCap(ws, "room.inbox")) {
-              authResult.inbox = rooms.inboxSnapshot();
+              authResult.inbox = rooms.inboxSnapshotFor(ws);
             }
             send(ws, authResult, cfg);
             replaySessionArchives(ws, devices, cfg);
@@ -779,7 +779,7 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             // 收件箱账本快照（设计 D §1，新面按 cap 剥离）：声明了 room.inbox 才带 inbox 字段；
             // 未声明的旧端 auth_result 里根本没有这个字段，既有面一律不动。
             if (hasCap(ws, "room.inbox")) {
-              authResult.inbox = rooms.inboxSnapshot();
+              authResult.inbox = rooms.inboxSnapshotFor(ws);
             }
             send(ws, authResult, cfg);
             replaySessionArchives(ws, devices, cfg);
@@ -802,7 +802,7 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
           case "list_rooms": {
             const listFrame = { type: "room_list", devices: devicesViewFor(ws, rooms.deviceSnapshot()), rooms: rooms.listFor(ws) };
             // 收件箱账本快照（设计 D §1）：与 auth_result 同口径，按 cap 附带，未声明不带字段。
-            if (hasCap(ws, "room.inbox")) listFrame.inbox = rooms.inboxSnapshot();
+            if (hasCap(ws, "room.inbox")) listFrame.inbox = rooms.inboxSnapshotFor(ws);
             send(ws, listFrame, cfg);
             break;
           }
@@ -1313,8 +1313,46 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
               send(ws, errorFrame("bad_args", "action 只能是 allow / submit / deny", { id: origId, room: room.id }), cfg);
               return;
             }
+            // (b+) answer-form check (crypto.dialog, design 3.4): the answer
+            // must follow the slot's form. A sealed slot takes only *Enc
+            // fields -- any plaintext value/values/note present is bad_args
+            // and nothing is forwarded. A plaintext slot rejects any *Enc
+            // field the same way. Sealed fields are shape-checked only:
+            // a bare ct string, or an {enc:1, ct} envelope, with the ct
+            // capped like textEnc (dialogTextEncMax). The relay never
+            // decrypts; the bridge adjudicates after opening.
+            const encMax = (PROTOCOL.limits || {}).dialogTextEncMax || 12288;
+            const cleanAnswerEnc = (v) => {
+              if (typeof v === "string") return v && v.length <= encMax ? v : null;
+              if (v && typeof v === "object" && !Array.isArray(v) && v.enc === 1 && typeof v.ct === "string" && v.ct && v.ct.length <= encMax) return { enc: 1, ct: v.ct };
+              return null;
+            };
+            const encGiven = {};
+            let encPresent = false;
+            let formBad = false;
+            for (const f of ["valueEnc", "valuesEnc", "noteEnc"]) {
+              if (msg[f] === undefined) continue;
+              encPresent = true;
+              const cleaned = cleanAnswerEnc(msg[f]);
+              if (cleaned === null) formBad = true;
+              else encGiven[f] = cleaned;
+            }
+            if (slot.sealed === true) {
+              if (msg.value !== undefined || msg.values !== undefined || msg.note !== undefined) formBad = true;
+            } else if (encPresent) {
+              formBad = true;
+            }
+            if (formBad) {
+              send(ws, errorFrame("bad_args", "应答形态与弹窗形态不一致", { id: origId, room: room.id }), cfg);
+              return;
+            }
             const frame = { type: "dialog_answer", room: room.id, dialogId, action };
-            if (typeof msg.value === "string") frame.value = msg.value;
+            // Plaintext free-text answers are length-clamped on forward,
+            // like values/note already were (INVENTORY 7.3): the dialog
+            // family's free-text cap is dialogTextMax.
+            if (typeof msg.value === "string") frame.value = msg.value.slice(0, (PROTOCOL.limits || {}).dialogTextMax || 500);
+            if (encGiven.valueEnc !== undefined) frame.valueEnc = encGiven.valueEnc;
+            if (encGiven.valuesEnc !== undefined) frame.valuesEnc = encGiven.valuesEnc;
             // 多选应答的 values 数组：按 limits 钳制后转发，逐项裁决（过滤伪造/去重/min-max）在桥
             if (Array.isArray(msg.values)) {
               const L = PROTOCOL.limits || {};
@@ -1322,6 +1360,11 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
             }
             if (action === "deny" && typeof msg.note === "string" && msg.note.trim()) {
               frame.note = msg.note.slice(0, (PROTOCOL.limits && PROTOCOL.limits.dialogNoteMax) || 500);
+            }
+            // (b+) a sealed deny reason forwards verbatim (shape already
+            // checked above); the bridge passes it through to dialog_close.
+            if (action === "deny" && encGiven.noteEnc !== undefined) {
+              frame.noteEnc = encGiven.noteEnc;
             }
             const aid = "ans-" + (++dialogAnswerSeq);
             frame.aid = aid;

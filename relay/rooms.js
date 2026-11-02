@@ -405,6 +405,9 @@ function sendCachedUiPrompt(ws, room, cfg) {
     kind: cached.kind,
     title: cached.title,
   };
+  // (b+) sealed title (crypto.dialog): the cache holds the envelope instead
+  // of a plaintext title (title stays null); resend it verbatim.
+  if (cached.titleEnc) event.titleEnc = cached.titleEnc;
   let frame;
   try {
     frame = JSON.stringify({ type: "room_event", room: room.id, event });
@@ -429,6 +432,19 @@ function withoutAnswerable(slot) {
   return copy;
 }
 
+/** (b+) downgrade copy of a sealed slot for connections without crypto.dialog:
+ *  structural fields only -- the text envelopes, the answerable flag and
+ *  the slot-internal sealed-form marker are removed. The cached slot
+ *  itself is never mutated (other connections still get the full form). */
+function downgradeSealedSlot(slot) {
+  const copy = { ...slot };
+  delete copy.answerable;
+  delete copy.textEnc;
+  delete copy.titleEnc;
+  delete copy.sealed;
+  return copy;
+}
+
 /** 对话框观察（O1）多槽补发：房间上每个在开 dialog 槽各补一条 dialog_open。
  *  startedAt 用首次捕获的原值（前端倒计时/已等待以它为锚，多端一致）。
  *  离线房间不补发（与 uiPrompt 对齐）；不带 seq / rev。
@@ -438,12 +454,24 @@ function sendCachedDialogs(ws, room, cfg) {
   if (!room || !room.online || !room.dialogs) return;
   const canAnswer = hasCap(ws, "dialog.respond");
   const canMulti = canAnswer && hasCap(ws, "dialog.multiselect");
+  const canSealed = hasCap(ws, "crypto.dialog");
   for (const slot of Object.values(room.dialogs)) {
     // 多选槽（G3）的 answerable 还要 dialog.multiselect 那道 cap，与直播门控同口径
     const slotCanAnswer = slot.kind === "multiselect" ? canMulti : canAnswer;
+    // (b+) sealed-form slot (crypto.dialog): sealed-form is the slot's
+    // internal presence marker (set when the intake frame carried an
+    // envelope field, valid or not), so a connection without the cap gets
+    // the downgrade card (structural fields only); with the cap the cached
+    // slot is resent with whatever valid payload it holds, under the usual
+    // answerable gate. The marker itself is never sent upstream.
+    let out = slot.sealed && !canSealed ? downgradeSealedSlot(slot) : (slotCanAnswer ? slot : withoutAnswerable(slot));
+    if (out.sealed !== undefined) {
+      out = { ...out };
+      delete out.sealed;
+    }
     let frame;
     try {
-      frame = JSON.stringify({ type: "room_event", room: room.id, event: slotCanAnswer ? slot : withoutAnswerable(slot) });
+      frame = JSON.stringify({ type: "room_event", room: room.id, event: out });
     } catch (e) {
       log("弹窗观察补发序列化失败，跳过:", room.id, e.message);
       continue;
@@ -766,18 +794,35 @@ function broadcastRoomAttention(rooms, room, cfg) {
 /** 房间的等待摘要：只在线房间有；canAnswer=false 时去掉 answerable。
  *  waiting 只带 6 个字段（不带 options/message/prefill 等正文面）；waitingPrompt 是
  *  旧的单槽 ui_prompt 兜底信号，只在 waiting 为空时才有意义。 */
-function waitingOf(room, canAnswer, canMulti = canAnswer) {
+function waitingOf(room, canAnswer, canMulti = canAnswer, canSealed = true) {
   if (!room || !room.online) return { waiting: [], waitingPrompt: null };
   const waiting = Object.values(room.dialogs || {}).map((s) => {
     const w = { dialogId: s.dialogId, kind: s.kind, startedAt: s.startedAt };
-    if (s.title) w.title = s.title;
+    // (b+) sealed-form slot (crypto.dialog): the summary carries only the
+    // ACK-sealed title's ct string, never a plaintext title (the slot holds
+    // none). Without the cap, titleEnc and the entry's answerable are both
+    // withheld (downgrade posture, design section 5.2). Sealed-form is the
+    // slot's presence marker: a slot whose envelope was invalid holds no
+    // payload at all and still derives as sealed here.
+    const sealed = !!s.sealed;
+    if (sealed) {
+      if (canSealed && s.titleEnc) w.titleEnc = s.titleEnc.ct;
+    } else if (s.title) w.title = s.title;
     if (s.timeout) w.timeout = s.timeout;
     // 多选槽（G3）的 answerable 还要 dialog.multiselect 那道 cap，与直播/补发同口径
-    if ((s.kind === "multiselect" ? canMulti : canAnswer) && s.answerable === true) w.answerable = true;
+    if ((!sealed || canSealed) && (s.kind === "multiselect" ? canMulti : canAnswer) && s.answerable === true) w.answerable = true;
     return w;
   });
   const p = room.uiPrompt;
-  const waitingPrompt = !waiting.length && p ? { kind: p.kind || "", title: p.title || "", at: p.at || 0 } : null;
+  let waitingPrompt = null;
+  if (!waiting.length && p) {
+    waitingPrompt = { kind: p.kind || "", at: p.at || 0 };
+    if (p.titleEnc) {
+      if (canSealed) waitingPrompt.titleEnc = p.titleEnc.ct;
+    } else {
+      waitingPrompt.title = p.title || "";
+    }
+  }
   return { waiting, waitingPrompt };
 }
 
@@ -793,7 +838,7 @@ function broadcastRoomWaiting(rooms, room, cfg) {
     room._waitingScheduled = false;
     for (const v of rooms.viewers) {
       if (!hasCap(v, "room.dialogs")) continue;
-      send(v, { type: "room_waiting", room: room.id, ...waitingOf(room, hasCap(v, "dialog.respond"), hasCap(v, "dialog.multiselect")) }, cfg);
+      send(v, { type: "room_waiting", room: room.id, ...waitingOf(room, hasCap(v, "dialog.respond"), hasCap(v, "dialog.multiselect"), hasCap(v, "crypto.dialog")) }, cfg);
     }
   });
 }
@@ -872,7 +917,11 @@ function roomsViewFor(ws, list) {
   // mask: even a full-mask viewer without it must not learn which rooms are
   // encrypted (design section 7 version-gate rule).
   const keepEnc = hasCap(ws, "crypto.content");
-  if (key === (1 << ROOM_LIST_CAPS.length) - 1 && keepEnc) return list;
+  // (b+) titleEnc in waiting entries rides its own cap (crypto.dialog), same
+  // outside-the-mask pattern as enc: a connection without it must not learn
+  // sealed titles, nor answer sealed dialogs from the summary.
+  const keepSealed = hasCap(ws, "crypto.dialog");
+  if (key === (1 << ROOM_LIST_CAPS.length) - 1 && keepEnc && keepSealed) return list;
   const keepAttention = !!(key & 1);
   const keepDialogs = !!(key & 2);
   const keepAnswerable = !!(key & 4);
@@ -921,7 +970,47 @@ function roomsViewFor(ws, list) {
         });
       }
     }
+    // (b+) sealed summary entries: titleEnc marks a sealed dialog/prompt.
+    // Without crypto.dialog, strip titleEnc and the sealed entry's
+    // answerable (the plaintext-title entries above are unaffected).
+    if (keepDialogs && !keepSealed) {
+      const sealedWaiting = Array.isArray(out.waiting) && out.waiting.some((w) => w && w.titleEnc);
+      const sealedPrompt = !!(out.waitingPrompt && out.waitingPrompt.titleEnc);
+      if (sealedWaiting || sealedPrompt) {
+        if (out === r) out = { ...r };
+        if (sealedWaiting) {
+          out.waiting = out.waiting.map((w) => {
+            if (!w || !w.titleEnc) return w;
+            const copy = { ...w };
+            delete copy.titleEnc;
+            delete copy.answerable;
+            return copy;
+          });
+        }
+        if (sealedPrompt) {
+          const copy = { ...out.waitingPrompt };
+          delete copy.titleEnc;
+          out.waitingPrompt = copy;
+        }
+      }
+    }
     return out;
+  });
+}
+
+/** (b+) per-connection inbox view (crypto.dialog): an entry carrying a
+ *  sealed title (titleEnc) loses both titleEnc and its answerable flag for
+ *  connections that did not declare the cap; every other entry passes
+ *  through untouched (same reference, no copies when nothing is sealed). */
+function inboxViewFor(ws, entries) {
+  if (hasCap(ws, "crypto.dialog")) return entries;
+  if (!Array.isArray(entries) || !entries.some((e) => e && e.titleEnc)) return entries;
+  return entries.map((e) => {
+    if (!e || !e.titleEnc) return e;
+    const copy = { ...e };
+    delete copy.titleEnc;
+    delete copy.answerable;
+    return copy;
   });
 }
 
@@ -990,6 +1079,11 @@ class Rooms {
   inboxSnapshot() {
     return this.inbox ? this.inbox.snapshot() : [];
   }
+  /** Per-connection inbox snapshot view ((b+), crypto.dialog): sealed-title
+   *  entries are stripped for connections without the cap (see inboxViewFor). */
+  inboxSnapshotFor(ws) {
+    return inboxViewFor(ws, this.inboxSnapshot());
+  }
   /** inbox_dismiss 命令面：只清 done/error（waiting 拒清在 store 内裁决），清成后增量广播对齐各端。 */
   dismissInbox(key) {
     if (!this.inbox || typeof key !== "string" || !key) return false;
@@ -1009,7 +1103,7 @@ class Rooms {
       if (!changes) return;
       for (const v of this.viewers) {
         if (!hasCap(v, "room.inbox")) continue;
-        send(v, { type: "inbox_update", upserts: changes.upserts, removed: changes.removed }, this.cfg);
+        send(v, { type: "inbox_update", upserts: inboxViewFor(v, changes.upserts), removed: changes.removed }, this.cfg);
       }
     });
   }
@@ -1041,6 +1135,10 @@ class Rooms {
           kind: "waiting", subkind: "dialog",
           dialogKind: typeof s.kind === "string" ? s.kind : undefined,
           title: s.title || undefined,
+          // (b+) sealed slot (crypto.dialog): the ledger carries the title's
+          // ct string from the slot's titleEnc, never a plaintext title (the
+          // slot holds none); per-connection stripping happens at delivery.
+          titleEnc: s.sealed && s.titleEnc ? s.titleEnc.ct : undefined,
           // 多选槽（G3）的账本 answerable 同样要过 dialog.multiselect 那道 cap
           answerable: (s.kind === "multiselect" ? canMulti : canAnswer) && s.answerable === true,
           at: s.startedAt || Date.now(),
@@ -1054,7 +1152,8 @@ class Rooms {
           key, accountId, roomId: room.id, deviceId: room.deviceId || null,
           kind: "waiting", subkind: "prompt",
           dialogKind: typeof p.kind === "string" ? p.kind : undefined,
-          title: p.title || undefined,
+          title: p.titleEnc ? undefined : (p.title || undefined),
+          titleEnc: p.titleEnc ? p.titleEnc.ct : undefined,
           at: p.at || Date.now(),
         });
       }
@@ -1454,7 +1553,8 @@ class Rooms {
       const viewFor = (ws) => {
         // The rooms view now also depends on crypto.content (enc flag), so the
         // cache key must include it — same discipline as the group key below.
-        const key = roomListCapKey(ws) | (hasCap(ws, "crypto.content") ? 128 : 0);
+        // (b+) adds crypto.dialog (titleEnc stripping) on bit 256, same reason.
+        const key = roomListCapKey(ws) | (hasCap(ws, "crypto.content") ? 128 : 0) | (hasCap(ws, "crypto.dialog") ? 256 : 0);
         let view = views.get(key);
         if (!view) {
           view = roomsViewFor(ws, rooms);
@@ -1470,10 +1570,10 @@ class Rooms {
         // 原先的 16 位与排期 cap 位相撞，必须上移一位。
         // crypto 位用 64：设备条目的 keyFp/keyAddedAt 只给声明 crypto.auth 的组（devicesViewFor）。
         // crypto.content 位用 128：rooms 视图的 enc 标志随它开关，组键必须区分。
-        const key = roomListCapKey(v) | (withInbox ? 32 : 0) | (hasCap(v, "crypto.auth") ? 64 : 0) | (hasCap(v, "crypto.content") ? 128 : 0);
+        const key = roomListCapKey(v) | (withInbox ? 32 : 0) | (hasCap(v, "crypto.auth") ? 64 : 0) | (hasCap(v, "crypto.content") ? 128 : 0) | (hasCap(v, "crypto.dialog") ? 256 : 0);
         let g = groups.get(key);
         if (!g) {
-          g = { view: viewFor(v), devices: devicesViewFor(v, devices), inbox: withInbox, conns: [] };
+          g = { view: viewFor(v), devices: devicesViewFor(v, devices), inbox: withInbox, sample: v, conns: [] };
           groups.set(key, g);
         }
         g.conns.push(v);
@@ -1483,7 +1583,9 @@ class Rooms {
         const frame = { type: "room_list", devices: g.devices, rooms: g.view };
         if (g.inbox) {
           if (!inboxSnap) inboxSnap = this.inboxSnapshot();
-          frame.inbox = inboxSnap;
+          // (b+): the shared snapshot is raw; each group gets its own
+          // crypto.dialog view of it (group members share the cap bit).
+          frame.inbox = inboxViewFor(g.sample, inboxSnap);
         }
         broadcast(g.conns, JSON.stringify(frame), this.cfg);
       }
@@ -1633,4 +1735,4 @@ function clearSessionState(room) {
   return hadTurnEnd;
 }
 
-module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor, devicesViewFor, encReasonOf };
+module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor, devicesViewFor, encReasonOf, inboxViewFor };

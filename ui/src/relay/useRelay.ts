@@ -160,6 +160,7 @@ import {
   isContentEnvelope,
   snapshotKeyInfoOf,
 } from "./contentDecrypt"
+import { dialogAnswerFrame, dialogEventHasSealedFields, resolveDialogEvent } from "./dialogCrypto"
 import { mobileNavFromPrefsSubset } from "@/pi/model/prefs"
 import type { PiMobileNavMode } from "@/pi/mobile/types"
 import { emptyRemoteQueue, parseRemoteQueueItem, parseRemoteQueueState, type RemoteQueueState } from "./remoteQueue"
@@ -517,6 +518,8 @@ export function useRelay() {
   const [decryptedPreviews, setDecryptedPreviews] = useState<ReadonlyMap<string, string>>(new Map())
   /** Preview cts a decrypt pass was already kicked for (deleted again when no ACK was available, so a later pass retries). */
   const previewKickedRef = useRef(new Set<string>())
+  /** Sealed summary-title cts (waiting / inbox titleEnc) a decrypt pass was already kicked for. */
+  const titleKickedRef = useRef(new Set<string>())
   const [authed, setAuthed] = useState(false)
   const [status, setStatus] = useState("未连接")
   /** 这个 token 连上过：之后断开算"重连"，界面出断线横幅而不是首次连接的加载条 */
@@ -1132,16 +1135,56 @@ export function useRelay() {
     })()
   }
 
+  /**
+   * Kick the async decrypt of one sealed summary title (waiting list,
+   * waiting prompt, inbox ledger): a bare ct under the account ACK.
+   * Success lands in the same decryptedPreviews map, keyed by ct, and is
+   * substituted into the title before exposure. Unlike message previews
+   * a failed open stores NOTHING -- a summary falls back to its kind
+   * copy, never to a failure label posing as a title -- and the ct is
+   * un-kicked so a corrected ACK can heal it on a later pass.
+   */
+  const kickTitleDecryption = (ct: string) => {
+    if (!ct || titleKickedRef.current.has(ct)) return
+    titleKickedRef.current.add(ct)
+    void (async () => {
+      const core = identityCoreRef.current ?? (await ensureIdentityReady())
+      const ackKey = core?.ackCryptoKey(core.accountId()) ?? null
+      if (!ackKey) {
+        // No ACK yet: un-kick so the pass re-runs when an ACK lands.
+        titleKickedRef.current.delete(ct)
+        return
+      }
+      const text = await decryptCtText(ackKey, ct)
+      if (text === null) {
+        titleKickedRef.current.delete(ct)
+        return
+      }
+      setDecryptedPreviews((prev) => {
+        if (prev.get(ct) === text) return prev
+        const next = new Map(prev)
+        next.set(ct, text)
+        return next
+      })
+    })()
+  }
+
   /** Kick preview decryption for every encrypted preview currently in view (re-run when an ACK lands). */
   useEffect(() => {
     for (const room of rooms) if (room.firstMessageEnc) kickPreviewDecryption(room.firstMessageEnc)
     for (const list of Object.values(sessionsByDevice)) {
       for (const session of list) if (session.firstMessageEnc) kickPreviewDecryption(session.firstMessageEnc)
     }
-    // kickPreviewDecryption is ref/setState-only; the identity fields are
-    // the re-run trigger for previews that were waiting on an ACK.
+    for (const room of rooms) {
+      for (const waiting of room.waiting ?? []) if (waiting.titleEnc) kickTitleDecryption(waiting.titleEnc)
+      if (room.waitingPrompt?.titleEnc) kickTitleDecryption(room.waitingPrompt.titleEnc)
+    }
+    for (const entry of inbox) if (entry.titleEnc) kickTitleDecryption(entry.titleEnc)
+    // kickPreviewDecryption / kickTitleDecryption are ref/setState-only;
+    // the identity fields are the re-run trigger for items that were
+    // waiting on an ACK.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rooms, sessionsByDevice, viewerIdentity.hasAck, viewerIdentity.ackFp])
+  }, [rooms, sessionsByDevice, inbox, viewerIdentity.hasAck, viewerIdentity.ackFp])
 
   /**
    * Decrypt a session_archive payload (design 4.1: ACK-level envelopes --
@@ -2362,6 +2405,9 @@ export function useRelay() {
         if (typeof inner.ct === "string") return true
         if (envelopeFromTextField(inner.delta) || envelopeFromTextField(inner.content)) return true
       }
+      // (b+) dialog-family sealed fields (textEnc / titleEnc / messageEnc
+      // envelopes, dialog_close noteEnc) ride the same chain.
+      if (dialogEventHasSealedFields(event)) return true
       return false
     }
 
@@ -2422,8 +2468,18 @@ export function useRelay() {
       const { event, failures, drop } = await decryptRoomEvent(key, rawEvent)
       noteDecryptFailures(roomId, failures)
       if (drop) return
+      // (b+) dialog-family events ride the same chain: resolveDialogEvent
+      // opens textEnc / messageEnc under the room key and titleEnc under
+      // the ACK, or degrades the card honestly (sealedBlocked). The
+      // blocked flavour follows the room crypto status: still waiting on
+      // the account key vs. a key that will never open it.
+      const core = identityCoreRef.current ?? (await ensureIdentityReady())
+      const ackKey = core?.ackCryptoKey(core.accountId()) ?? null
+      const blockedReason = roomCryptoEntryOf(roomId).status === "waiting-ack" ? "waiting" : "failed"
+      const resolved = await resolveDialogEvent({ roomKey: key, ackKey, blockedReason }, event)
+      noteDecryptFailures(roomId, resolved.failures)
       if (roomRef.current !== roomId) return
-      processRoomEventFrame(msg, event as { type?: string })
+      processRoomEventFrame(msg, resolved.event as { type?: string })
     }
 
     ws.onmessage = (ev) => {
@@ -3471,21 +3527,38 @@ export function useRelay() {
   const sendDialogAnswerTo = useCallback(
     (room: string, dialogId: string, answer: DialogAnswer): Promise<DialogAnswerResult> => {
       if (!room) return Promise.resolve("error")
-      const frame: Record<string, unknown> = { type: "dialog_answer", room, dialogId, action: answer.action }
-      if (typeof answer.value === "string") frame.value = answer.value
-      if (Array.isArray(answer.values)) frame.values = answer.values
-      if (answer.action === "deny" && answer.note) frame.note = answer.note
-      return sendQuery(frame).then(
-        () => "ok" as const,
-        (error: unknown) => {
-          if (errorCode(error) === "dialog_gone") {
-            pushNotice({ level: "info", title: "这个弹窗已被处理" })
-            return "gone" as const
-          }
-          pushNotice({ level: "error", title: "答案发送失败，请重试" })
-          return "error" as const
-        },
-      )
+      const fail = (): DialogAnswerResult => {
+        pushNotice({ level: "error", title: "答案发送失败，请重试" })
+        return "error"
+      }
+      const run = async (): Promise<DialogAnswerResult> => {
+        // (b+) a dialog that arrived sealed must be answered sealed: the
+        // relay rejects plaintext text for a sealed slot, and the bridge
+        // adjudicates only after opening. The current room's card is the
+        // record of the form; foreign-room inbox answers carry no text
+        // fields, so they never need a key. No key / seal failure fails
+        // the answer honestly -- never a plaintext fallback.
+        const card = room === roomRef.current ? dialogsRef.current.find((item) => item.dialogId === dialogId) : undefined
+        const sealed = card?.sealed === true
+        let sealKey: CryptoKey | null = null
+        if (sealed) {
+          sealKey = await awaitRoomKey(room, false)
+          if (!sealKey) return fail()
+        }
+        const frame = await dialogAnswerFrame({ room, dialogId, answer, sealed, sealKey })
+        if (!frame) return fail()
+        return sendQuery(frame).then(
+          () => "ok" as const,
+          (error: unknown) => {
+            if (errorCode(error) === "dialog_gone") {
+              pushNotice({ level: "info", title: "这个弹窗已被处理" })
+              return "gone" as const
+            }
+            return fail()
+          },
+        )
+      }
+      return run()
     },
     [pushNotice, sendQuery],
   )
@@ -5161,13 +5234,48 @@ export function useRelay() {
   const previewRooms = useMemo(
     () =>
       decryptedPreviews.size
-        ? rooms.map((room) =>
-            room.firstMessageEnc && decryptedPreviews.has(room.firstMessageEnc)
-              ? { ...room, firstMessage: decryptedPreviews.get(room.firstMessageEnc) ?? room.firstMessage }
-              : room,
-          )
+        ? rooms.map((room) => {
+            let next = room
+            if (room.firstMessageEnc && decryptedPreviews.has(room.firstMessageEnc)) {
+              next = { ...next, firstMessage: decryptedPreviews.get(room.firstMessageEnc) ?? room.firstMessage }
+            }
+            // (b+) sealed summary titles: substitute the opened title
+            // into the waiting entries that carried it as titleEnc
+            // (object identity kept when nothing substitutes).
+            if (room.waiting?.some((waiting) => waiting.titleEnc && decryptedPreviews.has(waiting.titleEnc))) {
+              next = {
+                ...next,
+                waiting: room.waiting.map((waiting) =>
+                  waiting.titleEnc && decryptedPreviews.has(waiting.titleEnc)
+                    ? { ...waiting, title: decryptedPreviews.get(waiting.titleEnc) ?? waiting.title }
+                    : waiting,
+                ),
+              }
+            }
+            if (room.waitingPrompt?.titleEnc && decryptedPreviews.has(room.waitingPrompt.titleEnc)) {
+              next = {
+                ...next,
+                waitingPrompt: { ...room.waitingPrompt, title: decryptedPreviews.get(room.waitingPrompt.titleEnc) ?? room.waitingPrompt.title },
+              }
+            }
+            return next
+          })
         : rooms,
     [rooms, decryptedPreviews],
+  )
+  // (b+) the inbox is exposed with opened sealed titles substituted the
+  // same way; the raw state stays the ledger copy (titleEnc intact for
+  // the kick pass and for update diffing).
+  const previewInbox = useMemo(
+    () =>
+      decryptedPreviews.size
+        ? inbox.map((entry) =>
+            entry.titleEnc && decryptedPreviews.has(entry.titleEnc)
+              ? { ...entry, title: decryptedPreviews.get(entry.titleEnc) ?? entry.title }
+              : entry,
+          )
+        : inbox,
+    [inbox, decryptedPreviews],
   )
   const previewSessionsByDevice = useMemo(() => {
     if (!decryptedPreviews.size) return sessionsByDevice
@@ -5305,7 +5413,7 @@ export function useRelay() {
     /** 指定房间的应答（收件箱原地答别房条目用，D-§1）。 */
     sendDialogAnswerTo,
     /** 收件箱账本本地副本（D-§1，只含元数据）与手动清除（仅 done/error）。 */
-    inbox,
+    inbox: previewInbox,
     dismissInbox,
     /** 定时排期（D-§3）：当前房清单 / 全量分桶副本 / 创建与取消（relay 本地命令）。 */
     schedules: roomId ? (schedulesByRoom[roomId] ?? []) : [],

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react"
 import { CircleHelp } from "../icons/CodexIcons"
 import type { VariantAppProps } from "@/pi/variants/types"
 import { approvalEndedOf, approvalReceiptOf, type PiLocalAnswer } from "@/pi/model/approvalReceipt"
-import { dialogCardState, PI_DIALOG_RECEIPT_MS, type PiDialogReceiptView } from "@/pi/model/dialogCard"
+import { dialogCardState, dialogSealedBlockedText, PI_DIALOG_RECEIPT_MS, type PiDialogReceiptView } from "@/pi/model/dialogCard"
 import { piClock } from "../logic/view"
 import { useNow } from "../hooks/useCodex"
 import { CodexButton, CodexSpinner } from "../primitives/primitives"
@@ -153,7 +153,9 @@ export function CodexApprovalCard({
       <div className="cx-approval-body">
         {dialog.title ? <div className="cx-approval-question">{dialog.title}</div> : null}
         {dialog.message ? <pre className="cx-approval-message">{dialog.message}</pre> : null}
-        {!answerable ? <div className="cx-approval-readonly">只能在电脑上回答</div> : null}
+        {!answerable ? (
+          <div className="cx-approval-readonly">{dialog.sealedBlocked ? dialogSealedBlockedText(dialog.sealedBlocked) : "只能在电脑上回答"}</div>
+        ) : null}
         {answerable && kind === "select" && options.length > 0 ? (
           <div className="cx-approval-options">
             {options.map((option) => (

@@ -6,6 +6,7 @@
  * 这里不许出现第二套计数。
  */
 import type { RoomTurnSeed } from "./attention.ts"
+import { TITLE_ENC_MAX_CHARS } from "./devices.ts"
 
 export type InboxKind = "waiting" | "error" | "done"
 export type InboxSubkind = "dialog" | "prompt" | "ask" | "turn" | "schedule"
@@ -22,6 +23,10 @@ export type InboxEntry = {
   dialogKind?: string
   /** 一句标题（≤120 字，协议面摘要）；turn 条目恒无 */
   title?: string
+  /** (b+) sealed title: a bare ct string under the account ACK. Opened
+   *  by the title pass in useRelay and substituted into `title` before
+   *  exposure; unopenable entries stay title-less (kind copy). */
+  titleEnc?: string
   /** dialog 条目：当前任一连接声明了 dialog.respond 时为 true（可远程答） */
   answerable?: boolean
   at: number
@@ -48,6 +53,7 @@ function cleanEntry(raw: unknown): InboxEntry | null {
   }
   if (typeof r.dialogKind === "string" && r.dialogKind) entry.dialogKind = r.dialogKind
   if (typeof r.title === "string" && r.title) entry.title = r.title
+  if (typeof r.titleEnc === "string" && r.titleEnc) entry.titleEnc = r.titleEnc.slice(0, TITLE_ENC_MAX_CHARS)
   if (typeof r.answerable === "boolean") entry.answerable = r.answerable
   return entry
 }
@@ -66,6 +72,7 @@ export function parseInboxEntries(raw: unknown): InboxEntry[] {
 function sameEntry(a: InboxEntry, b: InboxEntry): boolean {
   return a.roomId === b.roomId && a.deviceId === b.deviceId && a.kind === b.kind &&
     a.subkind === b.subkind && a.dialogKind === b.dialogKind && a.title === b.title &&
+    a.titleEnc === b.titleEnc &&
     a.answerable === b.answerable && a.at === b.at
 }
 

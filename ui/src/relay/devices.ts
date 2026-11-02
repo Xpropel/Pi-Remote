@@ -91,6 +91,11 @@ export type RoomWaiting = {
   dialogId: string
   kind: string
   title?: string
+  /** (b+) sealed title: a bare ct string under the account ACK
+   *  (protocol limits.inboxTitleEncMax). Opened by the title pass in
+   *  useRelay and substituted into `title` before exposure; when it
+   *  cannot be opened the summary stays title-less (kind copy). */
+  titleEnc?: string
   startedAt: number
   timeout?: number
   /** 这个网页能不能直接答（relay 按 dialog.respond cap 决定带不带；旧 relay 不带）。 */
@@ -98,7 +103,7 @@ export type RoomWaiting = {
 }
 
 /** room.dialogs（P9 A）旧的单槽 ui_prompt 兜底摘要：只在 waiting 为空时有意义。 */
-export type RoomWaitingPrompt = { kind: string; title: string; at: number }
+export type RoomWaitingPrompt = { kind: string; title: string; at: number; titleEnc?: string }
 
 /**
  * room.activity（设计 D §2.3）房间最近事件摘要：relay 只记白名单事件类型与
@@ -109,6 +114,11 @@ export type RoomLastEvent = { type: string; toolName?: string; at: number }
 
 /** room_list 房间条目里等待摘要的上限（协议 limits.dialogSlotsMax = 8）。 */
 export const ROOM_WAITING_MAX = 8
+
+/** (b+) sealed summary titles are bare ct strings capped by the
+ *  protocol (limits.inboxTitleEncMax = 1024); shared by the waiting
+ *  summary parsers here and the inbox ledger cleaner. */
+export const TITLE_ENC_MAX_CHARS = 1024
 
 /**
  * Crypto Phase 4 T-1 (phase-4 design 2.5): the plaintext-reason classes the
@@ -808,6 +818,7 @@ function parseRoomWaiting(raw: unknown): RoomWaiting[] | undefined {
       startedAt: typeof item.startedAt === "number" && Number.isFinite(item.startedAt) ? item.startedAt : 0,
     }
     if (typeof item.title === "string" && item.title) waiting.title = item.title
+    if (typeof item.titleEnc === "string" && item.titleEnc) waiting.titleEnc = item.titleEnc.slice(0, TITLE_ENC_MAX_CHARS)
     if (typeof item.timeout === "number" && Number.isFinite(item.timeout) && item.timeout > 0) waiting.timeout = item.timeout
     if (item.answerable === true) waiting.answerable = true
     out.push(waiting)
@@ -821,12 +832,17 @@ function parseRoomWaitingPrompt(raw: unknown): RoomWaitingPrompt | null | undefi
   if (!isRecord(raw)) return null
   const title = typeof raw.title === "string" ? raw.title : ""
   const kind = typeof raw.kind === "string" ? raw.kind : ""
-  if (!title && !kind) return null
-  return {
+  // (b+) a sealed prompt carries its title only as titleEnc: it still
+  // counts as "waiting", the title simply arrives later via decryption.
+  const titleEnc = typeof raw.titleEnc === "string" && raw.titleEnc ? raw.titleEnc.slice(0, TITLE_ENC_MAX_CHARS) : ""
+  if (!title && !kind && !titleEnc) return null
+  const out: RoomWaitingPrompt = {
     kind,
     title,
     at: typeof raw.at === "number" && Number.isFinite(raw.at) ? raw.at : 0,
   }
+  if (titleEnc) out.titleEnc = titleEnc
+  return out
 }
 
 

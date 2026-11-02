@@ -326,6 +326,10 @@ export type PiDialogCard = {
   startedAt: number
   /** 网页端可直接应答；undefined = 只读观察 */
   answerable?: boolean
+  /** (b+) sealed on the wire but unreadable on this end ("waiting" = no
+   *  content key yet, "failed" = keys here never open it); the read-only
+   *  line shows the sealed copy instead of the observe copy. */
+  sealedBlocked?: "waiting" | "failed"
 }
 
 /* ---------------- chat/composer/TaskListCard.tsx ---------------- */

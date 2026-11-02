@@ -14,6 +14,7 @@ import {
 } from "@/pi/model/approvalAnnounce"
 import { T_ATTENTION, T_ERROR, T_SECONDARY } from "./styles"
 import type { PiDialogCard } from "@/components/pi/shared/types"
+import { dialogSealedBlockedText } from "@/pi/model/dialogCard"
 
 export type PiApprovalState = "open" | "sending" | "failed" | "answered-elsewhere" | "denied" | "expired"
 
@@ -156,7 +157,9 @@ export function PiApprovalCard({
           </div>
         )}
         {!answerable ? (
-          <div className={cn("mt-3 text-(length:--cw-text-md)", T_SECONDARY)}>只能在电脑上回答</div>
+          <div className={cn("mt-3 text-(length:--cw-text-md)", T_SECONDARY)}>
+            {dialog.sealedBlocked ? dialogSealedBlockedText(dialog.sealedBlocked) : "只能在电脑上回答"}
+          </div>
         ) : kind === "select" ? (
           <div className="mt-3 flex flex-col gap-1.5" role="listbox" aria-label="选项">
             {options.map((opt) => {

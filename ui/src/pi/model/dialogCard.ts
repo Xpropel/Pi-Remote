@@ -28,6 +28,13 @@ export type PiDialogCardView = {
 /** 已超时 / 已拒绝的回执留 8 秒（或下一张卡出现时消失，由容器处理） */
 export const PI_DIALOG_RECEIPT_MS = 8000
 
+/** (b+) read-only copy for a sealed card this end cannot read: the key
+ *  not having arrived yet and the key never matching are different
+ *  states, so the copy differs. Single source for all three shells. */
+export function dialogSealedBlockedText(blocked: "waiting" | "failed"): string {
+  return blocked === "waiting" ? "已加密 · 等内容钥" : "已加密 · 无法解密"
+}
+
 /** 卡片 + 回执 + now → 六态之一。dialog 缺失时返回 null。 */
 export function dialogCardState(dialog: PiDialogLike | null | undefined, receipt: PiDialogReceiptView | null | undefined, now: number): PiDialogCardView | null {
   if (!dialog) return null

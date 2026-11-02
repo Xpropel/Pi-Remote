@@ -70,7 +70,7 @@ const PROTOCOL = {
     "health": "viewer 端口提供 GET /healthz",
     "dialog.respond": "对话框应答（O2，接管语义）：开关 dialogRemoteAnswer 开 AND 房间有 viewer 在线才接管（任一假落回 O1 透传本机弹窗，fail-open）。帧：dialog_open{…,answerable:true}（接管时带）/ dialog_answer{dialogId,action:allow|submit|deny,value?,values?,note?}（viewer→relay→桥，先答广播：首达 resolve、迟到回 dialog_gone；values 只用于 kind=multiselect 的多选应答，与 value 互斥，见 dialog.multiselect）/ dialog_close{dialogId,outcome,reason:answered|denied|timeout|aborted,note?}（裁决后全端广播收回）/ dialog_gate{hasViewers}（relay→桥：房间 viewer 订阅数 0↔>0 推送，桥重连补发当前值）/ dialog_answer_switch{enabled}（UI→relay→桥：开关下达，桥仅内存持有、重启回默认关，桥重连由 relay 按存值重下达）/ dialog_answer_result{aid,dialogId,ok,code?}（桥→relay→答题 viewer 的回执通道）/ dialog_claim{dialogId}（可选意向提示：仅供他端显示正在作答，不承载应答权，一期未实现流程）。Deny 理由只随帧广播供 UI 呈现，不回传模型（resolve 值域装不下）同路开关帧（UI→relay→桥：relay 存当前值，桥重连时按存值重下达，桥仅内存持有、重启回默认）：ask_user_switch{enabled}（G1 ask_user 工具开关）/ approval_gate_switch{enabled,tier?,tools?}（G2 工具执行审批门：tier ∈ high-risk|all-non-readonly|list，tools 为名单制工具名数组，桥只在字段合法时采纳）。",
     "dialog.multiselect": "多选对话框（G3，dialog.respond 的增量）：dialog_open.kind 新增 multiselect，帧体带 options（复用 dialogOptionsMax/dialogOptionChars 上限）与 minSelect?/maxSelect?（缺省 minSelect=1、maxSelect=选项数，桥侧组帧时已钳制）；应答走既有 dialog_answer 帧但改带 values?: string[]（与 value 互斥），桥侧按选项表过滤伪造值、去重并按 min/maxSelect 裁决，不满足回 bad_args 且 dialog 不落定（卡留在原地可改选重交）。answerable 只发给同时声明了 dialog.respond 与 dialog.multiselect 的 viewer：未声明本能力的端收到剥掉 answerable 的只读卡（A-6 门控平移，直播/补发/等待摘要同口径），其 dialog_answer 对多选槽一律回 dialog_gone。桥侧生产者 = ask_user 工具直接登记（不经 ctx.ui，pi 无多选 dialog）；门控不满足或中途交回本机时走本机兜底（逐项 confirm 序列，仍是既有四种 dialog）。旧桥不产生 multiselect 帧，天然兼容。limits 不新增（复用 dialog* 项）",
-    "dialog.observe": "对话框观察帧（O1）：dialog_open{dialogId,kind,title,options,message,placeholder,prefill,timeout,startedAt} / dialog_close{dialogId,outcome}；扩展 UI 状态帧 ext_status{statuses,widgets,title,working,tap} 与 ext_notify{message,level}。截断口径见 limits 的 dialog*/extNotify*/widget*/status* 项",
+    "dialog.observe": "对话框观察帧（O1）：dialog_open{dialogId,kind,title,options,message,placeholder,prefill,timeout,startedAt} / dialog_close{dialogId,outcome}；扩展 UI 状态帧 ext_status{statuses,widgets,title,working,tap} 与 ext_notify{message,level}。截断口径见 limits 的 dialog*/extNotify*/widget*/status* 项。密封形态（enc 房且设备声明 crypto.dialog）：dialog_open 的文本字段改以 textEnc/titleEnc 信封在场（明文字段缺席），ext_notify 的 message 改以 messageEnc 在场，ui_prompt_start 与 ui_prompt_end 的 title 改以 titleEnc 在场，见 crypto.dialog",
     "room.activity": "房间最近事件摘要（设计 D §2.3）：relay 在 local 事件出口旁按房维护 lastEvent{type,toolName?,at}（只记白名单事件类型 turn_start/agent_start/message_update/tool_execution_start/compaction_start，toolName 只取工具名元数据，不带任何正文/参数；回合落定 agent_settled 即清）；room_list 房间条目给声明了本能力的连接多带 lastEvent（无事件时为 null），未声明的旧端由 roomsViewFor 剥掉；不新开广播帧，lastEvent 搭 room_list 顺风车（随 busy/名册变化广播刷新）。UI 侧据它生成 busy 中的状态短语（正在执行命令/正在回复等），与 lastTurnEnd（room.attention）分工：lastEvent 管运行中、lastTurnEnd 管落定未读",
     "room.dialogs": "房间等待摘要（P9 A）：room_list 的房间条目（含 auth_result.rooms、list_rooms 回包）给声明了本能力的连接多带 waiting[] 与 waitingPrompt；waiting 只含 dialogId/kind/title/startedAt/timeout/answerable（不带 options/message/prefill），离线房间恒为空；waitingPrompt 是旧的单槽 ui_prompt 兜底信号，只在 waiting 为空时有意义；摘要变化时向设备级 viewer 连接广播 room_waiting{room,waiting,waitingPrompt}（每帧全量，不按订阅过滤，与 room_attention 的对象相同）",
     "room.inbox": "全局待答收件箱账本（设计 D §1）：relay 维护 per-account 账本（只存元数据：key/roomId/deviceId/kind/subkind/dialogKind/title≤120/answerable/at，绝不存 options/message/prefill 等正文；落盘 data/accounts/<safeKey>/inbox.json，跨 relay 重启恢复未读）；来源三路 = dialog 生命周期 / ui_prompt 兜底（仅无 dialog 条目时）/ 回合落定（lastTurnEnd 同源）；帧：auth_result 与 room_list 给声明了本能力的连接附带 inbox: InboxEntry[]（pending 全量快照），账本变化时向设备级 viewer 连接广播 inbox_update{upserts, removed}（与 room_waiting 同批听众，不按订阅过滤），inbox_dismiss{key}（viewer→relay 本地命令）只清 done/error 条目、waiting 拒清；未声明的端一律不收新字段/新帧（既有面零变化）。恢复期 waiting 条目未被房间补发确认即转 gone(stale)，turn 未读跨重启不丢",
@@ -81,7 +81,8 @@ const PROTOCOL = {
     "agent.state": "agent_state 全量快照事件能力位（子智能体胶囊预留：协议/通道先行，当前无生产者）",
     "usage.activity.v1": "使用活动聚合（P10）：extension 只读本机 pi 会话 jsonl，聚合每日 tokens/messages/sessions、模型分布、活跃/连续天数、峰值（本地时区分天、role=user 口径、不含 cost），经本地通道上报 usage_snapshot{deviceId,requestId,snapshot}；relay 校验并按 account+device 缓存，向 viewer 提供 usage_get{deviceId,requestId,force} → usage_snapshot{available,reason?,snapshot?,receivedAt?,stale?}；快照只含聚合计数（无正文/标题/cwd/金额）。旧端兼容：无此 cap 的 relay 收到 usage_get 回 unknown_type（UI 空态），旧 extension 收到 usage_refresh 忽略/unknown_type（relay 降级 unsupported/timeout），新 relay 不向未声明 cap 的 viewer 主动发 usage 帧",
     "crypto.auth": "设备/观看端身份（加密地基，设计 A §3；阶段 1 设备侧 + 阶段 2 观看端侧均已实现）：声明后配对帧 pair/pair_request 可带 keys{signPub, boxPub, pop} 登记设备公钥（设备签名钥 DIK 为 Ed25519、box 钥为 P-256；长度上限见 limits 的 signPubKeyBytes/boxPubKeyBytes，pop 为对裸配对码的签名），二维码核对字改绑握手记录（SAS v2）；local 通道 auth 带 keyFp+clientNonce 时走挑战-签名：relay 回 auth_challenge{nonce, expiresAt}（nonce 长度见 authNonceBytes），端回 auth_response{sig}（签名输入为域分隔串 pi-remote-auth-v1 与身份 id、双侧 nonce 的字节拼接，签名上限见 signatureMaxBytes），验签失败/钥已撤销/身份与钥错配复用 auth_failed/device_revoked/device_mismatch，不新增码；观看端身份（阶段 2）：VIK/VBK 均为 P-256（spki 长度上限同 boxPubKeyBytes；signPubKeyBytes 的 44 是 Ed25519 spki 长度、不适用于观看端）；新帧 viewer_register{viewerId, name?, signPub, boxPub（或 keys{signPub, boxPub}）, admin?} 经管理员门把观看端公钥登记进 viewers.jsonl（同 viewerId 在册未撤销时换钥拒绝、须先 viewer_revoke；已撤销的旧签名钥不得以同 viewerId 再登记），成功 ack 的 data 带 {viewerId, keyFp, admin}；viewer 通道 auth 带 viewerId+keyFp+clientNonce 走与设备同构的挑战-签名（签名输入里的身份 id 换成 viewerId，VIK 以 ECDSA P-256/SHA-256、IEEE P1363 编码验签），成功 auth_result 增 auth:\"key\" 与 viewerId；无名册钥的观看端仍可凭 viewerToken 登录（auth:\"token\" 口径，既有 auth_result 面逐字节不变），但令牌登录不构成管理员资格；管理帧（pair_create/pair_approve/device_revoke/viewer_revoke/list_viewers）走双轨管理员门：adminToken 或 adminSig 二选一。adminSig 是在册、admin:true、未撤销的 VIK 对帧规范化摘要的签名，摘要字节钉死为 utf8(\"pi-remote-admin-v1\") ‖ utf8(帧 type) ‖ utf8(规范 JSON)，其中规范 JSON = 帧去掉 adminSig/adminToken/type/id 四字段后的对象按「对象键递归升序、数组保序、无空白分隔符」序列化的 UTF-8 字节（id 是传输层在签名之后追加的相关句柄、不属于管理意图，故不进规范化摘要）；签名本体为 ECDSA P-256/SHA-256、IEEE P1363（r‖s）、base64；签名者由帧的 adminBy 字段指明（缺省时取连接绑定的 viewerId；注意 viewer_revoke 帧里的 viewerId 是撤销目标而非签名者），已绑 viewerId 的钥连接只能以自身 viewerId 签名；签名不合规与无 adminToken 同果：ack 失败 code=admin_required；新帧 list_viewers（管理员门）回 viewer_list{viewers:[{viewerId, name, keyFp, admin, createdAt, revokedAt, online}]}；viewer_revoke{viewerId}（管理员门）给名册行写 revokedAt 并断开该观看端的全部钥连接，成功 ack 的 data 必带 {closed, ackRotationRequired:true, hint}——撤销只关接入层，被撤销端仍持有 ACK 副本，密码学移除必须轮换 ACK 并重新分发给保留的端；auth_result 对钥连接增 ackFp（本账号各端已达成一致的内容钥指纹，contentKeyFpChars 位 hex，未知或正在分歧时为 null）供端上对账；新帧 ack_report{ackFp} 供钥端在 auth 成功后上报自己所持 ACK 的指纹（relay 只存指纹、永不接触 ACK 本体，仅内存），同账号已上报各端的指纹不一致时向这些端发 error 帧 code=key_mismatch（帧带 ackFps 列出冲突指纹），一致后自动消解；新帧 content_key_request/content_key_grant 为 ACK 包裹交付（relay 只按指纹路由透传、不落盘，包裹上限见 wrappedKeyMaxBytes）：持钥观看端与设备互为端点，转发时 relay 强制以发送方名册钥盖戳 from（发送方 keyFp）与 fromBoxPub（发送方名册 box 公钥），帧内自带的 from/fromBoxPub 不采信；新帧 key_update（旧 DIK 签新钥集合换登记）；名册设备行可带 keys{sign{alg,pub,addedAt,revokedAt?}, box{alg,pub}} 与 prevKeyFps[]，观看端行另存 viewers.jsonl，均只登记公钥（公开数据）；钥形态配对成功的 pair_result 带 keyRegistered:true 与 hasKeyHolder（布尔：本次登记之前本账号是否已有其他已登记未撤销公钥的设备，即在册持钥端存在的代理信号——relay 不持 ACK 本身、只能报存在性；设备据此不自生成 ACK、保持无内容钥状态，上线后经 content_key_request 索取；令牌形态 pair_result 不带 hasKeyHolder）；pair_approve 可带 contentKeyGrant，仅做形状清洗后透传进 pair_result，不解析、不落盘",
-    "crypto.content": "正文端到端加密（加密地基，设计 A §4.1 中间档 b；阶段 3 已实现：relay 侧存储/门控/迁移全量落地；依赖 crypto.auth）：enc 房间的 msg 本体与 remote 回显以信封承载——消息信封 {enc:1, role, h, ct}（AES-256-GCM under 每房间一把 RCK，ct=base64(nonce12‖密文‖tag16)，RCK 由账号内容主密钥 ACK 包裹，rckWrap 随房间 meta 与快照 keyInfo 下发、relay 只作不透明 blob 转存、长度上限见 wrappedKeyMaxBytes），h 为 HMAC-SHA256(RCK, 规范化正文) 的 64 位小写 hex，relay 无钥用它做对锚（firstHash/lastHash/tailHashes）与 remote 取代判定（同 h 先到者被取代、FIFO）；落盘记录：msg 行 {k:\"msg\", seq, enc:1, role, h, ct}（与明文 {k:\"msg\", seq, m} 同代共存、按行判别），remote 行 {k:\"remote\", seq, enc:1, at, cid?, h, ct}，viewer→设备消息帧为 {type:\"message\", room, enc:1, ct, h, cid?}（cid 仍受 msg.cid 门控），设备→relay 的 remote 事件为扁平形 {type:\"remote_message\", enc:1, h, ct, cid?, at?}；房间 meta 记录带 enc/ackFp/rckWrap（ackFp 为 ACK 的 SHA-256 前 8 字节 hex、长度见 contentKeyFpChars），reset 换代继承 enc 不许洗回明文；检查点/清单 state 携带 encMeta{enc,ackFp,rckWrap} 与 enc 形态 pending{seq, enc:1, h, ct, cid?}（明文 pending 仍为 {seq, text, cid?}），清单 index.json 顶层另带 enc/ackFp/rckWrap；快照帧仅向声明本能力的连接带 enc:1 与 keyInfo{ackFp, rckWrap} 头（快照体 messages 为信封 JSON 串）；room_list/auth_result.rooms 条目仅向声明本能力的连接带 enc:0|1，room_registered 帧带 enc:0|1；版本门：未声明本能力的 viewer 订阅 enc 房间回 error 帧 code=crypto_required（retryable:false）且不下发任何快照，未声明本能力的扩展连接向 enc 房间的任何写入、以及已声明连接向 enc 房间写明文记录（message_end 非信封 / remote_message 非信封形 / 明文快照）同样逐次回 crypto_required 并拒绝落盘，房间转 enc（注册声明 enc 或迁移完成）时在座的未声明 viewer 被同帧摘除；明文房间收到 enc 信封消息（viewer message 带 enc）回 bad_args；正文搜索（search_session_bodies）命中 enc 房间回 ack 失败 code=unsupported 且 data{unsupported:true, reason:\"room_encrypted\", roomId}，不静默省略；迁移（设计 §5）：设备经快照通道发 {type:\"snapshot\", room, migration:{msgCount, lastHash}, messages:[信封…]} 并同帧声明 enc（扁平字段 enc:1/ackFp/rckWrap 或嵌套 enc 对象，两式都认；room_register 的 room 对象同口径），relay 先在内存核 trailer（候选条数与末条 h）再动盘：不符回 migration_result{ok:false, reason:\"trailer_mismatch\"} 且两代数据都保留可重试；房间另有 live writer（busy 或其他连接占用 local）回 reason:\"live_writer\"；核对通过才删明文代（reset 子集：活动文件截断、密封段/清单/检查点删除）并以信封代 seed，回 migration_result{ok:true, msgCount, lastHash}；relay 配置 cryptoPlaintextRooms（config.json，默认 \"allow\"）：\"readonly\" = 明文房间拒绝新写入（事件记录与快照 seed，明文策略拒绝回 code=unsupported）、\"deny\" = 明文房间读写都拒（订阅回 unsupported）；enc 房间不受该策略影响；relay 只见 seq/role/时间/字节数/toolmeta 等元数据，dialog 提示词与 ext_notify 在本档明文（已知暴露，tier b 拍板口径）；图片预算改写对 enc 记录自动跳过（ct 内无图可读、改写会破坏 h 对锚）；relay 永不持有 ACK/RCK"
+    "crypto.content": "正文端到端加密（加密地基，设计 A §4.1 中间档 b；阶段 3 已实现：relay 侧存储/门控/迁移全量落地；依赖 crypto.auth）：enc 房间的 msg 本体与 remote 回显以信封承载——消息信封 {enc:1, role, h, ct}（AES-256-GCM under 每房间一把 RCK，ct=base64(nonce12‖密文‖tag16)，RCK 由账号内容主密钥 ACK 包裹，rckWrap 随房间 meta 与快照 keyInfo 下发、relay 只作不透明 blob 转存、长度上限见 wrappedKeyMaxBytes），h 为 HMAC-SHA256(RCK, 规范化正文) 的 64 位小写 hex，relay 无钥用它做对锚（firstHash/lastHash/tailHashes）与 remote 取代判定（同 h 先到者被取代、FIFO）；落盘记录：msg 行 {k:\"msg\", seq, enc:1, role, h, ct}（与明文 {k:\"msg\", seq, m} 同代共存、按行判别），remote 行 {k:\"remote\", seq, enc:1, at, cid?, h, ct}，viewer→设备消息帧为 {type:\"message\", room, enc:1, ct, h, cid?}（cid 仍受 msg.cid 门控），设备→relay 的 remote 事件为扁平形 {type:\"remote_message\", enc:1, h, ct, cid?, at?}；房间 meta 记录带 enc/ackFp/rckWrap（ackFp 为 ACK 的 SHA-256 前 8 字节 hex、长度见 contentKeyFpChars），reset 换代继承 enc 不许洗回明文；检查点/清单 state 携带 encMeta{enc,ackFp,rckWrap} 与 enc 形态 pending{seq, enc:1, h, ct, cid?}（明文 pending 仍为 {seq, text, cid?}），清单 index.json 顶层另带 enc/ackFp/rckWrap；快照帧仅向声明本能力的连接带 enc:1 与 keyInfo{ackFp, rckWrap} 头（快照体 messages 为信封 JSON 串）；room_list/auth_result.rooms 条目仅向声明本能力的连接带 enc:0|1，room_registered 帧带 enc:0|1；版本门：未声明本能力的 viewer 订阅 enc 房间回 error 帧 code=crypto_required（retryable:false）且不下发任何快照，未声明本能力的扩展连接向 enc 房间的任何写入、以及已声明连接向 enc 房间写明文记录（message_end 非信封 / remote_message 非信封形 / 明文快照）同样逐次回 crypto_required 并拒绝落盘，房间转 enc（注册声明 enc 或迁移完成）时在座的未声明 viewer 被同帧摘除；明文房间收到 enc 信封消息（viewer message 带 enc）回 bad_args；正文搜索（search_session_bodies）命中 enc 房间回 ack 失败 code=unsupported 且 data{unsupported:true, reason:\"room_encrypted\", roomId}，不静默省略；迁移（设计 §5）：设备经快照通道发 {type:\"snapshot\", room, migration:{msgCount, lastHash}, messages:[信封…]} 并同帧声明 enc（扁平字段 enc:1/ackFp/rckWrap 或嵌套 enc 对象，两式都认；room_register 的 room 对象同口径），relay 先在内存核 trailer（候选条数与末条 h）再动盘：不符回 migration_result{ok:false, reason:\"trailer_mismatch\"} 且两代数据都保留可重试；房间另有 live writer（busy 或其他连接占用 local）回 reason:\"live_writer\"；核对通过才删明文代（reset 子集：活动文件截断、密封段/清单/检查点删除）并以信封代 seed，回 migration_result{ok:true, msgCount, lastHash}；relay 配置 cryptoPlaintextRooms（config.json，默认 \"allow\"）：\"readonly\" = 明文房间拒绝新写入（事件记录与快照 seed，明文策略拒绝回 code=unsupported）、\"deny\" = 明文房间读写都拒（订阅回 unsupported）；enc 房间不受该策略影响；relay 只见 seq/role/时间/字节数/toolmeta 等元数据，dialog 提示词与 ext_notify 在本档明文；声明 crypto.dialog 后在 enc 房封存，见 crypto.dialog；图片预算改写对 enc 记录自动跳过（ct 内无图可读、改写会破坏 h 对锚）；relay 永不持有 ACK/RCK",
+    "crypto.dialog": "交互文本加密（(b+)；依赖 crypto.content）：声明本能力的设备在 enc 房把 dialog_open 的文本字段（title/options/message/placeholder/prefill）打包封为 textEnc（RCK 信封 {enc:1,ct}）、title 另封为 titleEnc（ACK 信封 {enc:1,ct}），ui_prompt_start 与 ui_prompt_end 的 title 封为 titleEnc（ACK 信封；end 帧同样带 title，两帧同口径），ext_notify 的 message 封为 messageEnc（RCK 信封 {enc:1,ct}）；结构字段（dialogId/kind/startedAt/timeout/minSelect/maxSelect/optionsTotal/answerable）一律明文留帧上；relay 只校验信封形状与长度（上限见 limits 的 dialogTextEncMax/dialogTitleEncMax/extNotifyEncMax），原样存槽/转发/补发，密封槽帧上同在的明文文本字段一律丢弃（dialog 本身不拒）；等待摘要（room_waiting 与 room_list 条目的 waiting/waitingPrompt）与收件箱账本条目只搬 titleEnc 的 ct 串（上限见 inboxTitleEncMax），不落明文标题，收件箱 ask 子类条目（当前有入口无生产者）同口径预留 titleEnc 承载；应答文本跟随问题形态自协商：密封槽的 dialog_answer 只收 valueEnc/valuesEnc/noteEnc（均为 ct 串，桥以本房 RCK 解开后走既有裁决），明文槽的应答带任一 *Enc 字段、密封槽的应答带任一明文 value/values/note，一律回 bad_args 且不转发；dialog_close 的 noteEnc 由桥自应答 noteEnc 原样透传，relay 只验形状与长度（替代明文清洗）；未声明本能力的观看连接只收密封 dialog 的降级只读卡（剥 textEnc/titleEnc 与 answerable，只剩结构字段），其等待摘要与收件箱条目被剥 titleEnc 与密封条目的 answerable；明文房、旧设备、旧 relay 组合下行为逐字不变；ext_status 文本不在本能力内（(b++) 候选）"
   },
   "errors": {
     "auth_failed": {
@@ -301,7 +302,11 @@ const PROTOCOL = {
     "dialogSlotsMax": 8,
     "dialogNoteMax": 500,
     "dialogAnswerTimeoutMs": 120000,
+    "dialogTextEncMax": 12288,
+    "dialogTitleEncMax": 1024,
     "extNotifyMax": 2000,
+    "extNotifyEncMax": 12288,
+    "inboxTitleEncMax": 1024,
     "widgetLinesMax": 50,
     "widgetLineChars": 200,
     "statusTextMax": 200,
@@ -345,7 +350,7 @@ const EXT_VERSION = "4.0.0";
 /** 本扩展声明的能力（protocol/v4.json 的 caps 键）。
  *  dialog.observe：O1 观察帧已真实生产（dialog_open/close、ext_status、ext_notify）才声明；
  *  dialog.respond：O2 接管应答已落地（beginDialog/noteDialogAnswer，定版说明第一部分 §2）才声明。 */
-const CLIENT_CAPS = ["err.v4", "msg.cid", "device.token", "room.label", "sync.v3", "dialog.observe", "dialog.respond", "usage.activity.v1", "crypto.content"];
+const CLIENT_CAPS = ["err.v4", "msg.cid", "device.token", "room.label", "sync.v3", "dialog.observe", "dialog.respond", "usage.activity.v1", "crypto.content", "crypto.dialog"];
 
 /** 远程命令/注入的失败：code 取自协议错误码表，不认识的一律记 internal */
 class RemoteError extends Error {
@@ -4579,6 +4584,7 @@ class Bridge {
   private emitEventNow(ev: any) {
     if (!ev || !this.roomId) return;
     ev = this.capDeltaEvent(ev);
+    ev = this.sealInteractionEvent(ev);
     if (mergeableDelta(ev)) {
       const p = this.pendingDelta;
       const a = ev.assistantMessageEvent;
@@ -4963,7 +4969,7 @@ class Bridge {
 
   /** 持留 dialog 的唯一落定出口：resolve + （点亮过的）发 dialog_close{reason,note?} + 点亮下一个。
    *  note 只进 close 帧供广播呈现，绝不进 resolve 值（pi 值域装不下，定版明文）。 */
-  private settleHeldDialog(entry: any, value: any, reason: string, note?: string) {
+  private settleHeldDialog(entry: any, value: any, reason: string, note?: string, noteEnc?: string) {
     if (entry.settled) return;
     entry.settled = true;
     if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
@@ -4979,7 +4985,11 @@ class Bridge {
     if (entry.active) {
       this.tapOpenDialogs.delete(entry.id);
       const close: any = { type: "dialog_close", dialogId: entry.id, outcome: "resolved", reason, at: Date.now() };
-      if (typeof note === "string" && note) close.note = note.slice(0, (PROTOCOL.limits as any).dialogNoteMax || 500);
+      // (b+) a sealed answer's deny reason rides as noteEnc: the bare ct
+      // string the answering viewer sent, passed through unopened (the
+      // bridge never reads the note) instead of any plaintext note.
+      if (typeof noteEnc === "string" && noteEnc) close.noteEnc = noteEnc;
+      else if (typeof note === "string" && note) close.note = note.slice(0, (PROTOCOL.limits as any).dialogNoteMax || 500);
       this.emitEvent(close);
     }
     entry.resolve(value);
@@ -5027,6 +5037,124 @@ class Bridge {
     return { ok: true, value };
   }
 
+  /** (b+) interaction-text seal context (crypto.dialog): non-null only
+   *  when this room is the confirmed encrypted room AND the relay declared
+   *  crypto.dialog in auth_result. encEntry already gates on content
+   *  readiness (key auth + relay crypto.content + held ACK); anything less
+   *  and interaction frames go out byte-identical to before (b+). */
+  private dialogSealContext(): { entry: any; ack: Buffer } | null {
+    if (!this.relayCaps || !this.relayCaps.has("crypto.dialog")) return null;
+    const entry = this.encEntry(this.roomId);
+    if (!entry || !entry.rck) return null;
+    const ack = this.accountAck();
+    if (!ack) return null;
+    return { entry, ack };
+  }
+
+  /** (b+) seal one outgoing interaction frame (crypto.dialog, design
+   *  section 3.1). The single out-gate in emitEventNow covers every
+   *  producer -- tap capture, held-dialog activation, ask_user, the
+   *  approval gate, local-fallback republication -- because all of them
+   *  emit through emitEvent. Only a copy is sealed: held entries and
+   *  local dialogs keep their plaintext args untouched. Seal failure
+   *  never falls back to plaintext: once the seal conditions hold, a
+   *  frame whose seal throws goes out textless -- structure fields
+   *  kept, every text field dropped, no sealed field attached -- one
+   *  line lands in the extension log, and later frames keep trying
+   *  (no latch). Plaintext only ever leaves when the seal conditions
+   *  themselves do not hold (see dialogSealContext). */
+  private sealInteractionEvent(ev: any): any {
+    if (!ev || typeof ev !== "object") return ev;
+    const type = ev.type;
+    if (type !== "dialog_open" && type !== "ui_prompt_start" && type !== "ui_prompt_end" && type !== "ext_notify") return ev;
+    const ctx = this.dialogSealContext();
+    if (!ctx) return ev;
+    try {
+      if (type === "dialog_open") {
+        // Pack order follows buildDialogOpen's own field order.
+        const pack: any = {};
+        for (const f of ["title", "options", "message", "placeholder", "prefill"]) {
+          if (ev[f] !== undefined) pack[f] = ev[f];
+        }
+        if (!Object.keys(pack).length) return ev;
+        const out: any = { ...ev };
+        out.textEnc = { enc: 1, ct: encryptTextCt(ctx.entry.rck, JSON.stringify(pack)) };
+        if (typeof ev.title === "string" && ev.title) out.titleEnc = encryptAckText(ctx.ack, ev.title);
+        for (const f of ["title", "options", "message", "placeholder", "prefill"]) delete out[f];
+        return out;
+      }
+      if (type === "ext_notify") {
+        if (typeof ev.message !== "string" || !ev.message) return ev;
+        const out: any = { ...ev, messageEnc: { enc: 1, ct: encryptTextCt(ctx.entry.rck, ev.message) } };
+        delete out.message;
+        return out;
+      }
+      // ui_prompt_start / ui_prompt_end: both frames carry the title
+      // (INVENTORY 7.5), so both are sealed the same way.
+      if (typeof ev.title !== "string" || !ev.title) return ev;
+      const out: any = { ...ev, titleEnc: encryptAckText(ctx.ack, ev.title) };
+      delete out.title;
+      return out;
+    } catch (err) {
+      // Seal conditions held but sealing threw: the encryption promise
+      // must not be silently broken by one runtime error, so the frame
+      // goes out textless (structure only, no text, no *Enc fields).
+      log("dialog text seal failed; sending a textless frame:", type, err instanceof Error ? err.message : String(err));
+      const out: any = { ...ev };
+      if (type === "dialog_open") {
+        for (const f of ["title", "options", "message", "placeholder", "prefill"]) delete out[f];
+      } else if (type === "ext_notify") {
+        delete out.message;
+      } else {
+        delete out.title;
+      }
+      delete out.textEnc;
+      delete out.titleEnc;
+      delete out.messageEnc;
+      return out;
+    }
+  }
+
+  /** (b+) open a sealed answer frame (crypto.dialog, design section
+   *  3.4): valueEnc/valuesEnc are opened with this room's RCK and
+   *  rewritten to the plaintext shape dialogAnswerValue already
+   *  adjudicates. Both wire spellings carry the same AES-256-GCM
+   *  ciphertext and are accepted -- the {enc:1, ct} envelope and the
+   *  bare ct string. noteEnc is deliberately NOT opened here: it passes
+   *  through to dialog_close verbatim (design section 2.3). A frame
+   *  whose sealed fields fail to open, or that mixes plaintext answer
+   *  fields with sealed ones, is rejected whole: the caller replies
+   *  bad_args and ciphertext never reaches pi as a value. */
+  private openSealedAnswer(msg: any): { ok: boolean; msg?: any } {
+    if (msg.valueEnc === undefined && msg.valuesEnc === undefined && msg.noteEnc === undefined) return { ok: true, msg };
+    if (msg.value !== undefined || msg.values !== undefined || msg.note !== undefined) return { ok: false };
+    const entry = this.encEntry(this.roomId);
+    if (!entry || !entry.rck) return { ok: false };
+    const openField = (field: any): string | null => {
+      const ct = typeof field === "string"
+        ? field
+        : field && typeof field === "object" && field.enc === 1 && typeof field.ct === "string" ? field.ct : null;
+      return ct ? decryptTextCt(entry.rck, ct) : null;
+    };
+    const out: any = { ...msg };
+    if (msg.valueEnc !== undefined) {
+      const value = openField(msg.valueEnc);
+      if (value === null) return { ok: false };
+      out.value = value;
+      delete out.valueEnc;
+    }
+    if (msg.valuesEnc !== undefined) {
+      const raw = openField(msg.valuesEnc);
+      if (raw === null) return { ok: false };
+      let parsed: any = null;
+      try { parsed = JSON.parse(raw); } catch { return { ok: false }; }
+      if (!Array.isArray(parsed)) return { ok: false };
+      out.values = parsed.map((v: any) => String(v ?? ""));
+      delete out.valuesEnc;
+    }
+    return { ok: true, msg: out };
+  }
+
   /** relay 转来的 dialog_answer（先答广播）：只有当前可应答的那一个能被 resolve；
    *  迟到 / 排队中 / 未知 id 一律回 dialog_gone；形状不合法回 bad_args（dialog 仍可答）。
    *  回执统一走 dialog_answer_result 帧（aid 对号）。 */
@@ -5045,16 +5173,36 @@ class Bridge {
         reply(false, "dialog_gone");
         return;
       }
-      const verdict = this.dialogAnswerValue(entry, msg);
+      // (b+) a sealed answer is opened with the room RCK before
+      // adjudication; a failed open rejects as bad_args and the dialog
+      // stays answerable (same posture as an out-of-range value).
+      const opened = this.openSealedAnswer(msg);
+      if (!opened.ok) {
+        log("sealed dialog answer failed to open; rejected as bad_args:", dialogId);
+        reply(false, "bad_args");
+        return;
+      }
+      const answer = opened.msg;
+      const verdict = this.dialogAnswerValue(entry, answer);
       if (!verdict.ok) {
         reply(false, "bad_args");
         return;
       }
-      const isDeny = msg.action === "deny";
-      const note = isDeny && typeof msg.note === "string" && msg.note
-        ? msg.note.slice(0, (PROTOCOL.limits as any).dialogNoteMax || 500)
+      const isDeny = answer.action === "deny";
+      // (b+) the deny reason follows the question's form: a sealed
+      // answer's noteEnc is normalized to the bare ct string and passed
+      // through to dialog_close unopened; a plaintext note keeps the
+      // existing clamp-and-carry path, and only when no noteEnc exists.
+      const rawNoteEnc = isDeny ? answer.noteEnc : undefined;
+      const noteEnc = typeof rawNoteEnc === "string" && rawNoteEnc
+        ? rawNoteEnc
+        : rawNoteEnc && typeof rawNoteEnc === "object" && rawNoteEnc.enc === 1 && typeof rawNoteEnc.ct === "string" && rawNoteEnc.ct
+          ? rawNoteEnc.ct
+          : undefined;
+      const note = !noteEnc && isDeny && typeof answer.note === "string" && answer.note
+        ? answer.note.slice(0, (PROTOCOL.limits as any).dialogNoteMax || 500)
         : undefined;
-      this.settleHeldDialog(entry, verdict.value, isDeny ? "denied" : "answered", note);
+      this.settleHeldDialog(entry, verdict.value, isDeny ? "denied" : "answered", note, noteEnc);
       reply(true);
     } catch {
       reply(false, "dialog_gone");

@@ -110,6 +110,28 @@ export async function decryptCtText(key: CryptoKey, ctB64: string, subtle?: Subt
   return plain ? new TextDecoder().decode(plain) : null
 }
 
+/**
+ * Seal UTF-8 text into a bare ct (base64( nonce(12) || AES-256-GCM(key,
+ * text) || tag(16) )) -- the exact counterpart of decryptCtText and of
+ * the device bridge's encryptTextCt. Used for dialog answers under the
+ * room RCK (crypto.dialog): the wire fields valueEnc / valuesEnc /
+ * noteEnc are bare ct strings, not envelope objects. Null on failure.
+ */
+export async function sealCtText(key: CryptoKey, text: string, subtle?: SubtleCrypto): Promise<string | null> {
+  const nonce = globalThis.crypto.getRandomValues(new Uint8Array(GCM_NONCE_BYTES))
+  try {
+    const ct = new Uint8Array(
+      await defaultSubtle(subtle).encrypt({ name: "AES-GCM", iv: nonce as BufferSource }, key, new TextEncoder().encode(text) as BufferSource),
+    )
+    const blob = new Uint8Array(nonce.length + ct.length)
+    blob.set(nonce, 0)
+    blob.set(ct, nonce.length)
+    return bytesToBase64(blob)
+  } catch {
+    return null
+  }
+}
+
 /** A snapshot frame's keyInfo: the room's RCK wrap + the ACK fingerprint it belongs to. */
 export interface SnapshotKeyInfo {
   ackFp: string
@@ -135,13 +157,17 @@ export function snapshotKeyInfoOf(frame: unknown): SnapshotKeyInfo | null {
 
 /**
  * Unwrap a room key: rckWrap is the raw RCK sealed under the account ACK.
- * The result is a non-extractable, decrypt-only CryptoKey.
+ * The result is a non-extractable CryptoKey. Usages include "encrypt"
+ * because the viewer is a legitimate sealer under the room key too:
+ * dialog answers (crypto.dialog, (b+)) are sealed with it, the mirror of
+ * the bridge opening them on the device. Decrypt-only would make the
+ * first viewer-side seal under an RCK impossible.
  */
 export async function unwrapRoomKey(ackKey: CryptoKey, rckWrapB64: string, subtle?: SubtleCrypto): Promise<CryptoKey | null> {
   const raw = await openSealed(ackKey, rckWrapB64, subtle)
   if (!raw || raw.length !== ROOM_KEY_BYTES) return null
   try {
-    return await defaultSubtle(subtle).importKey("raw", raw as BufferSource, { name: "AES-GCM" }, false, ["decrypt"])
+    return await defaultSubtle(subtle).importKey("raw", raw as BufferSource, { name: "AES-GCM" }, false, ["decrypt", "encrypt"])
   } catch {
     return null
   }

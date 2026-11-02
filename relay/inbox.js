@@ -31,6 +31,8 @@ const INBOX_PENDING_MAX = 50;
 const INBOX_TOMB_RETENTION_MS = 24 * 60 * 60 * 1000;
 /** 字段上限（与槽位/协议口径同源：dialogId ≤64、标题 ≤120）。 */
 const INBOX_TITLE_MAX = 120;
+/** Sealed title ct cap: mirrors protocol limits.inboxTitleEncMax ((b+), crypto.dialog). */
+const INBOX_TITLE_ENC_MAX = 1024;
 const INBOX_KEY_MAX = 240;
 
 const KINDS = new Set(["waiting", "error", "done"]);
@@ -65,6 +67,11 @@ function cleanEntry(raw) {
   if (dialogKind) entry.dialogKind = dialogKind;
   const title = capStr(raw.title, INBOX_TITLE_MAX);
   if (title) entry.title = title;
+  // (b+) sealed title (crypto.dialog): an opaque ACK-envelope ct string. An
+  // entry carries titleEnc instead of a plaintext title, never both from the
+  // sync path; old files without the field load unchanged.
+  const titleEnc = capStr(raw.titleEnc, INBOX_TITLE_ENC_MAX);
+  if (titleEnc) entry.titleEnc = titleEnc;
   if (typeof raw.answerable === "boolean") entry.answerable = raw.answerable;
   return entry;
 }
@@ -82,6 +89,7 @@ function wireOf(entry) {
   };
   if (entry.dialogKind) wire.dialogKind = entry.dialogKind;
   if (entry.title) wire.title = entry.title;
+  if (entry.titleEnc) wire.titleEnc = entry.titleEnc;
   if (typeof entry.answerable === "boolean") wire.answerable = entry.answerable;
   return wire;
 }
@@ -89,6 +97,7 @@ function wireOf(entry) {
 function sameWire(a, b) {
   return a.roomId === b.roomId && a.deviceId === b.deviceId && a.kind === b.kind &&
     a.subkind === b.subkind && a.dialogKind === b.dialogKind && a.title === b.title &&
+    a.titleEnc === b.titleEnc &&
     a.answerable === b.answerable && a.at === b.at;
 }
 

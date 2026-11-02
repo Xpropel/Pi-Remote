@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { ChevronDown, CircleHelp, ShieldCheck } from "lucide-react"
 import type { PiContainerProps } from "@/pi/containers/types"
-import { dialogCardState, PI_DIALOG_RECEIPT_MS, type PiDialogReceiptView } from "@/pi/model/dialogCard"
+import { dialogCardState, dialogSealedBlockedText, PI_DIALOG_RECEIPT_MS, type PiDialogReceiptView } from "@/pi/model/dialogCard"
 import { approvalEndedOf, approvalReceiptOf, type PiLocalAnswer } from "@/pi/model/approvalReceipt"
 import { ClaudeBadge, ClaudeButton } from "../primitives/ClaudePrimitives"
 import { useNow } from "../primitives/useClaude"
@@ -139,7 +139,9 @@ export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
         {dialog.title ? <p className="claude-approval-message">{dialog.title}</p> : null}
         {dialog.message ? <p className="claude-approval-detail">{dialog.message}</p> : null}
 
-        {observe ? <p className="claude-approval-observe">只能在电脑上回答</p> : null}
+        {observe ? (
+          <p className="claude-approval-observe">{dialog.sealedBlocked ? dialogSealedBlockedText(dialog.sealedBlocked) : "只能在电脑上回答"}</p>
+        ) : null}
 
         {!observe && dialog.kind === "select" ? (
           <div className="claude-approval-options" role="listbox" aria-label="选项">

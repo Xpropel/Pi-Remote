@@ -51,6 +51,7 @@ export type Cap =
   | "room.schedule"
   | "crypto.auth"
   | "crypto.content"
+  | "crypto.dialog"
   | "room.label"
   | "sync.v3"
   | "health"
@@ -135,7 +136,10 @@ export function viewerAuthFrame(input: { viewerId: string; keyFp: string; client
     // keyed viewer can hold an ACK and decrypt envelopes, so the content
     // cap rides on the key-auth frame only -- the token frame stays
     // byte-identical and token viewers keep getting plaintext service.
-    caps: [...VIEWER_CAPS, "crypto.auth", "crypto.content"],
+    // crypto.dialog ((b+)) rides on the same condition: the relay only
+    // forwards sealed dialog text to connections declaring it, and only
+    // a keyed viewer can open or seal it.
+    caps: [...VIEWER_CAPS, "crypto.auth", "crypto.content", "crypto.dialog"],
     client: { kind: "viewer", version: CLIENT_VERSION },
     viewerId: input.viewerId,
     keyFp: input.keyFp,
