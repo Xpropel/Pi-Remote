@@ -23,6 +23,9 @@ const { RoomStore } = require("../relay/store.js");
 const { storeSessionArchive, ARCHIVE_MAX_BYTES } = require("../relay/sessionArchive.js");
 const { Rooms, resendFallbackBody } = require("../relay/rooms.js");
 const { AccountIndex, safeKey } = require("../relay/index.js");
+const { loadConfig } = require("../relay/config.js");
+const { startRelay } = require("../relay/server.js");
+const { snapshotBodyFrom } = require("../relay/wire.js");
 
 function tmpDir(prefix = "pi-remote-lowrisk-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -395,4 +398,173 @@ test("低危 17：令牌追加+fsync 仍在写返回前完成，整文件压缩�
   const reopened = new AccountIndex(dir);
   assert.equal(reopened.hasDeviceToken("admin", "d1"), true);
   assert.equal(reopened.hasDeviceToken("admin", "d2"), true);
+});
+
+/* ---------------- 256MB 上限处置：可配 + 80% 预警 + 触顶可见性 ----------------
+ * 对应 findings/cap256/MEASUREMENT.md 的落地：硬上限值与语义（整批拒写、
+ * 不删旧、实时流继续）不变，只补三件事——上限进配置、80% 一次性预警、
+ * fileCapped/fileWarned/dropped 投影到 info / 快照 / room_list。 */
+
+// Capture console.error lines for the duration of fn, restoring afterwards.
+function captureErrors(fn) {
+  const lines = [];
+  const orig = console.error;
+  console.error = (...args) => { lines.push(args.join(" ")); };
+  try { fn(); } finally { console.error = orig; }
+  return lines;
+}
+
+test("上限处置 1：persistMaxRoomBytes 配置解析（合法生效 / 非法回落默认 / 0 合法）", () => {
+  const dir = tmpDir();
+  const write = (obj) => {
+    const file = path.join(dir, `cfg-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(file, JSON.stringify(obj));
+    return file;
+  };
+  const errors = captureErrors(() => {
+    assert.equal(loadConfig(write({ persistMaxRoomBytes: 123456 })).persistMaxRoomBytes, 123456);
+    assert.equal(loadConfig(write({ persistMaxRoomBytes: 0 })).persistMaxRoomBytes, 0, "0 = 关闭上限，是合法值");
+    assert.equal(loadConfig(write({})).persistMaxRoomBytes, 256 * 1024 * 1024, "缺省 = 256MB");
+    assert.equal(loadConfig(write({ persistMaxRoomBytes: "123456" })).persistMaxRoomBytes, 256 * 1024 * 1024, "字符串非法，回落默认");
+    assert.equal(loadConfig(write({ persistMaxRoomBytes: -1 })).persistMaxRoomBytes, 256 * 1024 * 1024, "负数非法，回落默认");
+    assert.equal(loadConfig(write({ persistMaxRoomBytes: 1.5 })).persistMaxRoomBytes, 256 * 1024 * 1024, "小数非法，回落默认");
+  });
+  assert.ok(
+    errors.some((line) => line.includes("persistMaxRoomBytes") && line.includes("已回退默认值")),
+    "非法值必须打日志说明回落，不能静默",
+  );
+});
+
+test("上限处置 2：startRelay 把 persistMaxRoomBytes 传进 RoomStore（缺省仍 256MB）", async () => {
+  const base = {
+    localPort: 0, viewerPort: 0, quiet: true, exitOnListenError: false,
+    localToken: "l".repeat(20), viewerToken: "v".repeat(20), adminToken: "a".repeat(20),
+    persistTranscripts: true,
+  };
+  const custom = await startRelay({ ...base, dataDir: tmpDir(), persistMaxRoomBytes: 4096 });
+  try {
+    assert.equal(custom.store.maxRoomFileBytes, 4096, "配置的小上限要真的进 store");
+  } finally { await custom.close(); }
+  const dflt = await startRelay({ ...base, dataDir: tmpDir() });
+  try {
+    assert.equal(dflt.store.maxRoomFileBytes, 256 * 1024 * 1024, "不配时保持原有 256MB 行为");
+  } finally { await dflt.close(); }
+});
+
+test("上限处置 3：80% 预警每房只报一次（日志 + 观察者），触顶后转 fileCapped", () => {
+  const maxRoomFileBytes = 10000;
+  const capEvents = [];
+  const s = new RoomStore(tmpDir(), {
+    persist: true, prewarm: false, maxRoomFileBytes,
+    onCapState: (roomId) => capEvents.push(roomId),
+  });
+  const file = path.join(s.dir, "r1.jsonl");
+  const errors = captureErrors(() => {
+    for (let i = 0; i < 80; i++) {
+      s.record("r1", end(user(`w${i}-${"x".repeat(600)}`, i + 1)));
+      s.flushAll();
+      if (s.rooms.get("r1").fileCapped) break;
+    }
+  });
+  const r = s.rooms.get("r1");
+  const warnLines = errors.filter((line) => line.includes("80%"));
+  assert.equal(warnLines.length, 1, `80% 预警日志只能有一条（实际 ${warnLines.length}）`);
+  assert.equal(r.capWarned, true, "预警闩锁要置位");
+  assert.equal(r.fileCapped, true, "继续写最终要触顶");
+  assert.deepEqual(capEvents, ["r1", "r1"], "观察者恰好收到两次跃迁：预警一次 + 触顶一次");
+  const info = s.info("r1");
+  assert.equal(info.fileWarned, true);
+  assert.equal(info.fileCapped, true);
+  assert.ok(info.dropped > 0, "触顶后被拒记录计入 dropped");
+  assert.deepEqual(s.capInfo("r1"), { capped: true, warned: true, dropped: info.dropped });
+  assert.ok(fs.statSync(file).size >= 8000, "预警点之前的内容都已落盘");
+  assert.ok(fs.statSync(file).size <= maxRoomFileBytes, "文件永远不越过硬上限");
+});
+
+test("上限处置 4：快照带 fileCapped/fileWarned/dropped（未触顶的快照不带这些字段）", () => {
+  const s = new RoomStore(tmpDir(), { persist: true, prewarm: false, maxRoomFileBytes: 4096 });
+  const early = captureErrors(() => {
+    s.record("r1", end(user("small")));
+    s.flushAll();
+  });
+  assert.equal(early.length, 0);
+  const snapClean = s.snapshot("r1", {});
+  assert.equal("fileCapped" in snapClean, false, "没到预警点：快照不带 cap 字段");
+  assert.ok(!snapshotBodyFrom(snapClean).includes("fileCapped"), "帧正文也不带");
+
+  captureErrors(() => {
+    for (let i = 0; i < 40; i++) {
+      s.record("r1", end(user(`m${i}-${"x".repeat(120)}`, i + 1)));
+      if (i % 4 === 3) s.flushAll();
+    }
+    s.flushAll();
+  });
+  assert.equal(s.rooms.get("r1").fileCapped, true);
+  const snap = s.snapshot("r1", {});
+  assert.equal(snap.fileCapped, true, "快照对象要带 fileCapped");
+  assert.equal(snap.fileWarned, true, "快照对象要带 fileWarned（先过 80% 才触顶）");
+  assert.ok(snap.dropped > 0, "快照对象要带 dropped 计数");
+  const body = snapshotBodyFrom(snap);
+  assert.ok(body.includes(`"fileCapped":true`), "快照帧正文要序列化 fileCapped");
+  assert.ok(body.includes(`"dropped":${snap.dropped}`), "快照帧正文要序列化 dropped");
+});
+
+test("上限处置 5：room_list 投影 fileCapped/fileWarned/dropped（未触顶房间不带）", () => {
+  const s = new RoomStore(tmpDir(), { persist: true, prewarm: false, maxRoomFileBytes: 4096 });
+  const rooms = new Rooms({ roomIdleEvictMs: 6 * 3600 * 1000, snapshotCacheTtlMs: 1500, cryptoOrphanDays: 30 });
+  rooms.bindStore(s);
+  rooms.get("r1");
+  rooms.get("r2");
+  captureErrors(() => {
+    for (let i = 0; i < 40; i++) {
+      s.record("r1", end(user(`m${i}-${"x".repeat(120)}`, i + 1)));
+      if (i % 4 === 3) s.flushAll();
+    }
+    s.flushAll();
+    s.record("r2", end(user("small")));
+    s.flushAll();
+  });
+  assert.equal(s.rooms.get("r1").fileCapped, true);
+  const list = rooms.list();
+  const e1 = list.find((e) => e.id === "r1");
+  assert.ok(e1, "触顶房间要在清单里");
+  assert.equal(e1.fileCapped, true);
+  assert.equal(e1.fileWarned, true);
+  assert.ok(e1.dropped > 0);
+  const e2 = list.find((e) => e.id === "r2");
+  assert.ok(e2, "普通房间也要在清单里");
+  assert.equal("fileCapped" in e2, false, "未触顶房间不带 fileCapped（条目形态与从前一致）");
+  assert.equal("fileWarned" in e2, false);
+  assert.equal("dropped" in e2, false);
+});
+
+test("上限处置 6：触顶房间重启后旧历史仍可读，再写一条重新闩锁停写（不删旧、不轮转）", () => {
+  const dir = tmpDir();
+  const a = new RoomStore(dir, { persist: true, prewarm: false, maxRoomFileBytes: 4096 });
+  captureErrors(() => {
+    for (let i = 0; i < 40; i++) {
+      a.record("r1", end(user(`m${i}-${"x".repeat(120)}`, i + 1)));
+      if (i % 4 === 3) a.flushAll();
+    }
+    a.flushAll();
+  });
+  assert.equal(a.rooms.get("r1").fileCapped, true);
+  const file = path.join(dir, "r1.jsonl");
+  const sizeBefore = fs.statSync(file).size;
+
+  // Fresh store over the same directory: history comes back from disk.
+  const b = new RoomStore(dir, { persist: true, prewarm: false, maxRoomFileBytes: 4096 });
+  const snap = b.snapshot("r1", {});
+  assert.ok(snap.items.length >= 5, `旧历史要能从盘上读回（实际 ${snap.items.length} 条）`);
+  const texts = snap.items.map((json) => JSON.parse(json));
+  assert.ok(texts.some((m) => JSON.stringify(m).includes("m0-")), "最早落盘的消息还在");
+
+  // The next write re-latches the cap instead of growing or rotating the file.
+  // (The write is deliberately larger than any headroom the cap can leave.)
+  captureErrors(() => {
+    b.record("r1", end(user(`one more-${"x".repeat(1500)}`)));
+    b.flushAll();
+  });
+  assert.equal(b.rooms.get("r1").fileCapped, true, "重启后首次 flush 按体积重新闩锁");
+  assert.equal(fs.statSync(file).size, sizeBefore, "文件不增长、不轮转，旧数据原样保留");
 });

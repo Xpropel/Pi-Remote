@@ -25,7 +25,7 @@
   "viewerAuthLockMs": 30000,
   "maxUnauthenticatedViewers": 100,
 
-  "_storage": "会话存储。dataDir / accountsDir 为相对路径时按仓库根目录解析；名册与会话索引放 accountsDir，对话正文（默认不落盘）放 dataDir。persistTranscripts=true（或 PI_REMOTE_PERSIST_TRANSCRIPTS=1）才把正文写入 data/rooms。cacheSize/cacheMaxBytes：每房间内存热缓存条数/字节上限；flushIntervalMs：批量落盘间隔；retentionDays：房间文件保留天数。maxSnapshotRecords/maxSnapshotBytes：单房间快照安全阀。dataDir/accountsDir 也可用 PI_REMOTE_DATA_DIR / PI_REMOTE_ACCOUNTS_DIR 覆盖。",
+  "_storage": "会话存储。dataDir / accountsDir 为相对路径时按仓库根目录解析；名册与会话索引放 accountsDir，对话正文（默认不落盘）放 dataDir。persistTranscripts=true（或 PI_REMOTE_PERSIST_TRANSCRIPTS=1）才把正文写入 data/rooms。cacheSize/cacheMaxBytes：每房间内存热缓存条数/字节上限；flushIntervalMs：批量落盘间隔；retentionDays：房间文件保留天数。persistMaxRoomBytes：单个会话落盘文件的字节硬上限（全部分段合计，仅 persistTranscripts 开启时有效，0 = 不限）；到顶后该会话停止落盘（不删旧数据、实时对话不受影响），达到 80% 时中继日志与房间列表会给出预警。maxSnapshotRecords/maxSnapshotBytes：单房间快照安全阀。dataDir/accountsDir 也可用 PI_REMOTE_DATA_DIR / PI_REMOTE_ACCOUNTS_DIR 覆盖。",
   "dataDir": "data/rooms",
   "accountsDir": "data/accounts",
   "cacheSize": 500,
@@ -35,6 +35,7 @@
   "flushIntervalMs": 200,
   "retentionDays": 30,
   "persistTranscripts": false,
+  "persistMaxRoomBytes": 268435456,
 
   "_transport": "传输。perMessageDeflate：viewer 通道压缩（≥1KB 的帧，快照通常压到 1/5 以下）；viewerLagBytes：发送缓冲超过它时跳过可丢的流式 delta；viewerMaxBufferBytes：已积压 + 本帧超过它时拒绝该帧，已积压本身超过它时断开慢连接。",
   "perMessageDeflate": true,

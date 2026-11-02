@@ -1022,6 +1022,29 @@ export function useRelay() {
     }
   }
 
+  /** Rooms whose storage-cap notice was already shown this page session. */
+  const fileCappedNotifiedRef = useRef(new Set<string>())
+
+  /**
+   * Show the storage-cap state of the open room as a room-scoped notice
+   * (the same pattern as the encrypted-room notice): the room's persisted
+   * transcript hit the relay's per-room cap, so new messages are no longer
+   * being saved -- the live conversation and the saved history are fine.
+   * Once per room per page session; the notice itself is persistent until
+   * dismissed or the room is left. Fed by the room_list flag and by the
+   * snapshot header, whichever lands first.
+   */
+  const noteFileCapped = (roomId: string) => {
+    if (!roomId || fileCappedNotifiedRef.current.has(roomId)) return
+    fileCappedNotifiedRef.current.add(roomId)
+    pushNotice({
+      level: "error",
+      title: "本会话已达中继保存上限，新消息不再保存到中继；实时对话不受影响，已保存的历史仍可读。",
+      scope: `room:${roomId}`,
+      dedupeKey: `file-capped:${roomId}`,
+    })
+  }
+
   /** Serialize one async unit of work per room so decrypted frames keep arrival order. */
   const enqueueRoomCryptoTask = (roomId: string, task: () => Promise<void>) => {
     const prev = roomChainsRef.current.get(roomId) ?? Promise.resolve()
@@ -2351,6 +2374,12 @@ export function useRelay() {
             codes: ["truncated"],
           })
         }
+        // Storage cap: the snapshot header states it directly, distinct
+        // from the generic truncated notice above (the cap stops future
+        // saving; it does not truncate what was already saved).
+        if (msg.fileCapped === true) {
+          noteFileCapped(typeof msg.room === "string" && msg.room ? msg.room : roomRef.current)
+        }
         // 历史补拉（R2-5）：全量快照整段换代，游标与入口状态一并重置（代次+1 让在飞补拉作废）；
         // 截断过才有“加载更早”入口，未截断即完整历史、入口不出现。
         historyGenRef.current += 1
@@ -2566,6 +2595,8 @@ export function useRelay() {
           roomsRef.current = list
           setRooms(list)
           noteRoomsCrypto(list)
+          const openCapped = list.find((room) => room.id === roomRef.current)
+          if (openCapped?.fileCapped) noteFileCapped(openCapped.id)
           // B-1：名册边沿喂注意力追踪（断线期间别房跑完的回合在这里补落定）
           // R3-1：同一份名册里的 relay 回合摘要紧接着种回（刷新/重连恢复的主路径）
           commitRoomTurnTracker(
@@ -2779,6 +2810,10 @@ export function useRelay() {
         roomsRef.current = list
         setRooms(list)
         noteRoomsCrypto(list)
+        // Storage cap: the roster flag covers caps that latched while this
+        // page was connected (the relay rebroadcasts on the transition).
+        const openCapped = list.find((room) => room.id === roomRef.current)
+        if (openCapped?.fileCapped) noteFileCapped(openCapped.id)
         // B-1：名册边沿喂注意力追踪（别房 busy true→false = 一回合落定）
         // R3-1：同一份名册里的 relay 回合摘要紧接着种回（刷新/重连恢复的主路径）
         commitRoomTurnTracker(

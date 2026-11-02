@@ -108,6 +108,11 @@ const DIR_FSYNC_RETRY_MAX_MS = 60 * 1000;
 // 到顶后停止落盘，内存热缓存继续服务实时流；快照按 distinct seq 缺口标记 truncated。
 // 0 = 关闭上限。上限按"整批不越过"判：宁可直接丢掉这一批（内存还在），也不写出半条记录。
 const ROOM_FILE_MAX_BYTES = 256 * 1024 * 1024;
+// Soft-warning point for the room file cap: when a room's persisted bytes
+// first reach this fraction of maxRoomFileBytes, the store logs one warning
+// per room (and reports fileWarned via info()/capInfo()) while it keeps
+// writing. The hard cap itself stays at 100% (see _markFileCapped).
+const ROOM_FILE_WARN_RATIO = 0.8;
 // 检查点指针临时文件（<room>.ckpt.json.<pid>.<hex>.tmp）只在一次同步写路径内存活，
 // 进程被强杀会留下孤儿；启动时只清理一小时以前的，避免误删另一个进程正在写的临时文件。
 // 清单文件（<room>.index.json）用同一套临时文件纪律，一并覆盖。
@@ -443,6 +448,13 @@ class RoomStore {
     // Disk-probe cache for encInfo() on rooms that are not loaded yet:
     // roomId -> {sig, meta}; sig pins the first segment's (mtime, size) + total size.
     this._encProbeCache = new Map();
+    // Same style of probe cache for capInfo() on unloaded rooms:
+    // roomId -> {sig, cap}; sig pins the active segment's (mtime, size) + total size.
+    this._capProbeCache = new Map();
+    // Optional observer for cap-state transitions (soft warning latched /
+    // hard cap latched): Rooms.bindStore hooks it to rebroadcast room_list so
+    // viewers learn the new fileWarned/fileCapped flags without reconnecting.
+    this.onCapState = typeof opts.onCapState === "function" ? opts.onCapState : null;
     this._prewarmScheduled = false;
     this._prewarmPending = 0;
     this._prewarmWaiters = [];
@@ -813,6 +825,10 @@ class RoomStore {
       _dirSyncTries: 0,
       fileCapped: false, // 房文件到达 maxRoomFileBytes：停止落盘，只在内存热缓存继续服务
       _capWarned: false,
+      // Latched the first time persisted bytes reach ROOM_FILE_WARN_RATIO of
+      // the cap (the 80% soft warning); info()/capInfo() expose it as
+      // fileWarned. Reset with the room generation, like fileCapped.
+      capWarned: false,
       _indexing: false,   // 异步索引在飞（占位房间）：读 API 不许信它的锚点，快照一律 truncated
       _indexJob: null,    // 在飞的索引任务（见 _startIndexJob；构造器预热与首次打开共用）
       _journal: null,     // 索引期间到达的写操作：按到达顺序排队，索引落地后重放（不丢不乱序）
@@ -2504,6 +2520,33 @@ class RoomStore {
     }
   }
 
+  /** Tell the optional cap-state observer that a room crossed a cap
+   *  threshold (soft warning or hard cap). Observer errors never break the
+   *  write path: this is a presentation hook, not part of persistence. */
+  _notifyCapState(r) {
+    if (typeof this.onCapState !== "function") return;
+    try { this.onCapState(r.id); } catch {}
+  }
+
+  /** Soft warning at ROOM_FILE_WARN_RATIO of the cap: after a successful
+   *  append, the first time a room's persisted bytes (all segments) reach
+   *  the warning point, latch capWarned, log once, and notify the observer.
+   *  Writing continues; only the hard cap stops persistence. A room loaded
+   *  from disk already past the warning point warns on its next append --
+   *  the latch is per generation, same discipline as _capWarned. */
+  _noteCapWarn(r) {
+    if (!this.persist || this.maxRoomFileBytes <= 0 || r.fileCapped || r.capWarned) return;
+    let total = r.sealedBytes || 0;
+    try { total += fs.statSync(r.file).size; } catch { return; }
+    if (total < Math.floor(this.maxRoomFileBytes * ROOM_FILE_WARN_RATIO)) return;
+    r.capWarned = true;
+    console.error(
+      `[store] 房间 ${r.id} 房文件已达上限的 ${Math.round(ROOM_FILE_WARN_RATIO * 100)}%` +
+        `（${total} / ${this.maxRoomFileBytes} 字节）：继续落盘，达到上限后将停止保存新记录`,
+    );
+    this._notifyCapState(r);
+  }
+
   /** 房文件到达上限：停止落盘。缓冲里的这一批不再写（内存热缓存已有一份），只计数并告警一次。
    *  之后 _writeLine 直接丢弃新记录（seq 照常递增），快照靠 distinct seq 缺口/热缓存标记 truncated。 */
   _markFileCapped(r) {
@@ -2519,6 +2562,7 @@ class RoomStore {
           `（内存热缓存继续服务；快照会按缺口标记 truncated，重启后旧历史仍可读）`,
       );
     }
+    this._notifyCapState(r);
   }
 
   /**
@@ -2539,6 +2583,8 @@ class RoomStore {
       // 清单统计记账 + 盘面状态捕获（此刻内存与盘面严格对齐，见 _captureDiskState）。
       this._noteAppended(r, batchLines);
       this._captureDiskState(r);
+      // 80% soft warning: check the new on-disk total against the cap.
+      this._noteCapWarn(r);
       const fsyncOk = !sync || this._fsyncFile(r.file);
       // 新建文件首次成功落盘后同步目录项：内容 fsync 不能保证文件名本身抗掉电。
       // 失败不再是"一次性放弃"：_syncRoomDir 保持 dirSynced=false 并按退避在后续 flush 重试。
@@ -2828,6 +2874,7 @@ class RoomStore {
       r._dirSyncTries = 0;
       r.fileCapped = false;
       r._capWarned = false;
+      r.capWarned = false;
       r.indexPartial = false;
       r._indexFailed = false;
       r._indexing = false;
@@ -2959,6 +3006,41 @@ class RoomStore {
     return meta;
   }
 
+  /** Cap state for one room, for the room_list projection: {capped, warned,
+   *  dropped} or null when there is nothing to report (persistence off, cap
+   *  disabled, room unknown, or an unloaded room still below the warning
+   *  point). Loaded rooms answer from their live latches. Unloaded rooms are
+   *  derived from the on-disk segment total: at/over the cap the next batch
+   *  would be rejected, so the room is effectively capped; the warning point
+   *  is the same ROOM_FILE_WARN_RATIO fraction. dropped is only known for
+   *  loaded rooms (it is a runtime counter, never persisted). */
+  capInfo(roomId) {
+    if (!this.persist || this.maxRoomFileBytes <= 0) return null;
+    const loaded = this.rooms.get(roomId);
+    if (loaded) {
+      if (!loaded.fileCapped && !loaded.capWarned && !(loaded.dropped > 0)) return null;
+      return { capped: !!loaded.fileCapped, warned: !!loaded.capWarned, dropped: loaded.dropped || 0 };
+    }
+    if (!safeRoomId(roomId)) return null;
+    const layout = this._layoutIn(roomId, this._roomDir(roomId));
+    if (!layout.exists) return null;
+    const activeFile = layout.active ? layout.active.file : null;
+    if (!activeFile) return null;
+    let sig = null;
+    try {
+      const st = fs.statSync(activeFile);
+      sig = `${st.mtimeMs}:${st.size}:${layout.total}`;
+    } catch { return null; }
+    const hit = this._capProbeCache.get(roomId);
+    if (hit && hit.sig === sig) return hit.cap;
+    const total = layout.total || 0;
+    const capped = total >= this.maxRoomFileBytes;
+    const warned = total >= Math.floor(this.maxRoomFileBytes * ROOM_FILE_WARN_RATIO);
+    const cap = capped || warned ? { capped, warned, dropped: 0 } : null;
+    this._capProbeCache.set(roomId, { sig, cap });
+    return cap;
+  }
+
   /** Declare (or replace) a room's enc meta (design section 5: the meta record
    *  gains enc/ackFp/rckWrap). Takes effect in memory immediately; on disk it
    *  rides the generation's next meta line — appended right away when the
@@ -3049,7 +3131,7 @@ class RoomStore {
   info(roomId) {
     const r = this._room(roomId);
     if (!r) {
-      return { exists: false, rev: null, seq: 0, msgCount: 0, firstHash: null, lastHash: null, dropped: 0, indexFailed: false, indexing: false, enc: 0 };
+      return { exists: false, rev: null, seq: 0, msgCount: 0, firstHash: null, lastHash: null, dropped: 0, fileCapped: false, fileWarned: false, indexFailed: false, indexing: false, enc: 0 };
     }
     return {
       exists: true,
@@ -3060,6 +3142,9 @@ class RoomStore {
       lastHash: r.lastMsgHash,
       enc: encMetaOf(r.metaExtra) ? 1 : 0,
       dropped: r.dropped || 0,
+      // Cap state (persist + cap enabled only; both latches live on the room).
+      fileCapped: !!r.fileCapped,
+      fileWarned: !!r.capWarned,
       indexFailed: !!(r._indexFailed || r.indexPartial),
       // 异步索引在飞（R-4）：锚点（rev/seq/hash）此刻都是占位空值，调用方据此知道要等落地后重问。
       indexing: !!r._indexing,
@@ -3419,9 +3504,10 @@ class RoomStore {
     const indexPartial = !!(r._indexFailed || r.indexPartial);
     const indexing = !!r._indexing;
     const encFields = this._snapEncFields(r);
+    const capFields = this._snapCapFields(r);
     if (!indexPartial && !indexing && since && since.rev === r.rev && Number.isInteger(since.seq) && since.seq >= 0 && since.seq <= r.seq) {
       const d = this._collect(r, { after: since.seq, limit, maxBytes });
-      if (!d.truncated) return { rev: r.rev, seq: r.seq, truncated: false, delta: true, baseSeq: since.seq, items: d.items, ...(encFields || {}) };
+      if (!d.truncated) return { rev: r.rev, seq: r.seq, truncated: false, delta: true, baseSeq: since.seq, items: d.items, ...(encFields || {}), ...(capFields || {}) };
       // 增量本身超安全阀（离线太久）：退回全量，由全量路径给出 truncated 语义
     }
     const f = this._collect(r, { after: 0, limit, maxBytes });
@@ -3429,7 +3515,21 @@ class RoomStore {
     if (f.truncated) {
       console.warn(`[store] 房间 ${r.id} 快照截断：交付 ${f.items.length} 条（触及 ${limit} 条 / ${Math.round(maxBytes / 1048576)}MB 安全阀）`);
     }
-    return { rev: r.rev, seq: r.seq, truncated, delta: false, baseSeq: 0, items: f.items, ...(encFields || {}) };
+    return { rev: r.rev, seq: r.seq, truncated, delta: false, baseSeq: 0, items: f.items, ...(encFields || {}), ...(capFields || {}) };
+  }
+
+  /** Cap fields for snapshot results: sparse, present only when there is
+   *  something to report (fileCapped / fileWarned latched, or records were
+   *  dropped). snapshotBodyFrom serializes them next to truncated so the UI
+   *  can tell "history stops being saved at the cap" apart from a generic
+   *  truncated snapshot. */
+  _snapCapFields(r) {
+    if (!this.persist || this.maxRoomFileBytes <= 0) return null;
+    const out = {};
+    if (r.fileCapped) out.fileCapped = true;
+    if (r.capWarned) out.fileWarned = true;
+    if (r.dropped > 0) out.dropped = r.dropped;
+    return Object.keys(out).length ? out : null;
   }
 
   /** 收集 seq > after 的可交付记录（old→new）；先热缓存，不够再磁盘尾扫描 */

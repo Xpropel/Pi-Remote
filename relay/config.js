@@ -53,6 +53,11 @@ const DEFAULT_CONFIG = {
   maxSnapshotBytes: 24 * 1024 * 1024, // 快照安全阀：单房间交付字节上限（手机端也要能吃下）
   flushIntervalMs: 200,  // 批量落盘间隔
   retentionDays: 30,     // 房间文件保留天数（超期清理）
+  // Per-room transcript file hard cap in bytes (all segments summed). Only
+  // applies when persistTranscripts is on; 0 disables the cap. At the cap the
+  // store stops persisting new records for that room (nothing is deleted, the
+  // live stream keeps flowing); at 80% it warns once per room.
+  persistMaxRoomBytes: 256 * 1024 * 1024,
   // —— 传输 ——
   perMessageDeflate: true,             // viewer 通道压缩（≥1KB 的帧；JSON 快照通常压到 1/5 以下）
   viewerLagBytes: 1024 * 1024,         // viewer 发送缓冲超过它：跳过可丢的流式 delta
@@ -127,6 +132,7 @@ const NUMERIC_CONFIG_FIELDS = {
   maxSnapshotBytes: { min: 1 },
   flushIntervalMs: { min: 1 },
   retentionDays: { min: 1 },
+  persistMaxRoomBytes: { min: 0 },
   viewerLagBytes: { min: 1 },
   viewerMaxBufferBytes: { min: 1 },
   roomIdleEvictMs: { min: 1 },

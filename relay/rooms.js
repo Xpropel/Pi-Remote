@@ -1054,6 +1054,10 @@ class Rooms {
     if (typeof store.setLocator === "function") {
       store.setLocator((id) => this.locateRoom(id));
     }
+    // Cap-state transitions (80% warning / hard cap) change the room_list
+    // flags: rebroadcast so connected viewers see fileWarned/fileCapped
+    // without waiting for the next roster change.
+    store.onCapState = () => { this.broadcastRoomList(); };
     for (const r of this.map.values()) this._stampStore(r);
   }
 
@@ -1472,7 +1476,13 @@ class Rooms {
         ? this._transcriptStore.encInfo(r.id)
         : null;
       if (encMeta && encMeta.ackFp) metaAckAccounts.add(r.accountId || DEFAULT_ACCOUNT);
-      facts.push({ r, session, encMeta });
+      // Transcript cap state (sparse; null when the store has nothing to
+      // report). Presentation only, like enc/encReason: no cap gating, old
+      // viewers simply ignore the unknown fields.
+      const capInfo = this._transcriptStore && typeof this._transcriptStore.capInfo === "function"
+        ? this._transcriptStore.capInfo(r.id)
+        : null;
+      facts.push({ r, session, encMeta, capInfo });
     }
     const ackKnownCache = new Map();
     const accountAckKnown = (accountId) => {
@@ -1485,7 +1495,7 @@ class Rooms {
       }
       return ackKnownCache.get(accountId);
     };
-    const out = facts.map(({ r, session, encMeta }) => {
+    const out = facts.map(({ r, session, encMeta, capInfo }) => {
       const accountId = r.accountId || DEFAULT_ACCOUNT;
       const deviceId = r.deviceId || UNREGISTERED_DEVICE;
       const entry = {
@@ -1529,6 +1539,13 @@ class Rooms {
         orphanThresholdMs,
       });
       if (encReason !== undefined) entry.encReason = encReason;
+      // Transcript cap flags (sparse: only the facts that hold are sent, so
+      // rooms nowhere near the cap keep their exact previous entry shape).
+      if (capInfo) {
+        if (capInfo.capped) entry.fileCapped = true;
+        if (capInfo.warned) entry.fileWarned = true;
+        if (capInfo.dropped > 0) entry.dropped = capInfo.dropped;
+      }
       return entry;
     });
     return out.sort((a, b) => Number(b.online) - Number(a.online) || a.id.localeCompare(b.id));

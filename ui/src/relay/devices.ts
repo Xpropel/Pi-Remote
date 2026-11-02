@@ -192,6 +192,16 @@ export type RoomInfo = {
    * evidence yet) -- the UI then keeps the legacy fallback label.
    */
   encReason?: RoomEncReason
+  /**
+   * Transcript storage cap (relay store): fileCapped = the room's persisted
+   * transcript reached the per-room cap and new messages are no longer being
+   * saved to the relay (nothing is deleted; the live conversation is
+   * unaffected). fileWarned = persisted bytes passed 80% of the cap.
+   * Absent = the relay did not say (old relay, persistence off, or the room
+   * is nowhere near the cap) -- never guessed.
+   */
+  fileCapped?: boolean
+  fileWarned?: boolean
   cwd: string | null
   online: boolean
   busy: boolean
@@ -773,6 +783,8 @@ function parseRoom(raw: unknown): RoomInfo {
     ...(firstMessageEnc ? { firstMessageEnc } : {}),
     ...(rec.enc === 1 ? { enc: true } : rec.enc === 0 ? { enc: false } : {}),
     ...(encReason ? { encReason } : {}),
+    ...(rec.fileCapped === true ? { fileCapped: true } : {}),
+    ...(rec.fileWarned === true ? { fileWarned: true } : {}),
     cwd: typeof rec.cwd === "string" ? rec.cwd : null,
     online: rec.online === true,
     busy: rec.busy === true,

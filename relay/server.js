@@ -218,6 +218,7 @@ function startRelay(overrides = {}) {
       cacheMaxBytes: cfg.cacheMaxBytes,
       flushIntervalMs: cfg.flushIntervalMs,
       persist: !!cfg.persistTranscripts,
+      maxRoomFileBytes: cfg.persistMaxRoomBytes,
     });
     rooms.bindStore(store);
     // 收件箱账本（设计 D §1）：与 prefs 同根落盘（accounts 目录下 per-account inbox.json），

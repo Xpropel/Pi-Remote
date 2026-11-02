@@ -179,6 +179,12 @@ function ackFrame(origId, ok, extra) {
 function snapshotBodyFrom(snap) {
   if (!snap) return `"rev":null,"seq":0,"truncated":false,"messages":[]`;
   let s = `"rev":${JSON.stringify(snap.rev)},"seq":${snap.seq},"truncated":${!!snap.truncated}`;
+  // Cap state (sparse; only store-produced snapshots carry these): the UI
+  // shows a dedicated "stopped saving at the storage cap" notice instead of
+  // folding the cap into the generic truncated meaning.
+  if (snap.fileCapped) s += `,"fileCapped":true`;
+  if (snap.fileWarned) s += `,"fileWarned":true`;
+  if (typeof snap.dropped === "number" && snap.dropped > 0) s += `,"dropped":${snap.dropped}`;
   if (snap.delta) s += `,"delta":true,"baseSeq":${snap.baseSeq}`;
   // Enc rooms (design section 7): the frame carries an enc header with the room
   // key info. Callers are responsible for never handing an enc snapshot to a
