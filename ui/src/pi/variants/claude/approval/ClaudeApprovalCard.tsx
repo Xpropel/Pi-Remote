@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { ChevronDown, CircleHelp, ShieldCheck } from "lucide-react"
 import type { PiContainerProps } from "@/pi/containers/types"
-import { dialogCardState, dialogSealedBlockedText, PI_DIALOG_RECEIPT_MS, type PiDialogReceiptView } from "@/pi/model/dialogCard"
+import { approvalPartsOf, dialogCardState, dialogIsApproval, dialogSealedBlockedText, PI_DIALOG_RECEIPT_MS, type PiDialogReceiptView } from "@/pi/model/dialogCard"
 import { approvalEndedOf, approvalReceiptOf, type PiLocalAnswer } from "@/pi/model/approvalReceipt"
 import { ClaudeBadge, ClaudeButton } from "../primitives/ClaudePrimitives"
 import { useNow } from "../primitives/useClaude"
@@ -102,8 +102,12 @@ export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
   const sending = view.state === "sending"
   const observe = view.observe
   const options = dialog.options ?? []
+  // Approval-gate cards (tool_call gate) get their own header treatment
+  // and a question/command split; ask_user cards keep the plain layout.
+  const approval = dialogIsApproval(dialog)
+  const approvalParts = approval ? approvalPartsOf(dialog) : null
   const source = dialog.kind === "confirm" ? "approval" : dialog.kind === "select" || dialog.kind === "multiselect" ? "choice" : "input"
-  const sourceLabel = dialog.kind === "confirm" ? "工具确认" : dialog.kind === "select" ? "选择题" : dialog.kind === "multiselect" ? "多选题" : dialog.kind === "editor" ? "长文本回答" : "输入回答"
+  const sourceLabel = approval ? "工具审批" : dialog.kind === "confirm" ? "工具确认" : dialog.kind === "select" ? "选择题" : dialog.kind === "multiselect" ? "多选题" : dialog.kind === "editor" ? "长文本回答" : "输入回答"
   // 多选的选择数区间（桥侧组帧已钳制；这里再按实际选项数收一遍）
   const minSel = Math.min(Math.max(0, dialog.minSelect ?? 1), options.length)
   const maxSel = Math.min(Math.max(minSel, dialog.maxSelect ?? options.length), options.length)
@@ -127,8 +131,12 @@ export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
   return (
     <section className="claude-approval" data-state={view.state} aria-label="审批卡">
       <header className="claude-approval-head">
-        <CircleHelp size={15} strokeWidth={1.75} className="claude-approval-icon" aria-hidden />
-        <span className="claude-approval-title">pi 在等你回答</span>
+        {approval ? (
+          <ShieldCheck size={15} strokeWidth={1.75} className="claude-approval-icon" aria-hidden />
+        ) : (
+          <CircleHelp size={15} strokeWidth={1.75} className="claude-approval-icon" aria-hidden />
+        )}
+        <span className="claude-approval-title">{approval ? "需要你的批准" : "pi 在等你回答"}</span>
         <ClaudeBadge tone="clay">{sourceLabel}</ClaudeBadge>
         <span className="claude-approval-source">mcp://{source}</span>
         {view.remainingSec != null ? <span className="claude-approval-countdown">剩余 {Math.floor(view.remainingSec / 60)}:{String(view.remainingSec % 60).padStart(2, "0")}</span> : null}
@@ -136,8 +144,17 @@ export function ClaudeApprovalCard({ p }: { p: PiContainerProps }) {
       </header>
 
       <div className="claude-approval-body">
-        {dialog.title ? <p className="claude-approval-message">{dialog.title}</p> : null}
-        {dialog.message ? <p className="claude-approval-detail">{dialog.message}</p> : null}
+        {approvalParts ? (
+          <>
+            {approvalParts.question ? <p className="claude-approval-message">{approvalParts.question}</p> : null}
+            {approvalParts.command ? <pre className="claude-approval-command">{approvalParts.command}</pre> : null}
+          </>
+        ) : (
+          <>
+            {dialog.title ? <p className="claude-approval-message">{dialog.title}</p> : null}
+            {dialog.message ? <p className="claude-approval-detail">{dialog.message}</p> : null}
+          </>
+        )}
 
         {observe ? (
           <p className="claude-approval-observe">{dialog.sealedBlocked ? dialogSealedBlockedText(dialog.sealedBlocked) : "只能在电脑上回答"}</p>

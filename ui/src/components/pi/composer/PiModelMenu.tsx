@@ -4,7 +4,7 @@ import { Check } from "@/components/kit/icons"
 import { usePiMenuSurface, usePiStatic } from "@/components/pi/shared/layers"
 import { cn } from "@/lib/utils"
 import { paletteMatches } from "@/pi/model/composerInput"
-import { hiddenUnconfiguredText, modelMenuListOf } from "@/pi/model/models"
+import { modelMenuListOf } from "@/pi/model/models"
 import { usePiMenuClose } from "./menuClose"
 import type { CModel } from "./types"
 import {
@@ -92,7 +92,6 @@ const EXPLAINER_FLOAT = "absolute left-[calc(100%+8px)] z-(--cw-pi-z-raised) -tr
 const MENU_MAX_H = "max-h-(--radix-dropdown-menu-content-available-height)"
 const LIST_SCROLL = "relative min-h-0 max-h-[360px] overflow-y-auto overscroll-contain [scrollbar-width:thin]"
 /** 「还有 N 个未配置的模型」：和未配置行的灰字同色，不可选（不在 listbox 里） */
-const HIDDEN_ROW = "flex min-h-7 items-center px-2 text-(length:--cw-text-sm) text-(--cw-text-4)"
 
 /**
  * 说明卡的 top（相对菜单卡的内边距盒）：选中行的中线，限在列表滚动区的可见范围里（行滚出去时卡停在滚动区上 / 下沿）。
@@ -169,7 +168,7 @@ function ModelMenuStatic({ variant, models, thinkingLevels, thinking, hoverKey, 
   const rowId = (key: string) => modelRowId(base, key)
   const activeKey = hoverKey ?? models.find((m) => m.current)?.key
   const explainerId = `${base}-explainer`
-  const { list: shown, hiddenUnconfigured } = modelMenuListOf(models, "", () => true)
+  const { list: shown } = modelMenuListOf(models, "", () => true)
   return (
     <MenuSurface
       data-slot="pi-model-menu"
@@ -222,7 +221,6 @@ function ModelMenuStatic({ variant, models, thinkingLevels, thinking, hoverKey, 
           )
         })}
       </div>
-      {hiddenUnconfigured > 0 && <div className={HIDDEN_ROW}>{hiddenUnconfiguredText(hiddenUnconfigured)}</div>}
     </MenuSurface>
   )
 }
@@ -245,7 +243,7 @@ function ModelMenuInteractive({
   const labelId = `${base}-label`
   const explainerId = `${base}-explainer`
   const [query, setQuery] = useState("")
-  const { list, hiddenUnconfigured } = modelMenuListOf(models, query, (m) => paletteMatches(query, m.name, m.modelId, m.provider))
+  const { list } = modelMenuListOf(models, query, (m) => paletteMatches(query, m.name, m.modelId, m.provider))
   const nav = useListNav(
     list.map((m) => !m.unconfigured),
     Math.max(0, list.findIndex((m) => m.current)),
@@ -365,7 +363,6 @@ function ModelMenuInteractive({
           )
         })}
       </div>
-      {hiddenUnconfigured > 0 && <div className={HIDDEN_ROW}>{hiddenUnconfiguredText(hiddenUnconfigured)}</div>}
       </div>
       {activeCard != null && (
         <span
@@ -399,8 +396,9 @@ function ModelSheetList({
   const close = usePiMenuClose()
   const base = useId()
   const rowId = (key: string) => modelRowId(base, key)
-  // 未配置的超过 5 个折成一行（F-R4，同桌面；sheet 没有搜索框，未配置的本来也不能选）
-  const { list, hiddenUnconfigured } = modelMenuListOf(models, "", () => true)
+  // Unconfigured rows past the fold cap stay out of the sheet (F-R4, same
+  // as desktop; the sheet has no search box and they are not selectable)
+  const { list } = modelMenuListOf(models, "", () => true)
   const current = Math.max(0, list.findIndex((m) => m.current))
   const nav = useListNav(
     list.map((m) => !m.unconfigured),
@@ -469,7 +467,6 @@ function ModelSheetList({
           </div>
         ))}
       </div>
-      {hiddenUnconfigured > 0 && <div className={cn("flex min-h-[52px] items-center px-1", t.sub, "text-(--cw-text-4)")}>{hiddenUnconfiguredText(hiddenUnconfigured)}</div>}
     </div>
   )
 }

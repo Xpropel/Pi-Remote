@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react"
-import { CircleHelp } from "../icons/CodexIcons"
+import { CircleHelp, ShieldCheck } from "../icons/CodexIcons"
 import type { VariantAppProps } from "@/pi/variants/types"
 import { approvalEndedOf, approvalReceiptOf, type PiLocalAnswer } from "@/pi/model/approvalReceipt"
-import { dialogCardState, dialogSealedBlockedText, PI_DIALOG_RECEIPT_MS, type PiDialogReceiptView } from "@/pi/model/dialogCard"
+import { approvalPartsOf, dialogCardState, dialogIsApproval, dialogSealedBlockedText, PI_DIALOG_RECEIPT_MS, type PiDialogReceiptView } from "@/pi/model/dialogCard"
 import { piClock } from "../logic/view"
 import { useNow } from "../hooks/useCodex"
 import { CodexButton, CodexSpinner } from "../primitives/primitives"
@@ -116,6 +116,10 @@ export function CodexApprovalCard({
   const remainingMs = dialog.timeout != null ? dialog.startedAt + dialog.timeout - now : null
   const options = (dialog.options ?? []) as string[]
   const kind = dialog.kind
+  // Approval-gate cards (tool_call gate) get the shield header and a
+  // question/command split; ask_user cards keep the plain layout.
+  const approval = dialogIsApproval(dialog)
+  const approvalParts = approval ? approvalPartsOf(dialog) : null
   // 多选的选择数区间（桥侧组帧已钳制；这里再按实际选项数收一遍）
   const minSel = Math.min(Math.max(0, dialog.minSelect ?? 1), options.length)
   const maxSel = Math.min(Math.max(minSel, dialog.maxSelect ?? options.length), options.length)
@@ -146,13 +150,26 @@ export function CodexApprovalCard({
   return (
     <section className="cx-approval-card" data-kind={kind} data-state={state} role="group" aria-label="需要批准" data-pi-ui-part="approval" data-p4-surface="CX-DLG-05" data-p4-ready="">
       <header className="cx-approval-head">
-        <CircleHelp aria-hidden size={15} strokeWidth={1.75} className="cx-approval-icon" />
-        <span className="cx-approval-title">需要批准</span>
+        {approval ? (
+          <ShieldCheck aria-hidden size={15} strokeWidth={1.75} className="cx-approval-icon" />
+        ) : (
+          <CircleHelp aria-hidden size={15} strokeWidth={1.75} className="cx-approval-icon" />
+        )}
+        <span className="cx-approval-title">{approval ? "需要你的批准" : "需要批准"}</span>
         <span className="cx-approval-clock">{remainingMs != null ? `剩余 ${piClock(remainingMs)}` : "等待回答"}</span>
       </header>
       <div className="cx-approval-body">
-        {dialog.title ? <div className="cx-approval-question">{dialog.title}</div> : null}
-        {dialog.message ? <pre className="cx-approval-message">{dialog.message}</pre> : null}
+        {approvalParts ? (
+          <>
+            {approvalParts.question ? <div className="cx-approval-question">{approvalParts.question}</div> : null}
+            {approvalParts.command ? <pre className="cx-approval-message">{approvalParts.command}</pre> : null}
+          </>
+        ) : (
+          <>
+            {dialog.title ? <div className="cx-approval-question">{dialog.title}</div> : null}
+            {dialog.message ? <pre className="cx-approval-message">{dialog.message}</pre> : null}
+          </>
+        )}
         {!answerable ? (
           <div className="cx-approval-readonly">{dialog.sealedBlocked ? dialogSealedBlockedText(dialog.sealedBlocked) : "只能在电脑上回答"}</div>
         ) : null}

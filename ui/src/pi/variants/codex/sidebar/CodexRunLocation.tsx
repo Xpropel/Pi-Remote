@@ -210,7 +210,10 @@ export function CodexRunLocation({
           <p className="cx-run-hint">Pi 没有云端托管；「远端设备」= 你已配对、在线的另一台设备（任务在其上真实执行）。</p>
         </div>
       ) : null}
-      {value.mode === "local" && compact ? <p className="cx-run-hint">用当前设备 + 最近目录直接开线程；要固定目录请选「指定文件夹」。</p> : null}
+      {/* No local-mode hint paragraph in the compact sidebar block: it
+          duplicates the mode buttons' own tooltips and the summary line
+          above it, and as the sidebar's last in-flow line it was the one
+          clipped mid-glyph by the identity footer at short heights. */}
       {branchInfo ? <CodexBranchReadyDialog p={p} info={branchInfo} onClose={() => setBranchInfo(null)} /> : null}
       {browserOpen && device ? (
         <CodexFolderBrowser

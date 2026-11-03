@@ -1,4 +1,4 @@
-import { hiddenUnconfiguredText, type PiModelRow } from "@/pi/model/models"
+import { type PiModelRow } from "@/pi/model/models"
 
 import { CodexSpinner } from "../primitives/primitives"
 
@@ -7,12 +7,10 @@ export function CodexModelMenu({
   rows,
   phase,
   onPick,
-  hiddenCount,
 }: {
   rows: readonly PiModelRow[]
   phase: string
   onPick: (row: PiModelRow) => void
-  hiddenCount: number
 }) {
   const visible = rows
   return (
@@ -37,7 +35,6 @@ export function CodexModelMenu({
           </button>
         ))
       )}
-      {hiddenCount > 0 ? <p className="cx-pop-note">{hiddenUnconfiguredText(hiddenCount)}</p> : null}
     </div>
   )
 }

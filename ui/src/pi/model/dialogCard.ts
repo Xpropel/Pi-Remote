@@ -35,6 +35,43 @@ export function dialogSealedBlockedText(blocked: "waiting" | "failed"): string {
   return blocked === "waiting" ? "已加密 · 等内容钥" : "已加密 · 无法解密"
 }
 
+/** The fields the approval-gate detection reads (structural subset of the
+ *  dialog card types used by the three shells). */
+export type PiDialogApprovalLike = { kind: string; title?: string; options?: string[]; message?: string }
+
+const APPROVAL_OPTION_FIRST = "允许一次"
+const APPROVAL_OPTION_DENY = "拒绝"
+// The session-wide allow label exists in two spellings: the shipped bridge
+// wording and the design-gallery wording. Both are gate-only labels.
+const APPROVAL_OPTION_SESSION: readonly string[] = ["本会话都允许", "这个会话里都允许"]
+
+/**
+ * Approval-gate dialogs (the bridge's tool_call gate) arrive as ordinary
+ * select dialogs; the only reliable marker is their fixed option triple
+ * (allow once / allow for this session / deny). ask_user questions carry
+ * arbitrary options, so they never match this.
+ */
+export function dialogIsApproval(card: PiDialogApprovalLike | null | undefined): boolean {
+  if (!card || card.kind !== "select") return false
+  const options = card.options ?? []
+  return options.length === 3 && options[0] === APPROVAL_OPTION_FIRST && options[2] === APPROVAL_OPTION_DENY && APPROVAL_OPTION_SESSION.includes(options[1])
+}
+
+/**
+ * Split a gate dialog into its question line and the command it asks
+ * about. Shipped frames embed the summary in the title
+ * ("允许执行 <tool>？ <summary>") and carry no message; gallery / legacy
+ * frames carry the command in message under a free-form question title.
+ */
+export function approvalPartsOf(card: PiDialogApprovalLike): { question: string; command: string } {
+  const title = card.title ?? ""
+  const match = /^允许执行\s+(\S+?)？\s*([\s\S]*)$/.exec(title)
+  if (match) {
+    return { question: `允许执行 ${match[1]}？`, command: (card.message || match[2] || "").trim() }
+  }
+  return { question: title, command: (card.message ?? "").trim() }
+}
+
 /** 卡片 + 回执 + now → 六态之一。dialog 缺失时返回 null。 */
 export function dialogCardState(dialog: PiDialogLike | null | undefined, receipt: PiDialogReceiptView | null | undefined, now: number): PiDialogCardView | null {
   if (!dialog) return null

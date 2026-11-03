@@ -1198,6 +1198,15 @@ test("dialog tap：纯函数 buildDialogOpen / capDialogOptions", () => {
   assert.equal("timeout" in bad, false, "非正 timeout 不带")
   const capped = ext.capDialogOptions("不是数组")
   assert.deepEqual(capped, { options: [] })
+  // Approval-gate select: the full command after the prompt's newline is
+  // split into message; the title keeps only the question line.
+  const gate = ext.buildDialogOpen("select", ["允许执行 bash？ rm -rf build\nrm -rf build\nnpm run build", ["允许一次", "本会话都允许", "拒绝"]], "dlg-3", 7)
+  assert.equal(gate.title, "允许执行 bash？ rm -rf build")
+  assert.equal(gate.message, "rm -rf build\nnpm run build")
+  // A non-approval select with a newline in its prompt is NOT split.
+  const plain = ext.buildDialogOpen("select", ["第一行\n第二行", ["a", "b"]], "dlg-4", 8)
+  assert.equal(plain.title, "第一行\n第二行")
+  assert.equal("message" in plain, false)
 })
 
 /* ---------------- 对话框应答接管（O2） ---------------- */
@@ -1928,7 +1937,7 @@ test("G2 审批：策略纯函数三档矩阵", () => {
 })
 
 test("G2 审批：摘要纯函数——bash 首行 / write 路径 / 其余 JSON 截断", () => {
-  assert.equal(ext.approvalSummary("bash", { command: "rm -rf build\nnpm run build" }), "rm -rf build")
+  assert.equal(ext.approvalSummary("bash", { command: "rm -rf build\nnpm run build" }), "rm -rf build\nnpm run build", "bash summary keeps the full multi-line command")
   assert.equal(ext.approvalSummary("write", { path: "/tmp/a.txt", content: "x" }), "/tmp/a.txt")
   assert.equal(ext.approvalSummary("edit", { path: "/tmp/b.txt" }), "/tmp/b.txt")
   const s = ext.approvalSummary("grep", { pattern: "x".repeat(900) })

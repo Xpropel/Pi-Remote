@@ -304,7 +304,7 @@ export function CodexComposer({ p, phone }: { p: VariantAppProps; phone: boolean
           </div>
         ) : null}
         {modelOpen ? (
-          <CodexModelMenu rows={menuList.list} phase={modelData.phase} onPick={pickModel} hiddenCount={menuList.hiddenUnconfigured} />
+          <CodexModelMenu rows={menuList.list} phase={modelData.phase} onPick={pickModel} />
         ) : null}
         {modelData.phase === "loading" && modelOpen ? <span className="cx-model-loading"><CodexSpinner size={11} /></span> : null}
       </div>

@@ -3,7 +3,7 @@ import test, { describe } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import { isOwnSendAppended, lastKeyOf, newItemsAfter } from "../ui/src/pi/model/transcriptWindow.ts"
-import { hiddenUnconfiguredText, modelMenuListOf, PI_MODEL_MENU_UNCONFIGURED_MAX } from "../ui/src/pi/model/models.ts"
+import { modelMenuListOf, PI_MODEL_MENU_UNCONFIGURED_MAX } from "../ui/src/pi/model/models.ts"
 
 const read = (p) => fs.readFileSync(new URL(`../ui/src/${p}`, import.meta.url), "utf8")
 
@@ -47,13 +47,12 @@ describe("F-R4 模型菜单：未配置的折叠、限高、说明卡在滚动�
     const r = rows(5, PI_MODEL_MENU_UNCONFIGURED_MAX)
     assert.deepEqual(modelMenuListOf(r, "", by("")), { list: r, hiddenUnconfigured: 0 })
   })
-  test("超过 5 个：只列已配置的，未配置的折成一行「还有 N 个未配置的模型」", () => {
+  test("超过 5 个：只列已配置的，未配置的折起（菜单不再渲染计数行，计数只作返回值）", () => {
     const r = rows(5, 1614)
     const out = modelMenuListOf(r, "", by(""))
     assert.equal(out.list.length, 5)
     assert.ok(out.list.every((m) => !m.unconfigured))
     assert.equal(out.hiddenUnconfigured, 1614)
-    assert.equal(hiddenUnconfiguredText(1614), "还有 1614 个未配置的模型")
   })
   test("搜索时命中的未配置模型展开，排在已配置的后面，不折", () => {
     const r = [...rows(2, 10)].reverse()

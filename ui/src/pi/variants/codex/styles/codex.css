@@ -3635,6 +3635,7 @@
   font-size: 11px;
   line-height: 17px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 [data-pi-ui="codex"] .cx-approval-options {

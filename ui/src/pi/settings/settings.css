@@ -481,6 +481,9 @@
   padding: 0;
   color: var(--st-text-3);
   font-size: 13px;
+  /* Pinned: the selected state (.is-on) changes color only -- the label
+     weight never changes across settings pages. */
+  font-weight: 400;
   line-height: 1.35;
   user-select: none;
 }

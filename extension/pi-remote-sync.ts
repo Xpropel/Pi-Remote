@@ -1649,6 +1649,23 @@ function buildDialogOpen(kind: string, args: any[], dialogId: string, startedAt:
     if (typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0) ev.timeout = timeout;
   }
   if (kind === "select" || kind === "multiselect") Object.assign(ev, capDialogOptions(args[1]));
+  // Approval-gate selects carry the full command after a newline in the
+  // prompt (see checkToolCallApproval): split it into title + message so
+  // the card renders the complete command in its body instead of losing
+  // everything past the 120-char title cap. Only the gate's own option
+  // triple marks a select as an approval; other selects keep the prompt
+  // verbatim in the title, exactly as before.
+  if (kind === "select" && typeof args[0] === "string" && args[0].includes("\n")) {
+    const opts = (ev as any).options as string[] | undefined;
+    if (opts && opts.length === 3 && opts[0] === APPROVAL_CHOICE_ONCE && opts[1] === APPROVAL_CHOICE_SESSION && opts[2] === APPROVAL_CHOICE_DENY) {
+      const nl = args[0].indexOf("\n");
+      const rest = args[0].slice(nl + 1).trim();
+      if (rest) {
+        ev.title = args[0].slice(0, nl).slice(0, PROTOCOL.limits.dialogTitleMax);
+        ev.message = rest.slice(0, PROTOCOL.limits.dialogTextMax);
+      }
+    }
+  }
   if (kind === "multiselect") {
     // 多选的选择数区间随帧下发（卡面计数与确认按钮可用性靠它）：组帧时按选项数钳制一遍，
     // 与桥侧裁决（dialogAnswerValue）同口径，消费端不必再猜缺省值
@@ -1825,7 +1842,12 @@ export function approvalSummary(toolName: string, input: any): string {
   try {
     const inp = input && typeof input === "object" ? input : {};
     if ((toolName === "bash" || toolName === "powershell") && typeof inp.command === "string") {
-      return inp.command.split(/\r?\n/)[0].slice(0, max);
+      // Full command, not just the first line: the approval card shows this
+      // as its message body (buildDialogOpen splits it out of the prompt),
+      // and approving a command you cannot fully read is the failure mode
+      // the gate exists to prevent. Capped at dialogTextMax like every
+      // other dialog text field.
+      return inp.command.slice(0, max);
     }
     if ((toolName === "write" || toolName === "edit") && typeof inp.path === "string") {
       return inp.path.slice(0, max);
@@ -5394,7 +5416,15 @@ class Bridge {
       return { block: true, reason: "Pi-Remote 审批门已开启，但当前没有可确认的界面，该工具调用被拦截。" };
     }
     const summary = approvalSummary(toolName, event.input);
-    const title = dialogText(`允许执行 ${toolName}？${summary ? " " + summary : ""}`, PROTOCOL.limits.dialogTitleMax) as string;
+    const hint = summary ? summary.split(/\r?\n/)[0] : "";
+    const composed = `允许执行 ${toolName}？${hint ? " " + hint : ""}`;
+    const titleLine = composed.slice(0, PROTOCOL.limits.dialogTitleMax);
+    // When the summary is multi-line or the title line had to cut it, the
+    // full summary rides after a newline; buildDialogOpen splits it back
+    // into the frame's message field so the approval card can show the
+    // complete command (the local prompt shows the same full text).
+    const needsDetail = !!summary && (summary.includes("\n") || titleLine.length < composed.length);
+    const title = needsDetail ? `${titleLine}\n${summary}` : titleLine;
     const picked = await ctx.ui.select(title, [APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY]);
     if (picked === APPROVAL_CHOICE_ONCE) return undefined;
     if (picked === APPROVAL_CHOICE_SESSION) {

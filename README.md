@@ -82,7 +82,7 @@ deploy/start-pi.sh         # in a second terminal: start pi
 
 Open `http://127.0.0.1:7002` and enter the viewer token from your `.env`.
 
-For running the relay on a server (systemd setup, token management, troubleshooting), see [deploy/README.md](deploy/README.md).
+For running the relay on a server (systemd setup, token management, troubleshooting), see [deploy/README.md](deploy/README.md). Alternatively, the relay runs as a single Docker Compose service — see [deploy/docker/README.md](deploy/docker/README.md).
 
 ## Security model
 

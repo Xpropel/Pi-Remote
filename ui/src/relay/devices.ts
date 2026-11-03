@@ -638,22 +638,79 @@ function withSessionLineage(rows: ListedSession[], sessions: SessionEntry[], lis
 export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions: SessionEntry[], listTruncated = false): ListedSession[] {
   const mine = rooms.filter((room) => roomDeviceId(room) === device.id)
   const byId = new Map(sessions.map((session) => [session.id, session]))
+  // Secondary identity links between a room and a stored-session entry, for
+  // the cases where the two sides spell the same session differently and the
+  // exact-id match above misses it:
+  // (1) file link -- the room id is the session FILE path (the bridge's bind
+  //     fallback) while the entry id is the bare session id; the file
+  //     basenames still match exactly (the file name embeds the session id).
+  // (2) active link -- the entry is flagged active (it is the reporting
+  //     bridge's own live session) and it is the only unclaimed active entry
+  //     in a workspace that has exactly one unclaimed online room.
+  // A paired entry is represented by its room row when the room is online
+  // (the live row wins; roomRow folds in the entry's title/counts), and by
+  // its own session row when the room is offline (the room row is dropped).
+  // Unpaired rows are never touched, so a pairing can only collapse two
+  // spellings of one session, never two different sessions.
+  const paired = new Map<string, SessionEntry>()
+  const pairedEntryIds = new Set<string>()
+  const fileNameOf = (value: string) => value.replace(/\\/g, "/").split("/").filter(Boolean).pop() || ""
+  const sessionByFile = new Map<string, SessionEntry>()
+  for (const session of sessions) {
+    if (session.path && !session.deleted) sessionByFile.set(fileNameOf(session.path), session)
+  }
+  for (const room of mine) {
+    if (byId.has(room.id)) continue
+    const entry = sessionByFile.get(fileNameOf(room.id))
+    if (entry && !pairedEntryIds.has(entry.id)) {
+      paired.set(room.id, entry)
+      pairedEntryIds.add(entry.id)
+    }
+  }
+  const roomIds = new Set(mine.map((room) => room.id))
+  const unclaimedOnlineByCwd = new Map<string, RoomInfo[]>()
+  for (const room of mine) {
+    if (!room.online || byId.has(room.id) || paired.has(room.id)) continue
+    const key = normPath(room.cwd || "")
+    const list = unclaimedOnlineByCwd.get(key) || []
+    list.push(room)
+    unclaimedOnlineByCwd.set(key, list)
+  }
+  const activeByCwd = new Map<string, SessionEntry[]>()
+  for (const session of sessions) {
+    if (!session.active || session.deleted || pairedEntryIds.has(session.id) || roomIds.has(session.id)) continue
+    const key = normPath(session.cwd || "")
+    const list = activeByCwd.get(key) || []
+    list.push(session)
+    activeByCwd.set(key, list)
+  }
+  for (const [key, roomList] of unclaimedOnlineByCwd) {
+    const entryList = activeByCwd.get(key) || []
+    if (roomList.length === 1 && entryList.length === 1) {
+      paired.set(roomList[0].id, entryList[0])
+      pairedEntryIds.add(entryList[0].id)
+    }
+  }
+  const entryForRoom = (room: RoomInfo) => paired.get(room.id) ?? byId.get(room.id)
+  // Entries whose live (online) room row represents them: skipped as
+  // standalone session rows in the online branch below.
+  const consumedEntryIds = new Set(mine.filter((room) => room.online && paired.has(room.id)).map((room) => paired.get(room.id)!.id))
   if (!device.online) {
     const fromIndex = sessions.filter((session) => !session.deleted).map((session) => sessionRow(session, false))
     const known = new Set(fromIndex.map((row) => row.id))
-    const extras = mine.filter((room) => !known.has(room.id))
-    const live = extras.filter((room) => room.online).map((room) => roomRow(room, false, byId.get(room.id)))
-    const idle = extras.filter((room) => !room.online).map((room) => roomRow(room, false, byId.get(room.id)))
+    const extras = mine.filter((room) => !known.has(room.id) && !paired.has(room.id))
+    const live = extras.filter((room) => room.online).map((room) => roomRow(room, false, entryForRoom(room)))
+    const idle = extras.filter((room) => !room.online).map((room) => roomRow(room, false, entryForRoom(room)))
     fromIndex.sort((a, b) => b.updatedAt - a.updatedAt)
     return withSessionLineage(uniqueRows([...live, ...fromIndex, ...idle]), sessions, listTruncated)
   }
   const roomById = new Map(mine.map((room) => [room.id, room]))
-  const active = mine.filter((room) => room.online).map((room) => roomRow(room, true, byId.get(room.id)))
+  const active = mine.filter((room) => room.online).map((room) => roomRow(room, true, entryForRoom(room)))
   const activeIds = new Set(active.map((row) => row.id))
   const indexedActive: ListedSession[] = []
   const rest: ListedSession[] = []
   for (const session of sessions) {
-    if (session.deleted || activeIds.has(session.id)) continue
+    if (session.deleted || activeIds.has(session.id) || consumedEntryIds.has(session.id)) continue
     const room = roomById.get(session.id)
     const online = !!(room && room.online)
     if (online) indexedActive.push(sessionRow({ ...session, online: true }, true))
@@ -662,7 +719,7 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
   rest.sort((a, b) => b.updatedAt - a.updatedAt)
   // 设备在线、但还没进索引的离线房间（刚关掉、清单还没推上来）：留在列表末尾可回看，不能直接丢
   const indexed = new Set(sessions.map((session) => session.id))
-  const idle = mine.filter((room) => !room.online && !indexed.has(room.id)).map((room) => roomRow(room, false, byId.get(room.id)))
+  const idle = mine.filter((room) => !room.online && !indexed.has(room.id) && !paired.has(room.id)).map((room) => roomRow(room, false, entryForRoom(room)))
   return withSessionLineage(uniqueRows([...active, ...indexedActive, ...rest, ...idle]), sessions, listTruncated)
 }
 

@@ -82,7 +82,7 @@ deploy/start-pi.sh         # 在另一个终端中启动 pi
 
 浏览器打开 `http://127.0.0.1:7002`，输入 `.env` 中的 viewer token 即可进入。
 
-将 relay 部署到服务器长期运行（含 systemd 配置、token 管理与故障排查）见 [deploy/README.md](deploy/README.md)。
+将 relay 部署到服务器长期运行（含 systemd 配置、token 管理与故障排查）见 [deploy/README.md](deploy/README.md)。也可以用 Docker Compose 一条命令运行 relay，见 [deploy/docker/README.md](deploy/docker/README.md)。
 
 ## 安全模型
 

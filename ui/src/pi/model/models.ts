@@ -86,14 +86,22 @@ export function modelRowsOf(data: unknown, current: PiCurrentModel = {}): PiMode
   return [...rows.filter((r) => !r.unconfigured), ...rows.filter((r) => r.unconfigured)]
 }
 
-/** 未配置的模型超过这么多就折成一行（F-R4）；不超过照旧逐行列出（画廊 c/model-menu 只有 1 个未配置） */
+/** Unconfigured models beyond this count are folded out of the menu
+ *  (F-R4); at or below it they are listed row by row as before. */
 export const PI_MODEL_MENU_UNCONFIGURED_MAX = 5
 /**
- * 菜单里实际列出的行（F-R4）：真实 pi 的 models 是整份内置目录（1619 个，配了的只有几个），全列出来菜单伸出视口。
- * - 没有搜索词：未配置的不超过 PI_MODEL_MENU_UNCONFIGURED_MAX 个时照旧全列；超过时只列已配置的，未配置的折成一行
- *   「还有 N 个未配置的模型」（hiddenUnconfigured = N，由部件画）。
- * - 有搜索词：命中的全列，已配置的在前、命中的未配置模型接在后面（各自保持原顺序），不折。
- * matches 是部件的过滤（paletteMatches：名字 / 模型 id / provider）。
+ * The rows the model menu actually lists (F-R4): a real pi model list is
+ * the whole built-in catalog (1619 entries, only a few configured), and
+ * listing all of them pushes the menu off screen.
+ * - No search query: unconfigured rows up to PI_MODEL_MENU_UNCONFIGURED_MAX
+ *   are listed as-is; past that only configured rows are listed and the
+ *   rest are folded away (hiddenUnconfigured reports how many, for tests
+ *   and diagnostics -- the menu itself renders no count line; the full
+ *   catalog lives on the settings page).
+ * - With a search query: every hit is listed, configured first, then the
+ *   unconfigured hits (each in its original order); nothing is folded.
+ * matches is the component's filter (paletteMatches: name / model id /
+ * provider).
  */
 export function modelMenuListOf<T extends { unconfigured?: boolean }>(
   rows: readonly T[],
@@ -107,10 +115,6 @@ export function modelMenuListOf<T extends { unconfigured?: boolean }>(
   const unconfigured = rows.filter((r) => r.unconfigured).length
   if (unconfigured <= PI_MODEL_MENU_UNCONFIGURED_MAX) return { list: [...rows], hiddenUnconfigured: 0 }
   return { list: rows.filter((r) => !r.unconfigured), hiddenUnconfigured: unconfigured }
-}
-/** 折叠行的文字 */
-export function hiddenUnconfiguredText(n: number): string {
-  return `还有 ${n} 个未配置的模型`
 }
 /** 思考级别的中文标签（design c/model-menu：关 / 最少 / 低 / 中 / 高）；不认识的档位原样显示，不猜 */
 const THINKING_LABEL: Record<string, string> = {

@@ -1,6 +1,7 @@
 import { useState } from "react"
-import { attentionRoomTitle } from "@/relay/attention"
 import { inboxDialogIdOf, type InboxEntry } from "@/relay/inbox"
+import { inboxEntryTitleOf } from "@/pi/model/inboxView"
+import { sidebarSessionsOf } from "@/pi/model/sidebarSource"
 import { relativeTimeLabel } from "@/pi/sidebar/model"
 import type { PiContainerProps } from "./types"
 
@@ -44,6 +45,8 @@ export function InboxContainer(props: PiContainerProps) {
   const now = Date.now()
   const entries = relay.inbox
   const roomsById = new Map(relay.rooms.map((room) => [room.id, room]))
+  const sessionsById = new Map(sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice).map((session) => [session.id, session]))
+  const devicesById = new Map(relay.devices.map((device) => [device.id, device]))
 
   const openEntry = (entry: InboxEntry) => {
     if (entry.deviceId && entry.deviceId !== relay.selectedDeviceId) relay.selectDevice(entry.deviceId)
@@ -86,7 +89,7 @@ export function InboxContainer(props: PiContainerProps) {
                       }}
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-(length:--cw-text-sm) text-(--cw-text-1)">{attentionRoomTitle(roomsById.get(entry.roomId))}</div>
+                        <div className="truncate text-(length:--cw-text-sm) text-(--cw-text-1)">{inboxEntryTitleOf(entry, roomsById, sessionsById, devicesById)}</div>
                         <div className="truncate text-(length:--cw-text-xs) text-(--cw-text-3)">{inboxDetailOf(entry)}</div>
                       </div>
                       <span className="shrink-0 text-(length:--cw-text-xs) text-(--cw-text-3)">{relativeTimeLabel(now, entry.at)}</span>

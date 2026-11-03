@@ -3019,6 +3019,23 @@
   white-space: pre-wrap;
 }
 
+/* Approval-gate command block: full text, wrapped anywhere, capped with
+   its own scroll -- never single-line truncated. */
+[data-pi-ui="claude"] .claude-approval-command {
+  margin: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-radius: var(--claude-r-chip);
+  background: var(--claude-chip-bg);
+  color: var(--claude-text-2);
+  font-family: var(--claude-font-mono);
+  font-size: var(--claude-text-code);
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 [data-pi-ui="claude"] .claude-approval-observe {
   margin: 0;
   color: var(--claude-text-3);

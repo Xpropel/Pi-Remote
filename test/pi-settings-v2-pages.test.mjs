@@ -190,8 +190,13 @@ test("模型页：设计册 §4 文案逐条在场，◐ 只读 / 刷新接真�
   assert.match(MODEL_DATA_SOURCE, /共七档：关 \/ 最小 \/ 低 \/ 中 \/ 高 \/ 超高 \/ 最高/)
 
   // 可写项（默认模型 / 思考 / 压缩三项）走 settings_set；供应商 / 新会话仍标 ◐ 只读。
+  // After audit U3: the bridge badge hangs only on the provider header /
+  // add-provider / new-session group; individual model rows and the
+  // add-model row no longer carry it (they stay inert via disabled).
   const bridge = (source.match(/status="bridge"/g) ?? []).length
-  assert.ok(bridge >= 5, `模型页剩下的只读项都要标状态（实际 ${bridge}）`)
+  assert.ok(bridge >= 4, `模型页剩下的只读项都要标状态（实际 ${bridge}）`)
+  assert.doesNotMatch(source, /<SettingsRow key=\{model\.key\} title=\{<span style=\{MONO\}>\{model\.label\}<\/span>\} status="bridge">/, "模型行不再逐行挂需扩展桥徽章")
+  assert.match(source, /<SettingsRow key=\{model\.key\} title=\{<span style=\{MONO\}>\{model\.label\}<\/span>\} disabled>/, "模型行改用 disabled 保持不可写")
   assert.doesNotMatch(source, /status="reserved"/, "给回复预留 / 近期原文保留已可写，不再是设计预留")
   assert.match(source, /useSettingsDocument/)
   assert.match(source, /useSettingsWriter/)

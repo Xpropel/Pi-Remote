@@ -36,6 +36,7 @@ export {
   Search,
   Send,
   Settings2,
+  ShieldCheck,
   Square,
   SquareTerminal,
   Sun,

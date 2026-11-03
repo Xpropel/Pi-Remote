@@ -1,8 +1,8 @@
 import { useState } from "react"
 import type { PiContainerProps } from "@/pi/containers/types"
-import { attentionRoomTitle } from "@/relay/attention"
 import type { InboxEntry } from "@/relay/inbox"
-import { inboxConfirmAnswerOf, inboxDetailOf, inboxGroupsOf } from "@/pi/model/inboxView"
+import { inboxConfirmAnswerOf, inboxDetailOf, inboxEntryTitleOf, inboxGroupsOf } from "@/pi/model/inboxView"
+import { sidebarSessionsOf } from "@/pi/model/sidebarSource"
 import { relativeTimeLabel } from "@/pi/sidebar/model"
 
 /**
@@ -19,6 +19,8 @@ export function ClaudeInboxPage({ p }: { p: PiContainerProps }) {
   const now = Date.now()
   const entries = relay.inbox
   const roomsById = new Map(relay.rooms.map((room) => [room.id, room]))
+  const sessionsById = new Map(sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice).map((session) => [session.id, session]))
+  const devicesById = new Map(relay.devices.map((device) => [device.id, device]))
   const groups = inboxGroupsOf(entries)
 
   const openEntry = (entry: InboxEntry) => {
@@ -57,7 +59,7 @@ export function ClaudeInboxPage({ p }: { p: PiContainerProps }) {
                     }}
                   >
                     <div className="claude-inbox-row-main">
-                      <div className="claude-inbox-row-title">{attentionRoomTitle(roomsById.get(entry.roomId))}</div>
+                      <div className="claude-inbox-row-title">{inboxEntryTitleOf(entry, roomsById, sessionsById, devicesById)}</div>
                       <div className="claude-inbox-row-detail">{inboxDetailOf(entry)}</div>
                     </div>
                     <span className="claude-inbox-row-time">{relativeTimeLabel(now, entry.at)}</span>

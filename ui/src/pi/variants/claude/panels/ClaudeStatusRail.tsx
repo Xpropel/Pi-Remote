@@ -165,7 +165,6 @@ function ClaudeRailExtras() {
     <>
       {rows.map((row) => {
         const status = caps.statusOf(row.capability)
-        const view = status === "unavailable" ? caps.disabledOf(row.capability) : null
         return (
           <section key={row.capability} className="claude-card" data-pi-ui-part="panel" data-p4-surface="CL-SHELL-07" {...claudeCapabilityAttrs(row.capability, status)}>
             <h2 className="claude-card-title">{row.title}</h2>
@@ -177,7 +176,9 @@ function ClaudeRailExtras() {
                 </p>
               ))
             ) : (
-              <p className="claude-card-empty">{view ? `${view.title}：${view.reason}（${view.docsPath}）` : "暂无数据"}</p>
+              // Absent capability: one quiet muted line (the long internal
+              // explanation with its doc anchor is not user-facing copy).
+              <p className="claude-card-empty">{status === "unavailable" ? "未接入" : "暂无数据"}</p>
             )}
           </section>
         )

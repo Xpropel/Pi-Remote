@@ -149,6 +149,18 @@ mkdir -p /opt/pi-remote/app/data/accounts /opt/pi-remote/app/relay /opt/pi-remot
 
 `enable` 和回环 `curl` 要等下一节的 `deploy-relay.ps1` 成功后再做。`curl` 应打印 `200`。然后再部署 web。
 
+## 3.1 Docker 部署（可选，与 systemd 二选一）
+
+不想装 systemd 单元时，relay 可以用 Docker Compose 一条命令跑起来：
+
+```bash
+cd deploy/docker
+cp .env.example .env   # 填入三枚 token
+docker compose up -d
+```
+
+数据存放在命名卷 `pi-remote-data`（容器内 `/app/data`），不在代码目录里；升级走「先跑只读自检脚本、再重建镜像原地重启」，完整说明（端口口径、卷备份与恢复、升级与回滚）见 [docker/README.md](docker/README.md)。两种部署的数据目录不要混用：从 systemd 切到 Docker（或反过来）时，先停旧进程，再把 `data/` 整体导入目标卷/目录，不要让两个 relay 同时写同一份数据。
+
 ## 4. 日常三件套（本机 PowerShell；macOS / Linux 见 4.1）
 
 | 改了什么 | 命令 | 做什么 |

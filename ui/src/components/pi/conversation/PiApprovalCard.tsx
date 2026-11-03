@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { Button, CodeChip, InlineLink, ReceiptLine } from "@/components/kit"
 import { PiSpinner } from "@/components/pi/shared/PiSpinner"
 import { usePiStatic } from "@/components/pi/shared/layers"
-import { Check, CircleHelp } from "@/components/kit/icons"
+import { Check, CircleHelp, ShieldCheck } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
 import { piClock, piDuration } from "@/components/pi/shared/format"
 import {
@@ -14,7 +14,7 @@ import {
 } from "@/pi/model/approvalAnnounce"
 import { T_ATTENTION, T_ERROR, T_SECONDARY } from "./styles"
 import type { PiDialogCard } from "@/components/pi/shared/types"
-import { dialogSealedBlockedText } from "@/pi/model/dialogCard"
+import { approvalPartsOf, dialogIsApproval, dialogSealedBlockedText } from "@/pi/model/dialogCard"
 
 export type PiApprovalState = "open" | "sending" | "failed" | "answered-elsewhere" | "denied" | "expired"
 
@@ -104,6 +104,10 @@ export function PiApprovalCard({
   const answerable = dialog.answerable === true
   const kind = dialog.kind
   const options = dialog.options ?? []
+  // Approval-gate cards (tool_call gate) get their own header and a
+  // question/command split; ask_user cards keep the plain layout.
+  const approval = dialogIsApproval(dialog)
+  const approvalParts = approval ? approvalPartsOf(dialog) : null
   // 多选的选择数区间（桥侧组帧已钳制；这里再按实际选项数收一遍，防旧帧/坏帧）
   const minSel = Math.min(Math.max(0, dialog.minSelect ?? 1), options.length)
   const maxSel = Math.min(Math.max(minSel, dialog.maxSelect ?? options.length), options.length)
@@ -134,9 +138,13 @@ export function PiApprovalCard({
       style={maxHeight ? { maxHeight } : undefined}
     >
       <header className="flex shrink-0 items-center gap-2 px-3.5 pt-3 text-(length:--cw-text-md) leading-(--cw-leading-tight)">
-        <CircleHelp aria-hidden size={16} strokeWidth={1.75} className={cn("shrink-0", T_ATTENTION)} />
+        {approval ? (
+          <ShieldCheck aria-hidden size={16} strokeWidth={1.75} className={cn("shrink-0", T_ATTENTION)} />
+        ) : (
+          <CircleHelp aria-hidden size={16} strokeWidth={1.75} className={cn("shrink-0", T_ATTENTION)} />
+        )}
         <span id={headId} className="min-w-0 flex-1 truncate font-(--cw-weight-semibold) text-(--cw-text)">
-          pi 在等你回答
+          {approval ? "需要你的批准" : "pi 在等你回答"}
         </span>
         {/* 倒计时不逐秒播报（§4.7）：可见文字对读屏隐藏，播报只走下面的 live region */}
         <span aria-hidden className={cn("shrink-0 tabular-nums", T_SECONDARY)}>
@@ -148,13 +156,28 @@ export function PiApprovalCard({
         </span>
       </header>
       <div ref={scrollRef} className={cn("min-h-0 overflow-y-auto px-3.5 pt-2 pb-3", SCROLL_FADE)}>
-        {dialog.title && (
-          <div className="text-(length:--cw-text-base) leading-(--cw-leading-base) text-(--cw-text)">{dialog.title}</div>
-        )}
-        {dialog.message && (
-          <div className="mt-1.5">
-            <CodeChip className="text-(length:--cw-text-code) leading-[1.5]">{dialog.message}</CodeChip>
-          </div>
+        {approvalParts ? (
+          <>
+            {approvalParts.question && (
+              <div className="text-(length:--cw-text-base) leading-(--cw-leading-base) text-(--cw-text)">{approvalParts.question}</div>
+            )}
+            {approvalParts.command && (
+              <pre className="mt-1.5 max-h-40 overflow-y-auto rounded-(--cw-radius-input) bg-(--cw-code-chip-bg) px-2.5 py-2 font-(family-name:--cw-font-mono) text-(length:--cw-text-code) leading-[1.5] whitespace-pre-wrap break-all text-(--cw-code-chip-fg)">
+                {approvalParts.command}
+              </pre>
+            )}
+          </>
+        ) : (
+          <>
+            {dialog.title && (
+              <div className="text-(length:--cw-text-base) leading-(--cw-leading-base) text-(--cw-text)">{dialog.title}</div>
+            )}
+            {dialog.message && (
+              <div className="mt-1.5">
+                <CodeChip className="text-(length:--cw-text-code) leading-[1.5]">{dialog.message}</CodeChip>
+              </div>
+            )}
+          </>
         )}
         {!answerable ? (
           <div className={cn("mt-3 text-(length:--cw-text-md)", T_SECONDARY)}>

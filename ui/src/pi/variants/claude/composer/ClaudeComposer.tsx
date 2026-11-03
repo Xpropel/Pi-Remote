@@ -180,7 +180,7 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
             trigger={
               <button type="button" className="claude-composer-tool" aria-label="添加图片或文件" disabled={blocked} data-p4-surface="CL-CODE-15">
                 <Paperclip size={16} strokeWidth={1.75} aria-hidden />
-                <span>Add content</span>
+                <span>添加内容</span>
               </button>
             }
           >

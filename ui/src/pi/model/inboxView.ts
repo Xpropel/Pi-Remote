@@ -10,9 +10,36 @@
  * (they need no payload). Ask / select / input entries jump into their
  * room, where the live dialog card carries the payload.
  */
+import { attentionRoomTitle } from "../../relay/attention.ts"
+import type { Device, ListedSession, RoomInfo } from "../../relay/devices.ts"
 import { inboxDialogIdOf, type InboxEntry } from "../../relay/inbox.ts"
 
 export type InboxViewGroup = { kind: InboxEntry["kind"]; label: string; entries: InboxEntry[] }
+
+/**
+ * Row title for a ledger entry. Live rooms resolve exactly like waiting
+ * rows always have (attentionRoomTitle). Turn (done / error) entries never
+ * carry a title of their own and their rooms are usually gone from the
+ * current room_list by the time they are read, so fall back to the merged
+ * stored-session listing for the same session id (its title follows the
+ * same naming priority: custom name, first message, workspace folder),
+ * then to the owning device's name -- never the bare fallback while
+ * better data exists anywhere in the entry's device data.
+ */
+export function inboxEntryTitleOf(
+  entry: InboxEntry,
+  roomsById: ReadonlyMap<string, RoomInfo>,
+  sessionsById: ReadonlyMap<string, ListedSession>,
+  devicesById: ReadonlyMap<string, Device>,
+): string {
+  const room = roomsById.get(entry.roomId)
+  if (room) return attentionRoomTitle(room)
+  const session = sessionsById.get(entry.roomId)
+  if (session?.title) return session.title
+  const device = entry.deviceId ? devicesById.get(entry.deviceId) : undefined
+  if (device?.name) return device.name
+  return "会话"
+}
 
 const GROUP_LABELS: { kind: InboxEntry["kind"]; label: string }[] = [
   { kind: "waiting", label: "等你答" },

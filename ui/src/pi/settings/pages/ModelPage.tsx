@@ -284,7 +284,11 @@ export function ModelPage() {
                   value="管理"
                 />
                 {shown.map((model) => (
-                  <SettingsRow key={model.key} title={<span style={MONO}>{model.label}</span>} status="bridge">
+                  // No per-row bridge badge: the provider header above
+                  // already carries it for the whole block (audit U3).
+                  // The row stays inert via disabled, exactly as the
+                  // bridge status made it before.
+                  <SettingsRow key={model.key} title={<span style={MONO}>{model.label}</span>} disabled>
                     {model.thinking ? <span className="settings-value">思考·{model.thinking}</span> : null}
                     {/* 只读：开关反映 pi 的「认证可用」清单；持久启停名单（enabledModels）要扩展桥才读得到。 */}
                     <SettingsSwitch
@@ -301,7 +305,10 @@ export function ModelPage() {
                     status="existing"
                   />
                 ) : null}
-                {/* 卡内模型开关 / 添加模型都是 ◐：不可编辑，保留设计形态。 */}
+                {/* In-card model switches / add-model are bridge-only:
+                    not editable, design shape kept. Badge follows the
+                    model-row rule (provider header only); this row stays
+                    inert via disabled. */}
                 <SettingsRow
                   title={
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -309,7 +316,7 @@ export function ModelPage() {
                       添加模型
                     </span>
                   }
-                  status="bridge"
+                  disabled
                 >
                   <span className="settings-value">手动填入模型名</span>
                 </SettingsRow>
