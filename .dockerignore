@@ -1,0 +1,20 @@
+# Build context guard for deploy/docker/Dockerfile.
+# The relay image copies only package.json, package-lock.json, relay/,
+# web/, deploy/docker/ and LICENSE; this file keeps local state and
+# unrelated trees out of the context (and therefore out of the image)
+# even if the Dockerfile's COPY set grows later.
+.git
+node_modules
+data
+logs
+.env
+*.log
+test
+ui
+extension
+DOC
+assets
+readyUI
+.agents
+deploy/known_hosts
+mock-evidence

@@ -1,0 +1,57 @@
+# Pi-Remote relay -- one-command deployment.
+#
+#   cp .env.example .env   # then fill in the tokens
+#   docker compose up -d
+#
+# All state lives in the named volume "pi-remote-data" (accounts index,
+# device registry, session lists, room files). It survives
+# `docker compose down` and image upgrades; only an explicit
+# `docker compose down -v` deletes it. A named volume is the default
+# because it behaves the same on Linux, macOS and Windows hosts and
+# cannot be wiped by accident along with a checkout; to use a plain
+# host directory instead, replace the volume entry with a bind mount
+# (see README.md in this directory).
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: pi-remote-relay
+    container_name: pi-remote-relay
+    restart: unless-stopped
+    environment:
+      # Inside the container the local channel must listen on all
+      # interfaces; bound to loopback it would be unreachable through
+      # the published port. Who can reach the port is still governed
+      # by the host-side binding below and by the token.
+      PI_REMOTE_LOCAL_HOST: "0.0.0.0"
+      # Tokens come from .env next to this file (see .env.example).
+      # Compose refuses to start when a required one is missing.
+      PI_REMOTE_LOCAL_TOKEN: ${PI_REMOTE_LOCAL_TOKEN:?set PI_REMOTE_LOCAL_TOKEN in .env}
+      PI_REMOTE_VIEWER_TOKEN: ${PI_REMOTE_VIEWER_TOKEN:?set PI_REMOTE_VIEWER_TOKEN in .env}
+      PI_REMOTE_ADMIN_TOKEN: ${PI_REMOTE_ADMIN_TOKEN:-}
+      PI_REMOTE_SERVER_NAME: ${PI_REMOTE_SERVER_NAME:-}
+      # Transcript persistence stays off unless explicitly enabled in
+      # .env (PI_REMOTE_PERSIST_TRANSCRIPTS=1); empty means "unset".
+      PI_REMOTE_PERSIST_TRANSCRIPTS: ${PI_REMOTE_PERSIST_TRANSCRIPTS:-}
+    ports:
+      # Viewer channel: web UI + viewer WebSocket + /healthz.
+      - "${PI_REMOTE_VIEWER_PORT:-7002}:7002"
+      # Local (extension) channel: published on the host loopback only,
+      # so it is not reachable from the network. Attach processes on the
+      # same host and SSH tunnels work out of the box. If pi runs on a
+      # different machine, change this to "7001:7001" and restrict the
+      # source addresses with your firewall -- the channel is
+      # token-authenticated, but it is designed to stay private.
+      - "127.0.0.1:${PI_REMOTE_LOCAL_PORT:-7001}:7001"
+    volumes:
+      - pi-remote-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7002/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pi-remote-data:
