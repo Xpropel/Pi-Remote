@@ -1,0 +1,81 @@
+/*
+ * Shared overlay motion language (anim audit B2/B3): one duration/easing set for
+ * every overlay surface in every shell, instead of per-shell literals.
+ *
+ * Scopes match pi-theme.css: [data-pi-root] covers in-tree rendering, and
+ * :root[data-pi-theme] (the <html> attribute mirrored by the headless root)
+ * makes the tokens inherit into Radix portals, which render under <body>,
+ * outside the pi root element.
+ *
+ * The keyframes animate the standalone `translate` / `scale` properties rather
+ * than `transform`, so they compose with a transform the surface already owns
+ * (e.g. .claude-menu[data-align="center"] keeps its translateX(-50%), and Radix
+ * popper positioning is never overridden).
+ *
+ * Reduced motion: the rails in pi-theme.css set `animation: none !important`
+ * and `transition: none !important` under these same two scopes, so every
+ * animation defined or consumed here is disabled automatically when the
+ * system asks for reduced motion. JS-driven surfaces additionally consult
+ * usePiMotion() before starting a closing phase.
+ */
+[data-pi-root],
+:root:root[data-pi-theme] {
+  --pi-motion-in: 160ms;
+  --pi-motion-out: 120ms;
+  --pi-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --pi-ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Menus and anchored popovers: fade in while rising 2px. */
+@keyframes pi-overlay-in {
+  from {
+    opacity: 0;
+    translate: 0 2px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+/* Centered dialogs: fade in while settling from 98% scale. */
+@keyframes pi-dialog-in {
+  from {
+    opacity: 0;
+    scale: 0.98;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+/* Generic exit fade (menu close; the sheet scrim close reuses it too). */
+@keyframes pi-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/*
+ * Kit menus (kit MenuSurface on Radix DropdownMenu / ContextMenu): the content
+ * element carries data-state="open" | "closed". Enter plays pi-overlay-in.
+ * On close, Radix Presence keeps the node mounted while the computed
+ * animation-name differs from the enter one, so pi-fade-out runs as a real
+ * exit before unmount; with forceMount the node stays mounted and the filled
+ * end state (opacity 0) simply holds. Applies to root contents and
+ * sub-contents of both menu kinds. Static surfaces render no data-state and
+ * are untouched.
+ */
+[data-slot="menu-surface"][data-state="open"],
+[data-slot="menu-sub-surface"][data-state="open"] {
+  animation: pi-overlay-in var(--pi-motion-in) var(--pi-ease-out) both;
+}
+
+[data-slot="menu-surface"][data-state="closed"],
+[data-slot="menu-sub-surface"][data-state="closed"] {
+  animation: pi-fade-out var(--pi-motion-out) var(--pi-ease-out) both;
+}

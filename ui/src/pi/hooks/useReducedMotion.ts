@@ -12,8 +12,18 @@
  *
  * 实现：matchMedia + useSyncExternalStore；没有 window / matchMedia（SSR、Node 单测）时按 false 处理。
  * 旧 Safari（< 14）的 MediaQueryList 没有 addEventListener，退回 addListener。
+ *
+ * In-app source (settings v2 `reducedMotion`): useReducedMotion() returns the OR of the
+ * OS preference above and the in-app setting, so every consumer of usePiMotion() follows
+ * both rails. The settings store is watched through its same-tab broadcast
+ * (SETTINGS_PREFS_EVENT) plus cross-tab "storage" events, so toggling the setting in the
+ * Appearance page applies live, without a reload. The CSS half of the in-app setting is
+ * in pi-theme.css, keyed on the <html data-pi-reduced-motion="on"> attribute that
+ * PiSettingsHost mirrors from the same pref.
  */
 import { useSyncExternalStore } from "react"
+import { loadSettingsLocal, SETTINGS_PREFS_EVENT, SETTINGS_STORAGE_KEY } from "../settings/model.ts"
+import type { SettingsStorage } from "../settings/types.ts"
 
 export const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
 
@@ -85,9 +95,61 @@ const subscribe = (onChange: () => void) => subscribeReducedMotion(onChange)
 const getSnapshot = () => readReducedMotion()
 const getServerSnapshot = () => false
 
+/* ------------------------------------------------------------------ */
+/* In-app setting source (settings v2 `reducedMotion`)                 */
+/* ------------------------------------------------------------------ */
+
+/** Storage of the settings v2 store; null when unavailable (SSR / Node tests / blocked). */
+function settingsStorage(): SettingsStorage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage
+  } catch {
+    return null
+  }
+}
+
+let inAppCache: { raw: string | null; reduced: boolean } | null = null
+
+/** The in-app "reduce motion" pref from the settings v2 store; false when unreadable. */
+function readInAppReducedMotion(): boolean {
+  const storage = settingsStorage()
+  if (!storage) return false
+  let raw: string | null = null
+  try {
+    raw = storage.getItem(SETTINGS_STORAGE_KEY)
+  } catch {
+    return false
+  }
+  // getSnapshot runs on every render of every consumer; re-parse only when the raw value changed.
+  if (inAppCache && inAppCache.raw === raw) return inAppCache.reduced
+  const reduced = loadSettingsLocal(storage).prefs.reducedMotion === true
+  inAppCache = { raw, reduced }
+  return reduced
+}
+
+/** Watch the settings v2 store: same-tab writes broadcast SETTINGS_PREFS_EVENT; other tabs fire "storage". */
+function subscribeInAppReducedMotion(onChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {}
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === null || event.key === SETTINGS_STORAGE_KEY) onChange()
+  }
+  window.addEventListener(SETTINGS_PREFS_EVENT, onChange)
+  window.addEventListener("storage", onStorage)
+  return () => {
+    window.removeEventListener(SETTINGS_PREFS_EVENT, onChange)
+    window.removeEventListener("storage", onStorage)
+  }
+}
+
+const subscribeInApp = (onChange: () => void) => subscribeInAppReducedMotion(onChange)
+const getInAppSnapshot = () => readInAppReducedMotion()
+
 /** 系统是否要求减少动效；设置变化时组件重新渲染 */
 export function useReducedMotion(): boolean {
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+  const system = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+  // OR with the in-app setting (see the file header): either source reduces motion app-wide.
+  const inApp = useSyncExternalStore(subscribeInApp, getInAppSnapshot, getServerSnapshot)
+  return system || inApp
 }
 
 const MOTION_FULL = motionOf(false)

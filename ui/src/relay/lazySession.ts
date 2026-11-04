@@ -4,7 +4,8 @@
  *  harness_start，等目标房间上线后只提交一次。把这些状态迁移写成纯函数，
  *  是因为这里最容易出现「重复发送」和「切走后还发到旧会话」两个问题。 */
 
-import type { ListedSession, RoomInfo } from "./devices.ts"
+import { baseName, type ListedSession, type RoomInfo } from "./devices.ts"
+import { cleanSessionTitleText } from "./titleText.ts"
 
 export type LazySelection = ListedSession & { deviceId: string }
 
@@ -71,7 +72,12 @@ export function lazySendTargets(send: LazySend | null, sessionId: string, device
 /** 未载入会话在列表里的合成房间：online 只表示“设备在线，可点选/可发送”，
  *  不代表本机已有这个房间；正文由 UI 的空态接管，不订阅。 */
 export function lazyRoomFromRow(row: LazySelection): RoomInfo {
-  const title = row.title || row.firstMessage || row.id.slice(0, 8)
+  // Same fallback chain as the sidebar rows (devices.ts sessionRow): the
+  // listed title, then the cleaned first message, then the workspace
+  // label. Callers may hand in a raw stored-session entry (no resolved
+  // title, first message possibly sealed and therefore empty) -- the raw
+  // session id is only the last resort when there is no workspace either.
+  const title = row.title || cleanSessionTitleText(row.firstMessage) || (row.cwd ? baseName(row.cwd) : row.id.slice(0, 8))
   return {
     id: row.id,
     label: title || null,

@@ -9,6 +9,8 @@ import assert from "node:assert/strict"
 import crypto from "node:crypto"
 import { readFileSync } from "node:fs"
 import {
+  KEY_MISSING_LABEL,
+  KEY_MISSING_TEXT,
   RoomKeyCache,
   UNDECRYPTABLE_LABEL,
   UNDECRYPTABLE_TEXT,
@@ -191,7 +193,7 @@ test("snapshot: failures become in-place placeholders and are counted; plaintext
   assert.equal(state.items[2].blocks[0].text, UNDECRYPTABLE_TEXT)
 })
 
-test("snapshot: with no room key every envelope becomes a placeholder (never ciphertext, never blank)", async () => {
+test("snapshot: with no room key every envelope becomes a LOCKED placeholder (never ciphertext, never blank, never 'corrupt')", async () => {
   const { messages, failures } = await decryptSnapshotMessages(null, [
     nodeEnvelope(RCK, asstMsg("a")),
     { role: "user", content: "明文", timestamp: 1 },
@@ -199,9 +201,25 @@ test("snapshot: with no room key every envelope becomes a placeholder (never cip
   ])
   assert.equal(failures, 2)
   assert.equal(messages.length, 3)
-  assert.deepEqual(messages[0].content, [{ type: "text", text: UNDECRYPTABLE_TEXT }])
+  // No key means the entries were never attempted: the placeholder must
+  // say "locked, no key yet", not claim a key mismatch / corruption --
+  // that wording is reserved for failures under a present key.
+  assert.deepEqual(messages[0].content, [{ type: "text", text: KEY_MISSING_TEXT }])
   assert.equal(messages[1].content, "明文")
-  assert.equal(messages[2].content, UNDECRYPTABLE_TEXT)
+  assert.equal(messages[2].content, KEY_MISSING_TEXT)
+})
+
+test("room event: with no room key the placeholder is the locked copy; with a key the corrupt copy", async () => {
+  const envelope = nodeEnvelope(RCK, asstMsg("秘密"))
+  const noKey = await decryptRoomEvent(null, { type: "message_end", message: envelope })
+  assert.equal(noKey.failures, 1)
+  assert.deepEqual(noKey.event.message.content, [{ type: "text", text: KEY_MISSING_TEXT }])
+  const wrongKey = await decryptRoomEvent(await webKey(WRONG_ACK), { type: "message_end", message: envelope })
+  assert.equal(wrongKey.failures, 1)
+  assert.deepEqual(wrongKey.event.message.content, [{ type: "text", text: UNDECRYPTABLE_TEXT }])
+  const noKeyText = await decryptRoomEvent(null, { type: "remote_message", text: envelope })
+  assert.equal(noKeyText.event.text, KEY_MISSING_TEXT)
+  assert.equal(KEY_MISSING_LABEL, "已加密")
 })
 
 test("snapshot: a remote-echo envelope (sealed bare prompt text) decrypts to the plaintext echo record, not a failure", async () => {
@@ -410,7 +428,8 @@ test("regression: a roster-pre-flagged enc room still notes its snapshot keyInfo
   assert.equal(noKey, null)
   const degraded = await decryptSnapshotMessages(noKey, snapshot.messages)
   assert.equal(degraded.failures, 1)
-  assert.equal(degraded.messages[0].content[0].text, UNDECRYPTABLE_TEXT)
+  // No key: the locked copy, not the corruption copy (which needs a key).
+  assert.equal(degraded.messages[0].content[0].text, KEY_MISSING_TEXT)
 })
 
 test("protocol + wiring: crypto.content rides the key-auth frame only; useRelay carries the honest states", () => {

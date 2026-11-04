@@ -647,6 +647,9 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
   // (2) active link -- the entry is flagged active (it is the reporting
   //     bridge's own live session) and it is the only unclaimed active entry
   //     in a workspace that has exactly one unclaimed online room.
+  // (3) embedded-id link -- the session id embedded in the entry's session
+  //     file name ("<timestamp>_<id>.jsonl") matches the room (whose own id
+  //     may itself be spelled as that file path), unique on both sides.
   // A paired entry is represented by its room row when the room is online
   // (the live row wins; roomRow folds in the entry's title/counts), and by
   // its own session row when the room is offline (the room row is dropped).
@@ -667,7 +670,47 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
       pairedEntryIds.add(entry.id)
     }
   }
+  // (3) embedded-id link -- a session file name embeds the session id
+  //     ("<timestamp>_<id>.jsonl", minted by pi), so an entry whose own id
+  //     is spelled differently (the file path itself, or an unrelated
+  //     manifest spelling) still names the room's session as long as its
+  //     path points at the room's session file; symmetrically, a room id
+  //     spelled as a file path embeds the bare id of its entry. The file
+  //     link above misses both: it compares whole basenames, which only
+  //     line up when BOTH sides carry the path spelling. Pairing here
+  //     requires an exact embedded-id match that is unique on both sides,
+  //     so it cannot merge two different sessions; anything ambiguous
+  //     stays unpaired and both rows are kept.
   const roomIds = new Set(mine.map((room) => room.id))
+  const embeddedIdOf = (value: string): string => {
+    const base = fileNameOf(String(value || "")).replace(/\.jsonl$/i, "")
+    const at = base.lastIndexOf("_")
+    return at > 0 ? base.slice(at + 1) : ""
+  }
+  const roomsByEmbeddedId = new Map<string, RoomInfo[]>()
+  for (const room of mine) {
+    if (byId.has(room.id) || paired.has(room.id)) continue
+    const key = embeddedIdOf(room.id) || room.id
+    const list = roomsByEmbeddedId.get(key) || []
+    list.push(room)
+    roomsByEmbeddedId.set(key, list)
+  }
+  const entriesByEmbeddedId = new Map<string, SessionEntry[]>()
+  for (const session of sessions) {
+    if (session.deleted || pairedEntryIds.has(session.id) || roomIds.has(session.id)) continue
+    const key = embeddedIdOf(session.path) || embeddedIdOf(session.id)
+    if (!key) continue
+    const list = entriesByEmbeddedId.get(key) || []
+    list.push(session)
+    entriesByEmbeddedId.set(key, list)
+  }
+  for (const [key, roomList] of roomsByEmbeddedId) {
+    const entryList = entriesByEmbeddedId.get(key) || []
+    if (roomList.length === 1 && entryList.length === 1) {
+      paired.set(roomList[0].id, entryList[0])
+      pairedEntryIds.add(entryList[0].id)
+    }
+  }
   const unclaimedOnlineByCwd = new Map<string, RoomInfo[]>()
   for (const room of mine) {
     if (!room.online || byId.has(room.id) || paired.has(room.id)) continue

@@ -12,6 +12,7 @@
  */
 import { useMemo, useState } from "react"
 import { deviceErrorText, ENC_FALLBACK_LABEL, ENC_REASON_LABELS, errorCode, type Device } from "@/relay/devices"
+import { useReducedMotion } from "@/pi/hooks/useReducedMotion"
 import { useSettings } from "../../SettingsContext.tsx"
 import { SettingsStatusDot } from "../../ui.tsx"
 import {
@@ -74,6 +75,7 @@ interface DeviceProbe {
 export function DevicesPage() {
   const { p, prefs, act } = useSettings()
   const { relay } = p
+  const reducedMotion = useReducedMotion()
   const devices = relay.devices ?? []
   const [probes, setProbes] = useState<Record<string, DeviceProbe>>({})
   const [probingId, setProbingId] = useState<string | null>(null)
@@ -89,12 +91,14 @@ export function DevicesPage() {
   const plaintextGroups = useMemo(() => plaintextRoomGroupsOf(relay.rooms), [relay.rooms])
   const deviceById = useMemo(() => new Map(devices.map((d) => [d.id, d])), [devices])
 
-  /** Deep-link to a device entry on this page: scroll it into view and flash it. */
+  /** Deep-link to a device entry on this page: scroll it into view and flash it.
+   *  The scroll is instant when reduced motion applies (OS setting or the in-app
+   *  setting, via useReducedMotion); an explicit "smooth" would ignore both. */
   const focusDevice = (deviceId: string | undefined) => {
     if (!deviceId) return
     const el = document.querySelector(`[data-settings-device="${deviceId.replace(/"/g, "")}"]`)
     if (!el) return
-    el.scrollIntoView({ block: "center", behavior: "smooth" })
+    el.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" })
     el.classList.add("is-focus")
     window.setTimeout(() => el.classList.remove("is-focus"), 1600)
   }

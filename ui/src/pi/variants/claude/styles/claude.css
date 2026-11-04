@@ -245,7 +245,9 @@
 }
 
 [data-pi-ui="claude"] .claude-spin {
-  animation: claude-spin 0.9s linear infinite;
+  /* Same 0.8s as .claude-spinner above (and the kit/Codex spinners):
+     one spin speed per shell, not two. */
+  animation: claude-spin 0.8s linear infinite;
 }
 
 [data-pi-ui="claude"] .claude-skeleton {
@@ -537,6 +539,10 @@
   border-radius: var(--claude-r-panel);
   background: var(--claude-popover);
   box-shadow: var(--claude-popover-shadow);
+  /* Shared overlay motion (pi/styles/motion.css); the keyframes animate the
+     standalone translate property, so the [data-align="center"] transform
+     below (translateX(-50%)) is preserved. */
+  animation: pi-overlay-in var(--pi-motion-in) var(--pi-ease-out) both;
 }
 
 [data-pi-ui="claude"] .claude-menu[data-side="top"] {
@@ -651,6 +657,8 @@
   border: 0;
   background: var(--claude-overlay);
   cursor: default;
+  /* Shared overlay motion (pi/styles/motion.css): scrim fades in with the dialog. */
+  animation: pi-fade-in var(--pi-motion-in) var(--pi-ease-out) both;
 }
 
 [data-pi-ui="claude"] .claude-dialog {
@@ -663,6 +671,8 @@
   border-radius: var(--claude-r-dialog);
   background: var(--claude-s2);
   box-shadow: var(--claude-dialog-shadow);
+  /* Shared overlay motion (pi/styles/motion.css). */
+  animation: pi-dialog-in var(--pi-motion-in) var(--pi-ease-out) both;
 }
 
 [data-pi-ui="claude"] .claude-dialog-head {
@@ -744,6 +754,9 @@
   border-radius: var(--claude-r-dialog) var(--claude-r-dialog) 0 0;
   background: var(--claude-s2);
   box-shadow: var(--claude-sheet-shadow);
+  /* Same sheet entrance as the cursor shell (pi-sheet-in, 240ms, shared sheet
+     easing token from pi/styles/motion.css). */
+  animation: pi-sheet-in 240ms var(--pi-ease-sheet) both;
 }
 
 [data-pi-ui="claude"] .claude-sheet-grabber {

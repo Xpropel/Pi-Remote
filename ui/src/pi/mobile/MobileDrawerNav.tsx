@@ -1,8 +1,13 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import type { PiSidebarSession } from "../sidebar/types.ts"
+import { usePiMotion } from "../hooks/useReducedMotion.ts"
 import { IconChevronDown, IconFolder, IconMonitor, IconSearch, IconSend, IconSettings } from "./icons"
 import { LongPressCard } from "./LongPressCard"
 import type { PiMobileNavProps } from "./types.ts"
+
+/** Exit duration of the drawer closing phase; the enter in mobile.css
+ * (.pm-drawer / .pm-drawer-mask) runs the same 240ms on --pi-ease-sheet. */
+const DRAWER_CLOSE_MS = 240
 
 /**
  * P11-MOB-02/03 抽屉式侧栏：宽 clamp(屏宽−68, 288, 340)、全高贴左、遮罩 z20<抽屉 z30。
@@ -19,9 +24,74 @@ export function MobileDrawerNav({
   const [deviceMenu, setDeviceMenu] = useState(false)
   const [preview, setPreview] = useState<PiSidebarSession | null>(null)
   const asideRef = useRef<HTMLElement>(null)
-  // a11y：打开时焦点入内 + Tab 循环 + Esc 关闭并恢复聚焦；遮罩点击关闭由按钮承担
+  const { sheetSlide } = usePiMotion()
+  /*
+   * Closing phase (anim audit B2b): a close request no longer unmounts the
+   * drawer on the spot. The layer stays mounted while the phase is
+   * "closing" (mobile.css plays the slide/fade out under [data-closing]),
+   * and only when the phase ends is the parent's onClose reported and the
+   * layer unmounted. It mirrors the PiSheet closing phase in PiOverlay.tsx,
+   * including the reduced-motion gate: sheetSlide === false skips the phase
+   * entirely, so closes are immediate in both directions.
+   */
+  const [phase, setPhase] = useState<"open" | "closing" | "closed">(open ? "open" : "closed")
+  const phaseRef = useRef(phase)
+  const onCloseRef = useRef(onClose)
+  const slideRef = useRef(sheetSlide)
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose
+    slideRef.current = sheetSlide
+  })
+  const closeTimerRef = useRef<number | null>(null)
+  const finishClose = useCallback(() => {
+    closeTimerRef.current = null
+    phaseRef.current = "closed"
+    setPhase("closed")
+    onCloseRef.current?.()
+  }, [])
+  const beginClose = useCallback(() => {
+    if (phaseRef.current !== "open") return
+    if (!slideRef.current) {
+      finishClose()
+      return
+    }
+    phaseRef.current = "closing"
+    setPhase("closing")
+    closeTimerRef.current = window.setTimeout(finishClose, DRAWER_CLOSE_MS)
+  }, [finishClose])
+  const beginCloseRef = useRef(beginClose)
+  useLayoutEffect(() => {
+    beginCloseRef.current = beginClose
+  })
+  /*
+   * Parent-driven changes ride the same phase machine: open=false is a
+   * close request too (a no-op when the flip is the parent answering
+   * finishClose, which already moved the phase past "open"), and open=true
+   * (re)opens, cancelling a pending close.
+   */
   useEffect(() => {
-    if (!open) return
+    if (open && phaseRef.current !== "open") {
+      if (closeTimerRef.current != null) {
+        clearTimeout(closeTimerRef.current)
+        closeTimerRef.current = null
+      }
+      phaseRef.current = "open"
+      setPhase("open")
+    } else if (!open && phaseRef.current === "open") {
+      beginClose()
+    }
+  }, [open, beginClose])
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current != null) clearTimeout(closeTimerRef.current)
+    },
+    [],
+  )
+  const interactive = phase === "open"
+  // a11y：打开时焦点入内 + Tab 循环 + Esc 关闭并恢复聚焦；遮罩点击关闭由按钮承担
+  // （焦点在关闭开始时即归还，和旧行为一致：旧版在父级 open 翻 false 的同一刻清理）
+  useEffect(() => {
+    if (!interactive) return
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const root = asideRef.current
     const focusables = () => [...(root?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])]
@@ -30,7 +100,7 @@ export function MobileDrawerNav({
       if (event.key === "Escape") {
         event.preventDefault()
         event.stopPropagation()
-        onClose()
+        beginCloseRef.current()
         return
       }
       if (event.key !== "Tab") return
@@ -51,18 +121,18 @@ export function MobileDrawerNav({
       document.removeEventListener("keydown", onKey)
       previous?.focus?.()
     }
-  }, [open, onClose])
+  }, [interactive])
   const activeDevice = data.devices.find((device) => device.id === data.selectedDeviceId) ?? data.devices.find((device) => device.current) ?? data.devices[0]
   const pinnedGroup = data.groups.find((group) => group.kind === "pinned")
   const workspaceGroups = data.groups.filter((group) => group.kind !== "pinned" && group.kind !== "archive")
   const pick = (sessionKey: string) => {
     onOpenSession(sessionKey)
-    onClose()
+    beginClose()
   }
-  if (!open) return null
+  if (phase === "closed") return null
   return (
-    <div className="pm-drawer-layer" data-pi-mobile-mode={mode} data-pi-mobile-surface="P11-MOB-02">
-      <button type="button" className="pm-drawer-mask" aria-label="关闭侧栏" onClick={onClose} />
+    <div className="pm-drawer-layer" data-pi-mobile-mode={mode} data-pi-mobile-surface="P11-MOB-02" data-closing={phase === "closing" ? "" : undefined}>
+      <button type="button" className="pm-drawer-mask" aria-label="关闭侧栏" onClick={beginClose} />
       <aside ref={asideRef} className="pm-drawer" role="dialog" aria-modal="true" aria-label="侧栏" data-pi-mobile-surface="P11-MOB-03">
         <div className="pm-drawer-scroll">
           <div className="pm-drawer-device-wrap">
@@ -102,7 +172,7 @@ export function MobileDrawerNav({
               </div>
             ) : null}
           </div>
-          <button type="button" className="pm-drawer-new" onClick={() => { actions.newSession(); onClose() }}>
+          <button type="button" className="pm-drawer-new" onClick={() => { actions.newSession(); beginClose() }}>
             <IconSend size={17} />
             {data.newSessionLabel ?? "新会话"}
           </button>
@@ -123,7 +193,7 @@ export function MobileDrawerNav({
                 data-active={page.active ? "" : undefined}
                 onClick={() => {
                   actions.selectLocalPage?.(page.id)
-                  onClose()
+                  beginClose()
                 }}
               >
                 {page.icon ?? <IconFolder size={17} />}
@@ -174,7 +244,7 @@ export function MobileDrawerNav({
           <span className="pm-identity-text" title={data.serverUrl ?? data.serverName}>
             <span className="pm-identity-name">{data.serverName || "Pi-Remote"}</span>
           </span>
-          <button type="button" className="pm-icon-btn" aria-label="设置" onClick={() => { actions.openSettings(); onClose() }}>
+          <button type="button" className="pm-icon-btn" aria-label="设置" onClick={() => { actions.openSettings(); beginClose() }}>
             <IconSettings size={20} />
           </button>
         </div>

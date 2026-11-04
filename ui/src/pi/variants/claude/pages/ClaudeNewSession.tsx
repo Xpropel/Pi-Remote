@@ -5,6 +5,7 @@ import { deviceScopeLabel, folderForDevice, newSessionDefaultsOf, offlineReasonO
 import { useMissingFolders } from "@/pi/model/folderExistence"
 import { initialBrowsePathOf } from "@/pi/model/folderBrowser"
 import { HARNESS_START_TIMEOUT_MS } from "@/relay/devices"
+import { cleanSessionTitleText } from "@/relay/titleText"
 import { newSessionDraftOf, setNewSessionDraft, subscribeNewSessionDraft } from "@/relay/drafts"
 import { baseName } from "../model/format"
 import { useComposerEnter } from "@/pi/headless/useComposerEnter"
@@ -293,7 +294,7 @@ export function ClaudeNewSession({ p, phone = false }: { p: PiContainerProps; ph
                   relay.selectRoom(session.id)
                 }}
               >
-                <span className="claude-chat-recent-name">{session.name || session.label || session.firstMessage || session.id}</span>
+                <span className="claude-chat-recent-name">{session.name || session.label || cleanSessionTitleText(session.firstMessage) || (session.cwd ? baseName(session.cwd) : session.id.slice(0, 8))}</span>
                 <span className="claude-chat-recent-meta">{session.cwd ?? ""}</span>
               </button>
             ))}

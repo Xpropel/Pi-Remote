@@ -425,9 +425,23 @@ type RoomCryptoEntry = {
   status: RoomCryptoStatus | null
   /** Resolvers parked until keyInfo lands (live events ahead of the first snapshot). */
   keyWaiters: Array<() => void>
-  /** A content_key_request was already sent for this room on this connection. */
+  /** A content_key_request was already sent for this room since it was last opened. */
   ackRequested: boolean
+  /**
+   * Frames held back while the room key is missing but an ACK grant is
+   * still pending (status waiting-ack): the newest snapshot plus the
+   * room events that followed it, in arrival order. Held frames are NOT
+   * settled into placeholders; the drain replays them once a key
+   * resolves, so a grant that lands seconds after the room opened heals
+   * the transcript in place. Null when nothing is held.
+   */
+  deferred: { snapshot: Record<string, unknown> | null; events: Array<Record<string, unknown>> } | null
+  /** A deferred-drain task is already queued/running for this room. */
+  drainingDeferred: boolean
 }
+
+/** Cap on held room events per room while a grant is pending (drop policy in deferRoomEvent). */
+const DEFERRED_EVENT_CAP = 1000
 
 /** Upper bound a live event may wait for its room's keyInfo before degrading to placeholders. */
 const ROOM_KEY_WAIT_MS = 15000
@@ -510,6 +524,8 @@ export function useRelay() {
   // chain and keep the byte-identical synchronous path. RCKs live only as
   // non-extractable CryptoKeys in the RoomKeyCache (memory only).
   const roomCryptoRef = useRef(new Map<string, RoomCryptoEntry>())
+  /** Assigned by connect(): drains frames held for a pending room key in every room. */
+  const cryptoDrainRef = useRef<() => void>(() => {})
   const roomKeyCacheRef = useRef(new RoomKeyCache())
   const roomChainsRef = useRef(new Map<string, Promise<void>>())
   const [decryptFailures, setDecryptFailures] = useState<Readonly<Record<string, number>>>({})
@@ -981,7 +997,7 @@ export function useRelay() {
   const roomCryptoEntryOf = (roomId: string): RoomCryptoEntry => {
     let entry = roomCryptoRef.current.get(roomId)
     if (!entry) {
-      entry = { enc: false, keyInfo: null, status: null, keyWaiters: [], ackRequested: false }
+      entry = { enc: false, keyInfo: null, status: null, keyWaiters: [], ackRequested: false, deferred: null, drainingDeferred: false }
       roomCryptoRef.current.set(roomId, entry)
     }
     return entry
@@ -1055,7 +1071,15 @@ export function useRelay() {
     })
   }
 
-  /** Ask the account's keyed ends for an ACK delivery, at most once per room per connection. */
+  /**
+   * Ask the account's keyed ends for an ACK delivery. Latched per room so
+   * a stream of undecryptable frames asks once, not once per frame; the
+   * latch is re-armed every time the room is opened (see subscribe), so
+   * opening a keyless encrypted room re-asks even when an earlier ask
+   * went out while no keyed end was online to answer it. Never fires
+   * once an ACK is held -- awaitRoomKey only calls this on its no-ACK
+   * branches.
+   */
   const requestAckForRoom = (roomId: string) => {
     const entry = roomCryptoEntryOf(roomId)
     if (entry.ackRequested) return
@@ -1203,6 +1227,10 @@ export function useRelay() {
       if (room.waitingPrompt?.titleEnc) kickTitleDecryption(room.waitingPrompt.titleEnc)
     }
     for (const entry of inbox) if (entry.titleEnc) kickTitleDecryption(entry.titleEnc)
+    // Room frames held for a pending grant (see RoomCryptoEntry.deferred)
+    // drain through the same trigger: an ACK landing is the one event
+    // that can turn a waiting-ack room readable.
+    cryptoDrainRef.current()
     // kickPreviewDecryption / kickTitleDecryption are ref/setState-only;
     // the identity fields are the re-run trigger for items that were
     // waiting on an ACK.
@@ -2472,11 +2500,93 @@ export function useRelay() {
       return false
     }
 
+    /**
+     * Hold a snapshot whose room key is still waiting on an ACK grant
+     * instead of settling it: settled-without-a-key would stamp every
+     * message as an undecryptable placeholder and count a pile of
+     * failures for what is really one pending delivery. The room keeps
+     * showing the single waiting-ack line; drainDeferredCrypto replays
+     * the frame once a key resolves. Events already held stay held (they
+     * precede this snapshot; the seq guards sort them out at replay),
+     * and a held snapshot is only replaced by one carrying at least as
+     * many messages, so the relay's empty snapshotPending anchor frame
+     * can never displace a real snapshot.
+     */
+    const deferEncSnapshot = (roomId: string, msg: Record<string, unknown>) => {
+      const entry = roomCryptoEntryOf(roomId)
+      const held = entry.deferred
+      const heldCount = held?.snapshot && Array.isArray(held.snapshot.messages) ? held.snapshot.messages.length : -1
+      const thisCount = Array.isArray(msg.messages) ? msg.messages.length : 0
+      if (held?.snapshot && thisCount < heldCount) return
+      entry.deferred = { snapshot: msg, events: held?.events ?? [] }
+    }
+
+    /**
+     * Hold one room event behind the same pending grant (arrival order
+     * preserved). The queue is capped: past the cap the oldest streaming
+     * delta is dropped (a later delta / the message_end supersedes it);
+     * if no delta can be dropped the incoming frame is dropped instead
+     * -- the seq gap it leaves makes the event step resync from the
+     * relay's authoritative snapshot, so nothing settles wrong.
+     */
+    const deferEncRoomEvent = (roomId: string, msg: Record<string, unknown>) => {
+      const entry = roomCryptoEntryOf(roomId)
+      if (!entry.deferred) entry.deferred = { snapshot: null, events: [] }
+      const events = entry.deferred.events
+      if (events.length >= DEFERRED_EVENT_CAP) {
+        const deltaAt = events.findIndex((frame) => isRecord(frame.event) && frame.event.type === "message_update")
+        if (deltaAt < 0) return
+        events.splice(deltaAt, 1)
+      }
+      events.push(msg)
+    }
+
+    /**
+     * Replay a room's held frames, in order, through the normal chain.
+     * Called when a key may newly resolve: a frame that settles with a
+     * key, an accepted ACK grant, and the identity-state effect that
+     * fires when an ACK lands by any path. Re-deferral during the drain
+     * (grant still not usable for this room) simply rebuilds the held
+     * set; the finally-pass re-drains once more if the key resolved
+     * mid-drain after an early frame had already re-deferred.
+     */
+    const drainDeferredCrypto = (roomId: string) => {
+      const entry = roomCryptoEntryOf(roomId)
+      if (entry.drainingDeferred) return
+      const held = entry.deferred
+      if (!held || (!held.snapshot && held.events.length === 0)) return
+      entry.deferred = null
+      entry.drainingDeferred = true
+      enqueueRoomCryptoTask(roomId, async () => {
+        try {
+          if (held.snapshot) await processEncSnapshot(held.snapshot)
+          for (const frame of held.events) await processEncRoomEvent(frame)
+        } finally {
+          entry.drainingDeferred = false
+          if (entry.deferred && entry.status === "ready") drainDeferredCrypto(roomId)
+        }
+      })
+    }
+
+    // The identity effect (component scope) drains held rooms whenever an
+    // ACK lands; connect owns the processors, so it publishes the hook.
+    cryptoDrainRef.current = () => {
+      for (const id of roomCryptoRef.current.keys()) drainDeferredCrypto(id)
+    }
+
     /** Enc snapshot: decrypt the whole list under the room key, then run the shared snapshot bookkeeping. */
     const processEncSnapshot = async (msg: Record<string, unknown>): Promise<void> => {
       const roomId = typeof msg.room === "string" ? msg.room : roomRef.current
       if (!roomId) return
       const key = await awaitRoomKey(roomId, false)
+      if (!key && roomCryptoEntryOf(roomId).status === "waiting-ack") {
+        // Grant pending: hold the frame (the room shows the one calm
+        // waiting state) instead of a screen of per-message errors.
+        deferEncSnapshot(roomId, msg)
+        wakeRoomKeyWaiters(roomId)
+        return
+      }
+      if (key) drainDeferredCrypto(roomId)
       const raw = Array.isArray(msg.messages) ? msg.messages : []
       const { messages, failures } = await decryptSnapshotMessages(key, raw)
       noteDecryptFailures(roomId, failures)
@@ -2493,6 +2603,13 @@ export function useRelay() {
       const roomId = typeof msg.room === "string" ? msg.room : roomRef.current
       if (!roomId) return
       const key = await awaitRoomKey(roomId, true)
+      if (!key && roomCryptoEntryOf(roomId).status === "waiting-ack") {
+        // Same hold as the snapshot: a live event must not settle its
+        // sealed fields as placeholders while a grant is still pending.
+        deferEncRoomEvent(roomId, msg)
+        return
+      }
+      if (key) drainDeferredCrypto(roomId)
       const rawEvent = isRecord(msg.event) ? msg.event : {}
       const { event, failures, drop } = await decryptRoomEvent(key, rawEvent)
       noteDecryptFailures(roomId, failures)
@@ -2755,6 +2872,11 @@ export function useRelay() {
           void core.acceptAckGrant(grant).then((accepted) => {
             syncIdentityState()
             if (!accepted) return
+            // Rooms opened ahead of this grant hold their frames back
+            // (RoomCryptoEntry.deferred): replay them now that the key
+            // can resolve. The identity effect drains on the same event;
+            // doing it here too keeps the heal immediate, not effect-paced.
+            for (const id of roomCryptoRef.current.keys()) drainDeferredCrypto(id)
             setNotice({ text: "已收到账号内容钥（ACK）：本机现在持有内容钥。", tone: "warn" })
             // Report the new fingerprint so the relay reconciliation can converge.
             const fp = core.ackFpFor(core.accountId())
@@ -3082,10 +3204,11 @@ export function useRelay() {
         if (code === "crypto_required") {
           const roomId = typeof msg.room === "string" && msg.room ? msg.room : roomRef.current || ""
           if (roomId) noteRoomCryptoStatus(roomId, "crypto-required")
-          // Room-scoped: the notice describes this room only, so it is
-          // retracted when the user leaves the room instead of staying
-          // pinned over unrelated pages.
-          setNotice({ text: "这个房间已加密，当前观看端无法读取：需要先启用观看端身份并持有内容钥。", tone: "bad", scope: roomId ? `room:${roomId}` : undefined })
+          // No floating notice on top of the status: the transcript's
+          // inline crypto-required line (TranscriptContainer) is the
+          // single, in-flow surface for this room state in every shell.
+          // A room-scoped stack card used to repeat the same sentence
+          // floating over the room's first lines / title row.
           return
         }
         setNotice({ text: String(msg.message || msg.code || "出错了"), tone: "bad" })
@@ -3392,6 +3515,12 @@ export function useRelay() {
     const resume = roomRef.current === id && sync.room === id && !!sync.rev
     if (roomRef.current && roomRef.current !== id) pendingSwitchRef.current = false
     roomRef.current = id
+    // Opening an encrypted room re-arms the one-shot ACK request: if this
+    // viewer still holds no ACK, resolving this room's key asks the
+    // account's keyed ends for a fresh grant instead of relying on a
+    // request that may have gone out while no keyed end was online.
+    const cryptoEntry = roomCryptoRef.current.get(id)
+    if (cryptoEntry?.enc) cryptoEntry.ackRequested = false
     lastRoomRef.current = id
     setRoomId(id)
     // 存档失败不影响订阅本身（隐私模式下 safeStore 会静默失败）

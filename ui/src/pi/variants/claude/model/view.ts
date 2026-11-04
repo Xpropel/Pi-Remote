@@ -5,7 +5,8 @@ import type { PiUiPlatformTab } from "@/pi/extensions"
 import type { PiContainerProps, Relay } from "@/pi/containers/types"
 import { attentionForRoom, type AttentionItem } from "@/relay/attention"
 import { contextReadout } from "@/relay/contextUsage"
-import type { Device, RoomInfo } from "@/relay/devices"
+import { baseName, type Device, type RoomInfo } from "@/relay/devices"
+import { cleanSessionTitleText } from "@/relay/titleText"
 import { pageLinkView } from "@/relay/presence"
 import { bootInputOf, bootViewOf } from "@/pi/model/boot"
 import { rowMarkerA11y, rowMarkerOf } from "@/pi/model/rowMarker"
@@ -34,7 +35,23 @@ export function sessionHeadOf(relay: Relay): ClaudeSessionHead {
   void row
   const deviceId = room?.deviceId ?? relay.selectedDevice?.id ?? null
   const device = relay.devices.find((d) => d.id === deviceId) ?? null
-  const title = room?.name || room?.label || room?.firstMessage || relay.lazySession?.title || relay.roomId || ""
+  // Title: prefer the merged sidebar row for this room -- it carries the
+  // shared title resolution (session name -> cleaned first message ->
+  // workspace label), identical to the Cursor/Codex shells. Then the
+  // room's own fields, then the lazy selection's title. A raw room or
+  // session id is never a title: when the first message cannot be
+  // decrypted by this viewer the workspace label is the last resort.
+  const listedTitle = relay.roomId
+    ? sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice).find((s) => s.id === relay.roomId)?.title
+    : undefined
+  const title =
+    listedTitle ||
+    room?.name ||
+    room?.label ||
+    cleanSessionTitleText(room?.firstMessage) ||
+    relay.lazySession?.title ||
+    (room?.cwd ? baseName(room.cwd) : "") ||
+    ""
   return { room, device, title, cwd: room?.cwd ?? "", loaded: !(relay.lazySession && relay.lazySession.id === relay.roomId) }
 }
 

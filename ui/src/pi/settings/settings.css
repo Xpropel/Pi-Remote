@@ -445,7 +445,10 @@
   border-radius: 50%;
   background: var(--st-switch-knob);
   box-shadow: var(--st-knob-shadow);
-  transition: left 120ms ease;
+  /* The knob travels via transform, not the layout property `left`
+     (same pattern as the kit/Claude switches): 2px inset + 16px travel
+     lands exactly where left: 18px used to put it. */
+  transition: transform 120ms ease;
 }
 
 .settings-root .settings-switch.is-on {
@@ -453,7 +456,7 @@
 }
 
 .settings-switch.is-on .settings-switch-thumb {
-  left: 18px;
+  transform: translateX(16px);
   /* ON thumb color follows --st-switch-knob-on (dark skins use a dark knob on the light ink track). */
   background: var(--st-switch-knob-on);
 }

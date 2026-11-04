@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type ReactNode, type Ref } from "react"
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type ReactNode, type Ref } from "react"
 // 部件里的 Dialog.Title / Dialog.Description / Dialog.Close 也从这里引（radix-ui 包，和 PiOverlay 同一个 Dialog 原语）
 import { ContextMenu, Dialog, DropdownMenu } from "radix-ui"
 import type { PiLayout } from "@/components/pi/shared/viewport"
@@ -163,6 +163,13 @@ export interface PiSheetProps extends PiOverlayControl {
   /** 可交互：关闭后焦点回哪（默认 = 打开前的焦点元素，不在了就回顶栏标题） */
   returnFocus?: PiReturnFocus
 }
+
+/**
+ * Exit duration of the sheet closing phase (anim audit B2); the enter stays
+ * 240ms. The exit animation classes in PiSheetInteractive hardcode the same
+ * 200ms (Tailwind arbitrary values cannot read this constant) — keep in sync.
+ */
+const SHEET_CLOSE_MS = 200
 
 const SHEET_LAYER = "absolute inset-x-0 top-0 z-(--cw-pi-z-sheet) flex flex-col justify-end"
 const SHEET_CARD = "relative flex min-h-0 flex-col rounded-t-(--cw-pi-sheet-radius) bg-(--cw-surface) shadow-(--cw-shadow-palette)"
@@ -346,6 +353,75 @@ function PiSheetInteractive({
   const { sheetSlide } = usePiMotion()
   const frame = usePiFrame()
   const keyboardOpen = keyboardProp ?? frame.keyboardOpen
+  /*
+   * Closing phase (anim audit B2): a close request no longer unmounts the
+   * sheet on the spot. This wrapper always drives PiOverlay as a controlled
+   * overlay whose open value stays true while the phase is "closing", plays
+   * the exit (card slides down, scrim fades; SHEET_CLOSE_MS on the shared
+   * sheet easing), and only then reports onOpenChange(false) and lets the
+   * layer unmount. It mirrors PiFeedback's "leaving" pattern, except the
+   * sheet owns the delay because callers unmount it as soon as
+   * onOpenChange(false) lands. Reduced motion (sheetSlide === false) skips
+   * the phase entirely, so closes are immediate: no slide in either
+   * direction, matching the enter gate.
+   */
+  const [phase, setPhase] = useState<"open" | "closing" | "closed">(open === false ? "closed" : "open")
+  const phaseRef = useRef(phase)
+  const onOpenChangeRef = useRef(onOpenChange)
+  const sheetSlideRef = useRef(sheetSlide)
+  useLayoutEffect(() => {
+    onOpenChangeRef.current = onOpenChange
+    sheetSlideRef.current = sheetSlide
+  })
+  const closeTimerRef = useRef<number | null>(null)
+  const finishClose = useCallback(() => {
+    closeTimerRef.current = null
+    phaseRef.current = "closed"
+    setPhase("closed")
+    onOpenChangeRef.current?.(false)
+  }, [])
+  const beginClose = useCallback(() => {
+    if (phaseRef.current !== "open") return
+    if (!sheetSlideRef.current) {
+      finishClose()
+      return
+    }
+    phaseRef.current = "closing"
+    setPhase("closing")
+    closeTimerRef.current = window.setTimeout(finishClose, SHEET_CLOSE_MS)
+  }, [finishClose])
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (next) onOpenChangeRef.current?.(true)
+      else beginClose()
+    },
+    [beginClose],
+  )
+  /*
+   * Parent-driven changes ride the same phase machine: open=false is a close
+   * request too (a no-op when the flip is the parent answering finishClose,
+   * which already moved the phase past "open"), and open=true (re)opens,
+   * cancelling a pending close.
+   */
+  useEffect(() => {
+    if (open === true && phaseRef.current !== "open") {
+      if (closeTimerRef.current != null) {
+        clearTimeout(closeTimerRef.current)
+        closeTimerRef.current = null
+      }
+      phaseRef.current = "open"
+      setPhase("open")
+    } else if (open === false && phaseRef.current === "open") {
+      beginClose()
+    }
+  }, [open, beginClose])
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current != null) clearTimeout(closeTimerRef.current)
+    },
+    [],
+  )
+  const closing = phase === "closing"
   const [kbLayout, handleRef, headerRef, bodyRef, footerRef] = useSheetKeyboardLayout(keyboardOpen, size, open !== false)
   const layout = keyboardOpen ? kbLayout : null
   const compact = !!layout?.compact
@@ -356,8 +432,8 @@ function PiSheetInteractive({
   return (
     // 不 portal：留在 PiPhonePage 的 sheet 槽里，absolute 盖住整页（和静态态同一个位置）
     <PiOverlay
-      open={open}
-      onOpenChange={onOpenChange}
+      open={phase !== "closed"}
+      onOpenChange={handleOpenChange}
       returnFocus={returnFocus}
       focus="sheet"
       portal={false}
@@ -372,8 +448,22 @@ function PiSheetInteractive({
       layerClassName="flex flex-col justify-end"
       layerStyle={{ bottom: keyboardOpen ? "var(--cw-pi-keyboard-h)" : 0 }}
       backdropData={{ "data-pi-sheet-backdrop": "" }}
-      backdropClassName={sheetSlide ? "animate-[pi-fade-in_240ms_ease-out]" : undefined}
-      className={cn(SHEET_CARD, sheetSlide && "animate-[pi-sheet-in_240ms_cubic-bezier(0.32,0.72,0,1)]", className)}
+      backdropClassName={
+        closing
+          ? "animate-[pi-fade-out_200ms_var(--pi-ease-sheet)_both]"
+          : sheetSlide
+            ? "animate-[pi-fade-in_240ms_ease-out]"
+            : undefined
+      }
+      className={cn(
+        SHEET_CARD,
+        closing
+          ? // The enter keyframes (pi-sheet-in in pi-theme.css) played in
+            // reverse are the exact mirror of the slide-in: down and out.
+            "animate-[pi-sheet-in_200ms_var(--pi-ease-sheet)_reverse_both]"
+          : sheetSlide && "animate-[pi-sheet-in_240ms_cubic-bezier(0.32,0.72,0,1)]",
+        className,
+      )}
       style={style}
       contentData={{ "data-pi-sheet-card": "" }}
     >
@@ -507,7 +597,11 @@ function PiDialogInteractive({
       focus="dialog"
       layerData={{ "data-pi-dialog": "" }}
       layerClassName="flex items-center justify-center p-10"
-      className={cn(DIALOG_CARD, className)}
+      // Shared overlay motion (pi/styles/motion.css): the scrim fades in and
+      // the card settles from 98% scale; the pi-theme reduced-motion rails
+      // disable both automatically (portal content sits under <html data-pi-theme>).
+      backdropClassName="animate-[pi-fade-in_var(--pi-motion-in)_var(--pi-ease-out)]"
+      className={cn(DIALOG_CARD, "animate-[pi-dialog-in_var(--pi-motion-in)_var(--pi-ease-out)_both]", className)}
       style={{ width }}
     >
       <header className="flex shrink-0 items-start gap-3 pt-4 pr-3 pb-2 pl-5">

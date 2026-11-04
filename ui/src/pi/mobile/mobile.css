@@ -444,6 +444,9 @@
   width: 100%;
   height: 100%;
   background: var(--pm-mask);
+  /* Enter: fade in alongside the drawer slide; the exit under
+     [data-closing] below reuses the shared pi-fade-out keyframes. */
+  animation: pm-mask-in 240ms var(--pi-ease-sheet) both;
 }
 .pm-drawer {
   position: absolute;
@@ -462,6 +465,38 @@
   -webkit-backdrop-filter: var(--pm-glass);
   backdrop-filter: var(--pm-glass);
   overflow: hidden;
+  /* Enter/exit motion (anim audit B2b): previously the drawer popped in
+     and out with no transition at all, unlike this shell's 240ms sheet
+     and page transitions. Enter slides in on the shared sheet easing;
+     the exit replays the same keyframes in reverse while MobileDrawerNav
+     keeps the layer mounted through its closing phase ([data-closing]).
+     Reduced motion: the pi-theme.css rails kill these animations under
+     the app root, and the component skips the closing phase entirely. */
+  animation: pm-drawer-in 240ms var(--pi-ease-sheet) both;
+}
+@keyframes pm-drawer-in {
+  from {
+    transform: translateX(-102%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes pm-mask-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.pm-drawer-layer[data-closing] .pm-drawer {
+  /* The enter keyframes played in reverse are the exact mirror of the
+     slide-in: out to the left (same shape as the PiSheet exit). */
+  animation: pm-drawer-in 240ms var(--pi-ease-sheet) reverse both;
+}
+.pm-drawer-layer[data-closing] .pm-drawer-mask {
+  animation: pi-fade-out 240ms var(--pi-ease-sheet) both;
 }
 :root[data-pi-theme="light"] .pm-drawer {
   box-shadow: 24px 0 60px rgba(0, 0, 0, 0.18);

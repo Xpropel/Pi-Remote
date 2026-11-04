@@ -448,6 +448,31 @@ test("会话合并：活动房间和清单同 id 只保留活动项，未连接�
   assert.deepEqual(idle.map((row) => `${row.id}:${row.openable}`), ["s1:false", "s2:false"])
 })
 
+test("会话合并（embedded-id link）：条目 id 拼写不同、但其会话文件内嵌 id 与房间一致时合并为一行", () => {
+  // Entry id spelled as the session file path; the room carries the bare id.
+  const filePath = "D:\\sessions\\2026-11-04T04-08-41-487Z_s1.jsonl"
+  const asPath = mergeDeviceSessions(dev(true), [room()], [sess({ id: filePath, path: filePath })])
+  assert.deepEqual(asPath.map((row) => row.id), ["s1"])
+  assert.equal(asPath[0].openable, true)
+  assert.equal(asPath[0].messageCount, 4, "房间行折入条目的条数")
+
+  // Entry id is an unrelated manifest spelling; its path still names the
+  // room's session file ("<timestamp>_s1.jsonl"), so it is the same session.
+  const asManifest = mergeDeviceSessions(dev(true), [room()], [sess({ id: "manifest-row-9", path: filePath })])
+  assert.deepEqual(asManifest.map((row) => row.id), ["s1"])
+
+  // Room offline: the entry alone carries the row (one row, not openable).
+  const offline = mergeDeviceSessions(dev(true), [room({ online: false })], [sess({ id: "manifest-row-9", path: filePath, online: false, active: false })])
+  assert.deepEqual(offline.map((row) => `${row.id}:${row.openable}`), ["manifest-row-9:false"])
+})
+
+test("会话合并（embedded-id link）：内嵌 id 被两条清单争用时不合并，各行保留", () => {
+  const filePath = "D:\\sessions\\2026-11-04T04-08-41-487Z_s1.jsonl"
+  const rows = mergeDeviceSessions(dev(true), [room()], [sess({ id: "m1", path: filePath }), sess({ id: "m2", path: filePath })])
+  // No proof which entry is the room's own: the room row and both entries stay.
+  assert.deepEqual(rows.map((row) => row.id), ["s1", "m1", "m2"])
+})
+
 test("会话标题：优先会话名，其次首条消息，不再用目录名", () => {
   const folderRoom = room({ label: "work" })
   const fromFirst = mergeDeviceSessions(dev(true), [folderRoom], [sess({ name: "", firstMessage: "帮我重构 relay 重连", path: "C:/sessions/a.jsonl" })])
@@ -692,6 +717,37 @@ test("惰性会话：合成房间只用于显示，同 id 的真实在线房间�
   assert.equal(replaced[0], lazy)
   const online = room({ id: "s1", online: true })
   assert.deepEqual(withLazyRoom([online], lazy), [online])
+})
+
+test("惰性会话标题：无现成标题且首条消息不可读时回落目录名，不露原始会话 id", () => {
+  // A raw stored-session entry shape: no resolved title, sealed first
+  // message (empty string), but a real workspace cwd.
+  const row = {
+    id: "s9",
+    title: "",
+    firstMessage: "",
+    cwd: "D:/work",
+    online: false,
+    busy: false,
+    viewers: 0,
+    messageCount: 0,
+    updatedAt: 9,
+    openable: false,
+    deviceId: "d1",
+  }
+  const lazy = lazyRoomFromRow(row)
+  assert.equal(lazy.label, "work")
+  assert.equal(lazy.name, "work")
+})
+
+test("guard: Claude 壳标题回落不得露原始会话/房间 id（A2）", () => {
+  const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8")
+  const sidebar = read("../ui/src/pi/variants/claude/sidebar/ClaudeUnifiedSidebar.tsx")
+  assert.ok(!sidebar.includes("|| room.id"), "Claude sidebar room title must not fall back to the raw room id")
+  assert.ok(!sidebar.includes("|| session.id"), "Claude sidebar entry title must not fall back to the raw session id")
+  assert.ok(sidebar.includes("sidebarSessionsOf("), "Claude sidebar rows come from the shared merge")
+  const view = read("../ui/src/pi/variants/claude/model/view.ts")
+  assert.ok(!view.includes("|| relay.roomId"), "sessionHeadOf must not fall back to the raw room id")
 })
 
 test("惰性发送状态机：点选不发送，房间上线只提交一次，切走/失败清队列", () => {

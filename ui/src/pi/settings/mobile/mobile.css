@@ -378,7 +378,9 @@
   border-radius: 50%;
   background: var(--st-switch-knob);
   box-shadow: var(--st-knob-shadow);
-  transition: left 140ms ease, background-color 140ms ease;
+  /* Knob travel via transform instead of the layout property `left`:
+     2px inset + 19px travel lands where left: 21px used to put it. */
+  transition: transform 140ms ease, background-color 140ms ease;
 }
 
 [data-pi-settings-mobile] .sm-switch.is-on .sm-switch-track {
@@ -387,7 +389,7 @@
 }
 
 [data-pi-settings-mobile] .sm-switch.is-on .sm-switch-thumb {
-  left: 21px;
+  transform: translateX(19px);
   /* A11Y-04: the ON thumb (--st-switch-knob-on) keeps >=3:1 against the ON track in every skin. */
   background: var(--st-switch-knob-on);
 }

@@ -353,6 +353,21 @@
   }
 }
 
+/*
+ * In-app "reduce motion" setting (settings v2 pref `reducedMotion`): PiSettingsHost
+ * mirrors the pref onto <html data-pi-reduced-motion="on">. Same kill switch as the
+ * system block above, keyed on that attribute instead of the media query, so the
+ * in-app setting stills the whole app on its own, independent of the OS setting.
+ */
+:root[data-pi-reduced-motion="on"],
+:root[data-pi-reduced-motion="on"] *,
+:root[data-pi-reduced-motion="on"] *::before,
+:root[data-pi-reduced-motion="on"] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
 /* 会话行上关掉系统长按菜单（design §4.5：列表行长按打开会话菜单；消息正文保留系统文字选择）。Chrome 不认这条，只有 iOS 生效 */
 [data-pi-root] [data-pi-row] {
   -webkit-touch-callout: none;

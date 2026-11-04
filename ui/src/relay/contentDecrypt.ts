@@ -260,6 +260,24 @@ export const UNDECRYPTABLE_LABEL = "无法解密"
 export const UNDECRYPTABLE_TEXT = "这条消息无法解密（内容钥不匹配或密文损坏）"
 
 /**
+ * Placeholder copy for an entry that was never even attempted: the room
+ * key itself is missing on this viewer (no ACK held, or the snapshot's
+ * wrap would not open under it), so nothing about this ciphertext is
+ * known to be wrong. The corruption wording above is reserved for
+ * entries that fail to open while the room key IS present; a missing
+ * key must read as "locked, waiting for a key", never as damage.
+ */
+export const KEY_MISSING_LABEL = "已加密"
+export const KEY_MISSING_TEXT = "这条消息已加密，本机还没有能打开它的内容钥"
+
+/** The message a not-yet-keyed envelope degrades to (same shapes as undecryptableMessage). */
+export function keyMissingMessage(role?: string): AgentMessage {
+  if (role === "assistant") return { role: "assistant", content: [{ type: "text", text: KEY_MISSING_TEXT }] }
+  if (role === "user") return { role: "user", content: KEY_MISSING_TEXT }
+  return { role: "custom", customType: KEY_MISSING_LABEL, content: KEY_MISSING_TEXT }
+}
+
+/**
  * The message a failed envelope degrades to. user/assistant keep their
  * role so live-bubble replacement and grouping behave as with a real
  * message; every other role becomes a custom note in the same slot. The
@@ -321,8 +339,10 @@ async function decryptSnapshotEntry(
  * decrypt under the room key, non-envelope elements pass through
  * untouched (plaintext and enc generations coexist during migration),
  * failed envelopes become in-place placeholders and are counted. A null
- * key (no ACK held / fingerprint mismatch) fails every envelope the
- * same way -- callers surface that as a room state, not per-item noise.
+ * key (no ACK held / the wrap would not open) fails every envelope the
+ * same way, but with the locked placeholder: the entries were never
+ * attempted, so they must not carry the corruption wording -- callers
+ * surface the missing key as a room state, not per-item damage.
  */
 export async function decryptSnapshotMessages(
   key: CryptoKey | null,
@@ -340,7 +360,9 @@ export async function decryptSnapshotMessages(
     if (message) out.push(message as AgentMessage)
     else {
       failures += 1
-      out.push(undecryptableMessage(item.role))
+      // No key at all: the entry was never attempted, so it degrades to
+      // the locked placeholder, not the corruption one.
+      out.push(key ? undecryptableMessage(item.role) : keyMissingMessage(item.role))
     }
   }
   return { messages: out, failures }
@@ -433,7 +455,7 @@ export async function decryptRoomEvent(
     if (plain) editable().message = plain
     else {
       failures += 1
-      editable().message = undecryptableMessage(message.role)
+      editable().message = key ? undecryptableMessage(message.role) : keyMissingMessage(message.role)
     }
   }
 
@@ -458,7 +480,7 @@ export async function decryptRoomEvent(
     if (plain !== null) editable().text = plain
     else {
       failures += 1
-      editable().text = UNDECRYPTABLE_TEXT
+      editable().text = key ? UNDECRYPTABLE_TEXT : KEY_MISSING_TEXT
     }
   }
 

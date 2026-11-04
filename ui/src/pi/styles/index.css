@@ -8,6 +8,8 @@
 @import "tailwindcss" source(none);
 @import "./theme.css";
 @import "./base.css";
+/* Shared overlay motion tokens and keyframes (anim audit B2/B3); see motion.css. */
+@import "./motion.css";
 
 @source "../../components/kit";
 @source "../../components/pi";

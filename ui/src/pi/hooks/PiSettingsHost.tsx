@@ -471,6 +471,20 @@ export function PiSettingsHost({
   // 等待确认：新出现的 waiting 条目 → 应用内提醒 + 提示音（仍受开关 / 仅页面外 / 总是提醒约束）。
   useWaitingNotice(relay, { gate, enabled: notifications, waitingKeys: attention.waitingKeys })
 
+  // Reduce motion (settings v2 pref -> app root): mirror the pref onto <html> so the
+  // pi-theme.css kill switch keyed on [data-pi-reduced-motion="on"] stills the whole app,
+  // not just the settings subtree. prefs come from usePiSettingsPrefs above, so toggling
+  // the Appearance setting lands here on the same frame it is written. The JS gates read
+  // the same pref through useReducedMotion (OR with the OS preference).
+  useLayoutEffect(() => {
+    const el = document.documentElement
+    if (prefs.reducedMotion) el.setAttribute("data-pi-reduced-motion", "on")
+    else el.removeAttribute("data-pi-reduced-motion")
+    return () => {
+      if (el.getAttribute("data-pi-reduced-motion") === "on") el.removeAttribute("data-pi-reduced-motion")
+    }
+  }, [prefs.reducedMotion])
+
   return (
     <PiPrivacyProvider value={gate.privacy}>
       <PiSendKeyProvider value={prefs.sendKey}>{children}</PiSendKeyProvider>
