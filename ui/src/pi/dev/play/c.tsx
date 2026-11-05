@@ -650,6 +650,7 @@ function PlayPalette({ ui, act, variant }: PlaySlotProps) {
       act.openSession(row.id)
       return
     }
+    if (row.kind === "bodyHit") return
     if (row.key === "new") act.newSession()
     else if (row.key === "sidebar") act.toggleSidebar()
     else if (row.key === "pane") act.togglePane()

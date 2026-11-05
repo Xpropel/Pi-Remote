@@ -4,7 +4,8 @@
  * 行首标记按真实注意力（attentionForRoom + rowMarkerOf），组名"设备名/目录名"。
  */
 import { attentionForRoom, type AttentionItem } from "../../relay/attention.ts"
-import { baseName, mergeDeviceSessions, type Device, type ListedSession, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
+import { attributeSessionsAcrossDevices, baseName, mergeDeviceSessions, type Device, type ListedSession, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
+import type { BodySearchPage } from "../../shell/searchModel.ts"
 import { rowMarkerOf, type PiRowMarkerKind } from "./rowMarker.ts"
 
 export type PiPaletteIcon = "new" | "sidebar" | "pane" | "compact" | "regenerate" | "tree" | "usage" | "inspect" | "settings"
@@ -50,17 +51,74 @@ export function paletteSessionsOf(input: {
   attention: readonly AttentionItem[]
   currentRoomId?: string | null
 }): PiPaletteSession[] {
-  const rows: PiPaletteSession[] = []
+  // Same cross-device attribution as the sidebar (B-1): a session two
+  // devices claim is offered once, under its owning device.
+  const deviceById = new Map(input.devices.map((device) => [device.id, device]))
+  const tagged: (ListedSession & { deviceId: string })[] = []
   for (const device of input.devices) {
     for (const s of mergeDeviceSessions(device, [...input.rooms], [...(input.sessionsByDevice[device.id] ?? [])])) {
-      const marker = rowMarkerOf(attentionForRoom(input.attention, s.id), s.busy, s.online, s.openable)
-      rows.push({ id: s.id, title: s.title, marker, group: `${device.name}/${baseName(s.cwd)}`, deviceId: device.id, updatedAt: s.updatedAt ?? 0, row: s })
+      tagged.push({ ...s, deviceId: device.id })
     }
+  }
+  const rows: PiPaletteSession[] = []
+  for (const s of attributeSessionsAcrossDevices(tagged)) {
+    const { deviceId, ...row } = s
+    const device = deviceById.get(deviceId)
+    const marker = rowMarkerOf(attentionForRoom(input.attention, s.id), s.busy, s.online, s.openable)
+    rows.push({ id: s.id, title: s.title, marker, group: `${device?.name ?? deviceId}/${baseName(s.cwd)}`, deviceId, updatedAt: s.updatedAt ?? 0, row })
   }
   const current = input.currentRoomId ?? ""
   return rows
     .sort((a, b) => (a.id === current ? -1 : b.id === current ? 1 : b.updatedAt - a.updatedAt))
     .slice(0, PALETTE_SESSIONS_MAX)
+}
+
+/** One body-search hit as a palette row (A-3: the palette's lower "body matches" section). */
+export type PiPaletteBodyHit = {
+  id: string
+  title: string
+  /** "device name / directory name", same shape as the session rows */
+  group: string
+  /** First matching snippet ("" when the extension sent none) */
+  snippet: string
+  matchCount: number
+  /** Host-side session file path (the open fallback when the hit is outside the listed window) */
+  session: string
+  cwd: string
+  mtime: number
+  deviceId: string
+}
+
+/**
+ * Body-search page -> palette body rows. Body search runs on ONE device (the
+ * selected one; the extension scans that device's plaintext session files, and
+ * the relay refuses enc rooms before the command ever leaves the server), so
+ * every row is stamped with that device. Hits the title section already shows
+ * (same session id, or same file path after slash normalization) are dropped:
+ * a session must appear once, in the title section. Page order is kept (the
+ * merge already sorted by mtime, newest first).
+ */
+export function paletteBodyHitsOf(
+  page: BodySearchPage,
+  device: { id: string; name: string },
+  exclude: readonly { id: string; path?: string }[],
+): PiPaletteBodyHit[] {
+  const norm = (path: string) => path.replace(/\\/g, "/")
+  const shownIds = new Set(exclude.map((x) => x.id))
+  const shownPaths = new Set(exclude.flatMap((x) => (x.path ? [norm(x.path)] : [])))
+  return page.results
+    .filter((hit) => !shownIds.has(hit.id) && !shownPaths.has(norm(hit.session)))
+    .map((hit) => ({
+      id: hit.id,
+      title: hit.title,
+      group: `${device.name}/${baseName(hit.cwd)}`,
+      snippet: hit.snippets[0]?.text ?? "",
+      matchCount: hit.matchCount,
+      session: hit.session,
+      cwd: hit.cwd,
+      mtime: hit.mtime,
+      deviceId: device.id,
+    }))
 }
 
 /** 离线时命令行禁用的原因（设置、切换侧栏、开关右 pane 照常可用） */

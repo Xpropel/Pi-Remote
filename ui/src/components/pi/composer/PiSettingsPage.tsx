@@ -203,6 +203,12 @@ export interface PiSettingsData {
   /** P11：移动端交互 UI 偏好（全局 prefs.mobileNav；仅移动断点生效） */
   mobileNav?: PiMobileNavMode
   onMobileNavChange?: (mode: PiMobileNavMode) => void
+  /** Device-owned switches (remote answer / ask_user / approval gate):
+   *  true while the current room's device report has not arrived yet --
+   *  the three switches and the gate tier radios stay inert, because the
+   *  local value is not settled truth. Container supplies it from the
+   *  relay switch-sync view; galleries omit it (never pending). */
+  switchesPending?: boolean
 }
 export function PiSettingsSections({
   variant,
@@ -221,6 +227,7 @@ export function PiSettingsSections({
   usageRelay,
   mobileNav,
   onMobileNavChange,
+  switchesPending,
 }: { variant: CVariant } & PiSettingsData) {
   const isStatic = usePiStatic(staticProp)
   const phone = variant === "phone"
@@ -228,8 +235,14 @@ export function PiSettingsSections({
   const segW = phone ? "w-full" : "w-[228px]"
   const change = isStatic ? undefined : onPrefsChange
   const act = isStatic || !onAction ? undefined : (action: PiSettingsAction) => () => onAction(action)
+  // Device-owned switches stay inert while the device report is pending
+  // (sound is a purely local preference and is not one of them).
   const toggle = (key: "dialogRemote" | "sound" | "askUser" | "approvalGate") =>
-    change ? { checked: prefs[key], onCheckedChange: (v: boolean) => change({ [key]: v }) } : { defaultChecked: prefs[key] }
+    switchesPending && key !== "sound"
+      ? { checked: prefs[key], disabled: true }
+      : change
+        ? { checked: prefs[key], onCheckedChange: (v: boolean) => change({ [key]: v }) }
+        : { defaultChecked: prefs[key] }
   const busySelector = (
     <TextSelector
       tone="primary"
@@ -409,19 +422,19 @@ export function PiSettingsSections({
           variant={variant}
           label="只问高危操作"
           checked={prefs.approvalGateTier === "high-risk"}
-          onSelect={change && (() => change({ approvalGateTier: "high-risk" }))}
+          onSelect={change && !switchesPending ? () => change({ approvalGateTier: "high-risk" }) : undefined}
         />
         <RadioRow
           variant={variant}
           label="所有非只读操作都问"
           checked={prefs.approvalGateTier === "all-non-readonly"}
-          onSelect={change && (() => change({ approvalGateTier: "all-non-readonly" }))}
+          onSelect={change && !switchesPending ? () => change({ approvalGateTier: "all-non-readonly" }) : undefined}
         />
         <RadioRow
           variant={variant}
           label="只问名单里的工具"
           checked={prefs.approvalGateTier === "list"}
-          onSelect={change && (() => change({ approvalGateTier: "list" }))}
+          onSelect={change && !switchesPending ? () => change({ approvalGateTier: "list" }) : undefined}
         />
       </Group>
       <Group

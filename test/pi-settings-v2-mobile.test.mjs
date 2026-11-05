@@ -362,6 +362,73 @@ function tokensImported() {
   return shell
 }
 
+test("设备页有观看端身份入口（C-D2）：与桌面共用身份桥 / 状态口径 / 备份模块", () => {
+  const section = readMobile("pages/IdentitySection.tsx")
+  // 设备页在「我的设备」之后挂载，与桌面设备页同一位置。
+  assert.match(mobileDevicesPage, /import \{ MobileIdentitySection \} from "\.\/IdentitySection\.tsx"/)
+  assert.match(mobileDevicesPage, /<MobileIdentitySection \/>/)
+  assert.ok(
+    mobileDevicesPage.indexOf("<MobileIdentitySection />") > mobileDevicesPage.indexOf('label="我的设备"'),
+    "身份区应在设备名册之后",
+  )
+
+  // 同一接缝：身份桥是设置面到身份核心的唯一入口；本区不得直碰核心 / IndexedDB / 密钥生成。
+  assert.match(section, /loadIdentityBridge/)
+  assert.match(section, /from "\.\.\/\.\.\/pages\/identityApi\.ts"/)
+  assert.doesNotMatch(section, /@\/relay\/viewerIdentity|createViewerIdentityCore|indexedDB|generateKeyPair/)
+
+  // 同一状态口径：状态由共享 identityLogic 塑形，五态与桌面逐一对应。
+  assert.match(section, /identityStateViewOf\(await active\.getState\(\)\)/)
+  for (const phase of ["none", "not-registered", "waiting-ack", "ready"]) {
+    assert.ok(section.includes(`"${phase}"`), `身份区缺状态 ${phase}`)
+  }
+  assert.match(section, /data-sm-identity=\{phase\}/)
+  // 未启用：启用入口 + 必读警告 + 理解勾选后才可确认（与桌面同一启用纪律）。
+  assert.match(section, /启用观看端身份/)
+  assert.match(section, /IDENTITY_UNRECOVERABLE_WARNING/)
+  assert.match(section, /disabled=\{!enableAcked \|\| busy !== null\}/)
+  assert.match(section, /await bridge\.enable\(\)/)
+  // 已启用态的细节与桌面同口径：双指纹、备份状态、登记失败与等钥文案都走共享文案函数。
+  assert.match(section, /formatFingerprintText\(view\?\.keyFp\)/)
+  assert.match(section, /formatFingerprintText\(view\?\.ackFp\)/)
+  assert.match(section, /backupStatusTextOf/)
+  assert.match(section, /registrationErrorTextOf\(view\)/)
+  assert.match(section, /IDENTITY_WAITING_ACK_TEXT/)
+  // 恢复动作齐全：重新登记 / 忘记本机身份都经桥，不另开通道。
+  assert.match(section, /重新登记/)
+  assert.match(section, /忘记本机身份/)
+  assert.match(section, /bridge\?\.forget/)
+  assert.match(section, /await bridge\.forget\(\)/)
+  // 身份信号变化时重读（启用会重连密钥登录、ACK 可能迟到送达），与桌面同一纪律。
+  assert.match(section, /identitySignal/)
+  assert.match(section, /p\.relay\.viewerIdentity/)
+})
+
+test("设备页身份区：口令备份导出 / 导入与观看端名册同桌面共用模块", () => {
+  const section = readMobile("pages/IdentitySection.tsx")
+  assert.match(section, /from "\.\.\/\.\.\/pages\/identityBackup\.ts"/)
+  assert.match(section, /createIdentityBackup/)
+  assert.match(section, /await bridge\.exportAck\(\)/)
+  assert.match(section, /openIdentityBackup/)
+  assert.match(section, /await bridge\.importAck\(opened\.ack\)/)
+  assert.match(section, /downloadTextFile/)
+  assert.match(section, /type="file"/)
+  // 名册：共享塑形 + 自身行标记 + 撤销经桥。
+  assert.match(section, /authorizedViewerRowsOf/)
+  assert.match(section, /isSelfViewerRow/)
+  assert.match(section, /当前浏览器/)
+  assert.match(section, /data-sm-viewer=\{row\.viewerId\}/)
+  assert.match(section, /await bridge\.revokeViewer\(revokeTarget\.viewerId\)/)
+  // 面板挂点齐备（自动化与真机点检共用）。
+  for (const panel of ["enable", "forget", "export", "import", "revoke"]) {
+    assert.ok(section.includes(`data-sm-identity-panel="${panel}"`), `身份区缺面板 ${panel}`)
+  }
+  // 样式：身份类名都在作用域内定义。
+  for (const cls of [".sm-identity-block", ".sm-identity-fp", ".sm-identity-panel", ".sm-identity-input", ".sm-identity-check"]) {
+    assert.ok(css.includes(`[data-pi-settings-mobile] ${cls}`), `mobile.css 缺 ${cls} 的作用域规则`)
+  }
+})
+
 test("桌面外壳未被手机端改动（手机端只落 settings/mobile/**）", () => {
   const desktopShell = read("ui/src/pi/settings/SettingsPage.tsx")
   assert.ok(desktopShell.includes("settings-rail"))

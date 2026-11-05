@@ -485,10 +485,36 @@ function sendCachedDialogs(ws, room, cfg) {
   }
 }
 
+/** Minimum spacing between ext_status requests to the same room's bridge.
+ *  Asking is demand-driven (a viewer is being served and the cache is
+ *  empty); the spacing keeps a burst of subscribes from turning into a
+ *  burst of identical snapshots. The timestamp lives on the room and is
+ *  reset when a report lands (rememberExtStatus) and when the session
+ *  state is cleared, so a genuinely new miss can ask again at once. */
+const EXT_STATUS_REQUEST_MIN_MS = 10000;
+
+/** Ask the room's bridge for a fresh ext_status snapshot (relay -> local).
+ *  Old bridges ignore the unknown frame type and simply keep today's
+ *  behavior (their first natural emit warms the cache). No-op when the
+ *  room is offline, has no bridge, or was asked very recently. */
+function requestExtStatus(room, cfg) {
+  if (!room || !room.online || !room.local) return;
+  const now = Date.now();
+  if (room.extStatusAskedAt && now - room.extStatusAskedAt < EXT_STATUS_REQUEST_MIN_MS) return;
+  room.extStatusAskedAt = now;
+  send(room.local, { type: "ext_status_request", room: room.id }, cfg);
+}
+
 /** 扩展 UI 状态（ext_status）最后一份快照补发：statuses/widgets/title/working/tap 全量。
- *  离线房间不补发；不带 seq / rev。超过 maxPayloadBytes 就记一行日志并跳过，不断开。 */
+ *  离线房间不补发；不带 seq / rev。超过 maxPayloadBytes 就记一行日志并跳过，不断开。
+ *  缓存为空但房间在线时，向桥索取一份新的（requestExtStatus）：注册竞态丢帧、
+ *  换代清缓存之后，缓存不会自己长回来，晚到的观看端会永远等不到设备开关真值。 */
 function sendCachedExtStatus(ws, room, cfg) {
-  if (!room || !room.online || !room.extStatus) return;
+  if (!room || !room.online) return;
+  if (!room.extStatus) {
+    requestExtStatus(room, cfg);
+    return;
+  }
   let frame;
   try {
     frame = JSON.stringify({ type: "room_event", room: room.id, event: room.extStatus });
@@ -1740,6 +1766,7 @@ function clearSessionState(room) {
   room.uiPrompt = null;
   room.dialogs = null;
   room.extStatus = null;
+  room.extStatusAskedAt = 0;
   room.taskList = null;
   room.agentState = null;
   room.remoteQueue = null;
@@ -1752,4 +1779,4 @@ function clearSessionState(room) {
   return hadTurnEnd;
 }
 
-module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor, devicesViewFor, encReasonOf, inboxViewFor };
+module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, requestExtStatus, EXT_STATUS_REQUEST_MIN_MS, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor, devicesViewFor, encReasonOf, inboxViewFor };

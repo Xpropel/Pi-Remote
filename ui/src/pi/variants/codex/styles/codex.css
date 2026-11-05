@@ -4145,6 +4145,12 @@
   text-align: center;
 }
 
+[data-pi-ui="codex"] .cx-palette-note {
+  padding: 6px 8px 2px;
+  color: var(--codex-text-3);
+  font-size: 11px;
+}
+
 [data-pi-ui="codex"] .cx-palette-foot {
   padding: 6px 12px;
   color: var(--codex-text-3);

@@ -53,6 +53,7 @@ export const PI_VARIANT_ALLOWED_HOOKS = [
   "@/pi/hooks/useTranscriptStick",
   "@/pi/hooks/useHighlightLines",
   "@/pi/hooks/useReducedMotion",
+  "@/pi/hooks/useBodySearch",
 ] as const
 
 /**
@@ -310,6 +311,7 @@ export const PI_VARIANT_ALLOWED_MODEL_MODULES = [
   "@/pi/model/sidebarSource",
   "@/pi/model/slashBuiltins",
   "@/pi/model/slashMenu",
+  "@/pi/model/switchSync",
   "@/pi/model/toolWeight",
   "@/pi/model/transcriptView",
   "@/pi/model/transcriptWindow",
@@ -352,6 +354,7 @@ export const PI_VARIANT_ALLOWED_HOOK_EXPORTS: Record<string, readonly string[]> 
   "@/pi/hooks/useTranscriptStick": ["PiTranscriptStick", "piTranscriptStick", "useTranscriptStick"],
   "@/pi/hooks/useHighlightLines": ["useHighlightLines"],
   "@/pi/hooks/useReducedMotion": ["REDUCED_MOTION_QUERY", "PAGE_TRANSITION_MS", "PiMotion", "motionOf", "readReducedMotion", "usePiMotion", "useReducedMotion"],
+  "@/pi/hooks/useBodySearch": ["BODY_SEARCH_DEBOUNCE_MS", "BodyHitOpenRelay", "BodySearchRelay", "BodySearchUiState", "SidebarBodyBlock", "SidebarBodyBlockHit", "bodyHitOf", "bodySearchNoteOf", "openBodySearchHit", "sidebarBodyBlockOf", "useBodySearch"],
 }
 
 /**

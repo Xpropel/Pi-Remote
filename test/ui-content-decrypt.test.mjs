@@ -19,6 +19,7 @@ import {
   decryptRoomEvent,
   decryptSnapshotMessages,
   isContentEnvelope,
+  isKeylessDeliveryReceipt,
   snapshotKeyInfoOf,
   undecryptableMessage,
 } from "../ui/src/relay/contentDecrypt.ts"
@@ -430,6 +431,56 @@ test("regression: a roster-pre-flagged enc room still notes its snapshot keyInfo
   assert.equal(degraded.failures, 1)
   // No key: the locked copy, not the corruption copy (which needs a key).
   assert.equal(degraded.messages[0].content[0].text, KEY_MISSING_TEXT)
+})
+
+test("B-2: delivery receipts are keyless-safe; anything carrying a sealed field is not", () => {
+  // The exact wire forms the bridge sends (extension failRemote /
+  // trackDelivery): delivered is {cid, at}; the enc failure form drops
+  // the text and carries the keyed hash instead.
+  assert.equal(isKeylessDeliveryReceipt({ type: "remote_message_delivered", cid: "c-1", at: 3 }), true)
+  assert.equal(
+    isKeylessDeliveryReceipt({ type: "remote_message_failed", enc: 1, h: "ab".repeat(32), code: "timeout", error: "pi 没有接收这条消息", cid: "c-1", at: 3 }),
+    true,
+  )
+  // The plaintext failure form (legacy bridge / plaintext room) carries
+  // the text as a plain string -- still nothing for a key to open.
+  assert.equal(isKeylessDeliveryReceipt({ type: "remote_message_failed", text: "你好", error: "发送失败", cid: "c-2", at: 3 }), true)
+  // The echo itself is content: it stays behind the grant.
+  assert.equal(isKeylessDeliveryReceipt({ type: "remote_message", enc: 1, ct: "AAAA", h: "ab".repeat(32), cid: "c-1", at: 3 }), false)
+  assert.equal(isKeylessDeliveryReceipt({ type: "message_end", message: { role: "user", content: "x" } }), false)
+  assert.equal(isKeylessDeliveryReceipt({ type: "agent_settled" }), false)
+  // A receipt shape smuggling a sealed field in any slot is refused.
+  const envelope = { enc: 1, role: "user", h: "", ct: "AAAA" }
+  assert.equal(isKeylessDeliveryReceipt({ type: "remote_message_delivered", cid: "c-1", text: envelope }), false)
+  assert.equal(isKeylessDeliveryReceipt({ type: "remote_message_delivered", cid: "c-1", message: envelope }), false)
+  assert.equal(isKeylessDeliveryReceipt({ type: "remote_message_failed", cid: "c-1", noteEnc: "AAAA" }), false)
+  assert.equal(isKeylessDeliveryReceipt({ type: "remote_message_delivered", cid: "c-1", enc: 1, ct: "AAAA", h: "ab".repeat(32) }), false)
+})
+
+test("B-2: a receipt passes the keyless decrypt pass untouched, and the reducer settles the bubble by cid", async () => {
+  const delivered = { type: "remote_message_delivered", cid: "c-b2", at: 5 }
+  const out = await decryptRoomEvent(null, delivered)
+  assert.equal(out.failures, 0)
+  assert.equal(out.drop, false)
+  assert.equal(out.event, delivered, "no envelope fields: the event object is passed through by reference")
+  // The settle chain the gate feeds: local echo bubble (sending) ->
+  // delivered action -> status delivered (the "发送中…" label clears).
+  let state = emptyTranscript()
+  state = reduceTranscript(state, { type: "echo", text: "DEEPB2 你好", cid: "c-b2" })
+  assert.equal(state.items[0].status, "sending")
+  state = reduceTranscript(state, { type: "delivered", cid: "c-b2" })
+  assert.equal(state.items[0].status, "delivered")
+  // Same for a failure receipt: the bubble lands on the failure state,
+  // never back on "sending".
+  let failed = emptyTranscript()
+  failed = reduceTranscript(failed, { type: "echo", text: "DEEPB2 第二条", cid: "c-b3" })
+  failed = reduceTranscript(failed, { type: "remote-failed", text: "DEEPB2 第二条", error: "pi 没有接收这条消息", cid: "c-b3" })
+  assert.equal(failed.items[0].failed, "pi 没有接收这条消息")
+  // Wiring: the waiting-ack hold in processEncRoomEvent must consult the
+  // predicate -- without that call the receipts still pile up behind a
+  // grant that may never come.
+  const src = readFileSync(new URL("../ui/src/relay/useRelay.ts", import.meta.url), "utf8")
+  assert.ok(src.includes("!isKeylessDeliveryReceipt(rawEvent)"), "the waiting-ack hold must exempt keyless delivery receipts")
 })
 
 test("protocol + wiring: crypto.content rides the key-auth frame only; useRelay carries the honest states", () => {

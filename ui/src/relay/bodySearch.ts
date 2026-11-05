@@ -28,7 +28,10 @@ function cwdKey(cwd: string): string {
   return cwd.replace(/\\/g, "/").replace(/\/+$/, "")
 }
 
-/** 同一组里要不要换成 room：打开的房间优先；否则取最近活动的（相同时取列表里更靠后的，同 devices.ts pickEntryRoom） */
+/** Within one cwd group, whether to replace the current pick with `room`:
+ *  the open room wins; otherwise the most recently active one (ties keep the
+ *  later list entry). Search fan-out target choice only -- this never moves
+ *  the viewer, so activity recency is fine here (unlike pickEntryRoom). */
 function preferred(room: BodySearchRoom, pick: BodySearchRoom, openRoomId: string | null): boolean {
   if (pick.id === openRoomId) return false
   if (room.id === openRoomId) return true
@@ -57,6 +60,22 @@ export function bodySearchTargetsOf(deviceId: string, rooms: readonly BodySearch
 const BAD_REPLY = "正文搜索回包形状不对，请重试"
 
 /**
+ * The relay's structured refusal reason on a failed ack (ack.data.reason,
+ * carried through the command channel on the rejection error). The roster's
+ * per-room enc flag alone misses real encrypted refusals: a room the roster
+ * did not mark enc still gets intercepted by the relay with
+ * reason "room_encrypted", and that ack detail is the only signal --
+ * without it the merge misreports the refusal as an old extension.
+ */
+export function bodySearchErrorReasonOf(error: unknown): string {
+  if (!error || typeof error !== "object") return ""
+  const data = (error as { data?: unknown }).data
+  if (!data || typeof data !== "object") return ""
+  const reason = (data as { reason?: unknown }).reason
+  return typeof reason === "string" ? reason : ""
+}
+
+/**
  * 合并各房间的回包。
  * - 每个回包先用 bodySearchPageOf 归一，形状不对的按这个目标失败算（bad_reply），不硬撑。
  * - 去重按会话文件路径（斜杠统一，大小写照原样）：同一个文件被两个目标回了，留命中条数多的，一样多留 mtime 新的，再一样留先到的。
@@ -81,13 +100,19 @@ export function mergeBodySearchReplies(
       continue
     }
     const error = reply.ok ? new RelayError("bad_reply", BAD_REPLY) : reply.error
-    // An enc room's extension refuses body search with "unsupported"
-    // because the ciphertext cannot be searched in the relay path
-    // (crypto Phase 3, design 4.1 t). Rewrite that one case to the
-    // dedicated "encrypted" code so the UI can say the room is
-    // encrypted instead of claiming the extension is too old.
+    // An enc room's body search is refused with "unsupported" because
+    // the ciphertext cannot be searched in the relay path (crypto
+    // Phase 3, design 4.1 t). Rewrite that one case to the dedicated
+    // "encrypted" code so the UI can say the room is encrypted instead
+    // of claiming the extension is too old. Two signals identify the
+    // case: the roster marked the target room enc, OR the relay's ack
+    // itself said so (data.reason "room_encrypted" -- the roster flag
+    // is not always set for rooms the relay still intercepts). A bare
+    // "unsupported" with neither signal stays "unsupported": that one
+    // really is an old extension.
     const encUnsupported =
-      reply.target.kind === "room" && reply.target.enc === true && errorCode(error) === "unsupported"
+      errorCode(error) === "unsupported" &&
+      ((reply.target.kind === "room" && reply.target.enc === true) || bodySearchErrorReasonOf(error) === "room_encrypted")
     if (firstError === null) firstError = error ?? new RelayError("result_unknown", "命令没有回应")
     unanswered.push({ cwd, code: encUnsupported ? "encrypted" : errorCode(error) || (reply.ok ? "bad_reply" : "") })
     if (encUnsupported) encFailures += 1

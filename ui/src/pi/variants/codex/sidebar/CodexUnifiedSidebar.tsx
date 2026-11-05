@@ -7,6 +7,8 @@
 import { useMemo, useState } from "react"
 import type { VariantAppProps } from "@/pi/variants/types"
 import { useNow } from "@/pi/hooks/useNow"
+import { bodyHitOf, openBodySearchHit, sidebarBodyBlockOf, useBodySearch } from "@/pi/hooks/useBodySearch"
+import { paletteMatches } from "@/pi/model/composerInput"
 import { sidebarDataOf } from "@/pi/model/sidebarSource"
 import { sidebarGroups } from "@/pi/model/sidebarGroups"
 import {
@@ -55,6 +57,12 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
   const deviceId = relay.selectedDeviceId ?? ""
   const localStore = useSidebarLocalState(account, deviceId)
   const scopeState = localStore.scopeState
+  // Body search (A-3): while the search overlay is open, search the
+  // selected device's session bodies; the block lands in data.search.body
+  // and the shared overlay renders it under the local title results.
+  // (Round 1 wired only the Cursor sidebar; this container built its
+  // search data without a body field, so body hits never showed here.)
+  const bodySearch = useBodySearch(relay, ui.search ?? "", ui.search != null)
 
   const data = useMemo<PiSidebarData>(() => {
     const base = sidebarDataOf({
@@ -93,6 +101,12 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
       return { id: group.key, kind: "workspace" as const, label: group.label || sidebarWorkspaceLabel(cwd), cwd, collapsed, sessions, count: sessions.length }
     })
     const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: scopeState.archives })
+    // Body-match block (A-3): sessions the local title match already
+    // lists are excluded, so a session never appears twice.
+    const bodyBlock = sidebarBodyBlockOf(
+      bodySearch,
+      base.sessions.filter((s) => paletteMatches(ui.search ?? "", s.title, s.cwd, s.firstMessage)).map((s) => ({ id: s.id, path: s.path })),
+    )
     const localPages: PiSidebarLocalPage[] = LOCAL_PAGES.map((page) => ({ id: page.id, label: page.label, active: localPage === page.id }))
     return {
       style: "codex", theme: themeOf(),
@@ -110,10 +124,23 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
       newSessionLabel: "新会话",
       width: clampSidebarWidth(ui.prefs.sidebarWidth),
       collapsed: ui.prefs.sidebarCollapsed,
-      search: { open: ui.search != null, query: ui.search ?? "" },
+      search: { open: ui.search != null, query: ui.search ?? "", body: bodyBlock },
       now,
     }
-  }, [relay, ui.prefs.grouping, ui.prefs.sidebarWidth, ui.prefs.sidebarCollapsed, ui.expanded, ui.search, scopeState, now, deviceMenuOpen, account, deviceId, localPage])
+  }, [relay, ui.prefs.grouping, ui.prefs.sidebarWidth, ui.prefs.sidebarCollapsed, ui.expanded, ui.search, scopeState, now, deviceMenuOpen, account, deviceId, localPage, bodySearch])
+
+  const openBodyHitById = (hitId: string) => {
+    const base = sidebarDataOf({
+      devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, roomId: relay.roomId,
+      dialogs: relay.dialogs, uiPrompt: relay.uiPrompt, turnEnd: relay.turnEnd, roomTurnEnds: relay.roomTurnEnds, inbox: relay.inbox, selectedDevice: relay.selectedDevice,
+    })
+    const hit = bodyHitOf(
+      bodySearch,
+      base.sessions.filter((s) => paletteMatches(ui.search ?? "", s.title, s.cwd, s.firstMessage)).map((s) => ({ id: s.id, path: s.path })),
+      hitId,
+    )
+    if (hit) openBodySearchHit(relay, hit, () => act.openSession())
+  }
 
   const actions: PiSidebarActions = {
     selectSession: (key) => {
@@ -131,6 +158,7 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
     toggleGroup: (groupId) => localStore.toggleFolder(groupId),
     openSearch: () => codexActions.onSearch(),
     closeSearch: () => act.setSearch(null),
+    selectBodyHit: openBodyHitById,
     setSearchQuery: (query) => act.setSearch(query),
     openSettings: () => codexActions.onOpenSettings(),
     openInbox: act.openInbox,

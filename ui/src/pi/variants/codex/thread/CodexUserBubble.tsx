@@ -21,7 +21,12 @@ export const CodexUserBubble = memo(function CodexUserBubble({
 }) {
   let status: string | null = null
   if (item.failed) status = "发送失败 · 重试"
-  else if ((item as Extract<Item, { kind: "user" }> & { outbox?: boolean }).outbox) status = "等重连后发送"
+  else if ((item as Extract<Item, { kind: "user" }> & { outbox?: boolean; awaiting?: boolean }).outbox)
+    status = (item as { awaiting?: boolean }).awaiting ? "已到设备 · 等待处理" : "等重连后发送"
+  // B-3/B-2 round 2: the device accepted the message but pi has not
+  // consumed it yet -- say awaiting (same words as the other shells)
+  // instead of leaving the bubble at "sending" for the whole wait.
+  else if (item.status === "awaiting") status = "已到设备 · 等待 pi 处理"
   else if (queueId) status = null
   else if (item.status === "sending") status = "发送中…"
   return (
@@ -39,7 +44,7 @@ export const CodexUserBubble = memo(function CodexUserBubble({
       </div>
       {queueId ? (
         <span className="cx-msg-status">
-          排队中
+          {item.status === "awaiting" ? "已到设备 · 等待 pi 处理" : "排队中"}
           {onQueueSendNow ? (
             <button type="button" className="cx-inline-link" onClick={onQueueSendNow}>
               立即发送

@@ -72,6 +72,7 @@ function defaults(): Relay {
     createSchedule: async () => null,
     cancelSchedule: async () => undefined,
     extStatus: null,
+    switchSyncView: { mode: "pending", dialogRemoteAnswer: null, approvalGateEnabled: null, approvalGateTier: null, askUserEnabled: null },
     activity: "",
     notice: null,
     notices: [],

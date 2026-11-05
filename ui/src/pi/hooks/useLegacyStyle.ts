@@ -5,7 +5,7 @@
  * 别的标签页改了走 storage 事件，本页写入派发 "pi-style"。
  */
 import { useSyncExternalStore } from "react"
-import { ASK_GATE_DEFAULTS, LEGACY_STYLE_DEFAULTS, LEGACY_STYLE_EVENT, LEGACY_STYLE_KEY, askGatePrefsOf, legacyStyleOf, legacyStyleWrite, type PiAskGatePrefs, type PiLegacyStyle } from "@/pi/model/legacyStyle"
+import { ASK_GATE_DEFAULTS, LEGACY_STYLE_DEFAULTS, LEGACY_STYLE_EVENT, LEGACY_STYLE_KEY, askGatePrefsOf, legacyPrefsOf, legacyStyleOf, legacyStyleWrite, type PiAskGatePrefs, type PiLegacyStyle } from "@/pi/model/legacyStyle"
 import type { PiLegacyStylePrefs } from "@/pi/model/settingsView"
 let legacyRaw: string | null | undefined
 let legacyValue: PiLegacyStyle = { ...LEGACY_STYLE_DEFAULTS }
@@ -57,6 +57,31 @@ export function useAskGatePrefs(): PiAskGatePrefs {
       return askGateValue
     },
     askGateServer,
+  )
+}
+
+let legacyPrefsRaw: string | null | undefined
+let legacyPrefsValue: Required<PiLegacyStylePrefs> = { ...LEGACY_STYLE_DEFAULTS, ...ASK_GATE_DEFAULTS }
+const legacyPrefsServer = () => ({ ...LEGACY_STYLE_DEFAULTS, ...ASK_GATE_DEFAULTS }) as Required<PiLegacyStylePrefs>
+
+/**
+ * The full legacy-key preference set for settings surfaces (legacy
+ * three + G1/G2 switches, every field resolved). Settings display must
+ * read the switch fields from here: adoption rewrites this key, so
+ * this is the copy that follows the device state.
+ */
+export function useLegacyPrefs(): Required<PiLegacyStylePrefs> {
+  return useSyncExternalStore(
+    subscribeLegacy,
+    () => {
+      const raw = readLegacyRaw()
+      if (raw !== legacyPrefsRaw) {
+        legacyPrefsRaw = raw
+        legacyPrefsValue = legacyPrefsOf(raw)
+      }
+      return legacyPrefsValue
+    },
+    legacyPrefsServer,
   )
 }
 

@@ -166,7 +166,7 @@ export function PiImageGrid({
 /**
  * 用户消息（PiUserTurn；compose from kit: UserMessage(card), MediaImage, GhostIconButton）。
  * 同列宽白卡；来自网页（from: "remote"）= 右上灰色手机小图标（推断）；卡下一行投递状态：
- * 发送失败（红字 + 重试）/ 等重连后发送（outbox，灰字）/ 发送中…（ack 超过 200ms 才出现）。送达后不写字。
+ * 发送失败（红字 + 重试）/ 等重连后发送（outbox，灰字）/ 已到设备 · 等待 pi 处理（设备已收下、pi 还没消费）/ 发送中…（ack 超过 200ms 才出现）。送达后不写字。
  */
 export function PiUserTurn({
   item,
@@ -181,6 +181,32 @@ export function PiUserTurn({
   const remote = item.from === "remote" || item.remote
   const actions = usePiTranscriptActions()
   const retry = actions?.retrySend
+  // F4 queue actions for a bubble that is a remote-queue entry (item.queued);
+  // shared by the queued label and the awaiting label below.
+  const queueAction = (fn?: (item: PiUserItem) => void, label?: string) =>
+    fn && label ? (
+      <button
+        key={label}
+        type="button"
+        className={cn("cursor-pointer text-inherit underline-offset-2 hover:underline", TOUCH_44_TEXT)}
+        onClick={() => fn(item)}
+      >
+        {label}
+      </button>
+    ) : null
+  const queueButtons = item.queued
+    ? [
+        queueAction(actions?.queueSendNow, "立即发送"),
+        queueAction(actions?.queueEdit, "编辑"),
+        queueAction(actions?.queueCancel, "取消"),
+      ].filter(Boolean)
+    : []
+  const queueButtonsSpan =
+    queueButtons.length > 0 ? (
+      <span className="inline-flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+        {queueButtons}
+      </span>
+    ) : null
   let status: ReactNode = null
   if (item.failed) {
     status = (
@@ -192,35 +218,27 @@ export function PiUserTurn({
       </span>
     )
   } else if (item.outbox) {
-    status = <span className={T_SECONDARY}>等重连后发送</span>
+    status = <span className={T_SECONDARY}>{item.awaiting ? "已到设备 · 等待处理" : "等重连后发送"}</span>
+  } else if (item.status === "awaiting") {
+    // B-3/B-2 round 2: the device accepted the message but pi has not
+    // consumed it yet (queued behind a busy pi, or in a crypto-required
+    // room this viewer cannot observe). It must not sit at "sending":
+    // same awaiting words as the outbox surfaces, with the F4 queue
+    // actions still attached when the queue entry is known.
+    status = (
+      <span className={cn("inline-flex items-center gap-2", T_SECONDARY)}>
+        <span>已到设备 · 等待 pi 处理</span>
+        {queueButtonsSpan}
+      </span>
+    )
   } else if (item.queued) {
     // F4: a queued prompt used to sit here as a dead "sending" bubble. It
     // now says it is queued and carries its own actions -- revealed on
     // hover / focus on fine pointers, always visible on touch.
-    const queueAction = (fn?: (item: PiUserItem) => void, label?: string) =>
-      fn && label ? (
-        <button
-          key={label}
-          type="button"
-          className={cn("cursor-pointer text-inherit underline-offset-2 hover:underline", TOUCH_44_TEXT)}
-          onClick={() => fn(item)}
-        >
-          {label}
-        </button>
-      ) : null
-    const buttons = [
-      queueAction(actions?.queueSendNow, "立即发送"),
-      queueAction(actions?.queueEdit, "编辑"),
-      queueAction(actions?.queueCancel, "取消"),
-    ].filter(Boolean)
     status = (
       <span className={cn("inline-flex items-center gap-2", T_SECONDARY)}>
         <span>排队中</span>
-        {buttons.length > 0 && (
-          <span className="inline-flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
-            {buttons}
-          </span>
-        )}
+        {queueButtonsSpan}
       </span>
     )
   } else if (item.status === "sending") {

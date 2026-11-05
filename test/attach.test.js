@@ -2709,3 +2709,159 @@ test("startup gate: token device without any key file still passes (unchanged)",
   assert.equal(attach.hasUsableDeviceKey(envPath, "dev-key-gate"), false);
   assert.equal(startupGateRefuses(envPath), false, "device-token installs keep passing exactly as before");
 });
+
+/* ---------------- B-4：attach 重启认领存活 pi ---------------- */
+
+const B4_START = "/kit/deploy/start-pi.sh";
+
+/** 假 tmux：panes 是 Map<会话名, {cwd, dead, start}>；list-panes / tmuxAlive 都按它答。 */
+function makeLinuxCtl({ panes = [], extra = {} } = {}) {
+  const dir = tmpDir();
+  const ws = tmpDir();
+  const live = new Map(panes.map((p) => [p.name, p]));
+  const spawned = [];
+  const logs = [];
+  const spawnSyncImpl = (file, args) => {
+    if (args[0] === "-V") return { status: 0, stdout: "tmux 3.4\n", stderr: "" };
+    if (args[0] === "list-panes" && args.includes("-a")) {
+      const lines = [...live.values()].map((p) => `${p.name}\t${p.cwd}\t${p.dead ? 1 : 0}\t${p.start}`);
+      return { status: 0, stdout: lines.length ? lines.join("\n") + "\n" : "", stderr: "" };
+    }
+    if (args[0] === "list-panes") {
+      const t = args.find((a) => typeof a === "string" && a.startsWith("="));
+      const p = t ? live.get(t.slice(1)) : null;
+      if (!p) return { status: 1, stdout: "", stderr: "can't find session" };
+      return { status: 0, stdout: p.dead ? "1\n" : "0\n", stderr: "" };
+    }
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const ctl = new attach.AttachController({
+    platform: "linux",
+    relay: "ws://127.0.0.1:7001",
+    deviceId: "dev-l1",
+    accountId: "admin",
+    deviceName: "Linux",
+    projects: [ws],
+    dirs: [ws],
+    attachFile: path.join(dir, "remote-attach.json"),
+    maxHours: 12,
+    existsDir: () => true,
+    exitHome: dir,
+    launchWaitMs: 0,
+    spawnSyncImpl,
+    spawnImpl: (file, args, opts) => {
+      spawned.push({ file, args, opts });
+      return { unref() {}, on() {} };
+    },
+    sessionLookup: async (id) =>
+      id === "sess-1" ? { id: "sess-1", path: path.join(ws, "2026-01-01T00-00-00_sess-1.jsonl"), cwd: ws, deleted: false } : null,
+    writeOut: (line) => logs.push(String(line)),
+    exit: () => {},
+    status: false,
+    ...extra,
+  });
+  return { ctl, live, spawned, logs, dir, ws };
+}
+
+test("B-4 parseLivePiPanes：只认 attach 命名 + start-pi 启动命令的存活窗格，并解析 --session", () => {
+  const stdout = [
+    `pi-app-mr2k4x8zab12\t/srv/app\t0\t"/usr/bin/env" "PI_REMOTE_X=1" "/bin/bash" "${B4_START}" "--session" "/srv/s/2026-01-01_sess-1.jsonl"`,
+    `pi-app-mr2k4x8zab34\t/srv/app\t0\t"/bin/bash" "${B4_START}"`,
+    `pi-app-mr2k4x8zab56\t/srv/app\t1\t"/bin/bash" "${B4_START}"`, // 已死窗格（remain-on-exit 留尸）不算
+    `pi-manual-abcdefghij\t/srv/app\t0\t"/bin/bash" "${B4_START}"`, // 名字尾巴不够长：不是 attach 的命名
+    `pi-app-mr2k4x8zab78\t/srv/app\t0\t"pi"`, // 名字像但不是 start-pi 拉起的
+    `work\t/srv/app\t0\t"/bin/bash" "${B4_START}"`, // 名字不对
+    "garbage line without tabs",
+    "",
+  ].join("\n");
+  const panes = attach.parseLivePiPanes(stdout);
+  assert.deepEqual(
+    panes.map((p) => [p.tmuxSession, p.cwd, p.sessionPath]),
+    [
+      ["pi-app-mr2k4x8zab12", "/srv/app", "/srv/s/2026-01-01_sess-1.jsonl"],
+      ["pi-app-mr2k4x8zab34", "/srv/app", ""],
+    ],
+  );
+  assert.equal(attach.sessionIdFromSessionPath("/x/2026-01-01T00-00-00_sess-1.jsonl"), "sess-1");
+  assert.equal(attach.sessionIdFromSessionPath("/x/sess-1.jsonl"), "sess-1");
+  assert.equal(attach.sessionIdFromSessionPath("/x/notes.txt"), "");
+});
+
+test("B-4 认领全链：存活 pi 在工作区里 → already_running；bootDirs 不 spawn", async () => {
+  const fixture = makeLinuxCtl({ panes: [] });
+  const { ctl, live, spawned, logs, ws } = fixture;
+  live.set("pi-app-mr2k4x8zab12", { name: "pi-app-mr2k4x8zab12", cwd: ws, dead: false, start: `"/bin/bash" "${B4_START}"` });
+  const plan = await ctl.planLaunch({ cwd: ws, source: "remote" });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.status, "already_running");
+  const rec = ctl.spawnedByCwd.get(attach.normalizeDir(ws, "linux"));
+  assert.ok(rec && rec.adopted === true && rec.tmuxSession === "pi-app-mr2k4x8zab12", "认领记录带 adopted 与 tmux 会话名");
+  await ctl.bootDirs();
+  assert.equal(spawned.length, 0, "bootDirs 没有再拉起新 pi");
+  assert.ok(logs.some((l) => l.includes("已在运行，不另起")), logs.join("\n"));
+});
+
+test("B-4 认领不看年龄、只看死活：认领很久的 pi 仍挡住重复拉起；它死了立刻放行", async () => {
+  const { ctl, live, ws } = makeLinuxCtl({ panes: [] });
+  live.set("pi-app-mr2k4x8zab12", { name: "pi-app-mr2k4x8zab12", cwd: ws, dead: false, start: `"/bin/bash" "${B4_START}"` });
+  const first = await ctl.planLaunch({ cwd: ws, source: "remote" });
+  assert.equal(first.status, "already_running");
+  const key = attach.normalizeDir(ws, "linux");
+  ctl.spawnedByCwd.get(key).at = Date.now() - 60 * 60 * 1000; // 认领于一小时前（远超 SPAWN_CLAIM_MS）
+  ctl._adoptAt = 0; // 允许重新发现（节流外）
+  const second = await ctl.planLaunch({ cwd: ws, source: "remote" });
+  assert.equal(second.status, "already_running", "adopted 只认 tmux 死活，不认 10 分钟年龄上限");
+  live.get("pi-app-mr2k4x8zab12").dead = true; // pi 真死了
+  ctl._adoptAt = 0;
+  const third = await ctl.planLaunch({ cwd: ws, source: "remote" });
+  assert.equal(third.status, "spawn", "死了就放行重新拉起");
+  assert.equal(ctl.spawnedByCwd.has(key), false, "死认领已清掉（spawnPlanned 会记新占用）");
+});
+
+test("B-4 sessionId 形态认领：--session 拉起的 pi 按会话 id 挡住重复拉起", async () => {
+  const { ctl, live, ws } = makeLinuxCtl({ panes: [] });
+  const sessionPath = path.join(ws, "2026-01-01T00-00-00_sess-1.jsonl");
+  live.set("pi-app-mr2k4x8zab12", {
+    name: "pi-app-mr2k4x8zab12",
+    cwd: ws,
+    dead: false,
+    start: `"/bin/bash" "${B4_START}" "--session" "${sessionPath}"`,
+  });
+  const plan = await ctl.planLaunch({ sessionId: "sess-1", source: "remote" });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.status, "already_running");
+  assert.ok(ctl.spawnedBySession.get("sess-1")?.adopted === true);
+});
+
+test("B-4 relay 房间状态抖动不冲掉认领：online→offline 后认领仍在，面板计数含认领数", async () => {
+  const { ctl, live, ws } = makeLinuxCtl({ panes: [] });
+  live.set("pi-app-mr2k4x8zab12", { name: "pi-app-mr2k4x8zab12", cwd: ws, dead: false, start: `"/bin/bash" "${B4_START}"` });
+  await ctl.planLaunch({ cwd: ws, source: "remote" }); // 触发认领
+  const key = attach.normalizeDir(ws, "linux");
+  assert.ok(ctl.spawnedByCwd.has(key));
+  // 房间上线又下线（重连抖动）：非 adopted 的占用会在这里被删，adopted 且存活的不删
+  ctl.observeRooms([{ id: "room-1", cwd: ws, online: true, deviceId: "dev-l1" }]);
+  ctl.observeRooms([]);
+  assert.ok(ctl.spawnedByCwd.has(key), "房间下线后认领仍在");
+  const plan = await ctl.planLaunch({ cwd: ws, source: "remote" });
+  assert.equal(plan.status, "already_running");
+  // 面板：relay 报 0 个在线房间时，认领的存活 pi 仍计数
+  ctl.connected = true;
+  ctl.authed = true;
+  ctl.expiresAt = Date.now() + 3600_000;
+  assert.equal(ctl.activeSessionCount(), 1);
+  assert.match(ctl.statusLine(), /活动会话 1 个/);
+  // 房间在线时不双计
+  ctl.observeRooms([{ id: "room-1", cwd: ws, online: true, deviceId: "dev-l1" }]);
+  assert.equal(ctl.activeSessionCount(), 1);
+});
+
+test("B-4 认领范围：不在本窗口工作区/项目内的 pi 不认领，照常 spawn", async () => {
+  const { ctl, live, ws } = makeLinuxCtl({ panes: [] });
+  const other = tmpDir();
+  live.set("pi-other-mr2k4x8zab12", { name: "pi-other-mr2k4x8zab12", cwd: other, dead: false, start: `"/bin/bash" "${B4_START}"` });
+  const adopted = ctl.adoptLivePi();
+  assert.equal(adopted, 0, "别人的 pi 不认领（多安装同机时不串台）");
+  const plan = await ctl.planLaunch({ cwd: ws, source: "remote" });
+  assert.equal(plan.status, "spawn");
+});

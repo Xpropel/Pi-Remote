@@ -89,8 +89,10 @@ export function PiQueueEditFooter({
 export interface PiQueueOutboxItem {
   cid: string
   text: string
-  status: "queued" | "replaying" | "failed"
+  status: "queued" | "replaying" | "awaiting" | "failed"
   at?: number
+  /** awaiting 的交出时刻（B-3）：已到设备、等 pi 确认 */
+  handedAt?: number
   error?: string
   /** 发出后没等到结果：可能已经送达 */
   unknown?: boolean
@@ -311,10 +313,10 @@ function TextButton({
   )
 }
 
-/** outbox 行的文字按钮：等着的"取消"、正在发的"取消"置灰、失败的"重试 · 取消" */
+/** outbox 行的文字按钮：等着的"取消"、正在发的"取消"置灰、失败的"重试 · 取消"；awaiting 已在设备手里，本页取消不了（同置灰） */
 function OutboxActions({ variant, item, on }: { variant: CVariant; item: PiQueueOutboxItem; on?: (action: "cancel" | "retry") => void }) {
   const dot = <span aria-hidden className="text-(--cw-text-4)">·</span>
-  const replaying = item.status === "replaying"
+  const replaying = item.status === "replaying" || item.status === "awaiting"
   return (
     <span className={cn("inline-flex shrink-0 items-center", variant === "phone" ? "gap-3" : "gap-1.5")}>
       {item.status === "failed" && (
@@ -400,9 +402,13 @@ export function PiQueuePanel({
           : "发送失败"
       : item.status === "replaying"
         ? "正在发送…"
-        : item.at != null
-          ? `${agoText(item.at, now)} · 连上后按顺序发送`
-          : "连上后按顺序发送"
+        : item.status === "awaiting"
+          ? item.handedAt != null
+            ? `已到设备 · 等待 pi 处理（${agoText(item.handedAt, now)}交出）`
+            : "已到设备 · 等待 pi 处理"
+          : item.at != null
+            ? `${agoText(item.at, now)} · 连上后按顺序发送`
+            : "连上后按顺序发送"
     return (
       // 行的 key 不用 cid：重试会换新 cid（等同重新发一条），用 cid 当 key 行会重建、焦点丢掉；按在队里的位置
       <div key={`outbox-${index}`} data-slot="pi-queue-outbox-row" data-status={item.status} className="flex min-w-0 flex-col gap-0.5 py-2">

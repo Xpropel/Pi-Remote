@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { noteSlashCommandUsed } from "@/chat/slashUsage"
-import { saveLegacyStyle, useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
+import { saveLegacyStyle, useLegacyPrefs, useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
 import { modelPillName, modelRowsOf, thinkingSegmentsOf, type PiModelRow } from "@/pi/model/models"
 import { settingsPrefsOf, settingsWritesOf, type PiSettingsPrefs } from "@/pi/model/settingsView"
 import { roomTitle } from "@/relay/useRelay"
@@ -148,8 +148,16 @@ export function usePrefsWriter(p: Pick<PiContainerProps, "act" | "relay">) {
   }
 }
 
-/** 设置页 / 显示选项读的偏好（提示音、网页回答、立即发送读旧键里真正生效的值） */
+/**
+ * Settings-page / display-options preferences. The legacy argument must
+ * be the FULL legacyPrefsOf set (legacy three + G1/G2 switches):
+ * settingsPrefsOf prefers the legacy copy for the ask_user switch and
+ * the approval gate, and device-report adoption rewrites only the
+ * legacy key -- feeding it the three-field useLegacyStyle object left
+ * those fields undefined, so the display silently fell back to the
+ * PiPrefs copy and never followed the device state.
+ */
 export function useSettingsPrefs(p: Pick<PiContainerProps, "ui" | "relay">): PiSettingsPrefs {
-  const legacy = useLegacyStyle()
+  const legacy = useLegacyPrefs()
   return settingsPrefsOf(p.ui.prefs, legacy, p.relay.sendMode)
 }

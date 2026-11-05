@@ -262,6 +262,11 @@
   color: var(--pm-text-4);
   font-size: 13px;
 }
+.pm-search-bodyhead {
+  margin: 16px 20px 4px;
+  color: var(--pm-text-4);
+  font-size: 12px;
+}
 .pm-group {
   margin-top: 14px;
 }

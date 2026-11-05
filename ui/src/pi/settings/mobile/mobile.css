@@ -1028,6 +1028,132 @@
   color: var(--st-error);
 }
 
+/* Viewer identity (mobile presentation of the desktop identity section). */
+
+[data-pi-settings-mobile] .sm-identity-block {
+  padding: 12px 14px;
+}
+
+[data-pi-settings-mobile] .sm-identity-block + .sm-identity-block {
+  border-top: 1px solid var(--st-border);
+}
+
+[data-pi-settings-mobile] .sm-identity-title {
+  color: var(--st-text-1);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+[data-pi-settings-mobile] .sm-identity-text {
+  margin: 6px 0 0;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+[data-pi-settings-mobile] .sm-identity-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  color: var(--st-text-4);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+[data-pi-settings-mobile] .sm-identity-fp {
+  font-family: var(--st-font-mono);
+  color: var(--st-text-2);
+  overflow-wrap: anywhere;
+}
+
+[data-pi-settings-mobile] .sm-identity-line {
+  padding: 12px 14px;
+  color: var(--st-text-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+[data-pi-settings-mobile] .sm-identity-error {
+  padding: 10px 14px;
+  color: var(--st-error);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+[data-pi-settings-mobile] .sm-identity-waiting {
+  padding: 10px 14px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+[data-pi-settings-mobile] .sm-identity-panel {
+  padding: 2px 14px 12px;
+}
+
+[data-pi-settings-mobile] .sm-identity-panel p {
+  margin: 8px 0 0;
+  color: var(--st-text-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+[data-pi-settings-mobile] .sm-identity-panel .sm-identity-warning {
+  color: var(--st-error);
+}
+
+[data-pi-settings-mobile] .sm-identity-panel p.sm-identity-error-text {
+  color: var(--st-error);
+}
+
+[data-pi-settings-mobile] .sm-identity-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--st-text-1);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+[data-pi-settings-mobile] .sm-identity-check input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+[data-pi-settings-mobile] .sm-identity-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+}
+
+[data-pi-settings-mobile] .sm-identity-input {
+  min-height: var(--sm-touch);
+  padding: 0 10px;
+  border: 1px solid var(--st-border);
+  border-radius: 10px;
+  background: var(--st-field-bg);
+  color: var(--st-text-1);
+  font-size: 14px;
+}
+
+[data-pi-settings-mobile] .sm-identity-input:focus-visible {
+  outline: 2px solid var(--st-field-focus-ring);
+  outline-offset: 1px;
+}
+
+[data-pi-settings-mobile] .sm-identity-file-name {
+  color: var(--st-text-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 /* ---------------- 供应商 ---------------- */
 
 [data-pi-settings-mobile] .sm-provider {

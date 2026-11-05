@@ -88,6 +88,7 @@ import {
   parseRooms,
   parseSessionList,
   pickDefaultDevice,
+  pickEntryRoom,
   pickLoginRoom,
   platformLabel,
   preferredDeviceId,
@@ -365,6 +366,30 @@ test("命令通道：受理后按 relay 给的 timeoutMs 计时，ack 结束", a
   ch.ack({ id: frame.id, ok: true, data: { done: 1 } })
   assert.deepEqual(await p, { done: 1 })
   assert.equal(ch.size, 0)
+})
+
+test("命令通道：失败 ack 的结构化细节（data.reason）随拒绝错误带回，无 data 时不挂字段", async () => {
+  // Body search depends on this (A-3 round 2): an encrypted room and an
+  // old extension both reject with code "unsupported"; only the ack's
+  // data.reason tells them apart, and the merge layer reads it off the
+  // rejection error.
+  const ch = new CommandChannel({ acceptTimeoutMs: 1000 })
+  const ws = fakeSocket()
+  ch.attach(ws)
+  const p = ch.command("r", "search_session_bodies", {})
+  ch.ack({ id: ws.sent[0].id, ok: false, code: "unsupported", error: "该会话已加密，正文搜索不支持", data: { unsupported: true, reason: "room_encrypted" } })
+  await assert.rejects(p, (err) => {
+    assert.equal(err.code, "unsupported")
+    assert.deepEqual(err.data, { unsupported: true, reason: "room_encrypted" })
+    return true
+  })
+  const p2 = ch.command("r", "search_session_bodies", {})
+  ch.ack({ id: ws.sent[1].id, ok: false, code: "unsupported", error: "unknown command" })
+  await assert.rejects(p2, (err) => {
+    assert.equal(err.code, "unsupported")
+    assert.equal("data" in err, false)
+    return true
+  })
 })
 
 test("命令通道：没等到受理回执，同一连接用同一 dedupeKey 重发一次，再没有就报丢失", async () => {
@@ -1282,22 +1307,49 @@ test("默认设备：有在线房间的优先；多台都有时选最近活动�
   assert.equal(pickDefaultDevice([windows], [room({ id: "x", deviceId: "missing", lastActivity: 100 })]), "win")
 })
 
-test("登录后打开正在跑的房间：当前房间仍在线就留在原地，否则进选中设备上最近活动的", () => {
+test("登录后打开正在跑的房间：当前房间仍在线就留在原地，否则进选中设备上名册靠前的在线房间", () => {
   const rooms = [
     room({ id: "old", deviceId: "win", online: false, lastActivity: 1 }),
     room({ id: "a", deviceId: "cloud", online: true, lastActivity: 10 }),
     room({ id: "b", deviceId: "cloud", online: true, lastActivity: 40 }),
     room({ id: "solo", deviceId: "win", online: true, lastActivity: 3 }),
   ]
-  assert.equal(pickLoginRoom(rooms, "cloud", "", true), "b", "多个在线房间进最近活动的")
+  assert.equal(pickLoginRoom(rooms, "cloud", "", true), "a", "多个在线房间进名册靠前的，不跟最近活动走")
   assert.equal(pickLoginRoom(rooms, "win", "", true), "solo", "只有一个在线房间就打开它")
   assert.equal(pickLoginRoom(rooms, "cloud", "a", true), "a", "正在看的在线房间刷新后还留在原地")
-  assert.equal(pickLoginRoom(rooms, "cloud", "old", true), "b")
+  assert.equal(pickLoginRoom(rooms, "cloud", "old", true), "a")
   assert.equal(pickLoginRoom([rooms[0]], "win", "old", true), null, "没有在线房间就停在名册")
   assert.equal(pickLoginRoom(rooms, "cloud", "b", false), null)
   assert.equal(preferredDeviceId(rooms, "a", [{ id: "cloud", online: true }, { id: "win", online: true }]), "cloud")
   assert.equal(preferredDeviceId(rooms, "old", [{ id: "win", online: true }]), null, "离线旧会话不能把默认设备钉在 Windows")
   assert.equal(preferredDeviceId(rooms, "solo", [{ id: "win", online: false }]), null)
+})
+
+test("A-2 回归：别房弹卡不能改变登录/重连落点，落点对弹卡活动完全不敏感", () => {
+  // A dialog opening in a room bumps that room's relay-side lastActivity
+  // (rooms.get() stamps every forwarded event). The viewer's landing room
+  // must be identical whether or not another room just popped a dialog.
+  const mine = room({ id: "mine", deviceId: "cloud", online: true, lastActivity: 10 })
+  const peer = room({ id: "peer", deviceId: "cloud", online: true, lastActivity: 20 })
+  const calm = [mine, peer]
+  const dialogPopped = [mine, room({ id: "peer", deviceId: "cloud", online: true, lastActivity: 999999 })]
+  assert.equal(pickEntryRoom(calm, "cloud")?.id, "mine")
+  assert.equal(pickEntryRoom(dialogPopped, "cloud")?.id, "mine", "别房刚弹卡也不能成为入口房间")
+  assert.equal(pickEntryRoom(dialogPopped)?.id, "mine", "不带设备过滤时同样取名单靠前的在线房间")
+  assert.equal(pickLoginRoom(dialogPopped, "cloud", "", true), "mine", "fresh load 落点不被别房弹卡带走")
+  assert.equal(pickLoginRoom(dialogPopped, "cloud", "mine", true), "mine", "重连后仍留在原房间")
+  assert.equal(pickLoginRoom(dialogPopped, "cloud", "peer", true), "peer", "本来就在弹卡房间里的人不被赶走")
+  // Invariance: only the dialog room's activity timestamp differs -> same pick.
+  assert.equal(pickLoginRoom(calm, "cloud", "", true), pickLoginRoom(dialogPopped, "cloud", "", true))
+  // Reconnect after the viewer's own room dropped out of the roster: the
+  // fallback is the first online room in roster order, not the dialog room,
+  // even though the dialog room has the freshest activity by far.
+  const dropped = [
+    room({ id: "mine", deviceId: "cloud", online: false, lastActivity: 10 }),
+    room({ id: "peer", deviceId: "cloud", online: true, lastActivity: 20 }),
+    room({ id: "dialog-room", deviceId: "cloud", online: true, lastActivity: 999999 }),
+  ]
+  assert.equal(pickLoginRoom(dropped, "cloud", "mine", true), "peer", "原房间已下线时落到名单靠前的在线房间，不落弹卡房间")
 })
 
 test("在线但没有正在跑的会话时，提示点选会话发送载入，或从允许的目录新建", () => {

@@ -72,7 +72,7 @@ export function outboxItemsOf(outbox: readonly PiOutboxStreamEntry[], items: rea
   const out: PiUserItem[] = []
   for (const entry of outbox) {
     if (entry.status === "failed" || shown.has(entry.cid)) continue
-    out.push({ kind: "user", key: `outbox-${entry.cid}`, text: entry.text, images: [], timestamp: entry.at, from: "remote", cid: entry.cid, outbox: true })
+    out.push({ kind: "user", key: `outbox-${entry.cid}`, text: entry.text, images: [], timestamp: entry.at, from: "remote", cid: entry.cid, outbox: true, ...(entry.status === "awaiting" ? { awaiting: true } : {}) })
   }
   return out
 }
@@ -235,7 +235,7 @@ export function observeThinking(clock: PiThinkingClock, items: readonly Item[], 
 /** relay.history 的形状（useRelay 的 history state） */
 export type HistoryLike = { room: string; status: "more" | "loading" | "error" | "done"; error?: string; truncated: boolean }
 
-export type PiTopLine = { text: string; action?: "load-earlier"; actionText?: string; tone?: "muted" | "error"; spinner?: boolean }
+export type PiTopLine = { text: string; action?: "load-earlier" | "enable-identity"; actionText?: string; tone?: "muted" | "error"; spinner?: boolean }
 
 /**
  * 历史补拉的流顶行（D02，状态来自 relay.history，补拉规则不变【测试 history-backfill】）：
@@ -255,6 +255,19 @@ export function historyTopLineOf(history: HistoryLike | null | undefined, roomId
     default:
       return null
   }
+}
+
+/**
+ * The crypto-required top line (the relay refused this viewer the room's
+ * content: no usable viewer identity / content key on this end). With
+ * nothing pending it stays the plain notice; when a dialog is waiting in
+ * the room, the sidebar is already calling the user to answer, so the
+ * line also carries the one actionable next step -- enabling the viewer
+ * identity (A-4: no pending dialog, no extra nagging).
+ */
+export function cryptoRequiredTopLineOf(pendingDialog: boolean): PiTopLine {
+  const text = "这个房间已加密，当前观看端无法读取加密内容"
+  return pendingDialog ? { text, tone: "error", action: "enable-identity", actionText: "启用观看端身份" } : { text, tone: "error" }
 }
 
 export type PiArchiveLike = { truncated: boolean; omitted: number }

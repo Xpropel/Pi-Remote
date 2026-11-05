@@ -6,21 +6,24 @@
  *   排序口径同 relay/attention.ts（等你回答 → 出错 → 设备未连接 → 完成未读，同级按时刻、再按 key）。attention.ts 本身不改。
  */
 import { attentionItemsOf, type AttentionItem, type AttentionKind, type AttentionSnapshot, type AttentionTurnEnd } from "../../relay/attention.ts"
-import { mergeDeviceSessions, UNREGISTERED_DEVICE_ID, type Device, type ListedSession, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
+import { attributeSessionsAcrossDevices, mergeDeviceSessions, UNREGISTERED_DEVICE_ID, type Device, type ListedSession, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
 import { roomStatusLine, type RoomStatusLine } from "../../relay/roomStatus.ts"
 import { sortShellDevices } from "../../shell/deviceStripModel.ts"
 
 /** 侧栏用的会话行：ListedSession + 所在设备 */
 export type PiDeviceListedSession = ListedSession & { deviceId: string }
 
-/** 每台设备的会话合在一起（设备照传入顺序；每台内部的顺序照 mergeDeviceSessions） */
+/** 每台设备的会话合在一起（设备照传入顺序；每台内部的顺序照 mergeDeviceSessions）。
+ *  最后过一遍跨设备归属（B-1）：同一会话被两台设备同时认领时只在归属设备下留一行。 */
 export function sidebarSessionsOf(
   devices: readonly Device[],
   rooms: readonly RoomInfo[],
   sessionsByDevice: Readonly<Record<string, readonly SessionEntry[] | undefined>>,
 ): PiDeviceListedSession[] {
-  return devices.flatMap((device) =>
-    mergeDeviceSessions(device, [...rooms], [...(sessionsByDevice[device.id] ?? [])]).map((row) => ({ ...row, deviceId: device.id })),
+  return attributeSessionsAcrossDevices(
+    devices.flatMap((device) =>
+      mergeDeviceSessions(device, [...rooms], [...(sessionsByDevice[device.id] ?? [])]).map((row) => ({ ...row, deviceId: device.id })),
+    ),
   )
 }
 

@@ -71,3 +71,19 @@ export function askGatePrefsOf(raw: string | null | undefined): PiAskGatePrefs {
     approvalGateTier: p.approvalGateTier === "high-risk" || p.approvalGateTier === "all-non-readonly" || p.approvalGateTier === "list" ? p.approvalGateTier : ASK_GATE_DEFAULTS.approvalGateTier,
   }
 }
+
+/**
+ * The full legacy-key preference set settings surfaces read (the three
+ * legacyStyleOf fields PLUS the G1/G2 switch fields), with every field
+ * resolved to a concrete value. settingsPrefsOf treats the legacy
+ * object as the operative copy for these fields (legacy ?? prefs), so
+ * any field missing here silently falls back to the PiPrefs copy --
+ * which device-report adoption never rewrites. The switch fields must
+ * therefore come from askGatePrefsOf, not be left undefined: adoption
+ * writes them into this key, and this merge is what makes the settings
+ * page display the adopted (device) value for the ask_user switch and
+ * the approval gate, not the stale local PiPrefs copy.
+ */
+export function legacyPrefsOf(raw: string | null | undefined): Required<PiLegacyStylePrefs> {
+  return { ...legacyStyleOf(raw), ...askGatePrefsOf(raw) }
+}

@@ -7,6 +7,9 @@
  * 不重复发送由客户端保证（relay 只按 (room, dedupeKey) 在内存里去重 10 分钟，不按 cid 去重，
  * 重启即丢）：
  *  - 一条只在 queued → replaying 时被认领一次，replaying 的条目绝不自动再发；
+ *  - B-3：命令结果只证明设备接受了调用，条目先转 awaiting（已到设备、等 pi 确认），
+ *    收到 remote_message_delivered 才算真送达移出；remote_message_failed 或超
+ *    OUTBOX_DELIVERY_CONFIRM_MS 无确认 → failed（正文保留，用户决定重试）；
  *  - 页面在 replaying 途中关掉，下次载入时由 recover 转成 failed（结果未知），由用户决定重试；
  *  - 重试换新的 cid + dedupeKey：等同于用户重新发一条，旧 cid 不会第二次上线。
  */
@@ -15,11 +18,23 @@ import { isCid } from "../../relay/protocol.ts"
 export const OUTBOX_STORAGE_KEY = "pi_remote_outbox_v1"
 /** 每个会话最多排多少条：localStorage 配额有限，超出时入队被拒，消息留在输入框 */
 export const OUTBOX_ROOM_MAX = 50
+/**
+ * B-3: after the command result comes back the message is only known to have
+ * reached the device-side extension (it may still sit in the device queue,
+ * waiting for the current turn to end). The entry leaves the outbox only when
+ * the device confirms pi actually consumed the message
+ * (remote_message_delivered). If neither delivered nor failed arrives within
+ * this bound, the entry surfaces as failed with unknown=true instead of
+ * pretending it was sent. The bound matches the extension's own idle
+ * delivery-watch cap (DELIVERY_MAX_WAIT_MS) so both ends give up at roughly
+ * the same horizon.
+ */
+export const OUTBOX_DELIVERY_CONFIRM_MS = 10 * 60 * 1000
 /** 单条正文上限，与 composer 的 COMPOSER_TEXT_MAX 一致 */
 export const OUTBOX_TEXT_MAX = 100_000
 const DEDUPE_KEY_RE = /^[A-Za-z0-9_-]{1,128}$/
 
-export type OutboxStatus = "queued" | "replaying" | "failed"
+export type OutboxStatus = "queued" | "replaying" | "awaiting" | "failed"
 
 /** 结构上兼容 P5.1 的 PiOutboxItemView（cid / text / status） */
 export type OutboxEntry = {
@@ -32,6 +47,8 @@ export type OutboxEntry = {
   /** 入队时刻（ms） */
   at: number
   status: OutboxStatus
+  /** awaiting 时的交出时刻（ms）：命令已被设备接受、等设备确认 pi 真正接收 */
+  handedAt?: number
   /** failed 时的原因 */
   error?: string
   /** failed 且命令可能已执行（发出后没等到结果）：提示用户先看会话再决定重试 */
@@ -53,6 +70,21 @@ export type OutboxAction =
   | { type: "replay"; roomId: string; cid: string; owner?: string }
   /** 回放成功：移出 outbox（owner 与认领者不一致时不动，防跨标签页误清） */
   | { type: "sent"; roomId: string; cid: string; owner?: string }
+  /**
+   * B-3: 命令已被设备接受（command_result ok）但 pi 还没确认接收：replaying → awaiting。
+   * 条目留在 outbox 里，直到 delivered / delivery-failed / 超时巡查给出终局。
+   */
+  | { type: "handoff"; roomId: string; cid: string; at: number; owner?: string }
+  /**
+   * B-3: 设备确认 pi 已真正接收（remote_message_delivered 按 cid 对上）：移出 outbox。
+   * 这是设备侧事实，哪个标签页收到事件都可落定，不查 owner；迟到时 failed 也认
+   * （超时巡查先标了失败、确认随后才到，以设备事实为准）。
+   */
+  | { type: "delivered"; roomId: string; cid: string }
+  /** B-3: 设备明确报注入失败（remote_message_failed 按 cid 对上）：awaiting / replaying → failed，正文保留可重试 */
+  | { type: "delivery-failed"; roomId: string; cid: string; error: string }
+  /** B-3: 交出后超过 OUTBOX_DELIVERY_CONFIRM_MS 仍无确认：awaiting → failed（结果未知，正文保留） */
+  | { type: "confirm-timeout"; roomId: string; cid: string; error: string }
   /** 回放失败：replaying → failed，留在原位（owner 同 sent） */
   | { type: "fail"; roomId: string; cid: string; error: string; unknown?: boolean; owner?: string }
   /** 帧根本没发出去（连接已断、本机未连接）：replaying → queued，cid 没上过线，原样再排 */
@@ -61,7 +93,7 @@ export type OutboxAction =
   | { type: "retry"; roomId: string; cid: string; nextCid: string; nextDedupeKey: string }
   /** 用户取消：queued / failed 移出；replaying 已在飞，不能取消 */
   | { type: "cancel"; roomId: string; cid: string }
-  /** 载入时调用一次：上次页面关在 replaying 途中的条目转 failed（结果未知） */
+  /** 载入时调用一次：上次页面关在 replaying / awaiting 途中的条目转 failed（结果未知） */
   | { type: "recover"; error: string }
 
 export const EMPTY_OUTBOX: OutboxState = { byRoom: {} }
@@ -87,10 +119,10 @@ export function outboxClaimedBy(state: OutboxState, roomId: string, cid: string,
   return !!entry && entry.status === "replaying" && entry.claim === owner
 }
 
-/** 下一条该回放的：该会话第一条 queued；已有条目在飞时返回 null（一条一条按序发） */
+/** 下一条该回放的：该会话第一条 queued；已有条目在飞（replaying / awaiting）时返回 null（一条一条按序发，等上一条有设备侧终局再发下一条） */
 export function nextReplay(state: OutboxState, roomId: string | null | undefined): OutboxEntry | null {
   const list = outboxOf(state, roomId)
-  if (list.some((entry) => entry.status === "replaying")) return null
+  if (list.some((entry) => entry.status === "replaying" || entry.status === "awaiting")) return null
   return list.find((entry) => entry.status === "queued") ?? null
 }
 
@@ -129,7 +161,9 @@ function patchEntry(
 }
 
 function settled(entry: OutboxEntry, status: OutboxStatus): OutboxEntry {
-  const { error: _error, unknown: _unknown, claim: _claim, ...rest } = entry
+  // handedAt only means something while awaiting; every transition out of a
+  // handoff (or into a fresh attempt) drops it along with error/unknown/claim.
+  const { error: _error, unknown: _unknown, claim: _claim, handedAt: _handedAt, ...rest } = entry
   return { ...rest, status }
 }
 
@@ -158,6 +192,34 @@ export function outboxReducer(state: OutboxState, action: OutboxAction): OutboxS
     case "sent":
       // failed 也认：别的标签页载入时可能已把在飞条目 recover 成 failed，结果实际送达了
       return patchEntry(state, action.roomId, action.cid, ["replaying", "failed"], () => null, action.owner)
+    case "handoff":
+      return patchEntry(
+        state,
+        action.roomId,
+        action.cid,
+        ["replaying"],
+        (entry) => ({ ...settled(entry, "awaiting"), handedAt: action.at }),
+        action.owner,
+      )
+    case "delivered":
+      // 设备侧事实，不查 owner：回放中的竞态（确认先于 handoff 落定）与超时后的迟到确认都认
+      return patchEntry(state, action.roomId, action.cid, ["replaying", "awaiting", "failed"], () => null)
+    case "delivery-failed":
+      return patchEntry(
+        state,
+        action.roomId,
+        action.cid,
+        ["replaying", "awaiting"],
+        (entry) => ({ ...settled(entry, "failed"), error: action.error || "发送失败" }),
+      )
+    case "confirm-timeout":
+      return patchEntry(
+        state,
+        action.roomId,
+        action.cid,
+        ["awaiting"],
+        (entry) => ({ ...settled(entry, "failed"), error: action.error || "设备长时间没有确认收到", unknown: true }),
+      )
     case "fail":
       return patchEntry(
         state,
@@ -189,7 +251,7 @@ export function outboxReducer(state: OutboxState, action: OutboxAction): OutboxS
       const byRoom: Record<string, readonly OutboxEntry[]> = {}
       for (const [roomId, list] of Object.entries(state.byRoom)) {
         byRoom[roomId] = list.map((entry) => {
-          if (entry.status !== "replaying") return entry
+          if (entry.status !== "replaying" && entry.status !== "awaiting") return entry
           changed = true
           return { ...settled(entry, "failed"), error: action.error, unknown: true }
         })
@@ -217,11 +279,15 @@ function parseEntry(raw: unknown, roomId: string): OutboxEntry | null {
   if (!isCid(cid) || typeof dedupeKey !== "string" || !DEDUPE_KEY_RE.test(dedupeKey)) return null
   if (typeof text !== "string" || !text.trim() || text.length > OUTBOX_TEXT_MAX) return null
   if (typeof at !== "number" || !Number.isFinite(at)) return null
-  if (status !== "queued" && status !== "replaying" && status !== "failed") return null
+  if (status !== "queued" && status !== "replaying" && status !== "awaiting" && status !== "failed") return null
   const entry: OutboxEntry = { cid, dedupeKey, roomId, text, at, status }
-  if (status === "replaying") {
+  if (status === "replaying" || status === "awaiting") {
     const claim = (raw as { claim?: unknown }).claim
     if (typeof claim === "string" && claim && claim.length <= 128) entry.claim = claim
+  }
+  if (status === "awaiting") {
+    const handedAt = (raw as { handedAt?: unknown }).handedAt
+    entry.handedAt = typeof handedAt === "number" && Number.isFinite(handedAt) ? handedAt : at
   }
   if (status === "failed") {
     entry.error = typeof error === "string" && error ? error : "发送失败"

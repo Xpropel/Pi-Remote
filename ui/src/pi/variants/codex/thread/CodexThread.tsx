@@ -37,7 +37,7 @@ export function CodexThread({ p, phone }: { p: VariantAppProps; phone: boolean }
     for (const item of source) if (item.kind === "user" && item.cid) shown.add(item.cid)
     return relay.outbox
       .filter((entry) => entry.status !== "failed" && !shown.has(entry.cid))
-      .map((entry) => ({ kind: "user", key: `outbox-${entry.cid}`, text: entry.text, images: [], timestamp: entry.at, from: "remote", cid: entry.cid, outbox: true }) as Item)
+      .map((entry) => ({ kind: "user", key: `outbox-${entry.cid}`, text: entry.text, images: [], timestamp: entry.at, from: "remote", cid: entry.cid, outbox: true, ...(entry.status === "awaiting" ? { awaiting: true } : {}) }) as Item)
   }, [relay.outbox, source])
   const items = outbox.length > 0 ? [...source, ...outbox] : source
   const turns = useMemo(() => codexSplitTurns(items), [items])

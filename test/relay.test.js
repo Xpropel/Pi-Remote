@@ -552,6 +552,126 @@ test("O1 对话框观察：多槽缓存补发、close 摘槽、宿主断开逐�
   );
 });
 
+test("ext_status 的 switches（设备侧开关真值）：直播原样、缓存补发原样带回、坏值整块丢弃", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const { c } = await local(relay);
+  const { v } = await viewer(relay);
+  t.after(() => v.close());
+  v.send({ type: "subscribe", room: ROOM });
+  await v.type("snapshot");
+
+  const switches = { dialogRemoteAnswer: true, approvalGate: { enabled: true, tier: "list" }, askUserEnabled: false };
+  c.send({ type: "event", room: ROOM, event: { type: "ext_status", statuses: {}, widgets: [], title: null, working: null, tap: { state: "ok" }, switches, at: 7 } });
+  const live = await v.type("room_event", (f) => f.event.type === "ext_status");
+  assert.deepEqual(live.event.switches, switches, "直播转发带 switches");
+
+  // 晚订阅：缓存补发必须带回 switches——观看端靠它对齐设备开关、进房不下达本地存值
+  const { v: mid } = await viewer(relay);
+  t.after(() => mid.close());
+  mid.send({ type: "subscribe", room: ROOM });
+  await mid.type("snapshot");
+  const cached = await mid.type("room_event", (f) => f.event.type === "ext_status");
+  assert.deepEqual(cached.event.switches, switches, "缓存补发带 switches");
+
+  // 坏 switches（非法 tier）：整块丢弃，不把垃圾种进缓存
+  c.send({ type: "event", room: ROOM, event: { type: "ext_status", statuses: {}, widgets: [], title: null, working: null, tap: { state: "ok" }, switches: { dialogRemoteAnswer: true, approvalGate: { enabled: true, tier: "bogus" }, askUserEnabled: true }, at: 8 } });
+  await v.type("room_event", (f) => f.event.type === "ext_status" && f.event.at === 8);
+  const { v: late2 } = await viewer(relay);
+  t.after(() => late2.close());
+  late2.send({ type: "subscribe", room: ROOM });
+  await late2.type("snapshot");
+  const cachedBad = await late2.type("room_event", (f) => f.event.type === "ext_status");
+  assert.equal("switches" in cachedBad.event, false, "坏 switches 不进缓存");
+
+  // askUserEnabled 同在白名单内：合法值随缓存补发带回
+  const switchesAsk = { dialogRemoteAnswer: false, approvalGate: { enabled: false, tier: "high-risk" }, askUserEnabled: true };
+  c.send({ type: "event", room: ROOM, event: { type: "ext_status", statuses: {}, widgets: [], title: null, working: null, tap: { state: "ok" }, switches: switchesAsk, at: 9 } });
+  await v.type("room_event", (f) => f.event.type === "ext_status" && f.event.at === 9);
+  const { v: late3 } = await viewer(relay);
+  t.after(() => late3.close());
+  late3.send({ type: "subscribe", room: ROOM });
+  await late3.type("snapshot");
+  const cachedAsk = await late3.type("room_event", (f) => f.event.type === "ext_status");
+  assert.deepEqual(cachedAsk.event.switches, switchesAsk, "缓存补发带 askUserEnabled");
+
+  // 坏 switches（askUserEnabled 非布尔）：同样整块丢弃
+  c.send({ type: "event", room: ROOM, event: { type: "ext_status", statuses: {}, widgets: [], title: null, working: null, tap: { state: "ok" }, switches: { dialogRemoteAnswer: true, approvalGate: { enabled: true, tier: "list" }, askUserEnabled: "yes" }, at: 10 } });
+  await v.type("room_event", (f) => f.event.type === "ext_status" && f.event.at === 10);
+  const { v: late4 } = await viewer(relay);
+  t.after(() => late4.close());
+  late4.send({ type: "subscribe", room: ROOM });
+  await late4.type("snapshot");
+  const cachedBadAsk = await late4.type("room_event", (f) => f.event.type === "ext_status");
+  assert.equal("switches" in cachedBadAsk.event, false, "askUser 坏值同样整块不进缓存");
+});
+
+test("ext_status 缓存为空时订阅向桥索取：桥应答后观看端拿到真值；缓存暖后不再索取", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const { c } = await local(relay);
+  t.after(() => c.close());
+  // 桥已注册但从未发过 ext_status（真机形态：启动时的补发与注册竞态丢失，
+  // 之后会话空闲、再无变化触发补发，缓存一直是空的）
+  const { v } = await viewer(relay);
+  t.after(() => v.close());
+  v.send({ type: "subscribe", room: ROOM });
+  const ask = await c.type("ext_status_request");
+  assert.equal(ask.room, ROOM, "缓存为空 → relay 向桥索取 ext_status");
+
+  // 桥应答：直播广播到达正在等的观看端，switches 原样（采纳侧的输入就是这一帧）
+  const switches = { dialogRemoteAnswer: false, approvalGate: { enabled: true, tier: "high-risk" }, askUserEnabled: true };
+  c.send({ type: "event", room: ROOM, event: { type: "ext_status", statuses: {}, widgets: [], title: null, working: null, tap: { state: "ok" }, switches, at: 11 } });
+  const got = await v.type("room_event", (f) => f.event.type === "ext_status");
+  assert.deepEqual(got.event.switches, switches, "索取应答直播到达观看端");
+
+  // 缓存已暖：再来的订阅者直接吃缓存补发，桥不再被打扰
+  const asksBefore = c.frames.filter((f) => f.type === "ext_status_request").length;
+  const { v: mid } = await viewer(relay);
+  t.after(() => mid.close());
+  mid.send({ type: "subscribe", room: ROOM });
+  const cached = await mid.type("room_event", (f) => f.event.type === "ext_status");
+  assert.deepEqual(cached.event.switches, switches, "暖缓存补发带 switches");
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(c.frames.filter((f) => f.type === "ext_status_request").length, asksBefore, "缓存暖后订阅不再索取");
+});
+
+test("回归：注册→实例更替清缓存→晚订阅，ext_status 真值仍送达（VERIFY2 项 3 真机序列）", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const { c } = await local(relay, { instance: "inst-a" });
+  t.after(() => c.close());
+  const switches = { dialogRemoteAnswer: true, approvalGate: { enabled: false, tier: "list" }, askUserEnabled: false };
+  // 桥报告过一份：缓存先暖起来
+  c.send({ type: "event", room: ROOM, event: { type: "ext_status", statuses: {}, widgets: [], title: null, working: null, tap: { state: "ok" }, switches, at: 21 } });
+  for (let i = 0; i < 100 && !(relay.rooms.peek(ROOM) && relay.rooms.peek(ROOM).extStatus); i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.ok(relay.rooms.peek(ROOM).extStatus, "报告已进缓存");
+
+  // pi 进程重启 = 实例更替：同 socket 重新注册，清会话状态把缓存一并清掉（真机断点）
+  c.send({ type: "room_register", room: { id: ROOM, label: "t", cwd: "/tmp", epoch: 1, instance: "inst-b" } });
+  await c.type("room_registered");
+  assert.equal(relay.rooms.peek(ROOM).extStatus, null, "实例更替清掉 ext_status 缓存");
+
+  // 两名观看端在缓存冷时先后订阅：只索取一次（节流），桥应答后两边都拿到真值
+  const { v: v1 } = await viewer(relay);
+  t.after(() => v1.close());
+  const { v: v2 } = await viewer(relay);
+  t.after(() => v2.close());
+  v1.send({ type: "subscribe", room: ROOM });
+  v2.send({ type: "subscribe", room: ROOM });
+  const ask = await c.type("ext_status_request");
+  assert.equal(ask.room, ROOM, "缓存冷 + 订阅 → 向桥索取");
+  c.send({ type: "event", room: ROOM, event: { type: "ext_status", statuses: {}, widgets: [], title: null, working: null, tap: { state: "ok" }, switches, at: 22 } });
+  const g1 = await v1.type("room_event", (f) => f.event.type === "ext_status");
+  const g2 = await v2.type("room_event", (f) => f.event.type === "ext_status");
+  assert.deepEqual(g1.event.switches, switches, "先订阅者拿到真值");
+  assert.deepEqual(g2.event.switches, switches, "后订阅者也拿到真值");
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(c.frames.filter((f) => f.type === "ext_status_request").length, 1, "两名订阅者同窗只索取一次（节流、无帧风暴）");
+});
+
 test("relay 重启：rev/seq 不变，viewer 增量重连命中；扩展重新注册拿到原锚点", async (t) => {
   const dir = tmpDir();
   const r1 = await boot(dir);

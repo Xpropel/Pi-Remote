@@ -150,6 +150,11 @@ export function GeneralPage() {
   // both surfaces always show and change one shared set of preferences.
   const conversation = useSettingsPrefs(p)
   const writeConversation = usePrefsWriter(p)
+  // The three conversation switches are device-owned: until the current
+  // room's bridge report arrives (switchSyncView "pending"), the local
+  // value is not settled truth, so the switches stay inert rather than
+  // presenting -- or recording -- a local guess.
+  const switchesPending = relay.switchSyncView.mode === "pending"
   const document = useSettingsDocument(relay)
   const writer = useSettingsWriter(relay)
   const audioInputs = useAudioInputs()
@@ -263,6 +268,7 @@ export function GeneralPage() {
           <SettingsSwitch
             label="允许智能体向我提问"
             checked={conversation.askUser}
+            disabled={switchesPending}
             onChange={(checked) => writeConversation({ askUser: checked })}
           />
         </SettingsRow>
@@ -270,6 +276,7 @@ export function GeneralPage() {
           <SettingsSwitch
             label="在网页上回答电脑上的确认框"
             checked={conversation.dialogRemote}
+            disabled={switchesPending}
             onChange={(checked) => writeConversation({ dialogRemote: checked })}
           />
         </SettingsRow>
@@ -277,12 +284,14 @@ export function GeneralPage() {
           <SettingsSwitch
             label="工具执行审批门"
             checked={conversation.approvalGate}
+            disabled={switchesPending}
             onChange={(checked) => writeConversation({ approvalGate: checked })}
           />
         </SettingsRow>
         <SettingsRadioGroup
           label="审批门问哪些工具"
           description="名单制时，名单在电脑端桥的配置里维护"
+          disabled={switchesPending}
           value={conversation.approvalGateTier}
           options={APPROVAL_TIER_OPTIONS}
           onChange={(value) => writeConversation({ approvalGateTier: value })}

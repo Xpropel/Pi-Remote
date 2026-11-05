@@ -288,7 +288,7 @@ export function ClaudeThread({ relay }: Pick<PiContainerProps, "relay">) {
             <div className="claude-bubble claude-bubble-outbox">
               <div className="claude-bubble-text">{entry.text}</div>
             </div>
-            <p className="claude-bubble-status">等重连后发送</p>
+            <p className="claude-bubble-status">{entry.awaiting ? "已到设备 · 等待处理" : "等重连后发送"}</p>
           </div>
         ))}
 
@@ -360,6 +360,16 @@ function ItemViewBase({
     // not "sending" -- say so and give it send-now / cancel right here (the
     // queue panel above the composer keeps edit and the full list).
     const queueEntry = item.cid ? relay.remoteQueue.items.find((entry) => entry.status === "pending" && entry.cid === item.cid) : undefined
+    const queueButtons = queueEntry ? (
+      <>
+        <button type="button" className="claude-link-btn" onClick={() => void relay.queueSendNow(queueEntry.id)}>
+          立即发送
+        </button>
+        <button type="button" className="claude-link-btn" onClick={() => void relay.queueCancel(queueEntry.id).catch(() => relay.notify("取消失败", "warn"))}>
+          取消
+        </button>
+      </>
+    ) : null
     return (
       <div className="claude-turn-user">
         <div className="claude-bubble">
@@ -373,15 +383,19 @@ function ItemViewBase({
               重试
             </button>
           </p>
+        ) : item.status === "awaiting" ? (
+          // B-3/B-2 round 2: the device accepted the message but pi has not
+          // consumed it yet -- same awaiting words as the other shells,
+          // never a dead "sending". Queue actions stay when the entry is
+          // known.
+          <p className="claude-bubble-status">
+            已到设备 · 等待 pi 处理
+            {queueButtons}
+          </p>
         ) : queueEntry ? (
           <p className="claude-bubble-status">
             排队中
-            <button type="button" className="claude-link-btn" onClick={() => void relay.queueSendNow(queueEntry.id)}>
-              立即发送
-            </button>
-            <button type="button" className="claude-link-btn" onClick={() => void relay.queueCancel(queueEntry.id).catch(() => relay.notify("取消失败", "warn"))}>
-              取消
-            </button>
+            {queueButtons}
           </p>
         ) : item.status === "sending" ? (
           <p className="claude-bubble-status">发送中…</p>

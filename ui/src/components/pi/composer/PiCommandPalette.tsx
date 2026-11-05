@@ -34,8 +34,29 @@ const ICON: Record<PaletteCommand["icon"], ReactNode> = {
   settings: <Settings />,
 }
 
-/** 命令面板执行的一行：命令（PaletteCommand.key）或会话（PaletteSession.id） */
-export type PiPaletteRun = { kind: "command"; key: string } | { kind: "session"; id: string }
+/** 命令面板执行的一行：命令（PaletteCommand.key）、会话（PaletteSession.id）或正文命中（A-3） */
+export type PiPaletteRun = { kind: "command"; key: string } | { kind: "session"; id: string } | { kind: "bodyHit"; id: string }
+
+/** One body-search hit row in the palette (A-3): title + first snippet + hit count. */
+export interface PiPaletteBodyHitView {
+  id: string
+  title: string
+  group: string
+  snippet: string
+  matchCount: number
+}
+
+/**
+ * The palette's body-match section (A-3). Passed only while a body search
+ * applies to the current query; the label names the searched device because
+ * body search covers that device's plaintext session files only.
+ */
+export interface PiPaletteBodySection {
+  label: string
+  hits: PiPaletteBodyHitView[]
+  /** Status line under the hits: searching / error / partial / truncated / not found. */
+  note?: string
+}
 
 export interface PiCommandPaletteProps extends PiOverlayControl {
   variant: CVariant
@@ -51,6 +72,10 @@ export interface PiCommandPaletteProps extends PiOverlayControl {
   offlineReason?: string
   /** P5：没有查询时会话组只列前 N 个（design：最近 4 个）；有查询时在全部 sessions 里搜。不给 = 全列 */
   recentLimit?: number
+  /** A-3：正文匹配组（宿主按查询在选中设备上搜正文后给；不给 = 没有正文组） */
+  body?: PiPaletteBodySection
+  /** A-3：查询变化通知宿主（宿主据此跑正文搜索；部件内部过滤仍用本地查询） */
+  onQueryChange?: (query: string) => void
   /** P4 可交互：执行一行（Enter / 点）。执行后关不关由调用方定（通常 onOpenChange(false) 再执行） */
   onRun?: (row: PiPaletteRun) => void
   /** P4 可交互：关闭后焦点回哪（默认 = 打开前的焦点元素，design §4.7 焦点表"命令面板"） */
@@ -146,7 +171,16 @@ function OfflineReason({ variant, children }: { variant: CVariant; children: Rea
   )
 }
 
-function PaletteList({ variant, commands, sessions: allSessions, activeKey, offline, offlineReason, recentLimit }: PiCommandPaletteProps) {
+/** 正文匹配组的一行状态文字（搜索中 / 出错 / 部分结果等；与会话行的排版口径分开） */
+function BodyNote({ variant, children }: { variant: CVariant; children: ReactNode }) {
+  return (
+    <div className={cn("flex shrink-0 items-center", variant === "phone" ? "min-h-8 px-4 text-[13px]" : "min-h-6 px-[19px] text-(length:--cw-text-sm)", C_SECONDARY)}>
+      {children}
+    </div>
+  )
+}
+
+function PaletteList({ variant, commands, sessions: allSessions, activeKey, offline, offlineReason, recentLimit, body }: PiCommandPaletteProps) {
   const phone = variant === "phone"
   const active = activeKey ?? commands[0]?.key
   const sessions = recentLimit != null ? allSessions.slice(0, recentLimit) : allSessions
@@ -190,6 +224,24 @@ function PaletteList({ variant, commands, sessions: allSessions, activeKey, offl
           />
         ))}
       </div>
+      {body ? (
+        <div className={phone ? "mt-2" : "mt-[9px]"}>
+          <GroupTitle variant={variant}>{body.label}</GroupTitle>
+          {body.hits.map((hit) => (
+            <Row
+              key={hit.id}
+              id={rowId(`body-${hit.id}`)}
+              variant={variant}
+              icon={<PiRowMarker kind="idle" />}
+              label={hit.title}
+              active={`body-${hit.id}` === active}
+              subtitle={hit.snippet || undefined}
+              trailing={phone ? undefined : <span className="truncate text-(length:--cw-text-sm) text-(--cw-text-2)">{`${hit.group} · 命中 ${hit.matchCount} 条`}</span>}
+            />
+          ))}
+          {body.note ? <BodyNote variant={variant}>{body.note}</BodyNote> : null}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -257,7 +309,7 @@ function PaletteFooter() {
 }
 
 /** 可交互的面板：搜索过滤、↑↓ / Enter，桌面 PiOverlay、手机全高 PiSheet */
-function PaletteInteractive({ variant, commands, sessions, offline, offlineReason, recentLimit, open, onOpenChange, onRun, returnFocus }: PiCommandPaletteProps) {
+function PaletteInteractive({ variant, commands, sessions, offline, offlineReason, recentLimit, body, onQueryChange, open, onOpenChange, onRun, returnFocus }: PiCommandPaletteProps) {
   const phone = variant === "phone"
   const base = useId()
   const listId = `${base}-list`
@@ -267,9 +319,11 @@ function PaletteInteractive({ variant, commands, sessions, offline, offlineReaso
   const shownCommands = commands.filter((c) => paletteMatches(query, c.label))
   // 没有查询：最近 recentLimit 个；有查询：在全部会话里搜
   const shownSessions = query.trim() || recentLimit == null ? sessions.filter((s) => paletteMatches(query, s.title, s.group)) : sessions.slice(0, recentLimit)
+  const shownBodyHits = body?.hits ?? []
   const rows: { id: string; run: PiPaletteRun; disabled: boolean }[] = [
     ...shownCommands.map((c) => ({ id: rowId(c.key), run: { kind: "command" as const, key: c.key }, disabled: paletteCommandDisabled(c.key, !!offline) })),
     ...shownSessions.map((s) => ({ id: rowId(s.id), run: { kind: "session" as const, id: s.id }, disabled: false })),
+    ...shownBodyHits.map((hit) => ({ id: rowId(`body-${hit.id}`), run: { kind: "bodyHit" as const, id: hit.id }, disabled: false })),
   ]
   const nav = useListNav(rows.map((r) => !r.disabled))
   const activeRow = rows[nav.active]
@@ -306,6 +360,7 @@ function PaletteInteractive({ variant, commands, sessions, offline, offlineReaso
       value={query}
       onChange={(event) => {
         setQuery(event.currentTarget.value)
+        onQueryChange?.(event.currentTarget.value)
         nav.setActive(0)
       }}
       onKeyDown={onKeyDown}
@@ -318,7 +373,7 @@ function PaletteInteractive({ variant, commands, sessions, offline, offlineReaso
   )
   const list = (
     <div role="listbox" id={listId} aria-label="命令与会话" className="flex flex-col">
-      {rows.length === 0 && (
+      {rows.length === 0 && !body && (
         <div className={cn("px-4 py-2", phone ? "text-[15px]" : "text-(length:--cw-text-md)", C_SECONDARY)}>没有匹配的命令或会话</div>
       )}
       {shownCommands.length > 0 && <GroupTitle variant={variant}>命令</GroupTitle>}
@@ -360,6 +415,28 @@ function PaletteInteractive({ variant, commands, sessions, offline, offlineReaso
           })}
         </div>
       )}
+      {body ? (
+        <div className={phone ? "mt-2" : "mt-[9px]"}>
+          <GroupTitle variant={variant}>{body.label}</GroupTitle>
+          {shownBodyHits.map((hit, j) => {
+            const i = shownCommands.length + shownSessions.length + j
+            return (
+              <Row
+                key={hit.id}
+                id={rowId(`body-${hit.id}`)}
+                variant={variant}
+                icon={<PiRowMarker kind="idle" />}
+                label={hit.title}
+                active={i === nav.active}
+                subtitle={hit.snippet || undefined}
+                trailing={phone ? undefined : <span className="truncate text-(length:--cw-text-sm) text-(--cw-text-2)">{`${hit.group} · 命中 ${hit.matchCount} 条`}</span>}
+                {...rowEvents(i)}
+              />
+            )
+          })}
+          {body.note ? <BodyNote variant={variant}>{body.note}</BodyNote> : null}
+        </div>
+      ) : null}
     </div>
   )
   if (phone) {

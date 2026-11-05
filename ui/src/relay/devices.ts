@@ -533,16 +533,25 @@ export function preferredDeviceId(
   return device?.online ? device.id : null
 }
 
-/** 某台设备上最近活动的在线房间。不传 deviceId 时在全部在线房间里挑。 */
-export function pickEntryRoom<T extends Pick<RoomInfo, "online" | "deviceId" | "lastActivity">>(rooms: T[], deviceId?: string | null): T | null {
-  const matches = rooms.filter((room) => room.online && (deviceId == null || roomDeviceId(room) === deviceId))
-  if (!matches.length) return null
-  return matches.reduce((pick, room) => ((room.lastActivity || 0) >= (pick.lastActivity || 0) ? room : pick), matches[0])
+/** Entry room on a device: the first online room in roster order (without a
+ *  deviceId, the first online room overall). The choice must be stable -- it
+ *  must NOT follow lastActivity. Relay-side activity is bumped by every
+ *  forwarded room event, dialog opens included, so a recency-based entry pick
+ *  systematically lands the viewer in whichever room most recently popped a
+ *  dialog (defect A-2: a dialog opening in another room must never decide
+ *  where the viewer ends up). Roster order does not move when a dialog opens,
+ *  so this pick is independent of dialog activity. */
+export function pickEntryRoom<T extends Pick<RoomInfo, "online" | "deviceId">>(rooms: T[], deviceId?: string | null): T | null {
+  return rooms.find((room) => room.online && (deviceId == null || roomDeviceId(room) === deviceId)) ?? null
 }
 
-/** 登录后要打开的房间。当前房间仍在这台在线设备上跑着，就留在原地；否则进入该设备最近活动的在线房间。没有就停在名册。 */
+/** Room to open after login / (re)connect. If the room the viewer was in is
+ *  still online on the selected device, stay there; otherwise fall back to
+ *  the device's entry room (pickEntryRoom: roster order, never activity
+ *  recency, so a dialog that just opened elsewhere cannot pull the viewer
+ *  into its room). No online room on the device: stay on the roster (null). */
 export function pickLoginRoom(
-  rooms: Pick<RoomInfo, "id" | "online" | "deviceId" | "lastActivity">[],
+  rooms: Pick<RoomInfo, "id" | "online" | "deviceId">[],
   selectedDeviceId: string | null,
   currentRoomId: string,
   deviceOnline: boolean,
@@ -764,6 +773,63 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
   const indexed = new Set(sessions.map((session) => session.id))
   const idle = mine.filter((room) => !room.online && !indexed.has(room.id) && !paired.has(room.id)).map((room) => roomRow(room, false, entryForRoom(room)))
   return withSessionLineage(uniqueRows([...active, ...indexedActive, ...rest, ...idle]), sessions, listTruncated)
+}
+
+/** Session id embedded in a session file name ("<timestamp>_<id>.jsonl"),
+ *  read off a path-shaped value or an id spelled as one; "" when absent.
+ *  Same derivation as mergeDeviceSessions' embedded-id link. */
+function embeddedSessionIdOf(value: string): string {
+  const base = (value || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || ""
+  const stem = base.replace(/\.jsonl$/i, "")
+  const at = stem.lastIndexOf("_")
+  return at > 0 ? stem.slice(at + 1) : ""
+}
+
+/**
+ * B-1 cross-device attribution. mergeDeviceSessions collapses the
+ * spellings of one session WITHIN a device, but the same session can
+ * still be claimed by two devices at once: every attach publishes its
+ * whole session-library scan, so two bridges that see the same session
+ * files (two installs sharing one session root, a synced ~/.pi) each
+ * list every session, and the sidebar grows a second row under the
+ * wrong device. That row opens an unloaded "shadow" view that would
+ * load the session on the wrong device if the user sent from it --
+ * forking a session another device's pi owns.
+ *
+ * Attribution runs where all devices' rows meet. Rows are keyed by the
+ * session id embedded in their file path (room rows may spell the id
+ * as a path), falling back to the bare row id. A key claimed by rows of
+ * exactly one device is left untouched, so same-device rows are never
+ * collapsed here. For a contested key exactly one device keeps its
+ * row(s): a device whose row is a live room (online + openable -- the
+ * pi is actually running there) always wins; otherwise the first
+ * claimant in row order wins (callers pass devices online-first, so an
+ * online claimant beats an offline one). The losing rows are dropped
+ * outright: no cross-device reference row remains, so there is no
+ * shadow view to send from.
+ */
+export function attributeSessionsAcrossDevices<T extends ListedSession & { deviceId: string }>(rows: readonly T[]): T[] {
+  const keyOf = (row: T): string => embeddedSessionIdOf(row.path || "") || embeddedSessionIdOf(row.id) || row.id
+  const keys = rows.map(keyOf)
+  const claimants = new Map<string, string[]>()
+  rows.forEach((row, index) => {
+    const key = keys[index]
+    if (!key) return
+    const list = claimants.get(key) ?? []
+    if (!list.includes(row.deviceId)) list.push(row.deviceId)
+    claimants.set(key, list)
+  })
+  const owner = new Map<string, string>()
+  for (const [key, devices] of claimants) {
+    if (devices.length < 2) continue
+    const live = rows.find((row, index) => keys[index] === key && row.online && row.openable)
+    owner.set(key, live ? live.deviceId : devices[0])
+  }
+  if (!owner.size) return [...rows]
+  return rows.filter((row, index) => {
+    const winner = owner.get(keys[index])
+    return winner === undefined || row.deviceId === winner
+  })
 }
 
 export function groupListedSessions(rows: ListedSession[]): { cwd: string; items: ListedSession[] }[] {

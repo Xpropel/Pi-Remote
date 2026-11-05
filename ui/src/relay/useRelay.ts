@@ -85,6 +85,7 @@ import {
   dialogReceiptOf,
   dialogsAfterEvent,
   extStatusAfterEvent,
+  extStatusSwitchesOf,
   uiPromptAfterEvent,
   type DialogAnswer,
   type DialogAnswerResult,
@@ -108,7 +109,9 @@ import {
 } from "@/relay/attention"
 import { applyInboxUpdate, inboxTurnSeedsOf, parseInboxEntries, type InboxEntry } from "@/relay/inbox"
 import { parseScheduleEntries, scheduleMapOfRooms, type ScheduleCreateInput, type ScheduleEntry } from "@/relay/schedule"
-import { useAskGatePrefs, useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
+import { saveLegacyStyle, useAskGatePrefs, useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
+import { askGatePrefsOf, legacyStyleOf, LEGACY_STYLE_KEY } from "@/pi/model/legacyStyle"
+import { SWITCH_SYNC_PENDING_VIEW, switchSyncAfterPush, switchSyncEntryInit, switchSyncOnReport, switchSyncShouldPush, switchSyncViewFromEntries, type SwitchSyncEntry, type SwitchSyncView } from "@/pi/model/switchSync"
 import {
   TERMINAL_UPDATE_FLUSH_MS,
   TOOL_END_META_MAX,
@@ -131,8 +134,11 @@ import { agentIsActive, agentStateAfterEvent, type AgentEntry } from "@/chat/cap
 import { useComposerUi } from "@/chat/composer/useComposerUi"
 import { useNotices } from "@/chat/composer/useNotices"
 import {
+  LAZY_SESSION_STORAGE_KEY,
   lazyRoomFromRow,
   lazySendPhaseText,
+  parseLazySelection,
+  serializeLazySelection,
   stepLazySend,
   withLazyRoom,
   type LazySelection,
@@ -158,16 +164,18 @@ import {
   decryptSnapshotMessages,
   envelopeFromTextField,
   isContentEnvelope,
+  isKeylessDeliveryReceipt,
   snapshotKeyInfoOf,
 } from "./contentDecrypt"
 import { dialogAnswerFrame, dialogEventHasSealedFields, resolveDialogEvent } from "./dialogCrypto"
-import { mobileNavFromPrefsSubset } from "@/pi/model/prefs"
+import { mobileNavFromPrefsSubset, type PiApprovalGateTier } from "@/pi/model/prefs"
 import type { PiMobileNavMode } from "@/pi/mobile/types"
 import { emptyRemoteQueue, parseRemoteQueueItem, parseRemoteQueueState, type RemoteQueueState } from "./remoteQueue"
 import { compactionNumbersOf } from "./compactionResult"
 import { readRoomDraft, saveRoomDraft, reconcileRemoteDraft, roomDraftFromRaw, shouldPersistDraft, DRAFTS_STORAGE_KEY } from "./drafts"
 import {
   EMPTY_OUTBOX,
+  OUTBOX_DELIVERY_CONFIRM_MS,
   OUTBOX_STORAGE_KEY,
   loadOutbox,
   newOutboxOwner,
@@ -245,6 +253,13 @@ const safeStore = {
       try { window.sessionStorage.removeItem(key) } catch {}
     },
   },
+}
+
+/** The not-yet-loaded selection restores from the same sessionStorage slot
+ *  family as the live room's "pi_room": setLazySelection writes it, and the
+ *  state initializers below read it back after a reload / shell switch. */
+function readStoredLazySelection(): LazySelection | null {
+  return parseLazySelection(safeStore.session.get(LAZY_SESSION_STORAGE_KEY))
 }
 
 /** outbox 的存储：访问 window.localStorage 本身就可能抛（隐私模式），拿不到时 outbox 停用、退回"消息留在输入框" */
@@ -553,7 +568,13 @@ export function useRelay() {
   const [syncedMobileNav, setSyncedMobileNav] = useState<PiMobileNavMode | null>(null)
   const [rooms, setRooms] = useState<RoomInfo[]>([])
   const [devices, setDevices] = useState<Device[]>([])
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
+  // A restored lazy selection also restores its device as the initial
+  // selection guess; applyRoster re-picks if that device is gone. A stored
+  // live room ("pi_room") wins over the lazy copy: the two are written
+  // mutually exclusively, and the live room's restore path owns the view.
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(() =>
+    safeStore.session.get("pi_room") ? null : readStoredLazySelection()?.deviceId ?? null,
+  )
   const [deviceMode, setDeviceMode] = useState(false)
   const [sessionsByDevice, setSessionsByDevice] = useState<Record<string, SessionEntry[]>>({})
   /** sessionsByDevice 的 ref 镜像：onmessage 闭包（useCallback([])）里处理 session_removed 时要看最新清单。 */
@@ -600,7 +621,7 @@ export function useRelay() {
   const [pendingStarts, setPendingStarts] = useState<Record<string, PendingStart>>({})
   const [commandInFlight, setCommandInFlight] = useState<Record<string, number>>({})
   const [snapshotPending, setSnapshotPending] = useState(false)
-  const [roomId, setRoomId] = useState(() => safeStore.session.get("pi_room") || "")
+  const [roomId, setRoomId] = useState(() => safeStore.session.get("pi_room") || readStoredLazySelection()?.id || "")
   const [selectionNonce, setSelectionNonce] = useState(0)
   /**
    * P9 B（spec §4.7.1 第 5 条）：正在看的会话被删、同一台设备上没有别的会话可切时的一次性信号。
@@ -704,13 +725,24 @@ export function useRelay() {
   const [model, setModel] = useState("")
   /** 模型的完整身份（provider/modelId/name）。输入卡优先显示 modelId，完整值放 tooltip。 */
   const [modelMeta, setModelMeta] = useState<ModelMeta>({})
-  /** 只点选、还没载入的会话；公共 roomId 指向它，但 roomRef 仍为空（不订阅不启动）。 */
-  const [lazySession, setLazySessionState] = useState<LazySelection | null>(null)
+  /** 只点选、还没载入的会话；公共 roomId 指向它，但 roomRef 仍为空（不订阅不启动）。
+   *  The initial value restores from sessionStorage (C-D1): after a reload /
+   *  shell switch the record the user had open comes back, not a live room.
+   *  A stored "pi_room" suppresses the restore (see selectedDeviceId). */
+  const [lazySession, setLazySessionState] = useState<LazySelection | null>(() =>
+    safeStore.session.get("pi_room") ? null : readStoredLazySelection(),
+  )
   /** 已经点了发送、正在等本机启动房间的队列（至多一条）。 */
   const [lazySend, setLazySendState] = useState<LazySend | null>(null)
   const [thinkingLevel, setThinkingLevel] = useState("")
   const [usage, setUsage] = useState<UsageState | null>(null)
-  const [draft, setDraft] = useState("")
+  // A live room's draft is hydrated by subscribe(); a restored lazy
+  // selection never subscribes, so its draft has to come back here instead.
+  const [draft, setDraft] = useState(() => {
+    if (safeStore.session.get("pi_room")) return ""
+    const lazy = readStoredLazySelection()
+    return lazy ? readRoomDraft(lazy.id) : ""
+  })
   /** P5.6 离线 outbox：按会话存 localStorage；断线 / 设备离线时发送进这里，恢复后按序回放 */
   const [outboxState, setOutboxState] = useState<OutboxState>(initialOutbox)
   const outboxRef = useRef(outboxState)
@@ -1462,8 +1494,10 @@ export function useRelay() {
   // memo(TranscriptItem) 的 onRetry 才不会每次按键都失效（整条会话重渲）
   const draftRef = useRef("")
   /** 草稿落盘（P3-3）：内存草稿当前归属的房间键。切房点（subscribe / 点选未载入会话 /
-   *  clearRoom）同步维护，落盘与恢复都以它为准，不靠 roomId 状态的事后推断。 */
-  const draftOwnerRef = useRef(safeStore.session.get("pi_room") || "")
+   *  clearRoom）同步维护，落盘与恢复都以它为准，不靠 roomId 状态的事后推断。
+   *  The initial guess mirrors the room restore: "pi_room" first, then the
+   *  restored lazy selection's id (C-D1). */
+  const draftOwnerRef = useRef(safeStore.session.get("pi_room") || readStoredLazySelection()?.id || "")
   /** 内存草稿是否已与归属房间"对过账"（恢复过或用户敲过）。未对账的空草稿不许落盘：
    *  刷新刚加载时 owner 只是 session 里的猜测值，拿它删落盘条目会把上次的草稿误删。 */
   const draftHydratedRef = useRef(false)
@@ -1670,7 +1704,7 @@ export function useRelay() {
   /** 重连后补拉会话索引的节流：同一台设备 10s 内只拉一次 */
   const lastSessionsAtRef = useRef(0)
   const clearPendingRef = useRef<(deviceId: string) => void>(() => {})
-  const lazySessionRef = useRef<LazySelection | null>(null)
+  const lazySessionRef = useRef<LazySelection | null>(safeStore.session.get("pi_room") ? null : readStoredLazySelection())
   const lazySendRef = useRef<LazySend | null>(null)
   const lazyTokenSeq = useRef(0)
   /** beginHarness 已经受理的那次启动；取消/失败时只清自己这次，别误伤别的设备命令 */
@@ -1851,6 +1885,10 @@ export function useRelay() {
   const setLazySelection = useCallback((selection: LazySelection | null) => {
     lazySessionRef.current = selection
     setLazySessionState(selection)
+    // Persist next to "pi_room" so a reload / shell switch restores this
+    // selection (C-D1); clearing the selection clears the stored copy.
+    if (selection) safeStore.session.set(LAZY_SESSION_STORAGE_KEY, serializeLazySelection(selection))
+    else safeStore.session.remove(LAZY_SESSION_STORAGE_KEY)
   }, [])
   const setLazySend = useCallback((send: LazySend | null) => {
     lazySendRef.current = send
@@ -1985,10 +2023,20 @@ export function useRelay() {
           dispatch({ type: "remote", text: String(event.text || ""), cid: isCid(event.cid) ? event.cid : undefined })
           break
         case "remote_message_delivered":
-          if (isCid(event.cid)) dispatch({ type: "delivered", cid: event.cid })
+          if (isCid(event.cid)) {
+            dispatch({ type: "delivered", cid: event.cid })
+            // B-3: device-confirmed delivery is also the outbox entry's
+            // terminal state -- only now may the queued marker clear.
+            if (roomRef.current) commitOutbox({ type: "delivered", roomId: roomRef.current, cid: event.cid })
+          }
           break
         case "remote_message_failed":
           dispatch({ type: "remote-failed", text: String(event.text || ""), error: String(event.error || "发送失败"), cid: isCid(event.cid) ? event.cid : undefined })
+          // B-3: an outbox entry waiting on this cid gets its terminal
+          // failure from the device too (no-op when the cid is not queued).
+          if (isCid(event.cid) && roomRef.current) {
+            commitOutbox({ type: "delivery-failed", roomId: roomRef.current, cid: event.cid, error: String(event.error || "发送失败") })
+          }
           setNotice({ text: String(event.error || "远程消息没有送进会话"), tone: "bad" })
           break
         case "queue_update":
@@ -2119,6 +2167,9 @@ export function useRelay() {
           break
         }
         case "ext_status":
+          // 设备侧开关真值随快照到达：先按 switchSync 口径对齐基线/本地偏好，
+          // 再落快照状态（本 case 只处理当前房间的事件，房间口径无歧义）。
+          noteSwitchReport(roomRef.current, event)
           setExtStatus((current) => extStatusAfterEvent(current, event))
           break
         case "ext_notify": {
@@ -2154,6 +2205,7 @@ export function useRelay() {
       pushNotice,
       hasLocalQueueCid,
       messageStartSeen,
+      commitOutbox,
     ],
   )
 
@@ -2602,15 +2654,20 @@ export function useRelay() {
     const processEncRoomEvent = async (msg: Record<string, unknown>): Promise<void> => {
       const roomId = typeof msg.room === "string" ? msg.room : roomRef.current
       if (!roomId) return
+      const rawEvent = isRecord(msg.event) ? msg.event : {}
       const key = await awaitRoomKey(roomId, true)
-      if (!key && roomCryptoEntryOf(roomId).status === "waiting-ack") {
+      if (!key && roomCryptoEntryOf(roomId).status === "waiting-ack" && !isKeylessDeliveryReceipt(rawEvent)) {
         // Same hold as the snapshot: a live event must not settle its
         // sealed fields as placeholders while a grant is still pending.
+        // Delivery receipts are the one exception (B-2): they carry
+        // nothing the key could open and have no seq, and they are the
+        // only signal that settles this viewer's own bubbles -- holding
+        // them would leave every message sent into a keyless room stuck
+        // at "sending" even after the device confirmed delivery.
         deferEncRoomEvent(roomId, msg)
         return
       }
       if (key) drainDeferredCrypto(roomId)
-      const rawEvent = isRecord(msg.event) ? msg.event : {}
       const { event, failures, drop } = await decryptRoomEvent(key, rawEvent)
       noteDecryptFailures(roomId, failures)
       if (drop) return
@@ -2749,6 +2806,11 @@ export function useRelay() {
           if (lazySessionRef.current) {
             // 用户只点选了一个还没载入的会话：重连后不要自动订阅别的房间把选择顶掉。
             // 排队中的发送由 room_list/subscribed 按目标 sessionId 自己接。
+            // A restored selection gets the same presentation as a fresh
+            // click (selectListedSession sets online when the synthetic
+            // room is shown): the device being online is what counts.
+            const lazyDevice = devicesRef.current.find((item) => item.id === lazySessionRef.current?.deviceId)
+            if (lazyDevice?.online) setOnline(true)
           } else if (!deviceModeRef.current) {
             const saved = list.find((room) => room.id === roomRef.current)
             const pick = saved || list.find((room) => room.online) || list[0]
@@ -3457,6 +3519,7 @@ export function useRelay() {
     setLazySessionState(null)
     setRoomId("")
     safeStore.session.remove("pi_room")
+    safeStore.session.remove(LAZY_SESSION_STORAGE_KEY)
     setOnline(false)
     setRoomDown(false)
     setBusy(false)
@@ -3626,63 +3689,132 @@ export function useRelay() {
 
   /* ---- 对话框应答（O2）：开关下达 + 答案发送 + 回执管理 ---- */
   const legacyStyle = useLegacyStyle()
-  const dialogAnswerSwitchSentRef = useRef("")
-  // 开关下达（定版通道：UI → relay 命令帧 → 桥）：偏好值或房间变化即下达当前值；
-  // relay 存当前值，桥重连时由 relay 重下达，所以这里只管「值变化即发」。
-  useEffect(() => {
-    if (!authed || !roomId) {
-      dialogAnswerSwitchSentRef.current = ""
-      return
+
+  /* ---- 设备侧开关同步（model/switchSync 口径）：远程应答与审批门归设备所有。
+   * ext_status 的 switches 是设备真值：到达即对齐基线，并把本地偏好改写成设备值
+   * （设置页显示跟着设备走）；本地值与基线不一致时才下达——那只发生在用户显式
+   * 改动之后，连上/进房本身不再下达，各端本地存值也就不再互相覆盖设备状态。
+   * 旧桥的快照没有 switches：该房间落 legacy 模式（进房/变化即下达，与此前一致）。
+   * The ask_user switch (G1) follows the same device-ownership discipline via a third entry. */
+  const dialogSyncRef = useRef(new Map<string, SwitchSyncEntry>())
+  const gateSyncRef = useRef(new Map<string, SwitchSyncEntry>())
+  const askSyncRef = useRef(new Map<string, SwitchSyncEntry>())
+  // React mirror of the CURRENT room's sync entries, for settings
+  // surfaces: mode "pending" means no device report has arrived yet, so
+  // the local prefs value must not be presented as settled truth;
+  // mode "device" carries the device-reported values.
+  const [switchSyncView, setSwitchSyncView] = useState<SwitchSyncView>(SWITCH_SYNC_PENDING_VIEW)
+  const refreshSwitchSyncView = (room: string | null) => {
+    setSwitchSyncView(
+      room
+        ? switchSyncViewFromEntries(dialogSyncRef.current.get(room), gateSyncRef.current.get(room), askSyncRef.current.get(room))
+        : SWITCH_SYNC_PENDING_VIEW,
+    )
+  }
+  const readLegacyRaw = () => {
+    try {
+      return window.localStorage.getItem(LEGACY_STYLE_KEY)
+    } catch {
+      return null
     }
-    const key = roomId + "|" + String(legacyStyle.dialogRemoteAnswer)
-    if (dialogAnswerSwitchSentRef.current === key) return
+  }
+  const noteSwitchReport = (room: string, event: unknown) => {
+    if (!room) return
+    const switches = extStatusSwitchesOf(event as { switches?: unknown })
+    // switches 字段在场但不合法 = 坏帧：整份报告忽略；字段根本不在场才是旧桥（落 legacy）。
+    if (switches === null && event !== null && typeof event === "object" && "switches" in (event as Record<string, unknown>)) return
+    {
+      const entry = dialogSyncRef.current.get(room) ?? switchSyncEntryInit()
+      const next = switchSyncOnReport(entry, switches ? String(switches.dialogRemoteAnswer) : null, String(legacyStyleOf(readLegacyRaw()).dialogRemoteAnswer))
+      dialogSyncRef.current.set(room, next.entry)
+      if (next.adopt !== null && switches && legacyStyleOf(readLegacyRaw()).dialogRemoteAnswer !== switches.dialogRemoteAnswer) {
+        saveLegacyStyle({ dialogRemoteAnswer: switches.dialogRemoteAnswer })
+      }
+    }
+    {
+      const entry = gateSyncRef.current.get(room) ?? switchSyncEntryInit()
+      const cur = askGatePrefsOf(readLegacyRaw())
+      const next = switchSyncOnReport(entry, switches ? String(switches.approvalGate.enabled) + "|" + switches.approvalGate.tier : null, String(cur.approvalGateEnabled) + "|" + cur.approvalGateTier)
+      gateSyncRef.current.set(room, next.entry)
+      if (next.adopt !== null && switches) {
+        if (cur.approvalGateEnabled !== switches.approvalGate.enabled || cur.approvalGateTier !== switches.approvalGate.tier) {
+          saveLegacyStyle({ approvalGateEnabled: switches.approvalGate.enabled, approvalGateTier: switches.approvalGate.tier as PiApprovalGateTier })
+        }
+      }
+    }
+    {
+      const entry = askSyncRef.current.get(room) ?? switchSyncEntryInit()
+      const next = switchSyncOnReport(entry, switches ? String(switches.askUserEnabled) : null, String(askGatePrefsOf(readLegacyRaw()).askUserEnabled))
+      askSyncRef.current.set(room, next.entry)
+      if (next.adopt !== null && switches && askGatePrefsOf(readLegacyRaw()).askUserEnabled !== switches.askUserEnabled) {
+        saveLegacyStyle({ askUserEnabled: switches.askUserEnabled })
+      }
+    }
+    if (room === roomRef.current) refreshSwitchSyncView(room)
+  }
+
+  // 开关下达（定版通道：UI → relay 命令帧 → 桥）：只在本地值偏离基线时发（用户显式
+  // 改动）；relay 存当前值，桥重连时由 relay 重下达。extStatus 入依赖：设备报告
+  // 到达（模式/基线变化）后要重新评估一次是否需要下达。
+  useEffect(() => {
+    if (!authed || !roomId) return
+    const entry = dialogSyncRef.current.get(roomId) ?? switchSyncEntryInit()
+    dialogSyncRef.current.set(roomId, entry)
+    const current = String(legacyStyle.dialogRemoteAnswer)
+    if (!switchSyncShouldPush(entry, current)) return
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
-    dialogAnswerSwitchSentRef.current = key
     try {
       ws.send(JSON.stringify({ type: "dialog_answer_switch", room: roomId, enabled: legacyStyle.dialogRemoteAnswer }))
-    } catch {
-      dialogAnswerSwitchSentRef.current = ""
-    }
-  }, [authed, roomId, legacyStyle.dialogRemoteAnswer])
+      dialogSyncRef.current.set(roomId, switchSyncAfterPush(entry, current))
+    } catch {}
+  }, [authed, roomId, legacyStyle.dialogRemoteAnswer, extStatus])
 
-  /* ---- G1/G2 开关下达（与 dialog_answer_switch 同路同纪律：值变化即发，relay 存值、桥重连重下达） ---- */
+  /* ---- G1/G2 switch pushes share one road and one discipline (switchSync:
+   * the device owns the state; a frame is sent only when the local value
+   * deviates from the baseline; the relay stores the value and re-sends it
+   * when the bridge reconnects). ---- */
   const askGate = useAskGatePrefs()
-  const askUserSwitchSentRef = useRef("")
+  // ask_user push, same discipline as remote-answer / approval-gate: never
+  // on connect or room entry, only on an explicit user change. extStatus is
+  // a dependency so the push is re-evaluated when a device report lands
+  // (mode / baseline change).
   useEffect(() => {
-    if (!authed || !roomId) {
-      askUserSwitchSentRef.current = ""
-      return
-    }
-    const key = roomId + "|ask|" + String(askGate.askUserEnabled)
-    if (askUserSwitchSentRef.current === key) return
+    if (!authed || !roomId) return
+    const entry = askSyncRef.current.get(roomId) ?? switchSyncEntryInit()
+    askSyncRef.current.set(roomId, entry)
+    const current = String(askGate.askUserEnabled)
+    if (!switchSyncShouldPush(entry, current)) return
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
-    askUserSwitchSentRef.current = key
     try {
       ws.send(JSON.stringify({ type: "ask_user_switch", room: roomId, enabled: askGate.askUserEnabled }))
-    } catch {
-      askUserSwitchSentRef.current = ""
-    }
-  }, [authed, roomId, askGate.askUserEnabled])
+      askSyncRef.current.set(roomId, switchSyncAfterPush(entry, current))
+    } catch {}
+  }, [authed, roomId, askGate.askUserEnabled, extStatus])
 
-  const approvalGateSwitchSentRef = useRef("")
+  // 审批门下达与远程应答同纪律（switchSync 口径）：设备是所有者，基线未偏离不发。
   useEffect(() => {
-    if (!authed || !roomId) {
-      approvalGateSwitchSentRef.current = ""
-      return
-    }
-    const key = roomId + "|gate|" + String(askGate.approvalGateEnabled) + "|" + askGate.approvalGateTier
-    if (approvalGateSwitchSentRef.current === key) return
+    if (!authed || !roomId) return
+    const entry = gateSyncRef.current.get(roomId) ?? switchSyncEntryInit()
+    gateSyncRef.current.set(roomId, entry)
+    const current = String(askGate.approvalGateEnabled) + "|" + askGate.approvalGateTier
+    if (!switchSyncShouldPush(entry, current)) return
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
-    approvalGateSwitchSentRef.current = key
     try {
       ws.send(JSON.stringify({ type: "approval_gate_switch", room: roomId, enabled: askGate.approvalGateEnabled, tier: askGate.approvalGateTier }))
-    } catch {
-      approvalGateSwitchSentRef.current = ""
-    }
-  }, [authed, roomId, askGate.approvalGateEnabled, askGate.approvalGateTier])
+      gateSyncRef.current.set(roomId, switchSyncAfterPush(entry, current))
+    } catch {}
+  }, [authed, roomId, askGate.approvalGateEnabled, askGate.approvalGateTier, extStatus])
+
+  // The settings-facing sync view follows the current room: entries a
+  // room already folded stay valid when the user comes back to it;
+  // a room with no report yet reads as pending.
+  useEffect(() => {
+    refreshSwitchSyncView(roomId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId])
 
 
   /** 发送一份远程答案（先答广播：桥以第一个到达者为准）。结果三态供卡片 phase 用。
@@ -4029,6 +4161,28 @@ export function useRelay() {
     setOutboxState(EMPTY_OUTBOX)
   }, [clearPendingFiles, clearPendingImages, dispatch, setAdminToken])
 
+  /**
+   * B-3/B-2 round 2: a send command's result is the device's own word at
+   * accept time, and it used to be thrown away -- the bubble then depended
+   * on transcript echo, which only happens once pi consumes the message,
+   * so a message parked behind a busy pi sat at "sending" for the whole
+   * wait (and forever where no room signal can reach this viewer).
+   * disposition "queued" means the device parked the message in its
+   * remote queue: advance the bubble to awaiting until the delivered /
+   * failed receipt (or the remote echo at injection) settles it. In a
+   * crypto-required room this viewer was refused the subscription, so no
+   * room signal can ever arrive -- any accepted send parks the bubble at
+   * awaiting, the last state this viewer can truthfully observe; the
+   * room's crypto-required line above the transcript already carries the
+   * enable-identity action that restores observability.
+   */
+  const noteSendAccepted = (roomId: string, cid: string, data: unknown) => {
+    const disposition = isRecord(data) && typeof data.disposition === "string" ? data.disposition : ""
+    if (disposition === "queued" || (roomId !== "" && roomCryptoEntryOf(roomId).status === "crypto-required")) {
+      dispatch({ type: "send-queued", cid })
+    }
+  }
+
   /** retryKey：从失败气泡点"重试"时传入那条气泡的 key，v4 下先摘掉它再发一条新的 */
   const sendText = useCallback(async (textOverride?: string, retryKey?: string) => {
     const text = (textOverride ?? draftRef.current).trim()
@@ -4134,7 +4288,12 @@ export function useRelay() {
       const plan = deliveryPlan(sendModeRef.current, busyRef.current)
       const args: Record<string, unknown> = wireCid ? { message: wireText, cid: wireCid } : { message: wireText }
       if (images) args.images = images
-      await commandSendRef.current(plan.command, args)
+      const targetRoom = roomRef.current
+      const accepted = await commandSendRef.current(plan.command, args)
+      // The result is the device's accept-time truth (see noteSendAccepted):
+      // a queued disposition moves the bubble to awaiting right away,
+      // instead of leaving it at "sending" until pi consumes the message.
+      if (targetRoom) noteSendAccepted(targetRoom, cid, accepted)
       if (sendLock.current.release(cid)) {
         clearSendAckTimer()
         setSendingSend(false)
@@ -4201,11 +4360,27 @@ export function useRelay() {
         noteLocalEchoCid(entry.cid)
         dispatch({ type: "echo", text: entry.text, cid: entry.cid })
         const plan = deliveryPlan(sendModeRef.current, busyRef.current || startedTurn)
-        const args: Record<string, unknown> = hasCap(serverRef.current, "msg.cid") ? { message: entry.text, cid: entry.cid } : { message: entry.text }
+        const confirmable = hasCap(serverRef.current, "msg.cid")
+        const args: Record<string, unknown> = confirmable ? { message: entry.text, cid: entry.cid } : { message: entry.text }
         try {
-          await channel.command(roomId, plan.command, args, lostMessageFor(plan.command), entry.dedupeKey)
+          const accepted = await channel.command(roomId, plan.command, args, lostMessageFor(plan.command), entry.dedupeKey)
           if (plan.command === "prompt") startedTurn = true
-          commitOutbox({ type: "sent", roomId, cid: entry.cid, owner })
+          // Same accept-time truth as a direct send: when the device parks
+          // the replayed message in its queue (busy pi), the transcript
+          // bubble for this cid must say awaiting too -- the outbox tail
+          // card that carries the awaiting copy is suppressed whenever a
+          // same-cid transcript bubble exists, so the bubble itself is the
+          // only surface the user actually sees (round-2 B-3 live shape).
+          noteSendAccepted(roomId, entry.cid, accepted)
+          // B-3: a command result only proves the device accepted the call --
+          // the message may still wait in the device queue behind a long
+          // turn. With the cid on the wire, park the entry in "awaiting"
+          // until the device confirms pi consumed it (delivered), reports
+          // the injection failed, or the confirm sweep gives up on it.
+          // Without cid support there is no confirmation to wait for, so
+          // keep the old handoff-level semantics.
+          if (confirmable) commitOutbox({ type: "handoff", roomId, cid: entry.cid, at: Date.now(), owner })
+          else commitOutbox({ type: "sent", roomId, cid: entry.cid, owner })
         } catch (error) {
           const code = errorCode(error)
           if (OUTBOX_REQUEUE_CODES.has(code)) {
@@ -4231,6 +4406,30 @@ export function useRelay() {
   useEffect(() => {
     void replayOutbox()
   }, [authed, online, roomId, devices, selectedDeviceId, deviceMode, browserOnline, lazySession, outboxState, replayOutbox])
+  /**
+   * B-3 确认巡查：awaiting 条目超过确认上限仍没等到设备确认（设备进程没了、
+   * 确认帧丢了）→ 转 failed（结果未知），正文保留在 outbox 里让用户决定重试，
+   * 不让它永远挂在"等待处理"里冒充已送达。迟到的 delivered 仍会把它清掉
+   * （reducer 的 delivered 对 failed 也落定）。
+   */
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      for (const [room, list] of Object.entries(outboxRef.current.byRoom)) {
+        for (const entry of list) {
+          if (entry.status !== "awaiting") continue
+          if (now - (entry.handedAt ?? entry.at) < OUTBOX_DELIVERY_CONFIRM_MS) continue
+          commitOutbox({
+            type: "confirm-timeout",
+            roomId: room,
+            cid: entry.cid,
+            error: "设备长时间没有确认收到这条消息（可能仍堵在设备队列里，或已经丢失）",
+          })
+        }
+      }
+    }, 30_000)
+    return () => window.clearInterval(timer)
+  }, [commitOutbox])
 
   /** 排队面板"取消"：queued / failed 可取消，正在发的不能 */
   const outboxCancel = useCallback((cid: string) => {
@@ -5147,7 +5346,11 @@ export function useRelay() {
     try {
       // 刚载入的会话也走输入卡当前的投递方式：忙时按选择 steer / follow_up，空闲 prompt。
       const plan = deliveryPlan(sendModeRef.current, busyRef.current)
-      await commandSendRef.current(plan.command, args)
+      const accepted = await commandSendRef.current(plan.command, args)
+      // Same accept-time truth as sendText: a queued disposition (the room
+      // was already busy when the lazy send landed) moves the bubble to
+      // awaiting instead of leaving it at "sending" until consumption.
+      if (send.cid) noteSendAccepted(send.sessionId, send.cid, accepted)
       if (lazySendRef.current?.token === token) {
         clearLazyTimers()
         setLazySend(stepLazySend(lazySendRef.current, { type: "submitted" }).send)
@@ -5585,6 +5788,8 @@ export function useRelay() {
     createSchedule,
     cancelSchedule,
     extStatus,
+    /** Current room's device-owned switch sync view (settings surfaces). */
+    switchSyncView,
     activity,
     notice,
     /** 第 5 章通知栈（N1–N8）：可见卡、队列与全部交互。 */

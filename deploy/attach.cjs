@@ -1836,6 +1836,52 @@ function tmuxSessionName(cwd, platform = HOST_PLATFORM) {
   return `pi-${slug}-${Date.now().toString(36)}${crypto.randomBytes(2).toString("hex")}`;
 }
 
+/** B-4: the shape of a tmux session name tmuxSessionName produces (slug + base36 timestamp + 4 hex = a 12+ char tail). */
+const LIVE_PI_NAME_RE = /^pi-[A-Za-z0-9_-]+-[0-9a-z]{12,}$/;
+
+/** pi session id from a session file path ("<ts>_<id>.jsonl" or "<id>.jsonl"); "" when it does not parse. */
+function sessionIdFromSessionPath(p) {
+  const base = path.basename(String(p == null ? "" : p));
+  if (!base.endsWith(".jsonl")) return "";
+  const stem = base.slice(0, -".jsonl".length);
+  const cut = stem.lastIndexOf("_");
+  const id = cut >= 0 ? stem.slice(cut + 1) : stem;
+  return /^[A-Za-z0-9_-]{1,200}$/.test(id) ? id : "";
+}
+
+/**
+ * B-4: parse `tmux list-panes -a -F "#{session_name}\t#{pane_current_path}\t#{pane_dead}\t#{pane_start_command}"`
+ * into the live pi sessions an earlier attach window launched on this host.
+ * Neither signal alone is trusted: the session name must have attach's own
+ * shape AND the pane's start command must run start-pi (a foreign session
+ * that merely looks similar is not adopted). Dead panes kept by
+ * remain-on-exit are not live. A "--session <path>" argument (sessionId-form
+ * launches) is recovered from the start command when present.
+ */
+function parseLivePiPanes(stdout) {
+  const out = [];
+  for (const line of String(stdout == null ? "" : stdout).split("\n")) {
+    if (!line) continue;
+    const parts = line.split("\t");
+    if (parts.length < 4) continue;
+    const name = parts[0];
+    const cwd = parts[1];
+    const dead = parts[2];
+    const startCommand = parts.slice(3).join("\t");
+    if (dead !== "0") continue;
+    if (!LIVE_PI_NAME_RE.test(name)) continue;
+    if (!/start-pi\.(?:sh|cmd)\b/.test(startCommand)) continue;
+    if (!cwd) continue;
+    let sessionPath = "";
+    // tmux shows pane_start_command with tokens quoted ("--session" "<path>"),
+    // so the argument separator may sit between two quote characters.
+    const m = startCommand.match(/--session"?[\s=]+"?([^"\s]+)/);
+    if (m) sessionPath = m[1];
+    out.push({ tmuxSession: name, cwd, sessionPath });
+  }
+  return out;
+}
+
 /** tmux 把以 ; 结尾的参数当命令分隔符：末尾的 ; 要写成 \; 才是字面量 */
 function tmuxArg(a) {
   const s = String(a);
@@ -2200,7 +2246,7 @@ class AttachController {
       reconnecting: this.reconnecting,
       expiresAt: this.expiresAt,
       now,
-      activeCount: this.onlineRooms.length,
+      activeCount: this.activeSessionCount(),
       viewer: this.viewerUrlProvider ? this.viewerUrlProvider() : viewerUrlFromRelay(this.relay, this.viewerPort),
       authMode: this.authMode,
       keepAwake: !!this.awakeChild,
@@ -2941,8 +2987,17 @@ class AttachController {
         if (rec && room && room.id) rec.roomId = String(room.id);
         this.seenOnline.add(cwd);
       } else if (this.seenOnline.has(cwd)) {
-        this.spawnedByCwd.delete(cwd);
-        this.seenOnline.delete(cwd);
+        const rec = this.spawnedByCwd.get(cwd);
+        // B-4: relay room state flaps during reconnect churn; an adopted pi
+        // that is still alive in tmux keeps its claim (only its room id is
+        // stale), so a later launch cannot spawn a twin beside it.
+        if (rec && rec.adopted && rec.tmuxSession && this.claimAlive(rec)) {
+          rec.roomId = null;
+          this.seenOnline.delete(cwd);
+        } else {
+          this.spawnedByCwd.delete(cwd);
+          this.seenOnline.delete(cwd);
+        }
       }
     }
     this.onlineRooms = online;
@@ -2967,6 +3022,9 @@ class AttachController {
   }
 
   async bootDirs() {
+    // B-4: reclaim pis a previous window left running before launching
+    // anything, so a restart never spawns an empty twin beside a live pi.
+    this.adoptLivePi();
     for (const dir of this.dirs) {
       const result = await this.launch({ cwd: dir, source: "cli" });
       if (!result.ok) this.writeOut(result.error || "启动失败：" + displayPathOf(dir));
@@ -3200,6 +3258,9 @@ class AttachController {
   async planLaunch({ cwd, sessionId, source }) {
     const parsed = parseHarnessArgs({ cwd, sessionId });
     if (!parsed.ok) return parsed;
+    // B-4: pick up pis left running by a previous window before deciding
+    // anything; relay room state alone missed them during reconnect churn.
+    this.adoptLivePi();
     let targetCwd = parsed.cwd || "";
     let sessionPath = null;
     if (parsed.sessionId) {
@@ -3246,21 +3307,39 @@ class AttachController {
       // sessionId 形态只认"这个会话"自己的占用记录：同目录刚拉起别的会话，不能把它判成已在运行
       const sid = String(parsed.sessionId);
       const rec = this.spawnedBySession.get(sid);
-      if (rec && Date.now() - (rec.at || 0) < SPAWN_CLAIM_MS && this.claimAlive(rec)) return { ok: true, status: "already_running", roomId: null };
-      this.spawnedBySession.delete(sid);
+      // B-4: an adopted claim tracks a pi verifiably alive in tmux; its age
+      // says nothing (a previous window may have started it hours ago), so
+      // liveness alone decides. A dead adopted claim is dropped at once.
+      if (rec && rec.adopted && rec.tmuxSession) {
+        if (this.claimAlive(rec)) return { ok: true, status: "already_running", roomId: null };
+        this.spawnedBySession.delete(sid);
+      } else if (rec && Date.now() - (rec.at || 0) < SPAWN_CLAIM_MS && this.claimAlive(rec)) {
+        return { ok: true, status: "already_running", roomId: null };
+      } else {
+        this.spawnedBySession.delete(sid);
+      }
       return { ok: true, status: "spawn", cwd: resolved, sessionPath, sessionId: sid };
     }
     const key = normalizeDir(resolved, this.platform);
     if (key && this.spawnedByCwd.has(key)) {
       const rec = this.spawnedByCwd.get(key) || {};
-      const age = Date.now() - (rec.at || 0);
-      // 拉起后 pi 一直没上线（启动失败/被关掉）：超过 SPAWN_CLAIM_MS 放行重试，
-      // 否则这个目录会永久返回 already_running{roomId:null}，谁都打不开。tmux 拉起的能直接查到 pi 已经退了，不用等
-      if (age < SPAWN_CLAIM_MS && this.claimAlive(rec)) {
-        return { ok: true, status: "already_running", roomId: rec.roomId ? rec.roomId : null };
+      // B-4: same rule for adopted cwd claims -- liveness, not claim age.
+      if (rec.adopted && rec.tmuxSession) {
+        if (this.claimAlive(rec)) {
+          return { ok: true, status: "already_running", roomId: rec.roomId ? rec.roomId : null };
+        }
+        this.spawnedByCwd.delete(key);
+        this.seenOnline.delete(key);
+      } else {
+        const age = Date.now() - (rec.at || 0);
+        // 拉起后 pi 一直没上线（启动失败/被关掉）：超过 SPAWN_CLAIM_MS 放行重试，
+        // 否则这个目录会永久返回 already_running{roomId:null}，谁都打不开。tmux 拉起的能直接查到 pi 已经退了，不用等
+        if (age < SPAWN_CLAIM_MS && this.claimAlive(rec)) {
+          return { ok: true, status: "already_running", roomId: rec.roomId ? rec.roomId : null };
+        }
+        this.spawnedByCwd.delete(key);
+        this.seenOnline.delete(key);
       }
-      this.spawnedByCwd.delete(key);
-      this.seenOnline.delete(key);
     }
     return { ok: true, status: "spawn", cwd: resolved, sessionPath };
   }
@@ -3415,6 +3494,88 @@ class AttachController {
 
   claimAlive(rec) {
     return !(rec && rec.tmuxSession) || this.tmuxAlive(rec.tmuxSession);
+  }
+
+  /** B-4: live pi panes on this host that an attach window launched (possibly a previous one). tmux launchers only. */
+  discoverLivePi() {
+    if (this.launcher !== "tmux") return [];
+    const r = this.tmuxRun(["list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}\t#{pane_dead}\t#{pane_start_command}"]);
+    if (!r || r.status !== 0) return [];
+    return parseLivePiPanes(r.stdout);
+  }
+
+  /** B-4: adoption is limited to workspaces this window may launch itself (boot dirs / projects / browse roots). */
+  adoptableCwdKey(cwd) {
+    let resolved = String(cwd || "");
+    try {
+      resolved = realDir(resolved, this.platform);
+    } catch {}
+    const key = normalizeDir(resolved, this.platform);
+    if (!key) return "";
+    const allowed = new Set();
+    for (const d of [...(this.dirs || []), ...(this.projects || [])]) {
+      const raw = normalizeDir(d, this.platform);
+      if (raw) allowed.add(raw);
+      try {
+        const real = normalizeDir(realDir(String(d), this.platform), this.platform);
+        if (real) allowed.add(real);
+      } catch {}
+    }
+    if (allowed.has(key)) return key;
+    if (this.browseRoots && this.browseRoots.length) {
+      try {
+        if (insideRoots(resolved, this.browseRoots, this.platform)) return key;
+      } catch {}
+    }
+    return "";
+  }
+
+  /**
+   * B-4: claim the pis a previous attach window left running, so boot and
+   * harness_start see them as already running instead of spawning an empty
+   * twin next to the live one. Claims are marked adopted: their liveness is
+   * re-checked in tmux (claimAlive), never inferred from relay room state
+   * or claim age. Throttled; adoption only fills gaps, never overwrites a
+   * claim this window made itself.
+   */
+  adoptLivePi() {
+    const now = Date.now();
+    if (now - (this._adoptAt || 0) < 1000) return 0;
+    this._adoptAt = now;
+    let adopted = 0;
+    for (const pane of this.discoverLivePi()) {
+      const key = this.adoptableCwdKey(pane.cwd);
+      if (key && !this.spawnedByCwd.has(key)) {
+        this.spawnedByCwd.set(key, { at: now, tmuxSession: pane.tmuxSession, adopted: true, roomId: null });
+        adopted++;
+      }
+      if (pane.sessionPath) {
+        const sid = sessionIdFromSessionPath(pane.sessionPath);
+        if (sid && !this.spawnedBySession.has(sid)) {
+          this.spawnedBySession.set(sid, { at: now, tmuxSession: pane.tmuxSession, adopted: true });
+          adopted++;
+        }
+      }
+    }
+    if (adopted) this.writeOut(`发现 ${adopted} 个仍在运行的 pi（此前窗口拉起），已认领，不会重复拉起`);
+    return adopted;
+  }
+
+  /**
+   * B-4: the panel count is rooms the relay reports online PLUS adopted
+   * live pis the relay does not currently show -- relay room state lags
+   * behind during reconnect churn, which is exactly when the count matters
+   * (the incident showed "0 active" next to two live pis).
+   */
+  activeSessionCount() {
+    const rooms = this.onlineRooms || [];
+    const covered = new Set(rooms.map((r) => normalizeDir(r && r.cwd, this.platform)).filter(Boolean));
+    let n = rooms.length;
+    for (const [key, rec] of this.spawnedByCwd) {
+      if (!rec || !rec.adopted || !rec.tmuxSession || covered.has(key)) continue;
+      if (this.claimAlive(rec)) n += 1;
+    }
+    return n;
   }
 
   /**
@@ -6164,6 +6325,8 @@ module.exports = {
   defaultSessionLookup,
   listSessionsCached,
   buildSpawnSpec,
+  parseLivePiPanes,
+  sessionIdFromSessionPath,
   piChildEnv,
   resolveAttachFile,
   probeTmux,

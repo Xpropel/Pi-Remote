@@ -9,6 +9,8 @@
  */
 import type { PiUiVariant } from "../variants/types.ts"
 import type { PiApprovalGateTier, PiPrefs } from "./prefs.ts"
+import { PI_APPROVAL_GATE_TIERS } from "./prefs.ts"
+import type { SwitchSyncView } from "./switchSync.ts"
 
 export type { PiApprovalGateTier }
 
@@ -62,6 +64,26 @@ export function settingsPrefsOf(prefs: PiPrefs, legacy: PiLegacyStylePrefs, send
     deviceFilter: prefs.deviceFilter ?? "all",
     grouping: prefs.grouping,
   }
+}
+
+/**
+ * Overlay the device-reported switch values onto a settings-prefs
+ * object, for surfaces that cannot read the legacy key (the Claude
+ * variant reads prefs only, by its independence rule). Only device
+ * mode carries device truth; pending / legacy views leave the prefs
+ * untouched. Fields the view does not carry (null) keep the prefs
+ * value, and an unrecognized tier is ignored rather than displayed.
+ */
+export function settingsPrefsWithDeviceSwitches(prefs: PiSettingsPrefs, view: SwitchSyncView | null | undefined): PiSettingsPrefs {
+  if (!view || view.mode !== "device") return prefs
+  const out = { ...prefs }
+  if (view.dialogRemoteAnswer !== null) out.dialogRemote = view.dialogRemoteAnswer
+  if (view.askUserEnabled !== null) out.askUser = view.askUserEnabled
+  if (view.approvalGateEnabled !== null) out.approvalGate = view.approvalGateEnabled
+  if (view.approvalGateTier !== null && (PI_APPROVAL_GATE_TIERS as readonly string[]).includes(view.approvalGateTier)) {
+    out.approvalGateTier = view.approvalGateTier as PiApprovalGateTier
+  }
+  return out
 }
 
 export type PiSettingsWrite =

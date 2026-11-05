@@ -213,6 +213,34 @@ export type ExtStatusWidget = {
   factory?: boolean
 }
 
+/** Device-owned switch state carried by ext_status (dialog.observe):
+ *  the bridge's current remote-answer, approval-gate and ask_user
+ *  values. Viewers adopt these on connect instead of pushing their
+ *  locally stored prefs over the device; only an explicit settings
+ *  change pushes back. */
+export type ExtStatusSwitches = {
+  dialogRemoteAnswer: boolean
+  approvalGate: { enabled: boolean; tier: string }
+  askUserEnabled: boolean
+}
+
+const EXT_STATUS_GATE_TIERS: readonly string[] = ["high-risk", "all-non-readonly", "list"]
+
+/** Validate the switches block of an ext_status event; null when the
+ *  bridge did not report one (older bridges) or it is malformed. */
+export function extStatusSwitchesOf(event: { switches?: unknown } | null | undefined): ExtStatusSwitches | null {
+  const sw = event?.switches
+  if (!sw || typeof sw !== "object" || Array.isArray(sw)) return null
+  const rec = sw as { dialogRemoteAnswer?: unknown; approvalGate?: unknown; askUserEnabled?: unknown }
+  const gate = rec.approvalGate
+  if (typeof rec.dialogRemoteAnswer !== "boolean") return null
+  if (typeof rec.askUserEnabled !== "boolean") return null
+  if (!gate || typeof gate !== "object" || Array.isArray(gate)) return null
+  const g = gate as { enabled?: unknown; tier?: unknown }
+  if (typeof g.enabled !== "boolean" || typeof g.tier !== "string" || !EXT_STATUS_GATE_TIERS.includes(g.tier)) return null
+  return { dialogRemoteAnswer: rec.dialogRemoteAnswer, approvalGate: { enabled: g.enabled, tier: g.tier }, askUserEnabled: rec.askUserEnabled }
+}
+
 export type ExtStatusSnapshot = {
   statuses: Record<string, string>
   widgets: ExtStatusWidget[]
@@ -220,6 +248,8 @@ export type ExtStatusSnapshot = {
   working: Record<string, unknown> | null
   /** tap 健康度：{ state: "ok" | "failed" | "off" }；failed 时 UI 回退信号模式并给出提示。 */
   tap: { state: string } | null
+  /** Device-side switch truth (remote answer, approval gate, ask_user); null on older bridges. */
+  switches: ExtStatusSwitches | null
   at: number
 }
 
@@ -230,6 +260,7 @@ export type ExtStatusEvent = {
   title?: unknown
   working?: unknown
   tap?: unknown
+  switches?: unknown
   at?: unknown
 }
 
@@ -261,6 +292,7 @@ export function extStatusAfterEvent(current: ExtStatusSnapshot | null, event: Ex
     title: typeof event.title === "string" ? event.title : null,
     working: event.working && typeof event.working === "object" && !Array.isArray(event.working) ? (event.working as Record<string, unknown>) : null,
     tap: typeof tapState === "string" ? { state: tapState } : null,
+    switches: extStatusSwitchesOf(event),
     at: typeof event.at === "number" && Number.isFinite(event.at) ? event.at : 0,
   }
 }

@@ -291,6 +291,7 @@
 .sb-root .sb-search-input input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--sb-ink1, currentColor); font: inherit; outline: none; }
 .sb-root .sb-search-close { border: 0; background: transparent; color: var(--sb-t5, currentColor); font-size: 11px; cursor: pointer; }
 .sb-root .sb-search-empty { margin: 12px 2px 2px; color: var(--sb-t5, currentColor); font-size: 12px; }
+.sb-root .sb-search-bodyhead { margin: 12px 2px 2px; color: var(--sb-t5, currentColor); font-size: 11px; }
 
 /* 搜索浮层结果（共享核本地过滤；P1 搜索不可用修复） */
 .sb-root .sb-search-results { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; max-height: 320px; overflow-y: auto; }

@@ -497,3 +497,33 @@ export async function decryptRoomEvent(
 
   return { event: out ?? event, failures, drop: false }
 }
+
+/**
+ * B-2: is this room event a delivery receipt that may be applied even
+ * while the room key is still waiting on a grant? remote_message_delivered
+ * and remote_message_failed settle the viewer's own optimistic bubbles by
+ * cid -- they are the ONLY signal that moves a bubble out of "sending".
+ * Their enc forms carry no content the room key could open (delivered is
+ * {cid, at}; a failure is {cid, h, code, error} -- h is a keyed hash, not
+ * an envelope), and the relay assigns them no seq, so applying one early
+ * can neither expose plaintext nor disturb the sync chain. Holding them
+ * behind a pending grant instead leaves every message this viewer sends
+ * into a keyless encrypted room stuck at "sending" forever, even though
+ * the device confirmed delivery (and the transcript shows the reply).
+ * The check is deliberately narrow and paranoid: the type must be a
+ * receipt AND no sealed field may ride along in any slot the decrypt
+ * pass would otherwise open -- anything else still waits for the key.
+ */
+export function isKeylessDeliveryReceipt(event: Record<string, unknown>): boolean {
+  if (event.type !== "remote_message_delivered" && event.type !== "remote_message_failed") return false
+  if (isContentEnvelope(event)) return false
+  if (isContentEnvelope(event.message) || isContentEnvelope(event.text)) return false
+  if (isContentEnvelope(event.args) || isContentEnvelope(event.result) || isContentEnvelope(event.partialResult)) return false
+  const inner = event.assistantMessageEvent
+  if (inner && typeof inner === "object") return false
+  // (b+) dialog-family sealed slots, named explicitly so this module does
+  // not have to import dialogCrypto (which imports this module).
+  if (event.textEnc !== undefined || event.titleEnc !== undefined || event.messageEnc !== undefined) return false
+  if (typeof event.noteEnc === "string" && event.noteEnc) return false
+  return true
+}

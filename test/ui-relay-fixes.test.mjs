@@ -412,3 +412,103 @@ test("重连时当前房间还没上线：room_list 里它上线后补订阅（�
   const list = relay.slice(listAt, relay.indexOf('if (type === "buffer_replay"', listAt))
   assert.match(list, /if \(current\?\.online && socketRoomRef\.current !== current\.id && !lazySessionRef\.current\) \{\s*(?:\/\/[^\n]*\n\s*)*subscribeRef\.current\(current\.id, true\)/)
 })
+
+/* ---------- FIX2-B3B2：己方气泡状态链（忙时直发 + 无钥加密房） ---------- */
+
+const bubbleOf = (state, cid) => state.items.find((item) => item.kind === "user" && item.cid === cid)
+
+test("B-3 气泡链：忙时直发 queued → awaiting → 注入回显 echoed → delivered 落定", () => {
+  let s = reduceTranscript(emptyTranscript(), { type: "echo", text: "忙时发的消息", cid: "cb1" })
+  assert.equal(bubbleOf(s, "cb1")?.status, "sending")
+  // 设备回包 disposition=queued：气泡立刻推进到 awaiting，不再冒充发送中
+  s = reduceTranscript(s, { type: "send-queued", cid: "cb1" })
+  assert.equal(bubbleOf(s, "cb1")?.status, "awaiting")
+  // pi 消费时扩展先回显（remote 按 cid 对号）：awaiting → echoed
+  s = reduceTranscript(s, { type: "remote", text: "忙时发的消息", cid: "cb1" })
+  assert.equal(bubbleOf(s, "cb1")?.status, "echoed")
+  // 送达确认落定
+  s = reduceTranscript(s, { type: "delivered", cid: "cb1" })
+  assert.equal(bubbleOf(s, "cb1")?.status, "delivered")
+  assert.equal(bubbleOf(s, "cb1")?.failed, undefined)
+})
+
+test("B-3 气泡链：awaiting 的失败落定（设备失败帧 / 本端命令结果丢失），正文保留", () => {
+  let s = reduceTranscript(emptyTranscript(), { type: "echo", text: "会失败的消息", cid: "cb2" })
+  s = reduceTranscript(s, { type: "send-queued", cid: "cb2" })
+  s = reduceTranscript(s, { type: "remote-failed", text: "会失败的消息", error: "pi 没有接收这条消息", cid: "cb2" })
+  assert.equal(bubbleOf(s, "cb2")?.failed, "pi 没有接收这条消息")
+  assert.equal(bubbleOf(s, "cb2")?.text, "会失败的消息", "失败也保留正文")
+
+  let t = reduceTranscript(emptyTranscript(), { type: "echo", text: "结果未知的消息", cid: "cb3" })
+  t = reduceTranscript(t, { type: "send-queued", cid: "cb3" })
+  t = reduceTranscript(t, { type: "send-failed", cid: "cb3", error: "结果未知", drop: false })
+  assert.equal(bubbleOf(t, "cb3")?.failed, "结果未知", "awaiting 后命令结果丢失也要落失败，不能永远停在等待处理")
+  assert.equal(bubbleOf(t, "cb3")?.text, "结果未知的消息")
+})
+
+test("B-3 气泡链：send-queued 只推进还在 sending 的气泡，迟到回包口径不改已落定状态", () => {
+  let s = reduceTranscript(emptyTranscript(), { type: "echo", text: "已送达", cid: "cb4" })
+  s = reduceTranscript(s, { type: "delivered", cid: "cb4" })
+  const settled = reduceTranscript(s, { type: "send-queued", cid: "cb4" })
+  assert.equal(settled, s, "delivered 后 send-queued 是 no-op（同一状态对象）")
+  assert.equal(bubbleOf(settled, "cb4")?.status, "delivered")
+
+  let e = reduceTranscript(emptyTranscript(), { type: "echo", text: "已回显", cid: "cb5" })
+  e = reduceTranscript(e, { type: "remote", text: "已回显", cid: "cb5" })
+  const echoed = reduceTranscript(e, { type: "send-queued", cid: "cb5" })
+  assert.equal(echoed, e, "echoed 后 send-queued 是 no-op")
+  assert.equal(bubbleOf(echoed, "cb5")?.status, "echoed")
+
+  const unknown = reduceTranscript(e, { type: "send-queued", cid: "不存在的 cid" })
+  assert.equal(unknown, e, "未知 cid 不动状态")
+})
+
+test("B-3 气泡链：queue-sync 的 pending 条目同样把 sending 推进到 awaiting（各发送路径收敛）", () => {
+  const pending = { id: "q1", segment: "follow_up", source: "web", text: "排队消息", images: [], status: "pending", at: 1, cid: "cb6" }
+  let s = reduceTranscript(emptyTranscript(), { type: "echo", text: "排队消息", cid: "cb6" })
+  s = reduceTranscript(s, { type: "queue-sync", items: [pending] })
+  assert.equal(bubbleOf(s, "cb6")?.status, "awaiting")
+  // 已落定的气泡不被 queue-sync 拉回 awaiting
+  s = reduceTranscript(s, { type: "delivered", cid: "cb6" })
+  const again = reduceTranscript(s, { type: "queue-sync", items: [pending] })
+  assert.equal(bubbleOf(again, "cb6")?.status, "delivered")
+  // 队列项失败：气泡落失败（既有口径保持）
+  let f = reduceTranscript(emptyTranscript(), { type: "echo", text: "排队消息", cid: "cb7" })
+  f = reduceTranscript(f, { type: "queue-sync", items: [{ ...pending, id: "q2", cid: "cb7", status: "failed", error: "注入失败啦" }] })
+  assert.equal(bubbleOf(f, "cb7")?.failed, "注入失败啦")
+})
+
+test("B-2/B-3 接线：三条发送路径都接住命令回包的 disposition（sendText / 回放 / lazy 提交）", () => {
+  const relay = readFileSync(new URL("../ui/src/relay/useRelay.ts", import.meta.url), "utf8")
+  // 收口函数：queued 明说排队；crypto-required 房间（未订阅、无任何房间信号可达）任何已受理发送都落 awaiting
+  const helper = relay.slice(relay.indexOf("const noteSendAccepted"), relay.indexOf("const sendText = useCallback"))
+  assert.match(helper, /disposition === "queued"/, "disposition=queued 是设备在回包里明说的排队事实")
+  assert.match(helper, /roomCryptoEntryOf\(roomId\)\.status === "crypto-required"/, "crypto-required 房间没有任何回执通道，按已受理落 awaiting")
+  assert.match(helper, /dispatch\(\{ type: "send-queued", cid \}\)/, "统一推进到 send-queued")
+
+  const sendText = relay.slice(relay.indexOf("const sendText = useCallback"), relay.indexOf("const replayOutbox = useCallback"))
+  assert.match(sendText, /const accepted = await commandSendRef\.current\(plan\.command, args\)/, "直发接住命令回包，不再丢弃返回值")
+  assert.match(sendText, /noteSendAccepted\(targetRoom, cid, accepted\)/, "直发按回包推进气泡")
+
+  const replay = relay.slice(relay.indexOf("const replayOutbox = useCallback"), relay.indexOf("const outboxCancel = useCallback"))
+  assert.match(replay, /const accepted = await channel\.command\(roomId, plan\.command, args/, "回放接住命令回包")
+  assert.match(replay, /noteSendAccepted\(roomId, entry\.cid, accepted\)/, "回放的气泡同样推进（尾卡被同 cid 气泡压制时这是唯一可见面）")
+
+  const flush = relay.slice(relay.indexOf("const flushLazySend = useCallback"), relay.indexOf("const markLazyRoomReady = useCallback"))
+  assert.match(flush, /const accepted = await commandSendRef\.current\(plan\.command, args\)/, "lazy 提交接住命令回包")
+  assert.match(flush, /noteSendAccepted\(send\.sessionId, send\.cid, accepted\)/, "lazy 气泡同样推进")
+})
+
+test("B-2/B-3 呈现：awaiting 是正式状态、三壳气泡都写「已到设备 · 等待 pi 处理」、不再只有发送中", () => {
+  const transcript = readFileSync(new URL("../ui/src/relay/transcript.ts", import.meta.url), "utf8")
+  assert.match(transcript, /export type SendStatus = "sending" \| "awaiting" \| "echoed" \| "delivered"/, "reducer 状态集含 awaiting")
+  const shared = readFileSync(new URL("../ui/src/components/pi/shared/types.ts", import.meta.url), "utf8")
+  assert.match(shared, /export type PiSendStatus = "sending" \| "awaiting" \| "echoed" \| "delivered"/, "呈现层状态集与 reducer 对齐")
+
+  const parts = readFileSync(new URL("../ui/src/components/pi/conversation/PiTurnParts.tsx", import.meta.url), "utf8")
+  assert.match(parts, /item\.status === "awaiting"[\s\S]{0,700}已到设备 · 等待 pi 处理/, "共享气泡（Cursor/手机）awaiting 文案")
+  const claude = readFileSync(new URL("../ui/src/pi/variants/claude/thread/ClaudeThread.tsx", import.meta.url), "utf8")
+  assert.match(claude, /item\.status === "awaiting"[\s\S]{0,600}已到设备 · 等待 pi 处理/, "Claude 壳 awaiting 文案")
+  const codex = readFileSync(new URL("../ui/src/pi/variants/codex/thread/CodexUserBubble.tsx", import.meta.url), "utf8")
+  assert.match(codex, /item\.status === "awaiting"\) status = "已到设备 · 等待 pi 处理"/, "Codex 壳 awaiting 文案")
+})

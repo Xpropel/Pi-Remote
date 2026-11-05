@@ -4,7 +4,8 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { attentionItemsOf } from "../ui/src/relay/attention.ts"
-import { mergeDeviceSessions } from "../ui/src/relay/devices.ts"
+import { attributeSessionsAcrossDevices, mergeDeviceSessions } from "../ui/src/relay/devices.ts"
+import { paletteSessionsOf } from "../ui/src/pi/model/palette.ts"
 import { searchSessions } from "../ui/src/shell/searchModel.ts"
 import { bootViewOf, listLoadingOf, relayHostOf, connectingText } from "../ui/src/pi/model/boot.ts"
 import { cacheHitOf, gitBranchOf, gitBranchText, sessionModelLine } from "../ui/src/pi/model/sessionInfo.ts"
@@ -243,4 +244,87 @@ test("sessionInfo：缓存命中 87%、模型行、get_git_branch 回包（G11�
   assert.equal(gitBranchOf({ branch: null, repoRoot: null, detached: false }), null, "不在仓库里：分支行整行不出现")
   assert.equal(gitBranchOf({ branch: null, repoRoot: null, detached: false, error: "EACCES" }), null)
   assert.equal(gitBranchOf("main"), null)
+})
+
+/* ---------------- B-1 跨设备归属 ---------------- */
+
+const B1_FILE = "/home/x/.pi/agent/sessions/--workA--/2026-11-04T10-00-00.000Z_sess-b1.jsonl"
+function b1Device(id, name) {
+  return { id, accountId: "a", name, platform: "linux", online: true, projects: ["/workA"], lastAttachAt: 1, firstSeenAt: 1, windowExpiresAt: null, auth: null, paired: true }
+}
+function b1Entry(id, path, cwd = "/workA") {
+  return { id, name: "DEEPSEED B1", firstMessage: "", path, cwd, messageCount: 4, sizeBytes: 10, updatedAt: 800, active: false, online: false }
+}
+
+test("B-1：同一会话被两台设备认领时只在直播房所在设备下留一行（影子行整行删除）", () => {
+  const devA = b1Device("dev-a", "UI测试机A")
+  const devB = b1Device("dev-b", "UI测试机B")
+  const room = { id: "sess-b1", label: null, cwd: "/workA", online: true, busy: false, viewers: 1, lastActivity: 900, deviceId: "dev-a" }
+  const sessionsByDevice = {
+    "dev-a": [b1Entry("sess-b1", B1_FILE)],
+    // B 的会话库扫描同样看见这个文件（共用会话根），另有自己独占的一条。
+    "dev-b": [b1Entry("sess-b1", B1_FILE), b1Entry("sess-b-only", "/home/x/.pi/agent/sessions/--workB--/2026-11-04T09-00-00.000Z_sess-b-only.jsonl", "/workB")],
+  }
+  const rows = sidebarSessionsOf([devA, devB], [room], sessionsByDevice)
+  const claimed = rows.filter((r) => r.id === "sess-b1")
+  assert.equal(claimed.length, 1, "同一会话只剩一行")
+  assert.equal(claimed[0].deviceId, "dev-a", "归直播房所在的 A")
+  assert.equal(claimed[0].openable, true, "留下的就是直播行本身")
+  assert.equal(rows.find((r) => r.id === "sess-b-only").deviceId, "dev-b", "B 独占的会话不受影响")
+  assert.equal(rows.length, 2)
+})
+
+test("B-1：直播房的 id 写成文件路径时，靠文件名内嵌 id 与另一台的条目对上同一归属键", () => {
+  const devA = b1Device("dev-a", "UI测试机A")
+  const devB = b1Device("dev-b", "UI测试机B")
+  const room = { id: B1_FILE, label: null, cwd: "/workA", online: true, busy: false, viewers: 1, lastActivity: 900, deviceId: "dev-a" }
+  const rows = sidebarSessionsOf([devA, devB], [room], { "dev-a": [], "dev-b": [b1Entry("sess-b1", B1_FILE)] })
+  assert.equal(rows.length, 1, "B 的存储行被删，只剩 A 的直播行")
+  assert.equal(rows[0].deviceId, "dev-a")
+  assert.equal(rows[0].openable, true)
+})
+
+test("B-1：两台都只有存储行时按传入设备顺序定归属（确定性，不随机）", () => {
+  const devA = b1Device("dev-a", "UI测试机A")
+  const devB = b1Device("dev-b", "UI测试机B")
+  const sessionsByDevice = { "dev-a": [b1Entry("sess-b1", B1_FILE)], "dev-b": [b1Entry("sess-b1", B1_FILE)] }
+  const ab = sidebarSessionsOf([devA, devB], [], sessionsByDevice)
+  assert.equal(ab.length, 1)
+  assert.equal(ab[0].deviceId, "dev-a")
+  const ba = sidebarSessionsOf([devB, devA], [], sessionsByDevice)
+  assert.equal(ba.length, 1)
+  assert.equal(ba[0].deviceId, "dev-b")
+})
+
+test("B-1：attributeSessionsAcrossDevices 只处理跨设备争议键；同设备同键行、未争议行原样保留", () => {
+  const row = (id, deviceId, extra = {}) => ({ id, title: id, cwd: "/w", online: false, busy: false, viewers: 0, messageCount: 0, updatedAt: 0, openable: false, deviceId, ...extra })
+  const rows = [
+    row("sess-x", "dev-b", { path: "/s/2026_x_sess-x.jsonl" }), // 存储行先出现
+    row("sess-x", "dev-a", { online: true, openable: true }), // 直播行后出现，仍胜
+    row("sess-y", "dev-a"),
+    row("sess-y", "dev-a", { path: "/s/2026_y_sess-y.jsonl" }), // 同设备同键：两行都留（设备内合并是 merge 的职责）
+    row("sess-z", "dev-b"),
+  ]
+  const out = attributeSessionsAcrossDevices(rows)
+  assert.deepEqual(
+    out.map((r) => `${r.deviceId}:${r.id}`),
+    ["dev-a:sess-x", "dev-a:sess-y", "dev-a:sess-y", "dev-b:sess-z"],
+  )
+})
+
+test("B-1：命令面板与侧栏同口径——palette 里同一会话只出现一次且归直播设备", () => {
+  const devA = b1Device("dev-a", "UI测试机A")
+  const devB = b1Device("dev-b", "UI测试机B")
+  const room = { id: "sess-b1", label: null, cwd: "/workA", online: true, busy: false, viewers: 1, lastActivity: 900, deviceId: "dev-a" }
+  const sessions = paletteSessionsOf({
+    devices: [devA, devB],
+    rooms: [room],
+    sessionsByDevice: { "dev-a": [b1Entry("sess-b1", B1_FILE)], "dev-b": [b1Entry("sess-b1", B1_FILE)] },
+    attention: [],
+    currentRoomId: "",
+  })
+  const claimed = sessions.filter((s) => s.id === "sess-b1")
+  assert.equal(claimed.length, 1)
+  assert.equal(claimed[0].deviceId, "dev-a")
+  assert.equal(claimed[0].group, "UI测试机A/workA")
 })

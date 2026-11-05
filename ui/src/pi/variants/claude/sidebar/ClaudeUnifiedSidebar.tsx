@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react"
 import { attentionItemsOf } from "@/relay/attention"
+import { bodyHitOf, openBodySearchHit, sidebarBodyBlockOf, useBodySearch } from "@/pi/hooks/useBodySearch"
+import { paletteMatches } from "@/pi/model/composerInput"
 import { openSessionRow, sidebarRowForKey, sidebarSessionsOf } from "@/pi/model/sidebarSource"
 import { useNow } from "../primitives/useClaude"
 import { CLAUDE_OVERLAY } from "../overlays/ids"
@@ -49,6 +51,12 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [archiveView, setArchiveView] = useState(false)
   const now = useNow(30_000)
+  // Body search (A-3): while the search overlay is open, search the
+  // selected device's session bodies; the block lands in data.search.body
+  // and the shared overlay renders it under the local title results.
+  // (Round 1 wired only the Cursor sidebar; this container built its
+  // search data without a body field, so body hits never showed here.)
+  const bodySearch = useBodySearch(relay, ui.search ?? "", searchOpen)
   const width = clampSidebarWidth(ui.prefs.sidebarWidth)
   const collapsed = ui.prefs.sidebarCollapsed ?? false
   const notify = (text: string) => {
@@ -126,6 +134,12 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
       inbox: relay.inbox,
       selectedDevice: relay.selectedDevice,
     }).filter((item) => item.kind === "waiting" || item.kind === "error" || item.kind === "done").length
+    // Body-match block (A-3): sessions the local title match already
+    // lists are excluded, so a session never appears twice.
+    const bodyBlock = sidebarBodyBlockOf(
+      bodySearch,
+      merged.filter((s) => paletteMatches(ui.search ?? "", s.title, s.cwd, s.firstMessage)).map((s) => ({ id: s.id, path: s.path })),
+    )
     return {
       style: "claude",
       theme: document.documentElement.dataset.piTheme === "light" ? "light" : "dark",
@@ -138,9 +152,9 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
       inboxCount,
       width,
       collapsed,
-      search: { open: searchOpen, query: ui.search ?? "" },
+      search: { open: searchOpen, query: ui.search ?? "", body: bodyBlock },
     }
-  }, [relay, scope, deviceMenuOpen, searchOpen, archiveView, width, collapsed, ui.search, now])
+  }, [relay, scope, deviceMenuOpen, searchOpen, archiveView, width, collapsed, ui.search, now, bodySearch])
 
   const actions: PiSidebarActions = {
     selectSession: (key) => {
@@ -177,6 +191,15 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
     },
     openSearch: () => setSearchOpen(true),
     closeSearch: () => setSearchOpen(false),
+    selectBodyHit: (hitId) => {
+      const mergedRows = sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice)
+      const hit = bodyHitOf(
+        bodySearch,
+        mergedRows.filter((s) => paletteMatches(ui.search ?? "", s.title, s.cwd, s.firstMessage)).map((s) => ({ id: s.id, path: s.path })),
+        hitId,
+      )
+      if (hit) openBodySearchHit(relay, hit, act.openSession)
+    },
     setSearchQuery: (query) => act.setSearch?.(query),
     openSettings: act.openSettings,
     openInbox: act.openInbox,

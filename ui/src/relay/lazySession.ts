@@ -4,10 +4,63 @@
  *  harness_start，等目标房间上线后只提交一次。把这些状态迁移写成纯函数，
  *  是因为这里最容易出现「重复发送」和「切走后还发到旧会话」两个问题。 */
 
-import { baseName, type ListedSession, type RoomInfo } from "./devices.ts"
+import { baseName, parseEncReason, type ListedSession, type RoomInfo } from "./devices.ts"
 import { cleanSessionTitleText } from "./titleText.ts"
 
 export type LazySelection = ListedSession & { deviceId: string }
+
+/** sessionStorage key holding the not-yet-loaded selection, written next to
+ *  the live room's "pi_room" entry: a reload / shell switch must restore the
+ *  record the user had open, not fall back to a live room (C-D1). */
+export const LAZY_SESSION_STORAGE_KEY = "pi_lazy_session"
+
+export function serializeLazySelection(selection: LazySelection): string {
+  return JSON.stringify(selection)
+}
+
+/** Parse a stored lazy selection. Only id + deviceId are load-bearing, so
+ *  they are required; every other field falls back to the neutral value the
+ *  session list would produce, and a malformed payload restores nothing.
+ *  Display fields (title / firstMessage / cwd / updatedAt) survive the round
+ *  trip so the restored placeholder shows the same title chain as a click. */
+export function parseLazySelection(raw: string | null): LazySelection | null {
+  if (!raw) return null
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const id = typeof row.id === "string" ? row.id : ""
+  const deviceId = typeof row.deviceId === "string" ? row.deviceId : ""
+  if (!id || !deviceId) return null
+  const text = (v: unknown): string => (typeof v === "string" ? v : "")
+  const count = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0)
+  const selection: LazySelection = {
+    id,
+    deviceId,
+    title: text(row.title),
+    cwd: text(row.cwd),
+    online: row.online === true,
+    busy: row.busy === true,
+    viewers: count(row.viewers),
+    messageCount: count(row.messageCount),
+    updatedAt: count(row.updatedAt),
+    openable: row.openable === true,
+  }
+  const firstMessage = text(row.firstMessage)
+  if (firstMessage) selection.firstMessage = firstMessage
+  const path = text(row.path)
+  if (path) selection.path = path
+  if (row.enc === true) selection.enc = true
+  const encReason = parseEncReason(row.encReason)
+  if (encReason) selection.encReason = encReason
+  const parentLabel = text(row.parentLabel)
+  if (parentLabel) selection.parentLabel = parentLabel
+  return selection
+}
 
 export type LazySendImage = { data: string; mimeType: string }
 

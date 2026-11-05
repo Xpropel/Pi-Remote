@@ -24,8 +24,11 @@ import {
   type PiSidebarSession,
 } from "@/pi/sidebar"
 import { useNow } from "@/pi/hooks/useNow"
+import { bodySearchNoteOf, openBodySearchHit, useBodySearch } from "@/pi/hooks/useBodySearch"
+import { paletteBodyHitsOf } from "@/pi/model/palette"
 import { sessionStatusLineOf, sidebarDataOf, openSessionRow } from "@/pi/model/sidebarSource"
 import { sidebarGroups } from "@/pi/model/sidebarGroups"
+import { searchSessions } from "@/shell/searchModel"
 import { PI_UI_IDS, type PiContainerProps } from "./types"
 
 const TICK_MS = 30_000
@@ -42,6 +45,8 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
   const deviceId = relay.selectedDeviceId ?? ""
   const localStore = useSidebarLocalState(account, deviceId)
   const scopeState = localStore.scopeState
+  // 正文搜索（A-3）：侧栏搜索打开时在选中设备上搜正文，结果进 data.search.body
+  const bodySearch = useBodySearch(relay, ui.search ?? "", ui.search != null)
 
   const data = useMemo<PiSidebarData>(() => {
     const base = sidebarDataOf({
@@ -95,6 +100,24 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
       return { id: group.key, kind: "workspace" as const, label: group.label || sidebarWorkspaceLabel(cwd), cwd, collapsed, sessions, count: sessions.length }
     })
     const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: scopeState.archives })
+    // 正文匹配块（A-3）：标题已命中的会话不重复列；状态行照 searchModel 诚实文案
+    const bodyBlock = ((): PiSidebarData["search"]["body"] => {
+      const { state, deviceId: bodyDeviceId, deviceName } = bodySearch
+      if (state.phase === "idle" || bodyDeviceId == null) return undefined
+      if (state.phase === "searching") {
+        return { deviceName, phase: "searching", hits: [], note: deviceName ? `正在 ${deviceName} 上搜索正文…` : "正在搜索正文…" }
+      }
+      if (state.phase === "error") return { deviceName, phase: "error", hits: [], note: state.text }
+      const query = (ui.search ?? "").trim()
+      const titleMatched = searchSessions(base.sessions, query)
+      const hits = paletteBodyHitsOf(state.page, { id: bodyDeviceId, name: deviceName }, titleMatched.map((s) => ({ id: s.id, path: s.path })))
+      return {
+        deviceName,
+        phase: "done",
+        hits: hits.map((hit) => ({ id: hit.id, label: hit.title, snippet: hit.snippet, matchCount: hit.matchCount })),
+        note: bodySearchNoteOf(state, hits.length) ?? undefined,
+      }
+    })()
     return {
       style: "cursor", theme: themeOf(),
       serverName: sidebarIdentityNameOf(relay.serverName, typeof location === "undefined" ? "" : location.hostname),
@@ -106,13 +129,13 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
       newSessionLabel: "新会话",
       width: clampSidebarWidth(ui.prefs.sidebarWidth),
       collapsed: ui.prefs.sidebarCollapsed,
-      search: { open: ui.search != null, query: ui.search ?? "" },
+      search: { open: ui.search != null, query: ui.search ?? "", body: bodyBlock },
       // 待答角标（设计 D §1）：只数 attention 清单里的 waiting+error+done——与账本 pending
       // 数恒等，计数唯一出口仍是 attentionItemsOf，设备掉线条不入此数。
       inboxCount: base.attention.filter((item) => item.kind === "waiting" || item.kind === "error" || item.kind === "done").length,
       now,
     }
-  }, [relay, ui.prefs.grouping, ui.prefs.sidebarWidth, ui.prefs.sidebarCollapsed, ui.expanded, ui.search, scopeState, now, deviceMenuOpen, account, deviceId])
+  }, [relay, ui.prefs.grouping, ui.prefs.sidebarWidth, ui.prefs.sidebarCollapsed, ui.expanded, ui.search, scopeState, now, deviceMenuOpen, account, deviceId, bodySearch])
 
   const openRowByKey = (key: string) => {
     const id = key.includes("::") ? key.split("::").slice(1).join("::") : key
@@ -124,8 +147,23 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
     if (session) openSessionRow(relay, session, act.openSession)
   }
 
+  const openBodyHitById = (hitId: string) => {
+    const { state, deviceId: bodyDeviceId, deviceName } = bodySearch
+    if (state.phase !== "done" || bodyDeviceId == null) return
+    const base = sidebarDataOf({
+      devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, roomId: relay.roomId,
+      dialogs: relay.dialogs, uiPrompt: relay.uiPrompt, turnEnd: relay.turnEnd, roomTurnEnds: relay.roomTurnEnds, inbox: relay.inbox, selectedDevice: relay.selectedDevice,
+    })
+    const query = (ui.search ?? "").trim()
+    const titleMatched = searchSessions(base.sessions, query)
+    const hits = paletteBodyHitsOf(state.page, { id: bodyDeviceId, name: deviceName }, titleMatched.map((s) => ({ id: s.id, path: s.path })))
+    const hit = hits.find((h) => h.id === hitId)
+    if (hit) openBodySearchHit(relay, hit, () => act.openSession())
+  }
+
   const actions: PiSidebarActions = {
     selectSession: openRowByKey,
+    selectBodyHit: openBodyHitById,
     newSession: act.newSession,
     selectDevice: (id) => { relay.selectDevice(id); act.openSession() },
     toggleDeviceMenu: (open) => setDeviceMenuOpen(open ?? !deviceMenuOpen),

@@ -4,8 +4,8 @@
  */
 import type { RemoteQueueItem } from "../../relay/remoteQueue.ts"
 
-/** outbox 条目的最小视图（lane-outbox 的 OutboxEntry 结构上满足它）。 */
-export type PiOutboxItemView = { cid: string; text: string; status: "queued" | "replaying" | "failed" }
+/** outbox 条目的最小视图（lane-outbox 的 OutboxEntry 结构上满足它）。awaiting = 已到设备、等 pi 确认（B-3）。 */
+export type PiOutboxItemView = { cid: string; text: string; status: "queued" | "replaying" | "awaiting" | "failed"; handedAt?: number }
 
 /** 本机队列（useRelay 的 queue：queue_update 的 steering + followUp）。条目形状这里不关心，只取文字。 */
 export type PiLocalQueue = { steering: readonly unknown[]; followUp: readonly unknown[] }

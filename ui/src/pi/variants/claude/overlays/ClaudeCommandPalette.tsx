@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useState } from "react"
 import { Search } from "lucide-react"
 import type { PiContainerProps } from "@/pi/containers/types"
 import { attentionItemsOf } from "@/relay/attention"
-import { paletteOfflineReasonOf, paletteSessionsOf, PI_PALETTE_COMMANDS, PALETTE_RECENT, type PiPaletteSession } from "@/pi/model/palette"
+import { paletteBodyHitsOf, paletteOfflineReasonOf, paletteSessionsOf, PI_PALETTE_COMMANDS, PALETTE_RECENT, type PiPaletteBodyHit, type PiPaletteSession } from "@/pi/model/palette"
 import { paletteMatches } from "@/pi/model/composerInput"
+import { bodySearchNoteOf, openBodySearchHit, useBodySearch } from "@/pi/hooks/useBodySearch"
 import { sessionLoaded } from "../model/view"
 import { ClaudeMark } from "../primitives/ClaudePrimitives"
 import { useNow } from "../primitives/useClaude"
@@ -13,9 +14,11 @@ import { relativeShort } from "../model/format"
 /**
  * Claude v2 自有命令面板（C-10 / [C-图8③]）：双环 popover 结果列表（标题匹配在上、正文匹配在下）、↑↓ 选中、Enter 执行、Esc 关闭。
  * 命令组与会话组的数据/过滤复用 @/pi/model/palette 纯函数；渲染、键盘与样式全部自有。
+ * 正文匹配（A-3）：useBodySearch 在选中设备上搜会话正文（防抖、按 (词, 设备) 作废），
+ * 命中去掉标题组已列的会话后排在下面；加密房间由中继拦下、以部分结果 / 出错文案明示，不搜密文。
  */
 
-type Row = { kind: "command"; key: string; label: string } | { kind: "session"; session: PiPaletteSession }
+type Row = { kind: "command"; key: string; label: string } | { kind: "session"; session: PiPaletteSession } | { kind: "body"; hit: PiPaletteBodyHit }
 
 export function ClaudeCommandPalette({ p }: { p: PiContainerProps }) {
   const { relay, ui, act } = p
@@ -53,13 +56,23 @@ export function ClaudeCommandPalette({ p }: { p: PiContainerProps }) {
     deviceName: relay.selectedDevice?.name,
   })
 
+  const bodySearch = useBodySearch(relay, query, open)
+  const bodyHits = useMemo(() => {
+    const { state, deviceId, deviceName } = bodySearch
+    if (state.phase !== "done" || deviceId == null) return []
+    const q = query.trim()
+    const titleMatched = sessions.filter((s) => paletteMatches(q, s.title, s.group))
+    return paletteBodyHitsOf(state.page, { id: deviceId, name: deviceName }, titleMatched.map((s) => ({ id: s.id, path: s.row.path })))
+  }, [bodySearch, sessions, query])
+  const bodyVisible = bodySearch.state.phase !== "idle"
+
   const rows: Row[] = useMemo(() => {
     if (!open) return []
     const q = query.trim()
     const commands: Row[] = PI_PALETTE_COMMANDS.filter((c) => !q || paletteMatches(q, c.label)).map((c) => ({ kind: "command" as const, key: c.key, label: c.label }))
     const wanted = q ? sessions.filter((s) => paletteMatches(q, s.title, s.group)) : sessions.slice(0, PALETTE_RECENT)
-    return [...commands, ...wanted.map((session) => ({ kind: "session" as const, session }))]
-  }, [open, query, sessions])
+    return [...commands, ...wanted.map((session) => ({ kind: "session" as const, session })), ...bodyHits.map((hit) => ({ kind: "body" as const, hit }))]
+  }, [open, query, sessions, bodyHits])
 
   useEffect(() => {
     // 结果条数变化后把选中项夹回范围（避免悬停/↑↓ 越界）
@@ -68,6 +81,11 @@ export function ClaudeCommandPalette({ p }: { p: PiContainerProps }) {
   }, [rows.length])
 
   const run = (row: Row) => {
+    if (row.kind === "body") {
+      close()
+      openBodySearchHit(relay, row.hit, () => act.openSession())
+      return
+    }
     if (row.kind === "session") {
       close()
       const hit = row.session
@@ -134,6 +152,29 @@ export function ClaudeCommandPalette({ p }: { p: PiContainerProps }) {
         {offline ? <p className="claude-palette-note">{offline}</p> : null}
         <div className="claude-palette-list" role="listbox">
           {rows.map((row, i) => {
+            if (row.kind === "body") {
+              const firstBody = rows.findIndex((r) => r.kind === "body") === i
+              return (
+                <Fragment key={`b-${row.hit.id}`}>
+                  {firstBody ? (
+                    <p className="claude-palette-bodyhead">{`正文匹配${bodySearch.deviceName ? ` · ${bodySearch.deviceName}` : ""}`}</p>
+                  ) : null}
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={i === index}
+                    className="claude-palette-row"
+                    data-active={i === index ? "" : undefined}
+                    onMouseEnter={() => setIndex(i)}
+                    onClick={() => run(row)}
+                  >
+                    <span className="claude-palette-row-title">{row.hit.title}</span>
+                    <span className="claude-palette-row-group">{row.hit.group}</span>
+                    <span className="claude-palette-row-time">{`命中 ${row.hit.matchCount} 条`}</span>
+                  </button>
+                </Fragment>
+              )
+            }
             if (row.kind === "command") {
               return (
                 <button
@@ -169,7 +210,14 @@ export function ClaudeCommandPalette({ p }: { p: PiContainerProps }) {
               </button>
             )
           })}
-          {rows.length === 0 ? <p className="claude-palette-empty">没有匹配的命令或会话</p> : null}
+          {bodySearch.state.phase === "searching" ? (
+            <p className="claude-palette-bodyhead">{bodySearch.deviceName ? `正在 ${bodySearch.deviceName} 上搜索正文…` : "正在搜索正文…"}</p>
+          ) : null}
+          {bodySearch.state.phase === "error" ? <p className="claude-palette-note">{bodySearch.state.text}</p> : null}
+          {bodySearch.state.phase === "done" && bodySearchNoteOf(bodySearch.state, bodyHits.length) ? (
+            <p className="claude-palette-bodyhead">{bodySearchNoteOf(bodySearch.state, bodyHits.length)}</p>
+          ) : null}
+          {rows.length === 0 && !bodyVisible ? <p className="claude-palette-empty">没有匹配的命令或会话</p> : null}
         </div>
         <div className="claude-palette-foot">↑↓ 选择 · Enter 执行 · Esc 关闭</div>
       </div>

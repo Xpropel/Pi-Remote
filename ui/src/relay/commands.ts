@@ -39,7 +39,7 @@ export type CommandChannelOptions = {
 
 const OPEN = 1
 
-export type CodedError = Error & { code: string; retryable?: boolean }
+export type CodedError = Error & { code: string; retryable?: boolean; data?: unknown }
 
 /** 通道自己判的失败也带码（DOC/71 §2）：没等到回应或断线后取不回结果 result_unknown（命令可能已执行），发不出去 offline */
 function coded(code: string, message: string, retryable?: unknown): CodedError {
@@ -119,7 +119,16 @@ export class CommandChannel {
     this.clear(p)
     this.pending.delete(p.id)
     if (msg.ok) p.resolve(msg.data)
-    else p.reject(coded(typeof msg.code === "string" ? msg.code : "", String(msg.error || "失败"), msg.retryable))
+    else {
+      const error = coded(typeof msg.code === "string" ? msg.code : "", String(msg.error || "失败"), msg.retryable)
+      // Keep the ack's structured detail on the rejection: the code alone
+      // cannot always say WHY a command was refused (an encrypted room and
+      // an old extension both surface as "unsupported"; only data.reason
+      // tells them apart), and per-target merge layers need the distinction
+      // to report honestly instead of blaming the extension version.
+      if (msg.data !== undefined) error.data = msg.data
+      p.reject(error)
+    }
     return true
   }
 

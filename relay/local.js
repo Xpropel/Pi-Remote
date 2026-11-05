@@ -20,6 +20,10 @@ const { purgeSessions } = require("./purge");
 /** attach 声明的能力里 relay 关心的子集（P9 B/C）：决定设备级 session.files 命令与目录浏览是否可用 */
 const DEVICE_FEATURES = ["session.files", "fs.browse"];
 
+/** G2 approval-gate tiers (same values as the bridge's APPROVAL_GATE_TIERS):
+ *  the ext_status cache only carries a switches block whose tier is legal. */
+const APPROVAL_GATE_TIERS = ["high-risk", "all-non-readonly", "list"];
+
 /** Phase 4 gate B (ACK-rotation design section 1.2): does an enc-meta
  *  declaration (room_register room object / snapshot frame) try to move a
  *  room's stored ackFp to a different value? Such transitions are refused
@@ -500,8 +504,25 @@ function rememberExtStatus(room, event) {
   cached.title = typeof event.title === "string" ? event.title.slice(0, L.dialogTitleMax || 120) : null;
   cached.working = event.working && typeof event.working === "object" && !Array.isArray(event.working) ? cloneQueueSide(event.working) : null;
   cached.tap = event.tap && typeof event.tap === "object" && typeof event.tap.state === "string" ? { state: event.tap.state } : null;
+  // Device-owned switch state (dialog.observe): late subscribers adopt
+  // the gate / remote-answer / ask_user state from this snapshot, so it
+  // must survive the cache. Whitelist-cleaned like the rest; a malformed
+  // field drops the whole switches block rather than passing junk through.
+  const sw = event.switches;
+  if (sw && typeof sw === "object" && !Array.isArray(sw)
+    && typeof sw.dialogRemoteAnswer === "boolean"
+    && typeof sw.askUserEnabled === "boolean"
+    && sw.approvalGate && typeof sw.approvalGate === "object" && !Array.isArray(sw.approvalGate)
+    && typeof sw.approvalGate.enabled === "boolean"
+    && APPROVAL_GATE_TIERS.includes(sw.approvalGate.tier)) {
+    cached.switches = { dialogRemoteAnswer: sw.dialogRemoteAnswer, approvalGate: { enabled: sw.approvalGate.enabled, tier: sw.approvalGate.tier }, askUserEnabled: sw.askUserEnabled };
+  }
   if (typeof event.at === "number" && Number.isFinite(event.at)) cached.at = event.at;
   room.extStatus = cached;
+  // The outstanding ask (if any) has been answered: reset the request
+  // throttle so a later cache clear can ask again without waiting out
+  // the spacing window.
+  room.extStatusAskedAt = 0;
 }
 
 /** toolCallId 必须是非空字符串，否则这帧不进进行中工具缓存。 */

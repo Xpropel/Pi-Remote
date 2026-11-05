@@ -71,6 +71,9 @@ export function SettingsContainer(props: PiContainerProps) {
       usageRelay={relay}
       mobileNav={ui.prefs.mobileNav}
       onMobileNavChange={(mode) => act.setPref("mobileNav", mode)}
+      // Device-owned switches: inert until the current room's device
+      // report arrives (the local value is not settled truth before).
+      switchesPending={relay.switchSyncView.mode === "pending"}
       // 新界面的偏好只存在这个浏览器里（pi_remote_pi_prefs 不走 prefs_set 同步）
       aboutNote="这些设置只保存在这个浏览器里。"
       logoutArmed={armed}

@@ -70,7 +70,7 @@ const PROTOCOL = {
     "health": "viewer 端口提供 GET /healthz",
     "dialog.respond": "对话框应答（O2，接管语义）：开关 dialogRemoteAnswer 开 AND 房间有 viewer 在线才接管（任一假落回 O1 透传本机弹窗，fail-open）。帧：dialog_open{…,answerable:true}（接管时带）/ dialog_answer{dialogId,action:allow|submit|deny,value?,values?,note?}（viewer→relay→桥，先答广播：首达 resolve、迟到回 dialog_gone；values 只用于 kind=multiselect 的多选应答，与 value 互斥，见 dialog.multiselect）/ dialog_close{dialogId,outcome,reason:answered|denied|timeout|aborted,note?}（裁决后全端广播收回）/ dialog_gate{hasViewers}（relay→桥：房间 viewer 订阅数 0↔>0 推送，桥重连补发当前值）/ dialog_answer_switch{enabled}（UI→relay→桥：开关下达，桥仅内存持有、重启回默认关，桥重连由 relay 按存值重下达）/ dialog_answer_result{aid,dialogId,ok,code?}（桥→relay→答题 viewer 的回执通道）/ dialog_claim{dialogId}（可选意向提示：仅供他端显示正在作答，不承载应答权，一期未实现流程）。Deny 理由只随帧广播供 UI 呈现，不回传模型（resolve 值域装不下）同路开关帧（UI→relay→桥：relay 存当前值，桥重连时按存值重下达，桥仅内存持有、重启回默认）：ask_user_switch{enabled}（G1 ask_user 工具开关）/ approval_gate_switch{enabled,tier?,tools?}（G2 工具执行审批门：tier ∈ high-risk|all-non-readonly|list，tools 为名单制工具名数组，桥只在字段合法时采纳）。",
     "dialog.multiselect": "多选对话框（G3，dialog.respond 的增量）：dialog_open.kind 新增 multiselect，帧体带 options（复用 dialogOptionsMax/dialogOptionChars 上限）与 minSelect?/maxSelect?（缺省 minSelect=1、maxSelect=选项数，桥侧组帧时已钳制）；应答走既有 dialog_answer 帧但改带 values?: string[]（与 value 互斥），桥侧按选项表过滤伪造值、去重并按 min/maxSelect 裁决，不满足回 bad_args 且 dialog 不落定（卡留在原地可改选重交）。answerable 只发给同时声明了 dialog.respond 与 dialog.multiselect 的 viewer：未声明本能力的端收到剥掉 answerable 的只读卡（A-6 门控平移，直播/补发/等待摘要同口径），其 dialog_answer 对多选槽一律回 dialog_gone。桥侧生产者 = ask_user 工具直接登记（不经 ctx.ui，pi 无多选 dialog）；门控不满足或中途交回本机时走本机兜底（逐项 confirm 序列，仍是既有四种 dialog）。旧桥不产生 multiselect 帧，天然兼容。limits 不新增（复用 dialog* 项）",
-    "dialog.observe": "对话框观察帧（O1）：dialog_open{dialogId,kind,title,options,message,placeholder,prefill,timeout,startedAt} / dialog_close{dialogId,outcome}；扩展 UI 状态帧 ext_status{statuses,widgets,title,working,tap} 与 ext_notify{message,level}。截断口径见 limits 的 dialog*/extNotify*/widget*/status* 项。密封形态（enc 房且设备声明 crypto.dialog）：dialog_open 的文本字段改以 textEnc/titleEnc 信封在场（明文字段缺席），ext_notify 的 message 改以 messageEnc 在场，ui_prompt_start 与 ui_prompt_end 的 title 改以 titleEnc 在场，见 crypto.dialog",
+    "dialog.observe": "对话框观察帧（O1）：dialog_open{dialogId,kind,title,options,message,placeholder,prefill,timeout,startedAt} / dialog_close{dialogId,outcome}；扩展 UI 状态帧 ext_status{statuses,widgets,title,working,tap,switches} 与 ext_notify{message,level}。switches 是设备侧开关的当前真值 {dialogRemoteAnswer, approvalGate{enabled,tier}, askUserEnabled}：开关归设备所有，观看端连上/进房时不下达本地存值、先按 switches 对齐显示，只在用户显式改动时才下达（dialog_answer_switch / approval_gate_switch / ask_user_switch）；桥在开关变化时补发快照、房间注册完成（room_registered 应答处理后）也补发一份全量快照、relay 缓存补发时原样带回；relay 侧缓存为空且房间在线时，可向桥发 ext_status_request{room} 索取一份（按房间节流，旧桥忽略未知帧、行为不变）。截断口径见 limits 的 dialog*/extNotify*/widget*/status* 项。密封形态（enc 房且设备声明 crypto.dialog）：dialog_open 的文本字段改以 textEnc/titleEnc 信封在场（明文字段缺席），ext_notify 的 message 改以 messageEnc 在场，ui_prompt_start 与 ui_prompt_end 的 title 改以 titleEnc 在场，见 crypto.dialog",
     "room.activity": "房间最近事件摘要（设计 D §2.3）：relay 在 local 事件出口旁按房维护 lastEvent{type,toolName?,at}（只记白名单事件类型 turn_start/agent_start/message_update/tool_execution_start/compaction_start，toolName 只取工具名元数据，不带任何正文/参数；回合落定 agent_settled 即清）；room_list 房间条目给声明了本能力的连接多带 lastEvent（无事件时为 null），未声明的旧端由 roomsViewFor 剥掉；不新开广播帧，lastEvent 搭 room_list 顺风车（随 busy/名册变化广播刷新）。UI 侧据它生成 busy 中的状态短语（正在执行命令/正在回复等），与 lastTurnEnd（room.attention）分工：lastEvent 管运行中、lastTurnEnd 管落定未读",
     "room.dialogs": "房间等待摘要（P9 A）：room_list 的房间条目（含 auth_result.rooms、list_rooms 回包）给声明了本能力的连接多带 waiting[] 与 waitingPrompt；waiting 只含 dialogId/kind/title/startedAt/timeout/answerable（不带 options/message/prefill），离线房间恒为空；waitingPrompt 是旧的单槽 ui_prompt 兜底信号，只在 waiting 为空时有意义；摘要变化时向设备级 viewer 连接广播 room_waiting{room,waiting,waitingPrompt}（每帧全量，不按订阅过滤，与 room_attention 的对象相同）",
     "room.inbox": "全局待答收件箱账本（设计 D §1）：relay 维护 per-account 账本（只存元数据：key/roomId/deviceId/kind/subkind/dialogKind/title≤120/answerable/at，绝不存 options/message/prefill 等正文；落盘 data/accounts/<safeKey>/inbox.json，跨 relay 重启恢复未读）；来源三路 = dialog 生命周期 / ui_prompt 兜底（仅无 dialog 条目时）/ 回合落定（lastTurnEnd 同源）；帧：auth_result 与 room_list 给声明了本能力的连接附带 inbox: InboxEntry[]（pending 全量快照），账本变化时向设备级 viewer 连接广播 inbox_update{upserts, removed}（与 room_waiting 同批听众，不按订阅过滤），inbox_dismiss{key}（viewer→relay 本地命令）只清 done/error 条目、waiting 拒清；未声明的端一律不收新字段/新帧（既有面零变化）。恢复期 waiting 条目未被房间补发确认即转 gone(stale)，turn 未读跨重启不丢",
@@ -1771,6 +1771,214 @@ export function prepareAskOptions(options: string[], recommended: number, allowF
   return { display, recAt, sentinelAt };
 }
 
+/* ---------------- A-1: safe local (terminal) select for ask_user ----------------
+ * pi's own ctx.ui.select selector owns the keyboard while it is open: it
+ * handles only up/down/confirm/cancel, silently drops every printable
+ * character, and resolves ANY Enter as "confirm the highlighted option"
+ * (index 0 at first). A user who types a follow-up message at the
+ * terminal while a question is pending therefore loses the message (the
+ * editor is displaced, the keystrokes go nowhere) and unintentionally
+ * answers the question with option 1. The renderer below restores the
+ * web card's semantics at the terminal: selection is explicit (arrow
+ * keys, then Enter with an empty input buffer); typed text accumulates
+ * in a buffer instead, and Enter with a non-empty buffer resolves as
+ * the free-text answer when the question allows one, or is ignored
+ * (selector stays open) when it does not. The key handling is a pure
+ * state machine so it can be unit-tested without a TUI; the component
+ * built on top of it is a thin shell. */
+
+export interface AskSelectState { selectedIndex: number; typed: string }
+
+export type AskSelectKey =
+  | { kind: "up" }
+  | { kind: "down" }
+  | { kind: "confirm" }
+  | { kind: "cancel" }
+  | { kind: "backspace" }
+  | { kind: "chars"; text: string };
+
+export type AskSelectOutcome =
+  | { type: "continue" }
+  | { type: "pick"; value: string }
+  | { type: "text"; value: string }
+  | { type: "cancel" };
+
+/** Marker object a settled local select returns for a typed free-text
+ *  answer, so the caller can tell it apart from a picked display option
+ *  (a picked option is always one of the display strings). */
+export interface AskLocalFreeText { __askLocalFreeText: string }
+
+export function isAskLocalFreeText(value: any): value is AskLocalFreeText {
+  return !!value && typeof value === "object" && typeof value.__askLocalFreeText === "string";
+}
+
+export function createAskSelectState(): AskSelectState {
+  return { selectedIndex: 0, typed: "" };
+}
+
+/** Normalize one raw terminal input chunk into semantic keys. A chunk is
+ *  usually a single key event, but a paste (or a batched send) can carry
+ *  many characters at once, so this returns a list. Inside a multi-char
+ *  chunk CR/LF count as spaces (a pasted multi-line message must not
+ *  fire confirm mid-paste); a chunk that is only CR/LF is the Enter key.
+ *  `kb` is the host keybindings manager when available (its select
+ *  bindings win over the raw-sequence fallbacks). */
+export function normalizeAskSelectKeys(data: string, kb?: any): AskSelectKey[] {
+  if (typeof data !== "string" || data === "") return [];
+  const matches = (action: string): boolean => {
+    try { return !!(kb && typeof kb.matches === "function" && kb.matches(data, action)); } catch { return false; }
+  };
+  if (matches("tui.select.cancel") || data === "\x03") return [{ kind: "cancel" }];
+  if (matches("tui.select.up") || data === "\x1b[A" || data === "\x1bOA") return [{ kind: "up" }];
+  if (matches("tui.select.down") || data === "\x1b[B" || data === "\x1bOB") return [{ kind: "down" }];
+  if (matches("tui.select.confirm")) return [{ kind: "confirm" }];
+  if (data === "\x1b") return [{ kind: "cancel" }];
+  if (data === "\r" || data === "\n") return [{ kind: "confirm" }];
+  if (data === "\x7f" || data === "\b") return [{ kind: "backspace" }];
+  // Bracketed paste: unwrap it and treat the payload as typed text.
+  let text = data;
+  const paste = text.match(/^\x1b\[200~([\s\S]*?)(?:\x1b\[201~)?$/);
+  if (paste) text = paste[1];
+  if (text.startsWith("\x1b")) return []; // any other escape sequence (mouse, function keys): ignore
+  // A batched chunk can end with the Enter key (send-keys style): split a
+  // trailing CR/LF off so it still confirms after the text has landed.
+  let trailingConfirm = false;
+  if (text.length > 1 && /[\r\n]$/.test(text)) {
+    trailingConfirm = true;
+    text = text.replace(/[\r\n]+$/, "");
+  }
+  const clean = text.replace(/[\r\n]+/g, " ").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  const out: AskSelectKey[] = [];
+  if (clean) out.push({ kind: "chars", text: clean });
+  if (trailingConfirm) out.push({ kind: "confirm" });
+  return out;
+}
+
+/** Advance the local-select state machine by one semantic key. Note what
+ *  is deliberately NOT here: j/k are ordinary typed characters (a
+ *  message may start with them), and digits never select an option (a
+ *  message may start with a digit). Only the arrow keys move the
+ *  highlight, and only Enter on an empty buffer confirms it. */
+export function askSelectApplyKey(state: AskSelectState, display: string[], key: AskSelectKey, allowFreeText: boolean): AskSelectOutcome {
+  switch (key.kind) {
+    case "up":
+      state.selectedIndex = Math.max(0, state.selectedIndex - 1);
+      return { type: "continue" };
+    case "down":
+      state.selectedIndex = Math.min(Math.max(0, display.length - 1), state.selectedIndex + 1);
+      return { type: "continue" };
+    case "backspace":
+      state.typed = Array.from(state.typed).slice(0, -1).join("");
+      return { type: "continue" };
+    case "chars":
+      state.typed += key.text;
+      return { type: "continue" };
+    case "cancel":
+      return { type: "cancel" };
+    case "confirm": {
+      if (!state.typed.trim()) {
+        const value = display[state.selectedIndex];
+        return value === undefined ? { type: "continue" } : { type: "pick", value };
+      }
+      // Text was typed: it must never silently turn into "option 1".
+      // With a free-text slot the text IS the answer; without one the
+      // Enter is ignored and the selector stays open (text stays
+      // editable, Esc still cancels the question).
+      if (!allowFreeText) return { type: "continue" };
+      return { type: "text", value: state.typed };
+    }
+  }
+  return { type: "continue" };
+}
+
+/** The ctx.ui.custom() component factory for the safe local select: a
+ *  thin shell over normalizeAskSelectKeys + askSelectApplyKey. Settles
+ *  exactly once -- a picked display string, an AskLocalFreeText marker,
+ *  or undefined for cancel / timeout / abort (pi's select cancel value,
+ *  so the caller normalizes it to "unanswered" as before). Rendering is
+ *  plain text on purpose: no theme or width-helper dependency. */
+export function askSelectComponentFactory(title: string, display: string[], opts: any, allowFreeText: boolean): (tui: any, theme: any, kb: any, done: (result: any) => void) => any {
+  return (tui: any, _theme: any, kb: any, done: (result: any) => void) => {
+    const state = createAskSelectState();
+    let settled = false;
+    let timer: any = null;
+    let tick: any = null;
+    let onAbort: (() => void) | null = null;
+    const signal = opts && typeof opts === "object" ? opts.signal : null;
+    const timeoutMs = opts && typeof opts.timeout === "number" && opts.timeout > 0 ? opts.timeout : 0;
+    const deadline = timeoutMs ? Date.now() + timeoutMs : 0;
+    const cleanup = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (tick) { clearInterval(tick); tick = null; }
+      if (signal && onAbort) {
+        try { signal.removeEventListener("abort", onAbort); } catch {}
+        onAbort = null;
+      }
+    };
+    const settle = (result: any) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      done(result);
+    };
+    if (signal && typeof signal.addEventListener === "function") {
+      if (signal.aborted) {
+        // Settle on the next tick so the host finishes mounting first.
+        setTimeout(() => settle(undefined), 0);
+      } else {
+        onAbort = () => settle(undefined);
+        try { signal.addEventListener("abort", onAbort, { once: true }); } catch { onAbort = null; }
+      }
+    }
+    if (timeoutMs) {
+      timer = setTimeout(() => settle(undefined), timeoutMs);
+      if (timer && typeof timer.unref === "function") timer.unref();
+      // Keep the countdown in the title roughly current.
+      tick = setInterval(() => { try { if (tui && typeof tui.requestRender === "function") tui.requestRender(); } catch {} }, 1000);
+      if (tick && typeof tick.unref === "function") tick.unref();
+    }
+    const clip = (line: string, width: number): string => {
+      if (!width || width <= 0) return line;
+      const chars = Array.from(line);
+      return chars.length > width ? chars.slice(0, width).join("") : line;
+    };
+    return {
+      render(width: number): string[] {
+        const lines: string[] = [];
+        let heading = title;
+        if (deadline) heading = `${title} (${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}s)`;
+        lines.push(heading, "");
+        for (let i = 0; i < display.length; i++) {
+          lines.push((i === state.selectedIndex ? "→ " : "  ") + display[i]);
+        }
+        lines.push("");
+        if (state.typed) {
+          lines.push(`输入中：${state.typed}`);
+          lines.push(allowFreeText
+            ? "回车 = 以这段文字作答 · 退格修改 · Esc 取消"
+            : "本题只能从选项中选择：退格清除文字后用 ↑↓ + 回车选择 · Esc 取消");
+        } else {
+          lines.push(allowFreeText
+            ? "↑↓ 选择 · 回车 确认 · 直接打字 = 自定义答案"
+            : "↑↓ 选择 · 回车 确认");
+        }
+        return lines.map((l) => clip(l, width));
+      },
+      handleInput(data: string) {
+        if (settled) return;
+        for (const key of normalizeAskSelectKeys(data, kb)) {
+          const out = askSelectApplyKey(state, display, key, allowFreeText);
+          if (out.type === "pick") { settle(out.value); return; }
+          if (out.type === "text") { settle({ __askLocalFreeText: out.value }); return; }
+          if (out.type === "cancel") { settle(undefined); return; }
+        }
+        try { if (tui && typeof tui.requestRender === "function") tui.requestRender(); } catch {}
+      },
+      dispose() { cleanup(); },
+    };
+  };
+}
+
 /** 多选的选择数区间（§5）：minSelect 缺省 1、maxSelect 缺省选项总数；两者钳进
  *  [0, 选项数] 且 min ≤ max。组帧（buildDialogOpen）、桥侧裁决、本机兜底共用同一口径。 */
 export function multiSelectRange(optionCount: number, minSelect?: any, maxSelect?: any): { min: number; max: number } {
@@ -1855,6 +2063,20 @@ export function approvalSummary(toolName: string, input: any): string {
     const s = JSON.stringify(input ?? {});
     return (typeof s === "string" ? s : "").slice(0, max);
   } catch { return ""; }
+}
+
+/** Block-reason text for an approval prompt that did not approve (§4):
+ *  the model (and anyone reading the transcript) must be able to tell WHY
+ *  the call did not run. Only an explicit refusal -- the local pick of the
+ *  deny option, or a remote dialog_answer with action "deny" (settle
+ *  reason "denied") -- may be reported as the user rejecting the call. A
+ *  bridge-side timeout means nobody answered; any other unresolved
+ *  outcome (terminal Esc, abort, session teardown) means the confirmation
+ *  never completed. Neither may borrow the rejection wording. */
+export function approvalBlockReason(picked: any, settleReason: string): string {
+  if (picked === APPROVAL_CHOICE_DENY || settleReason === "denied") return "用户拒绝了该工具调用";
+  if (settleReason === "timeout") return "Pi-Remote 审批门：等待确认超时，无人应答，该工具调用被拦截。";
+  return "Pi-Remote 审批门：确认未完成（被取消或中断），该工具调用被拦截。";
 }
 
 /** dialog 方法的 wrap：O2 接管判定 → 命中则桥持 promise 等远程裁决；否则 O1 观察路径
@@ -4918,8 +5140,11 @@ class Bridge {
   }
 
   /** dialog 调用入口（wrap 内同步执行）：门控全真返回桥持的 promise，否则返回 null 落回透传。
-   *  接管的 dialog 按调用顺序排队，同一时刻只一个处于可应答态（与本机单焦点对齐）。 */
-  beginDialog(kind: string, args: any[], release: () => any): Promise<any> | null {
+   *  接管的 dialog 按调用顺序排队，同一时刻只一个处于可应答态（与本机单焦点对齐）。
+   *  onSettle（可选）在该 dialog 唯一落定时恰好回调一次、带落定原因
+   *  （answered / denied / timeout / aborted / local）：resolve 值本身装不下原因，
+   *  需要按原因区分后续文案的生产者（如审批门）靠它分辨「用户拒绝」与「无人应答」。 */
+  beginDialog(kind: string, args: any[], release: () => any, onSettle?: (reason: string) => void): Promise<any> | null {
     if (!this.dialogAnswerEnabled || !this.dialogGateHasViewers) return null;
     if (this.tapState !== "ok") return null; // 自检失效 → O2 整体退回透传
     if (!this.roomId) return null;
@@ -4936,6 +5161,7 @@ class Bridge {
       settled: false, active: false, startedAt: 0, timer: null,
       signal: signal && typeof signal.addEventListener === "function" ? signal : null,
       onAbort: null,
+      onSettle: typeof onSettle === "function" ? onSettle : null,
     };
     if (entry.signal) {
       entry.onAbort = () => {
@@ -4989,6 +5215,17 @@ class Bridge {
     }
   }
 
+  /** Fire an entry's optional settle-reason hook exactly once (the entry's
+   *  settled flag already guarantees a single settle path runs). Hook
+   *  errors never disturb the settle itself. */
+  private fireDialogSettle(entry: any, reason: string) {
+    const hook = entry.onSettle;
+    entry.onSettle = null;
+    if (typeof hook === "function") {
+      try { hook(reason); } catch {}
+    }
+  }
+
   /** 持留 dialog 的唯一落定出口：resolve + （点亮过的）发 dialog_close{reason,note?} + 点亮下一个。
    *  note 只进 close 帧供广播呈现，绝不进 resolve 值（pi 值域装不下，定版明文）。 */
   private settleHeldDialog(entry: any, value: any, reason: string, note?: string, noteEnc?: string) {
@@ -5014,6 +5251,7 @@ class Bridge {
       else if (typeof note === "string" && note) close.note = note.slice(0, (PROTOCOL.limits as any).dialogNoteMax || 500);
       this.emitEvent(close);
     }
+    this.fireDialogSettle(entry, reason);
     entry.resolve(value);
     if (wasActive) this.activateNextHeldDialog();
   }
@@ -5029,6 +5267,7 @@ class Bridge {
     this.dialogHeld.delete(entry.id);
     const qi = this.dialogHeldQueue.indexOf(entry.id);
     if (qi >= 0) this.dialogHeldQueue.splice(qi, 1);
+    this.fireDialogSettle(entry, "aborted");
     entry.resolve(this.dialogCancelValue(entry.kind));
   }
 
@@ -5279,6 +5518,9 @@ class Bridge {
     if (on !== this.askUserEnabled) {
       this.askUserEnabled = on;
       log("ask_user 工具:", on ? "开" : "关");
+      // The device truth changed: re-emit the snapshot so viewers align
+      // their switch display with the device (same rule as setApprovalGate).
+      try { this.emitExtStatus(); } catch {}
     }
     this.syncAskUserActivation();
   }
@@ -5306,8 +5548,9 @@ class Bridge {
         if (!v.ok) return askResultError(v.error);
         if (p.multi === true) return await this.executeAskMulti(title, v.options, p, ui, opts);
         const { display, recAt, sentinelAt } = prepareAskOptions(v.options, typeof p.recommended === "number" ? p.recommended : -1, p.allowFreeText !== false);
-        const picked = await ui.select(title, display, opts);
+        const picked = await this.askSelectHeldOrLocal(ui, ctx, title, display, opts, sentinelAt >= 0);
         if (picked === undefined) return askResultUnanswered();
+        if (isAskLocalFreeText(picked)) return askResultOk(picked.__askLocalFreeText, "select+input");
         if (sentinelAt >= 0 && picked === display[sentinelAt]) {
           // 哨兵自由项：紧接二段 input；二段取消/空白 = 整问取消，不再发第三段
           const text = await ui.input(title, typeof p.placeholder === "string" ? p.placeholder : undefined, opts);
@@ -5324,6 +5567,54 @@ class Bridge {
       log("ask_user dialog 异常（按未作答处理）:", e?.message);
       return askResultUnanswered();
     }
+  }
+
+  /** ask_user 单选的应答通道（A-1）：与多选同构——先向 dialog 子系统登记持留
+   *  （门控全真时由远程裁决，resolve 值仍是展示选项，远程选哨兵后的二段 input
+   *  流程不变）；不接管时本机渲染走 askSelectLocal，并在 tap 正常时按观察口径
+   *  补记一次捕获/关闭（与 wrap 的 O1 账本一致，观看端仍能看到本机作答的问题）。
+   *  不再直调 ctx.ui.select：它就是 wrap 里 orig 的本体——终端语义有缺陷的正是它。 */
+  private async askSelectHeldOrLocal(ui: any, ctx: any, title: string, display: string[], opts: any, allowFreeText: boolean): Promise<any> {
+    const localSelect = () => this.askSelectLocal(ui, ctx, title, display, opts, allowFreeText);
+    const held = this.beginDialog("select", [title, display, opts], localSelect);
+    if (held) return await held;
+    // Same bookkeeping the wrap does for a local dialog (its capture call
+    // is also the tap self-check's heal path), so this stays unconditional.
+    const capId = this.noteDialogCapture("select", [title, display, opts]);
+    let outcome = "resolved";
+    try {
+      return await localSelect();
+    } catch (e) {
+      outcome = "error";
+      throw e;
+    } finally {
+      if (capId) this.noteDialogClosed(capId, outcome);
+    }
+  }
+
+  /** ask_user 单选的本机（终端）渲染（A-1）：宿主能展示自定义组件时（TUI 模式
+   *  且 ui.custom 可用）用安全选择器——打字进缓冲、回车只在缓冲为空时确认高亮项，
+   *  不再把用户顺手输入的消息吞掉并误答第一项。其余环境（RPC 模式、旧宿主）
+   *  回退宿主原 select（优先 tap 保存的原函数，与 dialog 交回本机时 release 调的
+   *  是同一个本体），行为与此前逐字一致。自定义组件若被宿主无声吞掉（promise
+   *  落定但组件从未 settle），不伪造成取消——同样回退宿主 select，问题保持可答。 */
+  private async askSelectLocal(ui: any, ctx: any, title: string, display: string[], opts: any, allowFreeText: boolean): Promise<any> {
+    const canCustom = !!ctx && (ctx as any).mode === "tui" && !!ui && typeof ui.custom === "function";
+    if (canCustom) {
+      let doneCalled = false;
+      try {
+        const factory = askSelectComponentFactory(title, display, opts, allowFreeText);
+        const result = await ui.custom((tui: any, theme: any, kb: any, done: (v: any) => void) =>
+          factory(tui, theme, kb, (v: any) => { doneCalled = true; done(v); }));
+        if (doneCalled) return result;
+        log("ask_user 本机自定义选择器未生效（宿主未展示），回退宿主选择器");
+      } catch (e: any) {
+        log("ask_user 本机自定义选择器异常，回退宿主选择器:", e?.message);
+      }
+    }
+    const orig = this.tapOriginals.get("select");
+    if (typeof orig === "function") return orig.apply(ui, [title, display, opts]);
+    return ui.select(title, display, opts);
   }
 
   /** ask_user 多选形态（§5 路线 B）：pi 没有多选 dialog、custom() 远程不可传输——由桥
@@ -5392,7 +5683,11 @@ class Bridge {
       this.approvalGateList = cfg.tools.filter((t: any) => typeof t === "string" && !!t);
       changed = true;
     }
-    if (changed) log("工具审批门:", this.approvalGateEnabled ? `开（策略 ${this.approvalGateTier}）` : "关");
+    if (changed) {
+      log("工具审批门:", this.approvalGateEnabled ? `开（策略 ${this.approvalGateTier}）` : "关");
+      // 设备侧真值变了：补发 ext_status，观看端的开关显示按设备对齐
+      try { this.emitExtStatus(); } catch {}
+    }
   }
 
   /** tool_call 审批裁决（§4）：放行回 undefined，拦截回 { block:true, reason }。
@@ -5425,14 +5720,50 @@ class Bridge {
     // complete command (the local prompt shows the same full text).
     const needsDetail = !!summary && (summary.includes("\n") || titleLine.length < composed.length);
     const title = needsDetail ? `${titleLine}\n${summary}` : titleLine;
-    const picked = await ctx.ui.select(title, [APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY]);
+    const { picked, settleReason } = await this.approvalSelectHeldOrLocal(ctx, title);
     if (picked === APPROVAL_CHOICE_ONCE) return undefined;
     if (picked === APPROVAL_CHOICE_SESSION) {
       this.approvalSessionAllow.add(toolName);
       return undefined;
     }
-    // 「拒绝」与超时/取消（select 回 undefined）同口径：fail-closed
-    return { block: true, reason: "用户拒绝了该工具调用" };
+    // Not approved: still fail-closed, but the reason names the actual
+    // outcome (explicit refusal vs timeout vs cancelled) instead of
+    // always claiming the user rejected the call.
+    return { block: true, reason: approvalBlockReason(picked, settleReason) };
+  }
+
+  /** 审批确认的应答通道（与 ask_user 单选同构）：先向 dialog 子系统登记
+   *  持留——门控全真时由远程裁决（resolve 值仍是三个选项之一、或远程
+   *  deny/超时落定的取消值 undefined）；不接管时本机渲染走 askSelectLocal
+   *  的安全选择器（A-1 状态机，allowFreeText=false：打字只进缓冲、回车
+   *  绝不确认高亮项，杜绝终端顺手打字误批「允许一次」）。此前这里直调
+   *  ctx.ui.select：靠 tap 的 wrap 才进得了持留，wrap 不在的 ctx 上则
+   *  观察/接管全无；且落回本机时用的是宿主选择器（吞字 + 回车确认）。
+   *  返回 settleReason 供 approvalBlockReason 区分拒绝/超时/取消——
+   *  本机落定的 reason 为 "local"，细节看 picked 本身。 */
+  private async approvalSelectHeldOrLocal(ctx: any, title: string): Promise<{ picked: any; settleReason: string }> {
+    const ui = ctx.ui;
+    const choices = [APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY];
+    const localSelect = () => this.askSelectLocal(ui, ctx, title, choices, undefined, false);
+    let settleReason = "";
+    const held = this.beginDialog("select", [title, choices], localSelect, (reason) => { settleReason = reason; });
+    if (held) {
+      const picked = await held;
+      return { picked, settleReason };
+    }
+    // Same O1 bookkeeping the tap wrap performs for a local dialog, so
+    // viewers still see the terminal-side prompt as a read-only card.
+    const capId = this.noteDialogCapture("select", [title, choices]);
+    let outcome = "resolved";
+    try {
+      const picked = await localSelect();
+      return { picked, settleReason: "local" };
+    } catch (e) {
+      outcome = "error";
+      throw e;
+    } finally {
+      if (capId) this.noteDialogClosed(capId, outcome);
+    }
   }
 
   /** fail-open 落回本机：把一个持留 dialog 交还原方法在本机弹出。
@@ -5468,6 +5799,7 @@ class Bridge {
       result = entry.release();
     } catch (e) {
       this.noteDialogClosed(entry.id, "error");
+      this.fireDialogSettle(entry, "local");
       entry.reject(e);
       done();
       return;
@@ -5475,15 +5807,16 @@ class Bridge {
     try {
       if (result && typeof result.then === "function") {
         result.then(
-          (v: any) => { this.noteDialogClosed(entry.id, "resolved"); entry.resolve(v); done(); },
-          (e: any) => { this.noteDialogClosed(entry.id, "rejected"); entry.reject(e); done(); },
+          (v: any) => { this.noteDialogClosed(entry.id, "resolved"); this.fireDialogSettle(entry, "local"); entry.resolve(v); done(); },
+          (e: any) => { this.noteDialogClosed(entry.id, "rejected"); this.fireDialogSettle(entry, "local"); entry.reject(e); done(); },
         );
       } else {
         this.noteDialogClosed(entry.id, "resolved");
+        this.fireDialogSettle(entry, "local");
         entry.resolve(result);
         done();
       }
-    } catch { entry.resolve(result); done(); }
+    } catch { this.fireDialogSettle(entry, "local"); entry.resolve(result); done(); }
   }
 
   /** 交回本机的串行泵（发现 A-4）：同一时刻只调起一个原方法，前一个在本机落定后
@@ -5594,7 +5927,16 @@ class Bridge {
     } catch {}
   }
 
-  /** ext_status 全量快照（与 task_list_state 同范式：relay 按房间缓存、晚订阅补发）。 */
+  /** ext_status 全量快照（与 task_list_state 同范式：relay 按房间缓存、晚订阅补发）。
+   *  switches 是设备侧开关的当前真值（远程应答 + 审批门）：这两个开关归设备所有，
+   *  观看端连上时按它对齐显示、只在用户显式改动时才下达新值（useRelay 的口径），
+   *  不再各端拿本地存值互相覆盖。值变化时由各 setter/帧处理处补发一份快照。
+   *  askUserEnabled rides in the same block under the same device-ownership rule.
+   *  Delivery is re-armed at two lifecycle points, because the relay cache
+   *  is the only source a late subscriber ever sees: once when room
+   *  registration completes (earlier emits may have raced the relay's
+   *  ownership check and been dropped), and whenever the relay answers a
+   *  cache miss with an ext_status_request frame. */
   emitExtStatus() {
     if (!this.roomId) return;
     const statuses: Record<string, string> = {};
@@ -5606,6 +5948,11 @@ class Bridge {
       title: this.extTitle,
       working: this.extWorking,
       tap: { state: this.tapState },
+      switches: {
+        dialogRemoteAnswer: this.dialogAnswerEnabled === true,
+        approvalGate: { enabled: this.approvalGateEnabled === true, tier: this.approvalGateTier },
+        askUserEnabled: this.askUserEnabled === true,
+      },
       at: Date.now(),
     });
   }
@@ -7043,6 +7390,14 @@ class Bridge {
       // sync 完成后再重发交回本机仍在开的 dialog（发现 A-5）：排在快照帧之后发出，
       // 不会被 relay 的清槽/对齐冲掉，等待卡/注意力的断粮到此补齐
       this.republishLocalDialogs();
+      // Re-report the full ext_status snapshot once registration has
+      // completed. The relay caches it per room and serves it to late
+      // subscribers, but any emit fired before registration completed is
+      // dropped by the relay's room-ownership check, and an idle session
+      // may never emit again -- without this, a viewer that joins later
+      // waits forever for the device switch truth and its settings
+      // switches stay stuck in the pending/disabled state.
+      try { this.emitExtStatus(); } catch {}
       return;
     }
     if (msg.type === "snapshot_request") {
@@ -7063,6 +7418,19 @@ class Bridge {
       this.pushSnapshot("resend_snapshot", undefined, String(room));
       this.pushTaskList();
       this.publishRemoteQueue();
+      return;
+    }
+    if (msg.type === "ext_status_request") {
+      const room = msg.room != null && msg.room !== "" ? String(msg.room) : this.roomId;
+      if (!room || (this.roomId && String(room) !== String(this.roomId))) {
+        log("忽略其他房间的 ext_status_request:", room);
+        return;
+      }
+      // The relay's per-room cache of this snapshot is empty (cleared on
+      // re-registration, or never warmed) and a viewer is waiting on it:
+      // re-send the full snapshot so the relay can cache it and the
+      // viewer can adopt the device switch truth.
+      try { this.emitExtStatus(); } catch {}
       return;
     }
     if (msg.type === "usage_refresh") {
@@ -7088,6 +7456,7 @@ class Bridge {
       if (enabled !== this.dialogAnswerEnabled) {
         this.dialogAnswerEnabled = enabled;
         log("对话框远程应答接管:", enabled ? "开（仍需 viewer 在线才接管）" : "关");
+        try { this.emitExtStatus(); } catch {}
         if (!enabled) {
           // 开关关闭：持留 dialog 立即交回本机弹窗，不等超时（fail-open，发现 A-1）
           try { this.releaseAllHeldDialogs("local"); } catch {}
@@ -7678,6 +8047,11 @@ class Bridge {
     const blocked = this.cannotPrompt();
     if (blocked) {
       this.markRemoteQueueFailed(item.id, blocked.message, blocked.code);
+      // B-3: also emit the cid failure frame (same discipline as
+      // failAllPendingRemoteQueue). Queue state alone leaves the sender's
+      // outbox entry waiting for a delivery confirmation that will never
+      // come, indistinguishable from a lost message.
+      if (item.cid) this.failRemote(item.text, blocked.message, null, item.cid, blocked.code);
       return;
     }
     item.status = "injected";
@@ -10645,5 +11019,5 @@ function usageEmptySnapshot(options: any = {}): any {
   });
 }
 
-export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, heldPrevContentKey, contentKeyCandidates, planContentKeyInstall, installContentKeyInKeyFile, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile, canonicalJsonOf, contentHashOf, remoteHashOf, sealBody, encryptMessageBody, openBody, decryptMessageBody, encryptTextCt, decryptTextCt, wrapRoomKey, unwrapRoomKey, encryptAckText, decryptAckText, remoteEchoMatchesText, shrinkImagesWithBudget, encryptTextBlocksDeep, storeRoomKeyInKeyFile, IMAGE_TOTAL_MAX_CHARS };
+export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, createAskSelectState, normalizeAskSelectKeys, askSelectApplyKey, askSelectComponentFactory, isAskLocalFreeText, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, approvalBlockReason, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, heldPrevContentKey, contentKeyCandidates, planContentKeyInstall, installContentKeyInKeyFile, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile, canonicalJsonOf, contentHashOf, remoteHashOf, sealBody, encryptMessageBody, openBody, decryptMessageBody, encryptTextCt, decryptTextCt, wrapRoomKey, unwrapRoomKey, encryptAckText, decryptAckText, remoteEchoMatchesText, shrinkImagesWithBudget, encryptTextBlocksDeep, storeRoomKeyInKeyFile, IMAGE_TOTAL_MAX_CHARS };
 

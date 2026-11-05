@@ -5,6 +5,7 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import {
   EMPTY_OUTBOX,
+  OUTBOX_DELIVERY_CONFIRM_MS,
   OUTBOX_ROOM_MAX,
   OUTBOX_STORAGE_KEY,
   loadOutbox,
@@ -234,6 +235,106 @@ test("命令通道：outbox 回放带自己的 dedupeKey，channel 重发同一�
   channel.disconnected()
   channel.connected("")
   channel.dispose()
+})
+
+test("B-3 交出不等于送达：handoff 后条目留 awaiting，nextReplay 被它挡住（保序单飞）", () => {
+  let s = reduce(EMPTY_OUTBOX, enq("r1", 1), enq("r1", 2))
+  s = outboxReducer(s, { type: "replay", roomId: "r1", cid: "c1", owner: "w1" })
+  s = outboxReducer(s, { type: "handoff", roomId: "r1", cid: "c1", at: 5000, owner: "w1" })
+  const [first, second] = outboxOf(s, "r1")
+  assert.equal(first.status, "awaiting")
+  assert.equal(first.handedAt, 5000)
+  assert.equal(second.status, "queued")
+  assert.equal(nextReplay(s, "r1"), null, "上一条没拿到设备确认前，下一条不发")
+  // handoff 只认 replaying：对 queued 条目直接 handoff 不生效
+  const untouched = outboxReducer(s, { type: "handoff", roomId: "r1", cid: "c2", at: 6000 })
+  assert.equal(outboxOf(untouched, "r1")[1].status, "queued")
+})
+
+test("B-3 设备确认才清条目：delivered 移出（awaiting / replaying 竞态 / 超时后迟到都认）", () => {
+  let s = reduce(EMPTY_OUTBOX, enq("r1", 1), enq("r1", 2))
+  s = outboxReducer(s, { type: "replay", roomId: "r1", cid: "c1" })
+  s = outboxReducer(s, { type: "handoff", roomId: "r1", cid: "c1", at: 5000 })
+  s = outboxReducer(s, { type: "delivered", roomId: "r1", cid: "c1" })
+  assert.deepEqual(statuses(s, "r1"), ["c2:queued"])
+  assert.equal(nextReplay(s, "r1")?.cid, "c2", "确认后下一条才能回放")
+  // 竞态：确认帧先于 handoff 落定到达（条目还在 replaying）也要清
+  let race = reduce(EMPTY_OUTBOX, enq("r1", 1))
+  race = outboxReducer(race, { type: "replay", roomId: "r1", cid: "c1" })
+  race = outboxReducer(race, { type: "delivered", roomId: "r1", cid: "c1" })
+  assert.equal(outboxSize(race), 0)
+  // 迟到：巡查已标 failed（未知），设备确认随后到——以设备事实为准，移出
+  let late = reduce(EMPTY_OUTBOX, enq("r1", 1))
+  late = outboxReducer(late, { type: "replay", roomId: "r1", cid: "c1" })
+  late = outboxReducer(late, { type: "handoff", roomId: "r1", cid: "c1", at: 5000 })
+  late = outboxReducer(late, { type: "confirm-timeout", roomId: "r1", cid: "c1", error: "设备长时间没有确认收到" })
+  assert.equal(outboxOf(late, "r1")[0].status, "failed")
+  late = outboxReducer(late, { type: "delivered", roomId: "r1", cid: "c1" })
+  assert.equal(outboxSize(late), 0)
+  // 对不上 cid 的确认不动别人的条目
+  const other = outboxReducer(s, { type: "delivered", roomId: "r1", cid: "nope" })
+  assert.equal(other, s)
+})
+
+test("B-3 设备报失败：delivery-failed 转 failed（留正文、可重试），不是 unknown", () => {
+  let s = reduce(EMPTY_OUTBOX, enq("r1", 1))
+  s = outboxReducer(s, { type: "replay", roomId: "r1", cid: "c1" })
+  s = outboxReducer(s, { type: "handoff", roomId: "r1", cid: "c1", at: 5000 })
+  s = outboxReducer(s, { type: "delivery-failed", roomId: "r1", cid: "c1", error: "pi 没有接收这条消息" })
+  const entry = outboxOf(s, "r1")[0]
+  assert.equal(entry.status, "failed")
+  assert.equal(entry.error, "pi 没有接收这条消息")
+  assert.equal(entry.unknown, undefined, "设备明确报的失败不是结果未知")
+  assert.equal(entry.text, "消息 1", "正文保留")
+  // 已是 failed 时迟到的失败帧不覆盖先到的失败原因
+  const again = outboxReducer(s, { type: "delivery-failed", roomId: "r1", cid: "c1", error: "别的错" })
+  assert.equal(again, s)
+  // 失败后可按老口径重试（换新 cid）
+  const retried = outboxReducer(s, { type: "retry", roomId: "r1", cid: "c1", nextCid: "c9", nextDedupeKey: "k9" })
+  assert.deepEqual(statuses(retried, "r1"), ["c9:queued"])
+})
+
+test("B-3 确认超时与恢复：confirm-timeout 只动 awaiting；recover 把 awaiting 也转 failed（未知）", () => {
+  let s = reduce(EMPTY_OUTBOX, enq("r1", 1), enq("r1", 2))
+  s = outboxReducer(s, { type: "replay", roomId: "r1", cid: "c1" })
+  s = outboxReducer(s, { type: "handoff", roomId: "r1", cid: "c1", at: 5000 })
+  const timed = outboxReducer(s, { type: "confirm-timeout", roomId: "r1", cid: "c1", error: "设备长时间没有确认收到这条消息" })
+  const entry = outboxOf(timed, "r1")[0]
+  assert.equal(entry.status, "failed")
+  assert.equal(entry.unknown, true)
+  assert.equal(entry.handedAt, undefined, "落定后清掉交出时刻")
+  // confirm-timeout 对 queued 条目不生效
+  const noop = outboxReducer(timed, { type: "confirm-timeout", roomId: "r1", cid: "c2", error: "x" })
+  assert.equal(noop, timed)
+  // 页面重开：awaiting 与 replaying 一样按结果未知收
+  const recovered = outboxReducer(s, { type: "recover", error: "上次发送途中页面关闭，结果未知；请看会话再决定是否重试" })
+  assert.equal(outboxOf(recovered, "r1")[0].status, "failed")
+  assert.equal(outboxOf(recovered, "r1")[0].unknown, true)
+  assert.ok(OUTBOX_DELIVERY_CONFIRM_MS >= 60_000, "确认上限是分钟级，不是秒级误杀")
+})
+
+test("B-3 awaiting 不可取消（已在设备手里）、可持久化往返（handedAt 保留，坏值回落入队时刻）", () => {
+  let s = reduce(EMPTY_OUTBOX, enq("r1", 1))
+  s = outboxReducer(s, { type: "replay", roomId: "r1", cid: "c1" })
+  s = outboxReducer(s, { type: "handoff", roomId: "r1", cid: "c1", at: 5000 })
+  assert.equal(outboxReducer(s, { type: "cancel", roomId: "r1", cid: "c1" }), s, "awaiting 点取消不动（去设备待发队列里取消）")
+  const storage = memoryStorage()
+  assert.equal(saveOutbox(storage, s), true)
+  const back = loadOutbox(storage)
+  assert.deepEqual(outboxOf(back, "r1").map((e) => [e.status, e.handedAt]), [["awaiting", 5000]])
+  const bad = parseOutbox(JSON.stringify({ v: 1, rooms: { r1: [{ cid: "c1", dedupeKey: "k1", text: "消息 1", at: 1001, status: "awaiting", handedAt: "x" }] } }))
+  assert.equal(outboxOf(bad, "r1")[0].handedAt, 1001)
+})
+
+test("B-3 useRelay 接线：回放落 handoff、delivered/failed 事件落 outbox 终局、有确认巡查", () => {
+  const relay = readFileSync(new URL("../ui/src/relay/useRelay.ts", import.meta.url), "utf8")
+  const replay = relay.slice(relay.indexOf("const replayOutbox = useCallback"), relay.indexOf("const outboxCancel = useCallback"))
+  assert.match(replay, /type: "handoff"/, "命令成功先转 awaiting，不直接清条目")
+  assert.match(replay, /confirmable \? commitOutbox\(\{ type: "handoff"|commitOutbox\(\{ type: "handoff"/, "带 cid 才等确认")
+  assert.match(relay, /case "remote_message_delivered":[\s\S]{0,400}type: "delivered"/, "设备确认帧落 outbox")
+  assert.match(relay, /case "remote_message_failed":[\s\S]{0,600}type: "delivery-failed"/, "设备失败帧落 outbox")
+  assert.match(relay, /type: "confirm-timeout"/, "有确认超时巡查")
+  assert.match(relay, /OUTBOX_DELIVERY_CONFIRM_MS/, "巡查用模型层的确认上限")
 })
 
 test("useRelay 接线：离线入队、恢复后回放、失败标失败、可取消 / 重试；在线且 outbox 为空时走原路径", () => {

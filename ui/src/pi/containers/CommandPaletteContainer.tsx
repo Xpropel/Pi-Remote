@@ -1,6 +1,8 @@
-import { useMemo } from "react"
-import { PiCommandPalette, type PiPaletteRun } from "@/components/pi/composer"
-import { PALETTE_RECENT, PI_PALETTE_COMMANDS, paletteOfflineReasonOf, paletteSessionsOf } from "@/pi/model/palette"
+import { useEffect, useMemo, useState } from "react"
+import { PiCommandPalette, type PiPaletteBodySection, type PiPaletteRun } from "@/components/pi/composer"
+import { paletteBodyHitsOf, PALETTE_RECENT, PI_PALETTE_COMMANDS, paletteOfflineReasonOf, paletteSessionsOf } from "@/pi/model/palette"
+import { paletteMatches } from "@/pi/model/composerInput"
+import { bodySearchNoteOf, openBodySearchHit, useBodySearch } from "@/pi/hooks/useBodySearch"
 import { attentionItemsOf } from "@/relay/attention"
 import { sessionLoaded } from "./cShared"
 import { openPiDialog, PI_UI_IDS, type PiContainerProps } from "./types"
@@ -10,6 +12,9 @@ import { openPiDialog, PI_UI_IDS, type PiContainerProps } from "./types"
  * 开关在 ui.paletteOpen（⌘K 由外壳的 usePiShellShortcuts 打开，只开这里，D-01；斜杠 /commands、/resume 也开它）；
  * 离线时命令项禁用并写明原因（设置、切换侧栏、开关右 pane 照常可用）；↑↓ 用 aria-activedescendant（部件里）。
  * 桌面放在外壳 overlay 槽（PiOverlay），手机放在 sheet 槽（全高 PiSheet）；关着时什么都不画。
+ * 正文匹配（A-3）：查询经 onQueryChange 镜像到本容器，useBodySearch 在选中设备上搜正文
+ * （防抖、按 (词, 设备) 作废），命中去掉标题组已列的会话后进「正文匹配 · 设备名」组；
+ * 加密房间由中继在命令出口拦下，合并层以部分结果 / 出错文案明示，面板不搜密文。
  */
 
 /** 命令 → 弹窗家族 */
@@ -24,6 +29,11 @@ const COMMAND_DIALOG: Record<string, string> = {
 export function CommandPaletteContainer(props: PiContainerProps) {
   const { relay, ui, act, variant } = props
   const open = ui.paletteOpen
+  const [paletteQuery, setPaletteQuery] = useState("")
+  useEffect(() => {
+    if (!open) setPaletteQuery("")
+  }, [open ])
+  const bodySearch = useBodySearch(relay, paletteQuery, open)
   const sessions = useMemo(() => {
     if (!open) return []
     const attention = attentionItemsOf({
@@ -38,6 +48,20 @@ export function CommandPaletteContainer(props: PiContainerProps) {
     })
     return paletteSessionsOf({ devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, attention, currentRoomId: relay.roomId })
   }, [open, relay.roomId, relay.rooms, relay.dialogs, relay.uiPrompt, relay.turnEnd, relay.roomTurnEnds, relay.inbox, relay.selectedDevice, relay.devices, relay.sessionsByDevice])
+  const bodyFullHits = useMemo(() => {
+    const { state, deviceId, deviceName } = bodySearch
+    if (!open || state.phase !== "done" || deviceId == null) return []
+    const titleMatched = sessions.filter((s) => paletteMatches(paletteQuery, s.title, s.group))
+    return paletteBodyHitsOf(state.page, { id: deviceId, name: deviceName }, titleMatched.map((s) => ({ id: s.id, path: s.row.path })))
+  }, [open, bodySearch, sessions, paletteQuery])
+  const body: PiPaletteBodySection | undefined = useMemo(() => {
+    const { state, deviceId, deviceName } = bodySearch
+    if (!open || state.phase === "idle" || deviceId == null) return undefined
+    const label = `正文匹配${deviceName ? ` · ${deviceName}` : ""}`
+    if (state.phase === "searching") return { label, hits: [], note: deviceName ? `正在 ${deviceName} 上搜索正文…` : "正在搜索正文…" }
+    if (state.phase === "error") return { label, hits: [], note: state.text }
+    return { label, hits: bodyFullHits, note: bodySearchNoteOf(state, bodyFullHits.length) ?? undefined }
+  }, [open, bodySearch, bodyFullHits])
   if (!open) return null
   const reason = paletteOfflineReasonOf({
     authed: relay.authed,
@@ -50,6 +74,11 @@ export function CommandPaletteContainer(props: PiContainerProps) {
   const close = () => act.setPaletteOpen(false)
   const run = (row: PiPaletteRun) => {
     close()
+    if (row.kind === "bodyHit") {
+      const hit = bodyFullHits.find((h) => h.id === row.id)
+      if (hit) openBodySearchHit(relay, hit, () => act.openSession())
+      return
+    }
     if (row.kind === "session") {
       const hit = sessions.find((s) => s.id === row.id)
       if (!hit) return
@@ -77,6 +106,8 @@ export function CommandPaletteContainer(props: PiContainerProps) {
       recentLimit={PALETTE_RECENT}
       offline={reason != null}
       offlineReason={reason ?? undefined}
+      body={body}
+      onQueryChange={setPaletteQuery}
       onOpenChange={(next) => {
         if (!next) close()
       }}

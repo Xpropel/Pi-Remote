@@ -3941,6 +3941,13 @@
   font-size: var(--claude-text-small);
 }
 
+[data-pi-ui="claude"] .claude-palette-bodyhead {
+  margin: 0;
+  padding: 8px 16px 2px;
+  color: var(--claude-text-3);
+  font-size: var(--claude-text-small);
+}
+
 [data-pi-ui="claude"] .claude-palette-list {
   display: flex;
   flex-direction: column;

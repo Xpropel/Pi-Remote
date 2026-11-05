@@ -191,8 +191,11 @@ export type Usage = {
   cost?: { total?: number }
 }
 
-/** 乐观气泡的投递进度（v4 按 cid 对号，DOC/71 §3）：发送中 → 已回显（扩展收到）→ 已送达（进了 pi）。失败看 failed。 */
-export type SendStatus = "sending" | "echoed" | "delivered"
+/** 乐观气泡的投递进度（v4 按 cid 对号，DOC/71 §3）：发送中 → 已回显（扩展收到）→ 已送达（进了 pi）。失败看 failed。
+ *  awaiting（B-3/B-2 round 2）：设备已经收下消息、但还排在 pi 前面没被消费
+ *  （发送命令回包 disposition=queued，或本端在 crypto-required 房间里根本
+ *  收不到任何房间信号）——不是还在路上，不许再冒充"发送中"。 */
+export type SendStatus = "sending" | "awaiting" | "echoed" | "delivered"
 
 export type UserItem = {
   kind: "user"
@@ -456,6 +459,11 @@ export type TranscriptAction =
   | { type: "remote-failed"; text: string; error: string; cid?: string }
   /** 扩展确认这条消息真正进了 pi */
   | { type: "delivered"; cid: string }
+  /** 设备在发送命令回包里明说这条先排队（disposition=queued），或本端对这个
+   *  房间没有任何观察通道（crypto-required，未订阅成功）：气泡从"发送中"
+   *  推进到 awaiting——设备已收下、等 pi 处理。只认还在 sending 的气泡，
+   *  回显/送达已先到时这条迟到的回包口径不再改状态。 */
+  | { type: "send-queued"; cid: string }
   /** 网页自己的发送命令失败：还在发送中的气泡 drop=true 时摘掉（草稿已退回），否则标失败；已回显的说明消息到了本机，不动 */
   | { type: "send-failed"; cid: string; error: string; drop: boolean }
   /** 重发前摘掉原来那条失败气泡 */
@@ -1608,6 +1616,19 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
       trimTranscript(d)
       return d
     }
+    case "send-queued": {
+      // The device accepted the message but pi has not consumed it yet:
+      // stop claiming "sending". Only a bubble still in flight may move --
+      // an echo/delivered that already landed is a later truth than the
+      // command result this action was built from.
+      const at = indexOfCid(state.items, action.cid)
+      const item = at >= 0 ? state.items[at] : undefined
+      if (!item || item.kind !== "user" || item.status !== "sending") return state
+      const d = draftOf(state)
+      setItem(d, at, { ...item, status: "awaiting" })
+      trimTranscript(d)
+      return d
+    }
     case "queue-sync": {
       // 只更新已有乐观气泡：别人发的远程消息没有本地 cid，等注入时的 remote 回显再出现。
       const byCid = new Map<string, RemoteQueueItem>()
@@ -1621,9 +1642,15 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
         if (!queued) continue
         const failed = queued.status === "failed" ? queued.error || "注入失败" : undefined
         const text = queued.text || item.text
-        if (text === item.text && failed === item.failed) continue
+        // A pending entry holding this cid is the same fact the send
+        // command reports as disposition=queued: advance the bubble to
+        // awaiting here too, so send paths whose command result carries
+        // no disposition (or whose queue frame lands first) converge on
+        // the same state instead of sitting at "sending".
+        const awaiting = queued.status === "pending" && item.status === "sending"
+        if (text === item.text && failed === item.failed && !awaiting) continue
         if (!d) d = draftOf(state)
-        setItem(d, k, { ...item, text, echo: text, ...(failed ? { failed } : { failed: undefined }) })
+        setItem(d, k, { ...item, text, echo: text, ...(awaiting ? { status: "awaiting" as SendStatus } : {}), ...(failed ? { failed } : { failed: undefined }) })
       }
       if (!d) return state
       trimTranscript(d)
@@ -1642,7 +1669,9 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
     case "send-failed": {
       const at = indexOfCid(state.items, action.cid)
       const item = at >= 0 ? state.items[at] : undefined
-      if (!item || item.kind !== "user" || item.status !== "sending") return state
+      // awaiting 也认：回包先说 queued、随后结果丢失（result_unknown）时，
+      // 气泡不能永远停在"设备已收下"上冒充没事——按失败落定，正文保留。
+      if (!item || item.kind !== "user" || (item.status !== "sending" && item.status !== "awaiting")) return state
       const d = draftOf(state)
       if (action.drop) removeItemAt(d, at)
       else setItem(d, at, { ...item, failed: action.error || "发送失败" })

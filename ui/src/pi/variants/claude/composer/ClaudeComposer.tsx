@@ -364,16 +364,19 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
           {outboxItems.map((entry) => (
             <div key={entry.cid} className="claude-queue-row">
               <span className="claude-queue-text">{entry.text}</span>
-              <span className="claude-queue-status">{entry.status === "failed" ? "回放失败" : "等重连后发送"}</span>
+              <span className="claude-queue-status">{entry.status === "failed" ? "回放失败" : entry.status === "awaiting" ? "已到设备 · 等待处理" : "等重连后发送"}</span>
               <div className="claude-queue-actions">
                 {entry.status === "failed" ? (
                   <button type="button" className="claude-link-btn" onClick={() => relay.outboxRetry(entry.cid)}>
                     重试
                   </button>
                 ) : null}
-                <button type="button" className="claude-link-btn" onClick={() => relay.outboxCancel(entry.cid)}>
-                  取消
-                </button>
+                {/* awaiting 已在设备手里：本页不能取消（去设备的待发队列里取消），按钮不出现免得点了没反应 */}
+                {entry.status === "awaiting" ? null : (
+                  <button type="button" className="claude-link-btn" onClick={() => relay.outboxCancel(entry.cid)}>
+                    取消
+                  </button>
+                )}
               </div>
             </div>
           ))}

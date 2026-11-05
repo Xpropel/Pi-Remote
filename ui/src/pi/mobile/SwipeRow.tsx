@@ -40,6 +40,9 @@ export function SwipeRow({
     if (!current) return
     drag.current = null
     setDragging(false)
+    // The press is over: a long-press that has not fired yet must not fire
+    // afterwards (a release off the row produces no click to cancel it).
+    cancelLongPress()
     event.currentTarget.releasePointerCapture?.(current.id)
     if (!current.moved) return
     setOffset((value) => (value < OPEN / 2 ? OPEN : 0))

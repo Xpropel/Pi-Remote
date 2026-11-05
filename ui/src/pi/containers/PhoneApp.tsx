@@ -4,9 +4,13 @@ import { MobileNavShell, useMobileSidebarData } from "@/pi/mobile"
 import type { PiSidebarActions } from "@/pi/sidebar"
 import { PiButton, PiCenteredState, PiPhonePage, PiTopBar, usePiStatic } from "@/components/pi/shared"
 import { usePiPhoneNav, type PiPhoneNav } from "@/pi/hooks/usePiPhoneNav"
+import { bodySearchNoteOf, openBodySearchHit, useBodySearch } from "@/pi/hooks/useBodySearch"
 import { bootInputOf, bootViewOf } from "@/pi/model/boot"
+import { paletteBodyHitsOf } from "@/pi/model/palette"
 import { phonePageOf, type PiPhonePageKey } from "@/pi/model/phoneRoute"
 import { sidebarSessionsOf } from "@/pi/model/sidebarSource"
+import { searchSessions } from "@/shell/searchModel"
+import type { PiSidebarSearchBody } from "@/pi/sidebar"
 import { CommandPaletteContainer } from "./CommandPaletteContainer"
 import { ComposerContainer, ComposerSheets } from "./ComposerContainer"
 import { useDeviceOfflineExtras } from "./DeviceOfflineContainer"
@@ -81,10 +85,29 @@ function CursorMobileShell({
 }) {
   const { relay, ui, act } = p
   const htmlTheme = typeof document !== "undefined" && document.documentElement.getAttribute("data-pi-theme") === "light" ? "light" : "dark"
+  // 正文搜索（A-3）：手机搜索页打开时在选中设备上搜正文，结果进 search.body
+  const bodySearch = useBodySearch(relay, ui.search ?? "", ui.search != null)
+  const bodyBlock = ((): PiSidebarSearchBody | undefined => {
+    const { state, deviceId: bodyDeviceId, deviceName } = bodySearch
+    if (state.phase === "idle" || bodyDeviceId == null) return undefined
+    if (state.phase === "searching") {
+      return { deviceName, phase: "searching", hits: [], note: deviceName ? `正在 ${deviceName} 上搜索正文…` : "正在搜索正文…" }
+    }
+    if (state.phase === "error") return { deviceName, phase: "error", hits: [], note: state.text }
+    const query = (ui.search ?? "").trim()
+    const titleMatched = searchSessions(sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice), query)
+    const hits = paletteBodyHitsOf(state.page, { id: bodyDeviceId, name: deviceName }, titleMatched.map((s) => ({ id: s.id, path: s.path })))
+    return {
+      deviceName,
+      phase: "done",
+      hits: hits.map((hit) => ({ id: hit.id, label: hit.title, snippet: hit.snippet, matchCount: hit.matchCount })),
+      note: bodySearchNoteOf(state, hits.length) ?? undefined,
+    }
+  })()
   const mobileSide = useMobileSidebarData(p as unknown as Parameters<typeof useMobileSidebarData>[0], {
     style: "cursor",
     theme: htmlTheme,
-    search: { open: ui.search != null, query: ui.search ?? "" },
+    search: { open: ui.search != null, query: ui.search ?? "", body: bodyBlock },
   })
   const selectSession = (key: string) => {
     const at = key.indexOf("::")
@@ -99,8 +122,23 @@ function CursorMobileShell({
     act.openSession()
     act.setPhonePage("chat")
   }
+  const selectBodyHit = (hitId: string) => {
+    const { state, deviceId: bodyDeviceId, deviceName } = bodySearch
+    if (state.phase !== "done" || bodyDeviceId == null) return
+    const query = (ui.search ?? "").trim()
+    const titleMatched = searchSessions(sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice), query)
+    const hits = paletteBodyHitsOf(state.page, { id: bodyDeviceId, name: deviceName }, titleMatched.map((s) => ({ id: s.id, path: s.path })))
+    const hit = hits.find((h) => h.id === hitId)
+    if (hit) {
+      openBodySearchHit(relay, hit, () => {
+        act.openSession()
+        act.setPhonePage("chat")
+      })
+    }
+  }
   const mobileActions: PiSidebarActions = {
     selectSession,
+    selectBodyHit,
     newSession: act.newSession,
     selectDevice: (deviceId) => relay.selectDevice(deviceId),
     addDevice: () => act.openSheet({ id: "a:pairing" }),

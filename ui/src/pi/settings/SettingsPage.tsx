@@ -89,6 +89,17 @@ export interface SettingsPageProps {
  */
 let lastSettingsPage: SettingsPageId | null = null
 
+/**
+ * Deep-link entry for other surfaces: preselect the tab the settings
+ * page opens on at its next mount (e.g. the encrypted-room guidance in
+ * the transcript jumps straight to the devices tab, where the viewer
+ * identity is enabled). It only seeds the initial tab -- once the page
+ * is open, the user's own navigation takes over as usual.
+ */
+export function rememberSettingsPage(page: SettingsPageId): void {
+  lastSettingsPage = settingsPageIdOf(page)
+}
+
 export function SettingsPage({ p, style, theme, page, initialPage, onPageChange, onBack }: SettingsPageProps) {
   const [innerPage, setInnerPage] = useState<SettingsPageId>(() => settingsPageIdOf(page ?? initialPage ?? lastSettingsPage ?? "general"))
   const [documentTheme] = useState<SettingsTheme>(themeFromDocument)

@@ -169,10 +169,34 @@ export interface PiSidebarSearchResult {
   detail?: string
 }
 
+/** One body-search hit for the search overlay / phone search page (A-3). */
+export interface PiSidebarSearchBodyHit {
+  id: string
+  label: string
+  snippet: string
+  matchCount: number
+}
+
+/**
+ * Body-search block for the search surfaces (A-3): the host runs the search
+ * on the selected device and hands down display-ready state. Body search
+ * covers that one device's plaintext session files; encrypted rooms are
+ * excluded by the relay and surface through the note (partial results).
+ */
+export interface PiSidebarSearchBody {
+  deviceName: string
+  phase: "searching" | "done" | "error"
+  hits: PiSidebarSearchBodyHit[]
+  /** Status line: searching / error / partial / truncated / not found. */
+  note?: string
+}
+
 export interface PiSidebarSearchState {
   open: boolean
   query: string
   results?: PiSidebarSearchResult[]
+  /** A-3: 正文匹配块（宿主在选中设备上搜正文后给；不给 = 没有正文组） */
+  body?: PiSidebarSearchBody
 }
 
 /** 侧栏全部输入（宿主只传数据/动作/slots；视觉由 style×theme 决定）。 */
@@ -227,6 +251,8 @@ export interface PiSidebarActions {
   openSearch: () => void
   closeSearch: () => void
   setSearchQuery?: (query: string) => void
+  /** A-3: 打开一条正文命中（按 hit id；宿主保存最近一页命中并走打开会话路径） */
+  selectBodyHit?: (hitId: string) => void
   openSettings: () => void
   /** 调宽（拖拽结束/键盘微调）；组件先 clamp 再回调 */
   resize: (width: number) => void

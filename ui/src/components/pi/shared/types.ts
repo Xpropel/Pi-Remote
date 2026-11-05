@@ -201,8 +201,9 @@ export type PiBlock =
 
 export type PiUsage = { totalTokens?: number; cost?: { total?: number } }
 
-/** 乐观气泡的投递进度：发送中 → 已回显 → 已送达。失败看 failed */
-export type PiSendStatus = "sending" | "echoed" | "delivered"
+/** 乐观气泡的投递进度：发送中 → 已回显 → 已送达。失败看 failed。
+ *  awaiting = 设备已收下、还排在 pi 前面（卡下写"已到设备 · 等待 pi 处理"）。 */
+export type PiSendStatus = "sending" | "awaiting" | "echoed" | "delivered"
 
 export type PiUserItem = {
   kind: "user"
@@ -218,6 +219,8 @@ export type PiUserItem = {
   status?: PiSendStatus
   /** 展示用：离线时进了本页 outbox（§1.12），卡下灰字"等重连后发送" */
   outbox?: boolean
+  /** outbox 条目已交到设备、等 pi 确认接收（B-3）：卡下灰字改"已到设备 · 等待处理" */
+  awaiting?: boolean
   /** View-layer mark (F4): this bubble is a remote-queue entry still waiting
    *  to be injected; queueId is that entry's id (set together). */
   queued?: boolean

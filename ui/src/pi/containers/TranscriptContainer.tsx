@@ -12,6 +12,7 @@ import { useNow } from "@/pi/hooks/useNow"
 import { piTranscriptStick } from "@/pi/hooks/useTranscriptStick"
 import {
   archiveTopLinesOf,
+  cryptoRequiredTopLineOf,
   EMPTY_THINKING_CLOCK,
   historyTopLineOf,
   liveExpandedOf,
@@ -25,6 +26,7 @@ import {
   type PiTopLine,
 } from "@/pi/model/transcriptView"
 import { COPY } from "@/relay/devices"
+import { rememberSettingsPage } from "@/pi/settings/SettingsPage"
 import type { Item } from "@/relay/transcript"
 import { openPiDialog, PI_UI_IDS, type PiContainerProps, type PiSessionExtras } from "./types"
 import { C_IDS, commandErrorText, useLegacyStyle } from "./cShared"
@@ -211,6 +213,12 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
 
   // 流顶一行：外壳的说明 + 本机记录 / 正在拉快照 + 补拉状态
   const loadEarlier = relay.loadEarlierHistory
+  // A-4: a dialog is pending in this room when this end already holds a
+  // card/prompt, or the roster waiting summary (the same signal the
+  // sidebar row renders from) names one -- sealed dialogs never reach
+  // the local card state on an end without the room key.
+  const roomEntry = roomId ? relay.rooms.find((room) => room.id === roomId) : undefined
+  const pendingDialog = waiting || (roomEntry?.waiting?.length ?? 0) > 0 || roomEntry?.waitingPrompt != null
   const deviceName = lazy ? (relay.devices.find((d) => d.id === lazy.deviceId)?.name ?? relay.selectedDevice?.name ?? null) : null
   const own: PiTopLine[] = []
   if (lazy) own.push(...archiveTopLinesOf(archive, deviceName))
@@ -220,7 +228,7 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
   if (!lazy) {
     if (relay.roomCryptoStatus === "waiting-ack") own.push({ text: "这个房间已加密，正在等待内容钥送达", tone: "muted" })
     if (relay.roomCryptoStatus === "mismatch") own.push({ text: "内容钥不一致：本机持有的内容钥与这个房间的钥不是同一把，消息无法解密", tone: "error" })
-    if (relay.roomCryptoStatus === "crypto-required") own.push({ text: "这个房间已加密，当前观看端无法读取加密内容", tone: "error" })
+    if (relay.roomCryptoStatus === "crypto-required") own.push(cryptoRequiredTopLineOf(pendingDialog))
     if (relay.decryptFailureCount > 0) own.push({ text: `有 ${relay.decryptFailureCount} 条消息无法解密`, tone: "muted" })
   }
   const history = lazy ? null : historyTopLineOf(relay.history, roomId)
@@ -230,7 +238,17 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
     tone: l.tone,
     spinner: l.spinner,
     action: l.actionText,
-    onAction: l.action === "load-earlier" ? () => void loadEarlier() : undefined,
+    onAction:
+      l.action === "load-earlier"
+        ? () => void loadEarlier()
+        : l.action === "enable-identity"
+          ? () => {
+              // The viewer identity is enabled on the settings devices
+              // tab; preselect it so opening settings lands right there.
+              rememberSettingsPage("devices")
+              act.openSettings()
+            }
+          : undefined,
   }))
   const topLine: ReactNode =
     extras?.topLine != null || lines.length > 0 ? (

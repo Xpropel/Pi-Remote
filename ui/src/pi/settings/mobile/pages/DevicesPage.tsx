@@ -9,6 +9,9 @@
  *   ● 设为默认：纯本机偏好 defaultDeviceId，刷新后保持，不改设备侧配置；
  *   ○ 新会话自动连上默认设备：本机偏好，即时生效；
  *   ◌ 阻止睡眠 / 常驻托盘：设计预留，不可用。
+ *   Viewer identity + authorized viewers: MobileIdentitySection, mounted
+ *     between the device roster and the plaintext-room groups (same slot as
+ *     the desktop devices page); it shares the desktop identity bridge.
  */
 import { useMemo, useState } from "react"
 import { deviceErrorText, ENC_FALLBACK_LABEL, ENC_REASON_LABELS, errorCode, type Device } from "@/relay/devices"
@@ -37,6 +40,7 @@ import {
   MobileSwitch,
   MobileTag,
 } from "../atoms.tsx"
+import { MobileIdentitySection } from "./IdentitySection.tsx"
 
 /** 测试连接的计时起点；浏览器有 performance 就用单调时钟。 */
 function nowMs(): number {
@@ -226,6 +230,8 @@ export function DevicesPage() {
           <MobileActionRow title="添加设备" description="在新设备浏览器打开后，输入这里显示的配对码" onClick={act.openPairing} />
         </MobileCard>
       </MobileGroup>
+
+      <MobileIdentitySection />
 
       {plaintextGroups.length ? (
         <MobileGroup label="未加密会话" stacked>

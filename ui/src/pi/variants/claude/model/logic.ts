@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import type { PiContainerProps, Relay } from "@/pi/containers/types"
-import { settingsWritesOf, type PiSettingsPrefs } from "@/pi/model/settingsView"
+import { settingsPrefsWithDeviceSwitches, settingsWritesOf, type PiSettingsPrefs } from "@/pi/model/settingsView"
 import { modelRowsOf, thinkingSegmentsOf } from "@/pi/model/models"
 import { platformTabOfDeviceId } from "./platformUi"
 import { setClaudeWorkspaceMode } from "./uiMemory"
@@ -51,7 +51,7 @@ export function useCommand(run: Relay["runCommand"], command: string | null, arg
 /* ---------------------------------------------------------------- 设置页读写 */
 
 export function settingsPrefsFor(p: Pick<PiContainerProps, "ui" | "relay">): PiSettingsPrefs {
-  return {
+  const base: PiSettingsPrefs = {
     ui: p.ui.prefs.ui,
     theme: p.ui.prefs.theme,
     fontSize: "standard",
@@ -67,6 +67,11 @@ export function settingsPrefsFor(p: Pick<PiContainerProps, "ui" | "relay">): PiS
     deviceFilter: p.ui.prefs.deviceFilter ?? "all",
     grouping: p.ui.prefs.grouping,
   }
+  // The device owns the three switches: when the current room's bridge
+  // has reported its state, the report (carried on the relay object, no
+  // storage access needed) wins over this variant's prefs-only copy --
+  // the same adoption the legacy-key surfaces get from useRelay.
+  return settingsPrefsWithDeviceSwitches(base, p.relay.switchSyncView)
 }
 
 /** 偏好改动 → 写到该写的地方（新偏好键 / 旧键三项 / relay.sendMode）；口径来自 model/settingsView */
