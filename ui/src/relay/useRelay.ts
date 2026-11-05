@@ -136,6 +136,7 @@ import { useNotices } from "@/chat/composer/useNotices"
 import {
   LAZY_SESSION_STORAGE_KEY,
   lazyRoomFromRow,
+  lazySendCryptoBlocked,
   lazySendPhaseText,
   parseLazySelection,
   serializeLazySelection,
@@ -3266,6 +3267,15 @@ export function useRelay() {
         if (code === "crypto_required") {
           const roomId = typeof msg.room === "string" && msg.room ? msg.room : roomRef.current || ""
           if (roomId) noteRoomCryptoStatus(roomId, "crypto-required")
+          // D-2: a lazy claim into an encrypted room dead-ends on this
+          // refusal -- the relay sends neither subscribed nor snapshot to a
+          // viewer without the content capability, so the queued send can
+          // never flush and would sit until the generic watch timeout with
+          // the wrong reason. Fail it now, with the real one; the failure
+          // stays in the bubble (and the notice) like any other send error.
+          if (roomId && lazySendCryptoBlocked(lazySendRef.current, roomId)) {
+            failLazySendRef.current("这个会话已加密：请先在设置里启用观看端身份，再重新发送。", true)
+          }
           // No floating notice on top of the status: the transcript's
           // inline crypto-required line (TranscriptContainer) is the
           // single, in-flow surface for this room state in every shell.

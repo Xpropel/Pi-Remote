@@ -3,6 +3,8 @@ import { PiSettingsPage, type PiSettingsAction } from "@/components/pi/composer"
 import { PiPhonePage, PiTopBar } from "@/components/pi/shared"
 import { playTestSound } from "@/chat/composer/sound"
 import { useNow } from "@/pi/hooks/useNow"
+import { switchDisplayStateOf } from "@/pi/model/switchSync"
+import { rememberSettingsPage } from "@/pi/settings/SettingsPage"
 import { usePrefsWriter, useSettingsPrefs } from "./cShared"
 import { HostDiagContainer } from "./HostDiagContainer"
 import { PairingContainer } from "./PairingContainer"
@@ -49,7 +51,14 @@ export function SettingsContainer(props: PiContainerProps) {
       }
       return
     }
-    if (action === "reconnect") relay.reconnectNow()
+    // D-1: the device-owned switches need a viewer identity first; the
+    // identity lives on the settings devices tab -- preselect it and
+    // open settings there (same landing as the room top-line action).
+    else if (action === "enable-identity") {
+      rememberSettingsPage("devices")
+      act.openSettings()
+    }
+    else if (action === "reconnect") relay.reconnectNow()
     else if (action === "sound-done") playTestSound("done")
     else if (action === "sound-fail") playTestSound("error")
     // "配对新设备…"、"接入说明与快捷键"：都在 a 的配对弹窗里（接入三步、attach 命令、设备管理与撤销）
@@ -74,6 +83,10 @@ export function SettingsContainer(props: PiContainerProps) {
       // Device-owned switches: inert until the current room's device
       // report arrives (the local value is not settled truth before).
       switchesPending={relay.switchSyncView.mode === "pending"}
+      // D-1: with no usable viewer identity the report can never
+      // arrive; the page renders an identity-required state instead of
+      // the local values.
+      switchesIdentityRequired={switchDisplayStateOf(relay.switchSyncView, relay.viewerIdentity) === "identity-required"}
       // 新界面的偏好只存在这个浏览器里（pi_remote_pi_prefs 不走 prefs_set 同步）
       aboutNote="这些设置只保存在这个浏览器里。"
       logoutArmed={armed}

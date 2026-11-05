@@ -113,6 +113,17 @@ function ListGroup({
             />
           ))
         : null}
+      {/* D-3: rows past the per-group cap need a visible way in on mobile too. */}
+      {!collapsed && actions.toggleExpanded && group.more != null && group.more > 0 ? (
+        <button type="button" className="pm-group-more" onClick={() => actions.toggleExpanded?.(group.id)}>
+          更多 {group.more}
+        </button>
+      ) : null}
+      {!collapsed && actions.toggleExpanded && group.expanded ? (
+        <button type="button" className="pm-group-more" onClick={() => actions.toggleExpanded?.(group.id)}>
+          收起
+        </button>
+      ) : null}
     </section>
   )
 }

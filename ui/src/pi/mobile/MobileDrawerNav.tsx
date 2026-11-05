@@ -232,6 +232,17 @@ export function MobileDrawerNav({
                       <DrawerSessionRow key={session.key} session={session} selected={session.selected} onOpen={pick} onLongPress={setPreview} />
                     ))
                   : null}
+                {/* D-3: rows past the per-group cap need a visible way in. */}
+                {!group.collapsed && actions.toggleExpanded && group.more != null && group.more > 0 ? (
+                  <button type="button" className="pm-group-more" onClick={() => actions.toggleExpanded?.(group.id)}>
+                    更多 {group.more}
+                  </button>
+                ) : null}
+                {!group.collapsed && actions.toggleExpanded && group.expanded ? (
+                  <button type="button" className="pm-group-more" onClick={() => actions.toggleExpanded?.(group.id)}>
+                    收起
+                  </button>
+                ) : null}
               </div>
             ))}
           </section>
@@ -255,6 +266,12 @@ export function MobileDrawerNav({
   )
 }
 
+/** Touch long-press threshold for drawer rows; matches the list rows
+ * (SwipeRow LONG_PRESS_MS) so both mobile shells answer a hold the same way. */
+const DRAWER_LONG_PRESS_MS = 480
+/** A hold that travels further than this is a drawer scroll, not a long-press. */
+const DRAWER_LONG_PRESS_SLOP = 10
+
 function DrawerSessionRow({
   session,
   selected,
@@ -266,6 +283,24 @@ function DrawerSessionRow({
   onOpen: (sessionKey: string) => void
   onLongPress: (session: PiSidebarSession) => void
 }) {
+  /*
+   * Touch long-press: before this, the row only answered contextmenu and
+   * Shift+F10, so a touch user had no way to reach the action card in
+   * drawer mode (verified on the live rig: a 1.3s touch hold produced no
+   * card and no contextmenu). The timer mirrors the list-row behaviour:
+   * touch/pen only (the mouse keeps the contextmenu path), movement past
+   * the slop cancels (drawer scroll), and the click the browser fires on
+   * release is swallowed so the session does not also open.
+   */
+  const timerRef = useRef<number | null>(null)
+  const originRef = useRef<{ x: number; y: number } | null>(null)
+  const suppressClickRef = useRef(false)
+  const clearTimer = () => {
+    if (timerRef.current != null) window.clearTimeout(timerRef.current)
+    timerRef.current = null
+    originRef.current = null
+  }
+  useEffect(() => clearTimer, [])
   return (
     <div className="pm-drawer-session">
       <button
@@ -273,10 +308,39 @@ function DrawerSessionRow({
         className="pm-drawer-session-btn"
         data-selected={selected ? "" : undefined}
         aria-haspopup="dialog"
-        aria-label={`${session.title}（Shift+F10 打开操作卡）`}
+        aria-label={`${session.title}${session.dateTimeLabel ? ` · ${session.dateTimeLabel}` : ""}（长按或 Shift+F10 打开操作卡）`}
         onClick={() => onOpen(session.key)}
+        onClickCapture={(event) => {
+          if (!suppressClickRef.current) return
+          suppressClickRef.current = false
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+        onPointerDown={(event) => {
+          if (event.pointerType === "mouse") return
+          clearTimer()
+          suppressClickRef.current = false
+          originRef.current = { x: event.clientX, y: event.clientY }
+          timerRef.current = window.setTimeout(() => {
+            timerRef.current = null
+            originRef.current = null
+            suppressClickRef.current = true
+            onLongPress(session)
+          }, DRAWER_LONG_PRESS_MS)
+        }}
+        onPointerMove={(event) => {
+          const origin = originRef.current
+          if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > DRAWER_LONG_PRESS_SLOP) clearTimer()
+        }}
+        onPointerUp={clearTimer}
+        onPointerCancel={clearTimer}
+        onPointerLeave={clearTimer}
         onContextMenu={(event) => {
           event.preventDefault()
+          // A platform contextmenu delivered after our own timer fired
+          // (Android long-press) must not reopen the card a second time.
+          if (suppressClickRef.current) return
+          clearTimer()
           onLongPress(session)
         }}
         onKeyDown={(event) => {
@@ -292,7 +356,7 @@ function DrawerSessionRow({
           </span>
         </span>
         <span className="pm-drawer-session-title">{session.title}</span>
-        {session.timeLabel ? <span className="pm-drawer-session-time">{session.timeLabel}</span> : null}
+        {session.timeLabel ? <span className="pm-drawer-session-time" title={session.dateTimeLabel}>{session.timeLabel}</span> : null}
       </button>
     </div>
   )

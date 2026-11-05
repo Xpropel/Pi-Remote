@@ -71,7 +71,7 @@ export function SidebarSessionRow({
       onBlur={scheduleClose}
     >
       <div className="sb-row" data-row="" data-style={style} data-active={isSelected ? "" : undefined} data-tone={session.status.tone} data-p11-surface="P11-SIDE-08">
-        <button type="button" className="sb-row-main" onClick={onOpen} aria-label={session.title}>
+        <button type="button" className="sb-row-main" onClick={onOpen} aria-label={session.dateTimeLabel ? `${session.title} · ${session.dateTimeLabel}` : session.title}>
           <span className="sb-marker" aria-hidden data-tone={session.status.tone} />
           <span className="sb-row-title" title={session.status.label}>{session.title}</span>
           {encBadge ? <span className="sb-row-enc">{encBadge}</span> : null}
@@ -85,7 +85,7 @@ export function SidebarSessionRow({
               <ArchiveIcon size={14} />
             </button>
           </span>
-          {session.timeLabel ? <span className="sb-row-time">{session.timeLabel}</span> : null}
+          {session.timeLabel ? <span className="sb-row-time" title={session.dateTimeLabel}>{session.timeLabel}</span> : null}
         </span>
       </div>
       {hover && anchor ? <SidebarHoverCard session={session} style={style} anchor={anchor} onMouseEnter={open} onMouseLeave={scheduleClose} /> : null}

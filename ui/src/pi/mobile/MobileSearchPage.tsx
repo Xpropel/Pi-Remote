@@ -68,7 +68,7 @@ export function MobileSearchPage({ data, actions, onOpenSession }: PiMobileNavPr
                   <span className="pm-search-row-title">{session.title}</span>
                   {session.summary ? <span className="pm-search-row-summary">{session.summary}</span> : null}
                 </span>
-                {session.timeLabel ? <span className="pm-search-row-time">{session.timeLabel}</span> : null}
+                {session.timeLabel ? <span className="pm-search-row-time" title={session.dateTimeLabel}>{session.timeLabel}</span> : null}
               </button>
             ))}
             {data.search.body ? (

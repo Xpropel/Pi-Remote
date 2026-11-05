@@ -17,12 +17,14 @@ import {
   type PiSidebarLocalState,
 } from "../sidebar/storage.ts"
 import {
+  fullTimeLabel,
   relativeTimeLabel,
   sidebarDeviceRows,
   sidebarGroupsWithOverlay,
   sidebarIdentityNameOf,
   sidebarSessionKeyOf,
   sidebarStatusOf,
+  storedTimeLabel,
   sidebarWorkspaceGroupId,
   sidebarWorkspaceLabel,
 } from "../sidebar/model.ts"
@@ -50,6 +52,8 @@ type GroupBuild = {
   label: string
   deviceId: string
   cwd: string
+  more?: number
+  expanded?: boolean
   rows: { id: string; title: string; marker: string; at?: number; deviceId?: string; subtitle?: string; trailingText?: string }[]
 }
 
@@ -126,7 +130,10 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
           title: row.title,
           status: markerStatus(row.marker),
           eventAt: row.at,
-          timeLabel: row.trailingText ?? relativeTimeLabel(now, row.at),
+          // D-3: stored (not live) rows get date+time once past an hour;
+          // live rows keep the relative label.
+          timeLabel: row.trailingText ?? (listed && !listed.online ? storedTimeLabel(now, row.at) : relativeTimeLabel(now, row.at)),
+          dateTimeLabel: fullTimeLabel(row.at),
           // 设计 D §2.4 第四层：两行制第二行承载状态全句（waiting/running/error/done/offline）；
           // 空闲态让位给原来的副标题（路径/设备），不拿"空闲"挤掉信息——状态优先只对有信息量的态生效
           summary: status.tone === "idle" ? (row.subtitle ?? "") : status.text,
@@ -149,6 +156,8 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
         collapsed: folderCollapsed,
         sessions,
         count: sessions.length,
+        more: group.more,
+        expanded: group.expanded,
       }
     })
     const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: scopeState.archives })
@@ -180,6 +189,9 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
     const next = setSidebarFolderCollapsed(local, scope, groupId, !(current.folders[groupId] ?? true))
     persist(next)
   }, [local, persist, scope])
+  // Group row-cap expansion lives in the shared UI state (same key space as
+  // the desktop shells: sidebarGroups group key), not in this local store.
+  const toggleExpanded = useCallback((groupId: string) => p.act.toggleExpanded(groupId), [p.act])
   const clearLocal = useCallback(() => persist(clearSidebarScope(local, scope)), [local, persist, scope])
   useEffect(() => {
     // 首次进入时把旧版本坏数据落成空（parse 已处理，这里只保证存储 key 存在）
@@ -192,5 +204,5 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       // 忽略
     }
   }, [])
-  return { data, togglePin, toggleArchive, toggleGroup, clearLocal }
+  return { data, togglePin, toggleArchive, toggleGroup, toggleExpanded, clearLocal }
 }

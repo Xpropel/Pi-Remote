@@ -118,6 +118,11 @@ export interface PiSidebarSession {
   /** 绝对时间；时间标签由 model 的 relativeTimeLabel 生成（见 timeLabel） */
   eventAt?: number
   timeLabel: string
+  /** Full timestamp (model's fullTimeLabel, e.g. "2026年11月4日 21:07") for the hover
+   *  card and the accessible row label, so same-title stored rows stay
+   *  distinguishable (D-3). Absent = host did not fill it; label falls back
+   *  to the title alone. */
+  dateTimeLabel?: string
   /** 会话事件流一句人话（移动列表第二行/气泡副行用）；无事件时必须为空，不编造 */
   summary?: string
   /** 一行实时状态全句（设计 D §2.2 的 roomStatusLine 输出；悬停气泡加行用）。缺省 = 宿主没接状态面，气泡不加行 */
@@ -152,6 +157,11 @@ export interface PiSidebarGroup {
   sessions: PiSidebarSession[]
   /** 组计数（组内会话数；置顶组=置顶数；归档组=归档数） */
   count: number
+  /** Rows hidden by the per-group cap (sidebarGroups "more"); > 0 renders a
+   *  "更多 N" expand row (D-3: capped groups were unreachable past row 5). */
+  more?: number
+  /** The group is currently expanded past the cap; renders a "收起" row. */
+  expanded?: boolean
 }
 
 /** Codex 扩展位：RunLocation/本地页入口（扩展/代码审查/计划任务/技能）以行数据注入，不复制共享核。 */
@@ -246,6 +256,10 @@ export interface PiSidebarActions {
   toggleArchive: (sessionKey: string) => void
   /** 分组折叠；plain 行「工作区」=全部展开/收起 */
   toggleGroup: (groupId: string) => void
+  /** Expand/collapse a group's capped row list ("更多 N" / "收起"); groupId is
+   *  the sidebarGroups key (deviceId:cwd). Optional: shells that never cap
+   *  their groups may omit it, and the sections render no expand row. */
+  toggleExpanded?: (groupId: string) => void
   togglePlainRow?: (row: PiSidebarPlainRow) => void
   /** 搜索 = 既有命令面板/搜索（spec §6.7）；默认无常驻输入框 */
   openSearch: () => void

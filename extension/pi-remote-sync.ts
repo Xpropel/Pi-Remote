@@ -516,10 +516,30 @@ function parseDeviceKeyData(data: any, filePath: string): { key: any } | { error
       if (typeof v === "string" && v) roomKeys[rid] = v;
     }
   }
+  // D-5: validate content-key entries at load time. An entry that does
+  // not decode to exactly 32 bytes can never seal or open anything (the
+  // use sites already treat it as "no key held"); before D-5 that state
+  // was invisible and only ever showed up as per-message seal failures
+  // in a log nobody watches. Record metadata only -- account, slot and
+  // decoded byte length, never the value -- so start() can raise one
+  // loud, persistent diagnostic. Malformed entries stay non-fatal: the
+  // sign/box identity above is what authentication depends on.
+  const invalidContentKeys: { account: string; slot: string; bytes: number }[] = [];
+  const auditContentKeys = (map: Record<string, string>, slot: string) => {
+    for (const account of Object.keys(map)) {
+      const buf = b64ToBuffer(map[account]);
+      if (!buf || buf.length !== 32) {
+        invalidContentKeys.push({ account, slot, bytes: buf ? buf.length : -1 });
+      }
+    }
+  };
+  auditContentKeys(contentKeys, "current");
+  auditContentKeys(contentKeysPrev, "prev");
   return {
     key: {
       filePath,
       deviceId,
+      invalidContentKeys,
       keyFp: keyFingerprintHex(signPubDer),
       signPriv,
       signPub,
@@ -4170,6 +4190,17 @@ class Bridge {
    *  back to plaintext -- an enc room must never receive plaintext. */
   encWriteRejected = false;
   private encRejectLogged = false;
+  /** D-5: dialog seal-key health. sealKeyFault is a persistent,
+   *  human-readable diagnosis (key-material metadata only, never key
+   *  values), set at start() when the loaded key file carries a content
+   *  key that is not exactly 32 bytes, or latched at runtime when
+   *  sealing/opening actually throws. It stays visible in get_host_diag
+   *  (the seal block) until the key material is fixed; fail-closed
+   *  behavior (textless frames) is unchanged either way. */
+  sealKeyFault: string | null = null;
+  sealFailures = 0;
+  sealLastError: string | null = null;
+  private sealFaultAnnounced = false;
   /** 接管持留的 dialog：dialogId → HeldDialog（含排队中的）。同一时刻只一个 active。 */
   dialogHeld = new Map<string, any>();
   dialogHeldQueue: string[] = [];
@@ -4217,6 +4248,9 @@ class Bridge {
     if (keyLoad.warning) log(keyLoad.warning);
     if (this.deviceKey) {
       log("设备钥已加载，钥模式待命（deviceId " + this.deviceKey.deviceId + "，keyFp " + this.deviceKey.keyFp + "）");
+      // D-5: a malformed content key in the file is announced once,
+      // loudly, at load time -- not discovered per sealed message.
+      this.noteSealKeyFileFault();
     }
     if (!RELAY_URL || (!TOKEN && !HAS_DEVICE_TOKEN && !this.deviceKey)) {
       log("PI_REMOTE_RELAY 为空，或 PI_REMOTE_TOKEN 与设备令牌都没配，扩展不连接");
@@ -5312,6 +5346,58 @@ class Bridge {
     return { entry, ack };
   }
 
+  /** True while the loaded key file carries a content key that failed
+   *  the load-time 32-byte validation (parseDeviceKeyData). Such a fault
+   *  can only heal by fixing the file and reloading, never at runtime. */
+  private sealKeyFileInvalid(): boolean {
+    return !!(this.deviceKey && Array.isArray(this.deviceKey.invalidContentKeys) && this.deviceKey.invalidContentKeys.length);
+  }
+
+  /** D-5: surface a malformed content key found at load time. One loud
+   *  error-level log line plus a diagnostics-ring entry; the fault also
+   *  stays readable in get_host_diag (seal block) for as long as the
+   *  loaded key carries the bad entries. */
+  noteSealKeyFileFault() {
+    if (!this.sealKeyFileInvalid()) return;
+    const bad = this.deviceKey.invalidContentKeys as { account: string; slot: string; bytes: number }[];
+    const parts = bad.map((b) => "账号 " + b.account + " 的" + (b.slot === "prev" ? "上一把" : "当前") + "内容钥" + (b.bytes < 0 ? "无法 base64 解码" : "解码后 " + b.bytes + " 字节（应为 32 字节）"));
+    this.sealKeyFault = "设备钥文件的内容钥无效：" + parts.join("；");
+    this.sealFaultAnnounced = true;
+    log("错误：" + this.sealKeyFault + "。受影响账号的对话文本无法密封：加密房间的对话框只显示结构、没有正文（fail-closed，不会发明文）。请重新配对或重生成设备钥文件后重启扩展；诊断见 get_host_diag 的 seal 段。");
+    try { recordDiagError(this.sealKeyFault); } catch {}
+  }
+
+  /** D-5: record a runtime seal/open failure. The first failure of an
+   *  episode is announced loudly (error-level log + diagnostics ring);
+   *  repeats only bump the counter -- before D-5 every failed message
+   *  wrote its own log line (438 lines over three days on one rig) and
+   *  the fault still went unnoticed. The frame fallback itself is
+   *  unchanged: textless, fail-closed. */
+  noteSealFailure(what: string, err?: any) {
+    this.sealFailures += 1;
+    const detail = err instanceof Error ? err.message : err ? String(err) : "";
+    if (detail) this.sealLastError = detail;
+    if (!this.sealKeyFault) {
+      this.sealKeyFault = "对话文本密封失败（" + what + "）" + (detail ? "：" + detail : "");
+    }
+    if (!this.sealFaultAnnounced) {
+      this.sealFaultAnnounced = true;
+      log("错误：对话文本密封失败（" + what + "）：" + (detail || "未知错误") + "。加密房间的对话框将只显示结构、没有正文（fail-closed，不会发明文）；请检查设备钥文件的内容钥，或重新配对/重生成设备钥后重启扩展。后续失败只计数不再逐条刷日志，诊断见 get_host_diag 的 seal 段。");
+      try { recordDiagError(this.sealKeyFault); } catch {}
+    }
+  }
+
+  /** D-5: a successful seal/open ends a runtime fault episode. A fault
+   *  sourced from the key file itself stands until reload (see
+   *  sealKeyFileInvalid), so only runtime faults clear here. */
+  noteSealSuccess() {
+    if (this.sealFaultAnnounced && !this.sealKeyFileInvalid()) {
+      log("对话文本密封已恢复正常");
+      this.sealKeyFault = null;
+    }
+    if (!this.sealKeyFileInvalid()) this.sealFaultAnnounced = false;
+  }
+
   /** (b+) seal one outgoing interaction frame (crypto.dialog, design
    *  section 3.1). The single out-gate in emitEventNow covers every
    *  producer -- tap capture, held-dialog activation, ask_user, the
@@ -5320,9 +5406,10 @@ class Bridge {
    *  local dialogs keep their plaintext args untouched. Seal failure
    *  never falls back to plaintext: once the seal conditions hold, a
    *  frame whose seal throws goes out textless -- structure fields
-   *  kept, every text field dropped, no sealed field attached -- one
-   *  line lands in the extension log, and later frames keep trying
-   *  (no latch). Plaintext only ever leaves when the seal conditions
+   *  kept, every text field dropped, no sealed field attached -- and
+   *  the failure is recorded through noteSealFailure (D-5: first
+   *  failure of an episode is announced loudly, repeats only count).
+   *  Plaintext only ever leaves when the seal conditions
    *  themselves do not hold (see dialogSealContext). */
   private sealInteractionEvent(ev: any): any {
     if (!ev || typeof ev !== "object") return ev;
@@ -5342,12 +5429,14 @@ class Bridge {
         out.textEnc = { enc: 1, ct: encryptTextCt(ctx.entry.rck, JSON.stringify(pack)) };
         if (typeof ev.title === "string" && ev.title) out.titleEnc = encryptAckText(ctx.ack, ev.title);
         for (const f of ["title", "options", "message", "placeholder", "prefill"]) delete out[f];
+        this.noteSealSuccess();
         return out;
       }
       if (type === "ext_notify") {
         if (typeof ev.message !== "string" || !ev.message) return ev;
         const out: any = { ...ev, messageEnc: { enc: 1, ct: encryptTextCt(ctx.entry.rck, ev.message) } };
         delete out.message;
+        this.noteSealSuccess();
         return out;
       }
       // ui_prompt_start / ui_prompt_end: both frames carry the title
@@ -5355,12 +5444,13 @@ class Bridge {
       if (typeof ev.title !== "string" || !ev.title) return ev;
       const out: any = { ...ev, titleEnc: encryptAckText(ctx.ack, ev.title) };
       delete out.title;
+      this.noteSealSuccess();
       return out;
     } catch (err) {
       // Seal conditions held but sealing threw: the encryption promise
       // must not be silently broken by one runtime error, so the frame
       // goes out textless (structure only, no text, no *Enc fields).
-      log("dialog text seal failed; sending a textless frame:", type, err instanceof Error ? err.message : String(err));
+      this.noteSealFailure(type, err);
       const out: any = { ...ev };
       if (type === "dialog_open") {
         for (const f of ["title", "options", "message", "placeholder", "prefill"]) delete out[f];
@@ -5398,21 +5488,29 @@ class Bridge {
       return ct ? decryptTextCt(entry.rck, ct) : null;
     };
     const out: any = { ...msg };
+    let openedAny = false;
     if (msg.valueEnc !== undefined) {
       const value = openField(msg.valueEnc);
-      if (value === null) return { ok: false };
+      // D-5: a present sealed field that will not open is a key-side
+      // fault (wrong/stale room key), distinct from a malformed frame;
+      // count it on the seal-health surface. The rejection itself is
+      // unchanged (bad_args, dialog stays answerable).
+      if (value === null) { this.noteSealFailure("dialog_answer", "sealed answer field failed to open"); return { ok: false }; }
       out.value = value;
       delete out.valueEnc;
+      openedAny = true;
     }
     if (msg.valuesEnc !== undefined) {
       const raw = openField(msg.valuesEnc);
-      if (raw === null) return { ok: false };
+      if (raw === null) { this.noteSealFailure("dialog_answer", "sealed answer field failed to open"); return { ok: false }; }
       let parsed: any = null;
       try { parsed = JSON.parse(raw); } catch { return { ok: false }; }
       if (!Array.isArray(parsed)) return { ok: false };
       out.values = parsed.map((v: any) => String(v ?? ""));
       delete out.valuesEnc;
+      openedAny = true;
     }
+    if (openedAny) this.noteSealSuccess();
     return { ok: true, msg: out };
   }
 
@@ -10078,6 +10176,16 @@ class Bridge {
       attach,
       // dialog tap 健康度：自检判失效（回退信号模式）在这里可见，见定版说明第一部分 §1
       tap: { state: this.tapState, captures: this.tapCaptures, missed: this.tapMissed, open: this.tapOpenDialogs.size },
+      // D-5: dialog seal-key health, persistent until the key material
+      // is fixed. Metadata only (account / slot / decoded byte length
+      // and counters) -- key values never appear here.
+      seal: {
+        dialogKey: this.sealKeyFileInvalid() ? "invalid" : "ok",
+        invalid: this.sealKeyFileInvalid() ? this.deviceKey.invalidContentKeys : [],
+        fault: this.sealKeyFault,
+        failures: this.sealFailures,
+        lastError: this.sealLastError,
+      },
       recentErrors: diagRecentErrors.map((e) => (e.code ? { at: e.at, message: e.message, code: e.code } : { at: e.at, message: e.message })),
       logTail: readLogTail(),
     };

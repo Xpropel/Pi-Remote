@@ -63,6 +63,40 @@ export function relativeTimeLabel(now: number, at: number | undefined | null): s
   return `${d.getMonth() + 1}月${d.getDate()}日`
 }
 
+/**
+ * Full unambiguous timestamp: "2026年11月4日 21:07" — year always shown,
+ * hour/minute zero-padded. Used by the hover card and the accessible row
+ * label so rows that share a title stay distinguishable (D-3).
+ */
+export function fullTimeLabel(at: number | undefined | null): string {
+  if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) return ""
+  const d = new Date(at)
+  const hh = String(d.getHours()).padStart(2, "0")
+  const mm = String(d.getMinutes()).padStart(2, "0")
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${hh}:${mm}`
+}
+
+/**
+ * Visible time label for a stored (not loaded) session row: relative while
+ * fresh (under an hour: 刚刚 / Nm), then date + time so a run of same-title
+ * rows in one workspace stays distinguishable at a glance (D-3). Same year
+ * drops the year prefix; other years keep the full label.
+ */
+export function storedTimeLabel(now: number, at: number | undefined | null): string {
+  if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) return ""
+  const diff = Math.max(0, now - at)
+  if (diff < 60_000) return "刚刚"
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
+  const full = fullTimeLabel(at)
+  return new Date(at).getFullYear() === new Date(now).getFullYear() ? full.slice(full.indexOf("年") + 1) : full
+}
+
+/** Accessible row label: title + full timestamp, so screen readers and tooltips can tell same-title rows apart (D-3). */
+export function sidebarRowLabel(title: string, at: number | undefined | null): string {
+  const full = fullTimeLabel(at)
+  return full ? `${title} · ${full}` : title
+}
+
 /** 会话摘要行：只有真实事件一句人话；没有就返回空串（移动列表行高不变，不编造）。 */
 export function sidebarSummaryLineOf(summary: unknown): string {
   const text = typeof summary === "string" ? summary.trim() : ""

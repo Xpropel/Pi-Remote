@@ -221,6 +221,41 @@ test("接线守卫: useSettingsPrefs 喂合并集；useRelay 暴露 switchSyncVi
   assert.match(claudeLogic, /settingsPrefsWithDeviceSwitches\(base, p\.relay\.switchSyncView\)/, "Claude 壳设置读数以设备报告覆盖 prefs 副本")
 })
 
+/* ---------------- D-1: display state (is device truth reachable?) ------ */
+
+test("switchDisplayStateOf: 无身份/未登记 + pending = identity-required（本地值永不冒充设备真值）", () => {
+  const pending = sync.SWITCH_SYNC_PENDING_VIEW
+  assert.equal(sync.switchDisplayStateOf(pending, null), "identity-required", "没有身份对象")
+  assert.equal(sync.switchDisplayStateOf(pending, undefined), "identity-required")
+  assert.equal(sync.switchDisplayStateOf(pending, { hasIdentity: false, registered: false }), "identity-required", "从未启用身份（D-1 实测形态）")
+  assert.equal(sync.switchDisplayStateOf(pending, { hasIdentity: true, registered: false }), "identity-required", "生成了钥但未登记：ext_status 仍到不了")
+  assert.equal(sync.switchDisplayStateOf(pending, { hasIdentity: false, registered: true }), "identity-required", "半截状态不算可用身份")
+})
+
+test("switchDisplayStateOf: 有可用身份时 FIX-GATE 行为不变（pending 等首份报告、device 显示真值、legacy 照旧）", () => {
+  const usable = { hasIdentity: true, registered: true }
+  assert.equal(sync.switchDisplayStateOf(sync.SWITCH_SYNC_PENDING_VIEW, usable), "pending", "有身份：仍是原来的短暂 pending")
+  const deviceView = { mode: "device", dialogRemoteAnswer: false, approvalGateEnabled: false, approvalGateTier: "list", askUserEnabled: false }
+  assert.equal(sync.switchDisplayStateOf(deviceView, usable), "device")
+  assert.equal(sync.switchDisplayStateOf(deviceView, null), "device", "报告已经到了就与身份无关")
+  assert.equal(sync.switchDisplayStateOf({ ...sync.SWITCH_SYNC_PENDING_VIEW, mode: "legacy" }, null), "legacy", "旧桥：本地值即操作值，不改")
+  assert.equal(sync.switchDisplayStateOf({ ...sync.SWITCH_SYNC_PENDING_VIEW, mode: "legacy" }, usable), "legacy")
+})
+
+test("D-1 接线守卫: 设置面按 switchDisplayStateOf 渲染 identity-required，并带启用身份的就地动作", () => {
+  const general = readUi("pi/settings/pages/GeneralPage.tsx")
+  assert.match(general, /switchDisplayStateOf\(relay\.switchSyncView, relay\.viewerIdentity\) === "identity-required"/, "通用页按纯函数判定 identity-required")
+  assert.match(general, /title="启用观看端身份"/, "通用页对话组带启用动作行")
+  assert.match(general, /setPage\("devices"\)/, "启用动作直达设备页（身份区所在页）")
+  assert.ok((general.match(/需先启用身份/g) ?? []).length >= 3, "三开关 + 档位在 identity-required 时都不显示本地值")
+  const container = readUi("pi/containers/SettingsContainer.tsx")
+  assert.match(container, /switchesIdentityRequired=\{switchDisplayStateOf\(relay\.switchSyncView, relay\.viewerIdentity\) === "identity-required"\}/, "旧设置容器同样传 identity-required")
+  assert.match(container, /action === "enable-identity"/, "旧设置容器处理启用身份动作")
+  const sections = readUi("components/pi/composer/PiSettingsPage.tsx")
+  assert.match(sections, /switchesIdentityRequired\?: boolean/, "共享设置节声明 identity-required 输入")
+  assert.match(sections, /act\?\.\("enable-identity"\)/, "共享设置节带启用身份动作行")
+})
+
 test("extStatusAfterEvent: switches 进快照；坏帧保留上一份", () => {
   const ev = { type: "ext_status", statuses: { a: "1" }, widgets: [], title: null, working: null, tap: { state: "ok" }, switches: { dialogRemoteAnswer: false, approvalGate: { enabled: true, tier: "high-risk" }, askUserEnabled: true }, at: 3 }
   const snap = extStatusAfterEvent(null, ev)

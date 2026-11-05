@@ -6,6 +6,7 @@
 import { useMemo, useState } from "react"
 import {
   clampSidebarWidth,
+  fullTimeLabel,
   PI_SIDEBAR_COPY,
   relativeTimeLabel,
   sidebarDeviceRows,
@@ -13,6 +14,7 @@ import {
   sidebarIdentityNameOf,
   sidebarSessionKeyOf,
   sidebarStatusOf,
+  storedTimeLabel,
   sidebarWorkspaceGroupId,
   sidebarWorkspaceLabel,
   UnifiedSidebar,
@@ -83,7 +85,10 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
           key, id: row.id, title: row.title,
           status: sidebarStatusOf({ running: row.marker === "running", waiting: row.marker === "waiting", error: row.marker === "error" }),
           eventAt: row.at,
-          timeLabel: row.trailingText ?? relativeTimeLabel(now, row.at),
+          // D-3: stored (not live) rows get date+time once past an hour so
+          // same-title rows stay tellable apart; live rows keep relative.
+          timeLabel: row.trailingText ?? (session && !session.online ? storedTimeLabel(now, row.at) : relativeTimeLabel(now, row.at)),
+          dateTimeLabel: fullTimeLabel(row.at),
           summary: row.subtitle ?? "",
           // 悬停气泡加行用状态全句（设计 D §2.4 第三层）
           statusLine: status.text,
@@ -97,7 +102,7 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
           encReason: session?.encReason,
         }
       })
-      return { id: group.key, kind: "workspace" as const, label: group.label || sidebarWorkspaceLabel(cwd), cwd, collapsed, sessions, count: sessions.length }
+      return { id: group.key, kind: "workspace" as const, label: group.label || sidebarWorkspaceLabel(cwd), cwd, collapsed, sessions, count: sessions.length, more: group.more, expanded: group.expanded }
     })
     const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: scopeState.archives })
     // 正文匹配块（A-3）：标题已命中的会话不重复列；状态行照 searchModel 诚实文案
@@ -171,6 +176,7 @@ export function CursorUnifiedSidebar({ p }: { p: PiContainerProps }) {
     togglePin: (key) => { localStore.togglePin(key); relay.notify(PI_SIDEBAR_COPY.pinHint) },
     toggleArchive: (key) => { localStore.toggleArchive(key); relay.notify(PI_SIDEBAR_COPY.archiveHint) },
     toggleGroup: (groupId) => localStore.toggleFolder(groupId),
+    toggleExpanded: (groupId) => act.toggleExpanded(groupId),
     openSearch: () => act.setSearch(ui.search ?? ""),
     closeSearch: () => act.setSearch(null),
     setSearchQuery: (query) => act.setSearch(query),

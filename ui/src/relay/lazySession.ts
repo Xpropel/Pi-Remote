@@ -122,6 +122,21 @@ export function lazySendTargets(send: LazySend | null, sessionId: string, device
   return !!send && send.sessionId === sessionId && send.deviceId === deviceId
 }
 
+/**
+ * Whether a crypto_required refusal for `roomId` kills the pending lazy send.
+ * The relay refuses a subscription to an encrypted room from a viewer
+ * connection without the content capability (a token-auth viewer never
+ * declares it) and then sends neither subscribed nor snapshot -- the two
+ * events the state machine waits for -- so the queued send can never flush
+ * and would hang until the generic watch timeout. The refusal is fatal only
+ * for the send that targets that very room and has not been submitted yet;
+ * a send already in "sending" got its room-ready and is unaffected, and an
+ * unrelated room's refusal must not touch the queue.
+ */
+export function lazySendCryptoBlocked(send: LazySend | null, roomId: string): boolean {
+  return !!send && !!roomId && send.sessionId === roomId && send.phase !== "sending"
+}
+
 /** 未载入会话在列表里的合成房间：online 只表示“设备在线，可点选/可发送”，
  *  不代表本机已有这个房间；正文由 UI 的空态接管，不订阅。 */
 export function lazyRoomFromRow(row: LazySelection): RoomInfo {

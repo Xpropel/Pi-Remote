@@ -213,12 +213,6 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
 
   // 流顶一行：外壳的说明 + 本机记录 / 正在拉快照 + 补拉状态
   const loadEarlier = relay.loadEarlierHistory
-  // A-4: a dialog is pending in this room when this end already holds a
-  // card/prompt, or the roster waiting summary (the same signal the
-  // sidebar row renders from) names one -- sealed dialogs never reach
-  // the local card state on an end without the room key.
-  const roomEntry = roomId ? relay.rooms.find((room) => room.id === roomId) : undefined
-  const pendingDialog = waiting || (roomEntry?.waiting?.length ?? 0) > 0 || roomEntry?.waitingPrompt != null
   const deviceName = lazy ? (relay.devices.find((d) => d.id === lazy.deviceId)?.name ?? relay.selectedDevice?.name ?? null) : null
   const own: PiTopLine[] = []
   if (lazy) own.push(...archiveTopLinesOf(archive, deviceName))
@@ -228,7 +222,7 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
   if (!lazy) {
     if (relay.roomCryptoStatus === "waiting-ack") own.push({ text: "这个房间已加密，正在等待内容钥送达", tone: "muted" })
     if (relay.roomCryptoStatus === "mismatch") own.push({ text: "内容钥不一致：本机持有的内容钥与这个房间的钥不是同一把，消息无法解密", tone: "error" })
-    if (relay.roomCryptoStatus === "crypto-required") own.push(cryptoRequiredTopLineOf(pendingDialog))
+    if (relay.roomCryptoStatus === "crypto-required") own.push(cryptoRequiredTopLineOf())
     if (relay.decryptFailureCount > 0) own.push({ text: `有 ${relay.decryptFailureCount} 条消息无法解密`, tone: "muted" })
   }
   const history = lazy ? null : historyTopLineOf(relay.history, roomId)

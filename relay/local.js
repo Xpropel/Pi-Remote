@@ -1563,7 +1563,9 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
                 return;
               }
             }
-            const room = rooms.get(rid);
+            // D-4: registration must not renew the idle clock (see
+            // Rooms.get); the offline paths stamp it when the session ends.
+            const room = rooms.get(rid, { activity: false });
             if (room.local && room.local !== ws) {
               try {
                 room.local.close(4009, "replaced by new local connection");
@@ -1574,6 +1576,8 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
               const old = ws._room;
               old.local = null;
               old.online = false;
+              // D-4: the idle window runs from when the session ended.
+              rooms.touch(old);
               clearActive(old);
               broadcast(old.viewers, { type: "room_offline", room: old.id }, cfg);
               log("local 改注册房间，旧房间离线:", old.id);
@@ -1588,6 +1592,7 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             room.accountId = boundAccount(index, devices, room.deviceId, cfg.accountId);
             if (msg.room && msg.room.deviceName) room.deviceName = String(msg.room.deviceName).slice(0, MAX_DEVICE_NAME);
             if (msg.room && msg.room.platform) room.platform = normalizePlatform(String(msg.room.platform)) || room.platform;
+            room.lastRegisterAt = Date.now();
             noteActive(room);
             // 分支换代 epoch（扩展在 navigate_tree / 终端 /tree 之后递增）：同一扩展实例（instance）的
             // epoch 变了 → 存储整体重置，避免新旧分支消息并集。instance 变了（pi 重启/runtime 重载，
@@ -1651,6 +1656,9 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             if (room.approvalGateSwitch) {
               send(ws, { type: "approval_gate_switch", room: room.id, ...room.approvalGateSwitch }, cfg);
             }
+            // D-4: this live registration supersedes the empty shells
+            // earlier attach runs left for the same device + workspace.
+            try { rooms.supersedeStaleShells(room); } catch (e) { log("注册期壳回收异常:", e.message); }
             rooms.broadcastRoomList();
             break;
           }
@@ -2053,6 +2061,8 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
             broadcastClearedSessionState(room, { settled: true });
             room.online = false;
             room.local = null;
+            // D-4: the idle window runs from when the session ended.
+            rooms.touch(room);
             if (clearSessionState(room)) broadcastRoomAttention(rooms, room, cfg);
             clearActive(room);
             cancelResend(room);
@@ -2198,6 +2208,8 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
       if (room && room.local === ws) {
         room.local = null;
         room.online = false;
+        // D-4: the idle window runs from when the session ended.
+        rooms.touch(room);
         clearActive(room);
         cancelResend(room);
         // 异常断开（没有 room_closed）也要把“本机还在跑”的队列/清单/弹窗收起来；
@@ -2224,6 +2236,8 @@ function startLocalServer(cfg, rooms, store, ctx, onListening, onError) {
         if (r !== room && r.local === ws) {
           r.local = null;
           r.online = false;
+          // D-4: the idle window runs from when the session ended.
+          rooms.touch(r);
           clearActive(r);
           cancelResend(r);
           broadcastClearedSessionState(r);

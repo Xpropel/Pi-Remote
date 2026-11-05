@@ -144,7 +144,7 @@ export function SwipeRow({
         }}
         role="button"
         tabIndex={0}
-        aria-label={`${session.title}${session.summary ? `：${session.summary}` : ""}`}
+        aria-label={`${session.title}${session.dateTimeLabel ? ` · ${session.dateTimeLabel}` : ""}${session.summary ? `：${session.summary}` : ""}`}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault()
@@ -163,7 +163,7 @@ export function SwipeRow({
         <span className="pm-row-main">
           <span className="pm-row-line1">
             <span className="pm-row-title">{session.title}</span>
-            {session.timeLabel ? <span className="pm-row-time">{session.timeLabel}</span> : null}
+            {session.timeLabel ? <span className="pm-row-time" title={session.dateTimeLabel}>{session.timeLabel}</span> : null}
           </span>
           <span className="pm-row-line2">{session.summary || "\u00a0"}</span>
         </span>

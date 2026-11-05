@@ -286,6 +286,19 @@
 .pm-group-toggle:hover {
   background: var(--pm-hover);
 }
+.pm-group-more {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 20px 0 22px;
+  color: var(--pm-text-3);
+  font-size: 13.5px;
+  text-align: left;
+}
+.pm-group-more:hover {
+  background: var(--pm-hover);
+}
 .pm-group-name {
   min-width: 0;
   overflow: hidden;

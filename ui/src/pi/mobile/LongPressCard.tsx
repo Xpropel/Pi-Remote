@@ -51,6 +51,8 @@ export function LongPressCard({
             <span className="pm-longpress-value pm-mono">{session.cwd}</span>
           </p>
         ) : null}
+        {/* D-3: full timestamp so same-title stored rows can be told apart here too. */}
+        {session.dateTimeLabel ? <p className="pm-longpress-sub">{session.dateTimeLabel}</p> : null}
         <p className="pm-longpress-sub">{session.deviceName ?? "本机"} · 本地</p>
         <p className="pm-longpress-hint">{PI_SIDEBAR_COPY.pinHint}</p>
         <div className="pm-longpress-actions">

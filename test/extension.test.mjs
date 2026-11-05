@@ -924,7 +924,13 @@ test("get_host_diag：字段齐全、attach 沿用窗口判定、错误环带 co
   assert.equal(diag.arch, process.arch)
   assert.equal(diag.extensionVersion, "4.0.0")
   assert.ok(diag.piVersion === null || typeof diag.piVersion === "string")
-  assert.deepEqual(Object.keys(diag).sort(), ["arch", "attach", "extensionVersion", "logTail", "nodeVersion", "piVersion", "platform", "recentErrors", "tap"].sort())
+  assert.deepEqual(Object.keys(diag).sort(), ["arch", "attach", "extensionVersion", "logTail", "nodeVersion", "piVersion", "platform", "recentErrors", "seal", "tap"].sort())
+  // D-5: the seal block is part of the one-screen diagnostics; a bridge
+  // with no device key loaded reports a healthy, empty seal surface.
+  assert.equal(diag.seal.dialogKey, "ok")
+  assert.deepEqual(diag.seal.invalid, [])
+  assert.equal(diag.seal.fault, null)
+  assert.equal(diag.seal.failures, 0)
   assert.equal(diag.tap.state, "off", "未装 tap 的桥如实报 off")
   assert.equal(diag.tap.captures, 0)
   assert.equal(diag.tap.open, 0)

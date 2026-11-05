@@ -8,6 +8,7 @@ import { CLAUDE_OVERLAY } from "../overlays/ids"
 import type { PiContainerProps } from "@/pi/containers/types"
 import { UnifiedSidebar } from "@/pi/sidebar/UnifiedSidebar"
 import {
+  fullTimeLabel,
   PI_SIDEBAR_COPY,
   relativeTimeLabel,
   sidebarGroupsWithOverlay,
@@ -19,6 +20,7 @@ import {
   type PiSidebarPlainRow,
   type PiSidebarSession,
   type PiSidebarStatus,
+  storedTimeLabel,
   useSidebarLocalState,
   clampSidebarWidth,
 } from "@/pi/sidebar"
@@ -92,7 +94,10 @@ export function ClaudeUnifiedSidebar({ p }: { p: PiContainerProps }) {
             id: row.id,
             title: row.title,
             status: statusOf(!!device.online, waiting, relay.roomId === row.id && row.openable),
-            timeLabel: relativeTimeLabel(now, row.updatedAt),
+            // D-3: stored (not live) rows get date+time once past an hour;
+            // live rows keep the relative label.
+            timeLabel: row.online ? relativeTimeLabel(now, row.updatedAt) : storedTimeLabel(now, row.updatedAt),
+            dateTimeLabel: fullTimeLabel(row.updatedAt),
             cwd: row.cwd ?? "",
             deviceName: device.name,
             selected: relay.roomId === row.id,

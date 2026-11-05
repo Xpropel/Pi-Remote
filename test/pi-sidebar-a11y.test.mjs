@@ -77,6 +77,60 @@ test("未选中会话标题六套深浅对比度 ≥4.5（色值对最高亮度�
 })
 
 
+const readRoot = (path) => readFile(new URL(`../ui/src/${path}`, import.meta.url), "utf8")
+
+test("D-3 行可辨识：行 aria-label 与悬停气泡带完整时间戳，时间位有 title 提示", async () => {
+  const row = await read("components/SidebarSessionRow.tsx")
+  assert.equal(row.includes("session.dateTimeLabel"), true)
+  assert.equal(row.includes("aria-label={session.dateTimeLabel ? `${session.title} · ${session.dateTimeLabel}` : session.title}"), true)
+  assert.equal(row.includes('title={session.dateTimeLabel}'), true)
+  const card = await read("components/SidebarHoverCard.tsx")
+  assert.equal(card.includes("session.dateTimeLabel"), true)
+  const swipe = await readRoot("pi/mobile/SwipeRow.tsx")
+  assert.equal(swipe.includes("session.dateTimeLabel"), true)
+  const longPress = await readRoot("pi/mobile/LongPressCard.tsx")
+  assert.equal(longPress.includes("session.dateTimeLabel"), true)
+})
+
+test("D-3 存储行时间：四壳都按在线与否在 storedTimeLabel / relativeTimeLabel 间分流并填 dateTimeLabel", async () => {
+  const shells = [
+    "pi/containers/CursorUnifiedSidebar.tsx",
+    "pi/variants/codex/sidebar/CodexUnifiedSidebar.tsx",
+    "pi/variants/claude/sidebar/ClaudeUnifiedSidebar.tsx",
+    "pi/mobile/useMobileSidebarData.ts",
+  ]
+  for (const path of shells) {
+    const source = await readRoot(path)
+    assert.equal(source.includes("storedTimeLabel"), true, path)
+    assert.equal(source.includes("fullTimeLabel"), true, path)
+    assert.equal(source.includes("dateTimeLabel:"), true, path)
+  }
+})
+
+test("D-3 分组可达：截断组有「更多 N / 收起」行且各宿主都接了 toggleExpanded", async () => {
+  const sections = await read("components/SidebarSections.tsx")
+  assert.equal(sections.includes("sb-groupmore"), true)
+  assert.equal(sections.includes("更多 {group.more}"), true)
+  assert.equal(sections.includes("group.expanded"), true)
+  const css = await read("sidebar.css")
+  assert.equal(css.includes(".sb-root .sb-groupmore"), true)
+  const hosts = [
+    "pi/containers/CursorUnifiedSidebar.tsx",
+    "pi/variants/codex/sidebar/CodexUnifiedSidebar.tsx",
+    "pi/containers/PhoneApp.tsx",
+    "pi/variants/codex/shell/CodexPhone.tsx",
+    "pi/variants/claude/shell/ClaudePhoneShell.tsx",
+  ]
+  for (const path of hosts) {
+    const source = await readRoot(path)
+    assert.equal(source.includes("toggleExpanded"), true, path)
+  }
+  const listHome = await readRoot("pi/mobile/MobileListHome.tsx")
+  assert.equal(listHome.includes("pm-group-more"), true)
+  const drawer = await readRoot("pi/mobile/MobileDrawerNav.tsx")
+  assert.equal(drawer.includes("pm-group-more"), true)
+})
+
 test("P2 收口：portal 气泡在 .sb-root 内且 Claude 标题衬线、ink3 文本抬升、浅色状态点非文字 ≥3、焦点恢复", async () => {
   const card = await read("components/SidebarHoverCard.tsx")
   assert.equal(card.includes("document.querySelector(\"[data-pi-sidebar]\")"), true)

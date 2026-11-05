@@ -1372,10 +1372,15 @@ class Rooms {
   _stampStore(r) {
     if (r && this._transcriptStore && !r.store) r.store = this._transcriptStore;
   }
-  get(id) {
+  get(id, opts) {
     let r = this.map.get(id);
     if (r) {
-      r.lastActivity = Date.now();
+      // D-4: registration passes { activity: false } -- re-registering a
+      // room must not renew its idle-eviction clock, or every attach
+      // restart would keep the room's stale siblings alive forever. The
+      // clock restarts when the session actually ends (the offline paths
+      // in local.js stamp it) and on real traffic (touch / event paths).
+      if (!opts || opts.activity !== false) r.lastActivity = Date.now();
       this._stampStore(r);
       if (this.inbox && !r._inboxRef) this._stampInboxRef(r);
       if (this.schedule && !r._scheduleRef) this._stampScheduleRef(r);
@@ -1395,6 +1400,9 @@ class Rooms {
       instance: null,
       generation: 0,
       lastActivity: Date.now(),
+      // D-4 observability only: when this shell last completed a
+      // room_register. Never used as an eviction input (lastActivity is).
+      lastRegisterAt: null,
       accountId: DEFAULT_ACCOUNT,
       deviceId: null,
       deviceName: null,
@@ -1644,24 +1652,129 @@ class Rooms {
       }
     });
   }
+  /* ---------------- D-4: registry hygiene (shell reaping) ----------------
+   * A "shell" is a Rooms entry with no live local, no viewer and nothing
+   * worth keeping. Attach re-registrations mint a fresh shell per restart
+   * (new room id, same device + cwd), and before D-4 nothing ever removed
+   * the old ones: registration renewed lastActivity via get(), so the
+   * idle evictor never fired, and the registry grew by a handful of
+   * shells per re-registration. Reaping a shell only removes the
+   * in-memory registry entry and its inbox/schedule bookkeeping; stored
+   * transcripts on disk and in the store are never touched. */
+
+  /** True when the room has stored content worth keeping the shell for:
+   *  messages in the store, an index still in flight over a real file, or
+   *  a transcript file on disk the store has not loaded yet. With no
+   *  store bound there is nothing stored, so the answer is false. */
+  shellHasTranscript(r) {
+    const store = this._transcriptStore;
+    if (!store || !r) return false;
+    try {
+      if (typeof store.info === "function") {
+        const inf = store.info(r.id);
+        if (inf && (inf.indexing || (inf.msgCount || 0) > 0)) return true;
+        if (inf && inf.exists) return false;
+      }
+      // No store record: fall back to the on-disk existence probe.
+      if (typeof store.exists === "function") return !!store.exists(r.id);
+    } catch {}
+    return false;
+  }
+
+  /** True when an unanswered dialog is attached to the room: a live slot
+   *  on the room object, or a waiting entry in the inbox ledger. */
+  shellHasPendingDialog(r) {
+    if (!r) return false;
+    if (r.dialogs && Object.keys(r.dialogs).length) return true;
+    if (r.uiPrompt) return true;
+    if (this.inbox && typeof this.inbox.roomEntries === "function") {
+      try {
+        const entries = this.inbox.roomEntries(r.accountId || DEFAULT_ACCOUNT, r.id);
+        if (entries && entries.some((e) => e && e.kind === "waiting")) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  /** True when the room still has armed (not yet fired) schedules. */
+  shellHasArmedSchedule(r) {
+    if (!r || !this.schedule || !this.schedule.store) return false;
+    try {
+      const armed = this.schedule.store.armedOfRoom(r.id);
+      return !!(armed && armed.length);
+    } catch {
+      return false;
+    }
+  }
+
+  /** A shell may be reaped only when nothing live or stored hangs off it. */
+  shellReapable(r) {
+    if (!r || r.online || r.local) return false;
+    if (r.viewers && r.viewers.size) return false;
+    if (this.shellHasTranscript(r)) return false;
+    if (this.shellHasPendingDialog(r)) return false;
+    if (this.shellHasArmedSchedule(r)) return false;
+    return true;
+  }
+
+  /** Remove one shell from the registry with the full teardown every
+   *  removal path needs: timers (via RoomMap.delete), inbox grace,
+   *  restored waiting entries, leftover turn entries, armed schedules.
+   *  Returns true when the room was present and removed. */
+  reapShell(id) {
+    const r = this.map.get(id);
+    if (!r) return false;
+    // RoomMap.delete matches the close path: cancels resend / snapshot timers.
+    this.map.delete(id);
+    let swept = 0;
+    // The room is gone from memory, so no resend can ever confirm its
+    // restored waiting entries: mark them stale (design section 1.4)
+    // instead of leaving them hanging in the inbox forever.
+    this._disarmInboxGrace(id);
+    if (this.inbox) {
+      swept += this.inbox.sweepRestored(id) || 0;
+      // Turn entries keyed to a gone room can never settle either; the
+      // pre-D-4 eviction path forgot them and they accumulated forever.
+      if (typeof this.inbox.clearRoomTurns === "function") {
+        swept += this.inbox.clearRoomTurns(r.accountId || DEFAULT_ACCOUNT, id) || 0;
+      }
+    }
+    // Armed schedules retire with the room (session_ended): there is
+    // nowhere left to deliver them (design section 3.5).
+    if (this.schedule) this.schedule.retireRoom(id);
+    if (swept) this._flushInbox();
+    return true;
+  }
+
+  /** Registration-time supersede: a device that just registered a live
+   *  room leaves behind earlier shells for the same device + workspace
+   *  (every attach restart mints one). Reap those that are empty right
+   *  away instead of waiting out the idle window, so N re-registrations
+   *  keep the registry bounded. Live, watched, stored, dialog-pending
+   *  and schedule-armed shells are all preserved by shellReapable. */
+  supersedeStaleShells(liveRoom) {
+    if (!liveRoom || !liveRoom.deviceId || !liveRoom.cwd) return 0;
+    const cwd = String(liveRoom.cwd).trim();
+    if (!cwd) return 0;
+    let n = 0;
+    for (const r of [...this.map.values()]) {
+      if (r === liveRoom || r.id === liveRoom.id) continue;
+      if (!r.deviceId || r.deviceId !== liveRoom.deviceId) continue;
+      if (!r.cwd || String(r.cwd).trim() !== cwd) continue;
+      if (!this.shellReapable(r)) continue;
+      if (this.reapShell(r.id)) n++;
+    }
+    return n;
+  }
+
   /** 离线、无人看、长时间无活动的房间移出内存（存储文件不动，再次订阅/上线时重建） */
   evictIdle() {
     const cutoff = Date.now() - this.cfg.roomIdleEvictMs;
     let n = 0;
-    let swept = 0;
     for (const [id, r] of this.map) {
       if (r.online || r.local || r.viewers.size || r.lastActivity > cutoff) continue;
-      // RoomMap.delete 与 close 路径一致：取消 resend 兜底 / 快照 TTL 定时器
-      this.map.delete(id);
-      n++;
-      // 房间从内存消失 = 再也不会有补发来确认：它名下恢复期 waiting 条目一并判 stale（§1.4），
-      // 免得收件箱永远挂着回不来的房间的陈年等待。
-      this._disarmInboxGrace(id);
-      if (this.inbox) swept += this.inbox.sweepRestored(id);
-      // 名下 armed 排期一并退休（session_ended）：房间已消失，排期无处投递（§3.5）。
-      if (this.schedule) this.schedule.retireRoom(id);
+      if (this.reapShell(id)) n++;
     }
-    if (swept) this._flushInbox();
     return n;
   }
 }

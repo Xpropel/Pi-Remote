@@ -373,8 +373,21 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
     send(local, frame, cfg);
   }
 
-  function onlineRoomByCwd(deviceId, cwd, platform = "") {
+  function onlineRoomByCwd(deviceId, cwd, platform = "", activeRoomId = null) {
     const want = normPath(cwd, platform);
+    // D-4: registration no longer renews lastActivity, so "most recently
+    // active" is no longer a safe proxy for "the room the device is
+    // actually in". Callers asking "which room is running in this cwd"
+    // (harness_start's already_running pre-check) pass the device's
+    // declared active room (noteActive at registration) and it wins when
+    // it checks out. The session-file-op callers deliberately keep the
+    // plain scan: spec D8 (P2-1) pins cwd-match first with the active
+    // room as their explicit fallback right after the call.
+    if (activeRoomId) {
+      const active = rooms.peek(activeRoomId);
+      if (active && active.online && active.deviceId === deviceId &&
+          normPath(active.cwd || "", platform) === want) return active;
+    }
     let best = null;
     for (const r of rooms.map.values()) {
       if (!r.online || r.deviceId !== deviceId) continue;
@@ -402,7 +415,7 @@ function startViewerServer(cfg, rooms, store, ctx, onListening, onError) {
         send(ws, ackFrame(origId, false, { error: DEVICE_ERRORS.cwd_not_allowed, code: "cwd_not_allowed", deviceId: dev.id }), cfg);
         return;
       }
-      const running = onlineRoomByCwd(dev.id, cwd, dev.platform);
+      const running = onlineRoomByCwd(dev.id, cwd, dev.platform, dev.activeRoomId);
       if (running) {
         send(ws, ackFrame(origId, true, { deviceId: dev.id, data: { status: "already_running", roomId: running.id } }), cfg);
         return;

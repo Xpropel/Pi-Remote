@@ -87,3 +87,22 @@ test("P11 a11y/六套 token：mobile.css 映射真实 --sb-*；抽屉/长按卡/
   const shell = await read("ui/src/pi/mobile/MobileNavShell.tsx")
   for (const attr of ['"data-pi-sidebar"', '"data-pi-mobile"', '"data-pi-sidebar-style"', '"data-pi-theme"']) assert.equal(shell.includes(attr), true, `根缺 ${attr}`)
 })
+
+test("Stack3 fix: drawer session rows answer a touch long-press, not only contextmenu/Shift+F10", async () => {
+  const drawer = await read("ui/src/pi/mobile/MobileDrawerNav.tsx")
+  for (const needle of [
+    "DRAWER_LONG_PRESS_MS = 480",
+    "onPointerDown",
+    'event.pointerType === "mouse"',
+    "DRAWER_LONG_PRESS_SLOP = 10",
+    "suppressClickRef",
+    "onClickCapture",
+    "onContextMenu",
+  ]) {
+    assert.equal(drawer.includes(needle), true, `抽屉行缺触摸长按要素 ${needle}`)
+  }
+  // The list rows keep their own pointer-driven long-press (SwipeRow).
+  const swipe = await read("ui/src/pi/mobile/SwipeRow.tsx")
+  assert.equal(swipe.includes("LONG_PRESS_MS = 480"), true)
+  assert.equal(swipe.includes("onPointerDown"), true)
+})

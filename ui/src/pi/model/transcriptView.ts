@@ -259,15 +259,15 @@ export function historyTopLineOf(history: HistoryLike | null | undefined, roomId
 
 /**
  * The crypto-required top line (the relay refused this viewer the room's
- * content: no usable viewer identity / content key on this end). With
- * nothing pending it stays the plain notice; when a dialog is waiting in
- * the room, the sidebar is already calling the user to answer, so the
- * line also carries the one actionable next step -- enabling the viewer
- * identity (A-4: no pending dialog, no extra nagging).
+ * content: no usable viewer identity / content key on this end). The
+ * line always carries the one actionable next step -- enabling the
+ * viewer identity. A-4 first added the action for rooms with a dialog
+ * waiting; D-1 generalized it: without identity the room stays an empty
+ * shell forever, so the way out must be reachable from the room itself
+ * even when nothing is pending.
  */
-export function cryptoRequiredTopLineOf(pendingDialog: boolean): PiTopLine {
-  const text = "这个房间已加密，当前观看端无法读取加密内容"
-  return pendingDialog ? { text, tone: "error", action: "enable-identity", actionText: "启用观看端身份" } : { text, tone: "error" }
+export function cryptoRequiredTopLineOf(): PiTopLine {
+  return { text: "这个房间已加密，当前观看端无法读取加密内容", tone: "error", action: "enable-identity", actionText: "启用观看端身份" }
 }
 
 export type PiArchiveLike = { truncated: boolean; omitted: number }

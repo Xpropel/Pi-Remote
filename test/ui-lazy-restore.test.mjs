@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs"
 import {
   LAZY_SESSION_STORAGE_KEY,
   lazyRoomFromRow,
+  lazySendCryptoBlocked,
   parseLazySelection,
   serializeLazySelection,
 } from "../ui/src/relay/lazySession.ts"
@@ -153,4 +154,32 @@ test("useRelay 接线：auth_result 的懒分支不订阅别的房间，且设�
   const body = relay.slice(at, relay.indexOf("} else if (!deviceModeRef.current) {", at))
   assert.match(body, /if \(lazyDevice\?\.online\) setOnline\(true\)/)
   assert.doesNotMatch(body, /subscribeRef\.current/, "懒分支里不能订阅任何房间")
+})
+
+// D-2 回归：无身份（令牌）观看端认领加密存储会话时，中继在 subscribe 处以
+// crypto_required 拒绝且永不下发 subscribed/snapshot，惰性发送等不到 room-ready。
+// 修复口径：拒绝命中待发队列时立即以真实原因失败，不再干等通用超时。
+const mkSend = (phase, sessionId = "sess-enc") => ({ token: 7, sessionId, deviceId: "dev-b", phase, text: "hi", image: null, cid: "cid-1" })
+
+test("D-2 lazySendCryptoBlocked：命中本房且未提交才判死", () => {
+  assert.equal(lazySendCryptoBlocked(null, "sess-enc"), false)
+  assert.equal(lazySendCryptoBlocked(mkSend("starting"), "sess-enc"), true)
+  assert.equal(lazySendCryptoBlocked(mkSend("waiting"), "sess-enc"), true)
+  // 已提交（room-ready 已过）：订阅拒绝只影响观看，不能误杀已发出的消息
+  assert.equal(lazySendCryptoBlocked(mkSend("sending"), "sess-enc"), false)
+  // 别房的拒绝与本队列无关
+  assert.equal(lazySendCryptoBlocked(mkSend("waiting"), "sess-other"), false)
+  assert.equal(lazySendCryptoBlocked(mkSend("waiting", "sess-other"), "sess-enc"), false)
+  // 无房号（错误帧没带 room）不猜
+  assert.equal(lazySendCryptoBlocked(mkSend("waiting"), ""), false)
+})
+
+test("D-2 useRelay 接线：crypto_required 分支对命中的待发惰性发送立即失败并给真实原因", () => {
+  const at = relay.indexOf('if (code === "crypto_required")')
+  assert.ok(at > 0, "crypto_required 分支存在")
+  const body = relay.slice(at, relay.indexOf('if (type === "usage_state")', at))
+  assert.match(body, /lazySendCryptoBlocked\(lazySendRef\.current, roomId\)/)
+  assert.match(body, /failLazySendRef\.current\("这个会话已加密：请先在设置里启用观看端身份，再重新发送。"/)
+  // 房间级加密状态记录保持在失败动作之前（观看面不受影响）
+  assert.ok(body.indexOf("noteRoomCryptoStatus") < body.indexOf("lazySendCryptoBlocked"))
 })

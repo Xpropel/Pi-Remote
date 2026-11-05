@@ -72,6 +72,18 @@ export function SidebarSections({
                   onHover={onHover}
                 />
               ))}
+              {/* D-3: rows past the per-group cap need a visible way in; without
+                  this row the sections silently hid every session past row 5. */}
+              {actions.toggleExpanded && group.more != null && group.more > 0 ? (
+                <button type="button" className="sb-groupmore" onClick={() => actions.toggleExpanded?.(group.id)}>
+                  更多 {group.more}
+                </button>
+              ) : null}
+              {actions.toggleExpanded && group.expanded ? (
+                <button type="button" className="sb-groupmore" onClick={() => actions.toggleExpanded?.(group.id)}>
+                  收起
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>

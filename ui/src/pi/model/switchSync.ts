@@ -172,3 +172,39 @@ export function switchSyncViewFromEntries(
     askUserEnabled: reportedBool(ask),
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Display state: is device truth even reachable from this viewer?    */
+
+/** The viewer-identity facts the switch display decision needs. */
+export type SwitchViewerIdentityLike = {
+  hasIdentity: boolean
+  registered: boolean
+}
+
+/**
+ * How a settings surface may present the device-owned switches:
+ * - "device": a device report arrived; the view carries device truth.
+ * - "legacy": old bridge; there is no device truth and the local value
+ *   remains the operative one (pre-existing behavior, unchanged).
+ * - "pending": a usable viewer identity exists and the first device
+ *   report is still in flight; the switches stay inert until it lands
+ *   (the FIX-GATE behavior, unchanged).
+ * - "identity-required": the view is still pending AND this viewer has
+ *   no usable identity (none generated, or generated but not
+ *   registered). Device reports only flow to registered,
+ *   key-authenticated viewers, so the pending state can never resolve
+ *   from here and the local preference values are NOT device truth:
+ *   the surface must say identity is required and offer the enable
+ *   action instead of displaying local values (D-1).
+ */
+export type SwitchDisplayState = "device" | "legacy" | "pending" | "identity-required"
+
+export function switchDisplayStateOf(
+  view: SwitchSyncView,
+  identity: SwitchViewerIdentityLike | null | undefined,
+): SwitchDisplayState {
+  if (view.mode === "device") return "device"
+  if (view.mode === "legacy") return "legacy"
+  return identity != null && identity.hasIdentity && identity.registered ? "pending" : "identity-required"
+}

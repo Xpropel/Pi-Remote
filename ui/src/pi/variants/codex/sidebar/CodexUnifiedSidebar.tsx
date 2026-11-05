@@ -13,6 +13,7 @@ import { sidebarDataOf } from "@/pi/model/sidebarSource"
 import { sidebarGroups } from "@/pi/model/sidebarGroups"
 import {
   clampSidebarWidth,
+  fullTimeLabel,
   PI_SIDEBAR_COPY,
   relativeTimeLabel,
   sidebarDeviceRows,
@@ -20,6 +21,7 @@ import {
   sidebarIdentityNameOf,
   sidebarSessionKeyOf,
   sidebarStatusOf,
+  storedTimeLabel,
   sidebarWorkspaceGroupId,
   sidebarWorkspaceLabel,
   UnifiedSidebar,
@@ -86,7 +88,10 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
           key, id: row.id, title: row.title,
           status: sidebarStatusOf({ running: row.marker === "running", waiting: row.marker === "waiting", error: row.marker === "error" }),
           eventAt: row.at,
-          timeLabel: row.trailingText ?? relativeTimeLabel(now, row.at),
+          // D-3: stored (not live) rows get date+time once past an hour;
+          // live rows keep the relative label.
+          timeLabel: row.trailingText ?? (session && !session.online ? storedTimeLabel(now, row.at) : relativeTimeLabel(now, row.at)),
+          dateTimeLabel: fullTimeLabel(row.at),
           summary: row.subtitle ?? "",
           cwd: session?.cwd ?? cwd,
           deviceName: base.devices.find((d) => d.id === devId)?.name ?? "",
@@ -98,7 +103,7 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
           encReason: session?.encReason,
         }
       })
-      return { id: group.key, kind: "workspace" as const, label: group.label || sidebarWorkspaceLabel(cwd), cwd, collapsed, sessions, count: sessions.length }
+      return { id: group.key, kind: "workspace" as const, label: group.label || sidebarWorkspaceLabel(cwd), cwd, collapsed, sessions, count: sessions.length, more: group.more, expanded: group.expanded }
     })
     const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: scopeState.archives })
     // Body-match block (A-3): sessions the local title match already
@@ -156,6 +161,7 @@ export function CodexUnifiedSidebar({ p, actions: codexActions, localPage }: { p
     togglePin: (key) => { localStore.togglePin(key); relay.notify(PI_SIDEBAR_COPY.pinHint) },
     toggleArchive: (key) => { localStore.toggleArchive(key); relay.notify(PI_SIDEBAR_COPY.archiveHint) },
     toggleGroup: (groupId) => localStore.toggleFolder(groupId),
+    toggleExpanded: (groupId) => act.toggleExpanded(groupId),
     openSearch: () => codexActions.onSearch(),
     closeSearch: () => act.setSearch(null),
     selectBodyHit: openBodyHitById,

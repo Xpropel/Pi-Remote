@@ -71,6 +71,44 @@ test("时间/摘要：刚刚/Nm/Nh/昨天/M月D日；摘要无事件必须空串
   assert.equal(model.sidebarSummaryLineOf("正在跑 e2e，已过 34 步"), "正在跑 e2e，已过 34 步")
 })
 
+test("D-3 完整时间戳：fullTimeLabel 恒显年份、时分零填充；坏值空串", () => {
+  assert.equal(model.fullTimeLabel(new Date(2026, 10, 4, 21, 7).getTime()), "2026年11月4日 21:07")
+  assert.equal(model.fullTimeLabel(new Date(2026, 0, 2, 9, 5).getTime()), "2026年1月2日 09:05")
+  assert.equal(model.fullTimeLabel(undefined), "")
+  assert.equal(model.fullTimeLabel(null), "")
+  assert.equal(model.fullTimeLabel(0), "")
+  assert.equal(model.fullTimeLabel(Number.NaN), "")
+})
+
+test("D-3 存储行时间：1 小时内相对、之后日期+时分（同年省年、跨年全量），同名行可逐行区分", () => {
+  const now = new Date(2026, 10, 5, 15, 0, 0).getTime()
+  assert.equal(model.storedTimeLabel(now, now - 30_000), "刚刚")
+  assert.equal(model.storedTimeLabel(now, now - 5 * 60_000), "5m")
+  assert.equal(model.storedTimeLabel(now, new Date(2026, 10, 5, 9, 30).getTime()), "11月5日 09:30")
+  assert.equal(model.storedTimeLabel(now, new Date(2026, 10, 4, 21, 7).getTime()), "11月4日 21:07")
+  assert.equal(model.storedTimeLabel(now, new Date(2025, 11, 31, 23, 59).getTime()), "2025年12月31日 23:59")
+  assert.equal(model.storedTimeLabel(now, undefined), "")
+  assert.equal(model.storedTimeLabel(now, 0), "")
+  // The D-3 failure shape: two stored rows in one workspace, same title,
+  // ~14 minutes apart on an earlier day -- relative labels collide ("1h"/date
+  // only), stored labels must not.
+  const a = model.storedTimeLabel(now, new Date(2026, 10, 4, 21, 7).getTime())
+  const b = model.storedTimeLabel(now, new Date(2026, 10, 4, 21, 21).getTime())
+  assert.notEqual(a, b)
+})
+
+test("D-3 行无障碍标签：标题 + 完整时间戳；无时间退回纯标题；overlay 不吞 more/expanded", () => {
+  const at = new Date(2026, 10, 4, 21, 7).getTime()
+  assert.equal(model.sidebarRowLabel("demo-project", at), "demo-project · 2026年11月4日 21:07")
+  assert.equal(model.sidebarRowLabel("demo-project", undefined), "demo-project")
+  assert.equal(model.sidebarRowLabel("demo-project", 0), "demo-project")
+  const session = { key: "dev::s1", id: "s1", title: "demo-project", status: model.sidebarStatusOf({}), timeLabel: "", cwd: "/w/demo", selected: false, pinned: false, archived: false, groupId: "cwd:/w/demo" }
+  const group = { id: "dev:/w/demo", kind: "workspace", label: "demo", cwd: "/w/demo", collapsed: false, sessions: [session], count: 1, more: 14, expanded: false }
+  const out = model.sidebarGroupsWithOverlay({ groups: [group], pins: [], archives: [] })
+  assert.equal(out[0].more, 14)
+  assert.equal(out[0].expanded, false)
+})
+
 test("分组/置顶/归档/设备/身份：稳定 key、cwd 分组、置顶顺序、归档隐藏、真实设备不虚构", () => {
   assert.equal(model.sidebarSessionKeyOf("dev1", "room1"), "dev1::room1")
   assert.equal(model.sidebarWorkspaceGroupId(undefined), "ungrouped")

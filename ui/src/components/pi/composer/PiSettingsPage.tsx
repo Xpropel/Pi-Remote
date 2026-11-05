@@ -47,7 +47,7 @@ const SUPPORT_NAV_IDS = ["about"] as const
 const SECTION_LABEL: Record<string, string> = Object.fromEntries(SETTINGS_SECTIONS.map((s) => [s.id, s.label]))
 
 /** 设置页里的动作（P4 可交互：整行可点的导航 / 动作行、试听按钮） */
-export type PiSettingsAction = "pair" | "reconnect" | "help" | "logout" | "sound-done" | "sound-fail" | `device:${string}`
+export type PiSettingsAction = "pair" | "reconnect" | "help" | "logout" | "sound-done" | "sound-fail" | "enable-identity" | `device:${string}`
 
 /** 当前密度的一句说明（§1.5 的三档） */
 const DENSITY_HINT: Record<string, string> = {
@@ -209,6 +209,14 @@ export interface PiSettingsData {
    *  local value is not settled truth. Container supplies it from the
    *  relay switch-sync view; galleries omit it (never pending). */
   switchesPending?: boolean
+  /** D-1: true when the pending state can never resolve because this
+   *  viewer has no usable identity (device reports only reach
+   *  registered, key-authenticated viewers). The three switches and the
+   *  gate tier then render an explicit identity-required state -- the
+   *  local values are NOT shown as the switch state -- plus an
+   *  "enable-identity" action row. Container supplies it from the relay
+   *  switch-sync view + viewer identity; galleries omit it. */
+  switchesIdentityRequired?: boolean
 }
 export function PiSettingsSections({
   variant,
@@ -228,6 +236,7 @@ export function PiSettingsSections({
   mobileNav,
   onMobileNavChange,
   switchesPending,
+  switchesIdentityRequired,
 }: { variant: CVariant } & PiSettingsData) {
   const isStatic = usePiStatic(staticProp)
   const phone = variant === "phone"
@@ -345,6 +354,14 @@ export function PiSettingsSections({
         />
       </Group>
       <Group variant={variant} id="conversation" title="对话">
+        {switchesIdentityRequired ? (
+          <Row
+            variant={variant}
+            label="启用观看端身份"
+            hint="下面的网页回答、提问与审批门归设备所有；没有身份时读不到设备状态，本机保存的值不是设备状态，所以不显示"
+            onClick={act?.("enable-identity")}
+          />
+        ) : null}
         <Row
           variant={variant}
           label="pi 忙的时候发消息"
@@ -376,64 +393,76 @@ export function PiSettingsSections({
           variant={variant}
           label="在网页上回答电脑上的确认框"
           hint="关掉后，确认框只能在电脑终端里回答"
-          toggle
+          toggle={!switchesIdentityRequired}
           control={
-            <Switch
-              tone="blue"
-              size={phone ? "lg" : "sm"}
-              {...toggle("dialogRemote")}
-              aria-label="在网页上回答电脑上的确认框"
-              className={switchFillRow(variant)}
-            />
+            switchesIdentityRequired ? (
+              <span className={cn(phone ? "text-[13px] leading-[18px]" : "text-(length:--cw-text-sm)", C_SECONDARY)}>需先启用身份</span>
+            ) : (
+              <Switch
+                tone="blue"
+                size={phone ? "lg" : "sm"}
+                {...toggle("dialogRemote")}
+                aria-label="在网页上回答电脑上的确认框"
+                className={switchFillRow(variant)}
+              />
+            )
           }
         />
         <Row
           variant={variant}
           label="允许智能体向我提问"
           hint="开启后，智能体可以用 ask_user 工具发来选择题或填空，在网页上作答；关掉后它不会问你"
-          toggle
+          toggle={!switchesIdentityRequired}
           control={
-            <Switch
-              tone="blue"
-              size={phone ? "lg" : "sm"}
-              {...toggle("askUser")}
-              aria-label="允许智能体向我提问"
-              className={switchFillRow(variant)}
-            />
+            switchesIdentityRequired ? (
+              <span className={cn(phone ? "text-[13px] leading-[18px]" : "text-(length:--cw-text-sm)", C_SECONDARY)}>需先启用身份</span>
+            ) : (
+              <Switch
+                tone="blue"
+                size={phone ? "lg" : "sm"}
+                {...toggle("askUser")}
+                aria-label="允许智能体向我提问"
+                className={switchFillRow(variant)}
+              />
+            )
           }
         />
         <Row
           variant={variant}
           label="工具执行审批门"
           hint="开启后，智能体执行工具前先弹窗等你批准；与上面的确认框应答是两个独立开关"
-          toggle
+          toggle={!switchesIdentityRequired}
           control={
-            <Switch
-              tone="blue"
-              size={phone ? "lg" : "sm"}
-              {...toggle("approvalGate")}
-              aria-label="工具执行审批门"
-              className={switchFillRow(variant)}
-            />
+            switchesIdentityRequired ? (
+              <span className={cn(phone ? "text-[13px] leading-[18px]" : "text-(length:--cw-text-sm)", C_SECONDARY)}>需先启用身份</span>
+            ) : (
+              <Switch
+                tone="blue"
+                size={phone ? "lg" : "sm"}
+                {...toggle("approvalGate")}
+                aria-label="工具执行审批门"
+                className={switchFillRow(variant)}
+              />
+            )
           }
         />
         <Row variant={variant} label="审批门问哪些工具" hint="名单制时，名单在电脑端桥的配置里维护" />
         <RadioRow
           variant={variant}
           label="只问高危操作"
-          checked={prefs.approvalGateTier === "high-risk"}
+          checked={!switchesIdentityRequired && prefs.approvalGateTier === "high-risk"}
           onSelect={change && !switchesPending ? () => change({ approvalGateTier: "high-risk" }) : undefined}
         />
         <RadioRow
           variant={variant}
           label="所有非只读操作都问"
-          checked={prefs.approvalGateTier === "all-non-readonly"}
+          checked={!switchesIdentityRequired && prefs.approvalGateTier === "all-non-readonly"}
           onSelect={change && !switchesPending ? () => change({ approvalGateTier: "all-non-readonly" }) : undefined}
         />
         <RadioRow
           variant={variant}
           label="只问名单里的工具"
-          checked={prefs.approvalGateTier === "list"}
+          checked={!switchesIdentityRequired && prefs.approvalGateTier === "list"}
           onSelect={change && !switchesPending ? () => change({ approvalGateTier: "list" }) : undefined}
         />
       </Group>

@@ -130,6 +130,7 @@ function PhonePages({
       relay.notify?.("归档仅本机记忆，不会删除会话", "warn")
     },
     toggleGroup: (groupId) => mobileSide.toggleGroup(groupId),
+    toggleExpanded: mobileSide.toggleExpanded,
     togglePlainRow: (row) => {
       if (row === "workspace") mobileSide.data.groups.forEach((group) => mobileSide.toggleGroup(group.id))
       else relay.notify?.("本机归档列表：暂无归档", "warn")

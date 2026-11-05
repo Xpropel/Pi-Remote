@@ -14,6 +14,7 @@
  */
 import { useEffect, useMemo, useState } from "react"
 import { serverDisplayName } from "@/pi/model/serverName"
+import { switchDisplayStateOf } from "@/pi/model/switchSync"
 import { usePrefsWriter, useSettingsPrefs } from "@/pi/containers/cShared"
 import type { PiApprovalGateTier } from "@/pi/model/prefs"
 import { useSettings } from "../SettingsContext"
@@ -143,7 +144,7 @@ function hostname(): string {
 }
 
 export function GeneralPage() {
-  const { p, prefs, act } = useSettings()
+  const { p, prefs, act, setPage } = useSettings()
   const { relay } = p
   // Conversation trio (ask / remote answer / approval gate): read and written
   // through the exact same cShared path as the composer settings popover, so
@@ -155,6 +156,13 @@ export function GeneralPage() {
   // value is not settled truth, so the switches stay inert rather than
   // presenting -- or recording -- a local guess.
   const switchesPending = relay.switchSyncView.mode === "pending"
+  // D-1: without a usable viewer identity no device report can ever
+  // reach this viewer, so the pending state would never resolve and the
+  // local values rendered under it would masquerade as device truth
+  // (measured: local all-on while the device had the gate off). Render
+  // an explicit identity-required state with the enable action instead;
+  // with an identity, the pending behavior above stays exactly as-is.
+  const identityRequired = switchDisplayStateOf(relay.switchSyncView, relay.viewerIdentity) === "identity-required"
   const document = useSettingsDocument(relay)
   const writer = useSettingsWriter(relay)
   const audioInputs = useAudioInputs()
@@ -262,40 +270,69 @@ export function GeneralPage() {
 
       <SettingsGroup
         label="对话"
-        description="本机偏好，改完立即生效；与输入框旁会话设置里的同名开关是同一组设置。"
+        description={
+          identityRequired
+            ? "这三项开关归设备所有。当前观看端没有可用的身份，读不到设备上的真实状态；本机保存的值不是设备状态，所以不在这里显示。"
+            : "本机偏好，改完立即生效；与输入框旁会话设置里的同名开关是同一组设置。"
+        }
       >
-        <SettingsRow title="允许智能体向我提问" description="开启后，智能体可以用 ask_user 工具发来选择题或填空，在网页上作答；关掉后它不会问你">
-          <SettingsSwitch
-            label="允许智能体向我提问"
-            checked={conversation.askUser}
-            disabled={switchesPending}
-            onChange={(checked) => writeConversation({ askUser: checked })}
+        {identityRequired ? (
+          <SettingsActionRow
+            title="启用观看端身份"
+            description="启用后，这里会显示并修改设备上的真实开关状态"
+            onClick={() => setPage("devices")}
           />
+        ) : null}
+        <SettingsRow title="允许智能体向我提问" description="开启后，智能体可以用 ask_user 工具发来选择题或填空，在网页上作答；关掉后它不会问你">
+          {identityRequired ? (
+            <span className="settings-value">需先启用身份</span>
+          ) : (
+            <SettingsSwitch
+              label="允许智能体向我提问"
+              checked={conversation.askUser}
+              disabled={switchesPending}
+              onChange={(checked) => writeConversation({ askUser: checked })}
+            />
+          )}
         </SettingsRow>
         <SettingsRow title="在网页上回答电脑上的确认框" description="关掉后，确认框只能在电脑终端里回答">
-          <SettingsSwitch
-            label="在网页上回答电脑上的确认框"
-            checked={conversation.dialogRemote}
-            disabled={switchesPending}
-            onChange={(checked) => writeConversation({ dialogRemote: checked })}
-          />
+          {identityRequired ? (
+            <span className="settings-value">需先启用身份</span>
+          ) : (
+            <SettingsSwitch
+              label="在网页上回答电脑上的确认框"
+              checked={conversation.dialogRemote}
+              disabled={switchesPending}
+              onChange={(checked) => writeConversation({ dialogRemote: checked })}
+            />
+          )}
         </SettingsRow>
         <SettingsRow title="工具执行审批门" description="开启后，智能体执行工具前先弹窗等你批准；与上面的确认框应答是两个独立开关">
-          <SettingsSwitch
-            label="工具执行审批门"
-            checked={conversation.approvalGate}
-            disabled={switchesPending}
-            onChange={(checked) => writeConversation({ approvalGate: checked })}
-          />
+          {identityRequired ? (
+            <span className="settings-value">需先启用身份</span>
+          ) : (
+            <SettingsSwitch
+              label="工具执行审批门"
+              checked={conversation.approvalGate}
+              disabled={switchesPending}
+              onChange={(checked) => writeConversation({ approvalGate: checked })}
+            />
+          )}
         </SettingsRow>
-        <SettingsRadioGroup
-          label="审批门问哪些工具"
-          description="名单制时，名单在电脑端桥的配置里维护"
-          disabled={switchesPending}
-          value={conversation.approvalGateTier}
-          options={APPROVAL_TIER_OPTIONS}
-          onChange={(value) => writeConversation({ approvalGateTier: value })}
-        />
+        {identityRequired ? (
+          <SettingsRow title="审批门问哪些工具" description="名单制时，名单在电脑端桥的配置里维护">
+            <span className="settings-value">需先启用身份</span>
+          </SettingsRow>
+        ) : (
+          <SettingsRadioGroup
+            label="审批门问哪些工具"
+            description="名单制时，名单在电脑端桥的配置里维护"
+            disabled={switchesPending}
+            value={conversation.approvalGateTier}
+            options={APPROVAL_TIER_OPTIONS}
+            onChange={(value) => writeConversation({ approvalGateTier: value })}
+          />
+        )}
       </SettingsGroup>
 
       <SettingsGroup label="语音输入">
