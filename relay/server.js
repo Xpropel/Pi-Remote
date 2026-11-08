@@ -309,10 +309,19 @@ function startRelay(overrides = {}) {
           const evictedRooms = rooms.evictIdle();
           const evictedStoreEntries = store.evictIdle(config.storeIdleEvictMs, (roomId) => {
             const room = rooms.peek(roomId);
-            if (!room) return false;
-            if (room.online || room.viewers.size) return true;
-            // 正文保留时长与"房间还在列表里"对齐：离线 6h 内仍列着的房间，不能 30 分钟后点进去是空的
-            return (room.lastActivity || 0) > Date.now() - config.roomIdleEvictMs;
+            if (room) {
+              if (room.online || room.viewers.size) return true;
+              // Keep the transcript cached while the room itself is still
+              // listed: an offline room listed within 6h must not open empty
+              // 30 minutes after boot.
+              return (room.lastActivity || 0) > Date.now() - config.roomIdleEvictMs;
+            }
+            // Store-only room (no registry entry): fall back to the store's
+            // own persisted last-activity record and apply the same 6h
+            // window, so stored sessions age by their on-disk record
+            // instead of being swept out on the boot clock.
+            const storeLastActivity = store.lastActivityOf(roomId);
+            return storeLastActivity != null && storeLastActivity > Date.now() - config.roomIdleEvictMs;
           });
           pruneDedupe(rooms, config);
           for (const [code, pairEntry] of relayContext.pairCodes) if (pairEntry.expiresAt <= Date.now()) relayContext.pairCodes.delete(code);

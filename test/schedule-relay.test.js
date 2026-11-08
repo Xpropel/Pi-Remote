@@ -164,6 +164,39 @@ test("到点投递：create 回执 → 命令通道下发 prompt（cid/段位对
   assert.ok(list.data.schedules.some((s) => s.id === entry.id && s.state === "retired"));
 });
 
+test("清单收敛：回执/更新/清单只带 textPreview+hasText 不带全文；投递仍用全文", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const ext = await extensionRoom(relay, R1);
+  t.after(() => ext.close());
+  const { v } = await viewer(relay, CAPS);
+  t.after(() => v.close());
+
+  const longText = "定".repeat(100);
+  const ack = await query(v, { type: "schedule_create", roomId: R1, text: longText, segment: "steer", kind: "once", at: Date.now() + 400 });
+  assert.equal(ack.ok, true, JSON.stringify(ack));
+  assert.equal("text" in ack.data, false, "create 回执不带正文全文");
+  assert.equal(ack.data.textPreview, "定".repeat(60));
+  assert.equal(ack.data.hasText, true);
+  const entry = ack.data;
+
+  // 投递面走内部条目：命令帧仍带全文（收敛只动观看端清单面）
+  const cmd = await ext.type("command", (f) => f.command === "prompt" && f.args && f.args.cid === `${entry.id}_1`);
+  assert.equal(cmd.args.text, longText);
+  ext.send({ type: "command_result", room: R1, id: cmd.id, ok: true, data: { disposition: "queued" } });
+
+  const upd = await v.type("schedule_update", schedUpdateWith((f) => f.room === R1 && f.schedules.some((s) => s.id === entry.id && s.state === "retired")));
+  const done = upd.schedules.find((s) => s.id === entry.id);
+  assert.equal("text" in done, false, "schedule_update 不带正文全文");
+  assert.equal(done.hasText, true);
+
+  const list = await query(v, { type: "schedule_list", roomId: R1 });
+  const listed = list.data.schedules.find((s) => s.id === entry.id);
+  assert.equal("text" in listed, false, "schedule_list 不带正文全文");
+  assert.equal(listed.textPreview, "定".repeat(60));
+  assert.equal(listed.hasText, true);
+});
+
 test("投递失败：命令回执失败 → 条目 failed + 收件箱账本 error 条目（sched:<id>）", async (t) => {
   const relay = await boot();
   t.after(() => relay.close());
@@ -286,4 +319,27 @@ test("重启恢复：armed 排期跨 relay 重启读回（排期表落盘）", a
   assert.ok(restored, "重启后排期仍在表上");
   assert.equal(restored.state, "armed");
   assert.equal(restored.kind, "every");
+});
+
+test("schedule_text 按需取文：只回请求端全文；不存在回 not_found", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const ext = await extensionRoom(relay, R1);
+  t.after(() => ext.close());
+  const { v } = await viewer(relay, CAPS);
+  t.after(() => v.close());
+
+  const longText = "定".repeat(100);
+  const ack = await query(v, { type: "schedule_create", roomId: R1, text: longText, segment: "steer", kind: "once", at: Date.now() + 60000 });
+  assert.equal(ack.ok, true, JSON.stringify(ack));
+  const entry = ack.data;
+
+  const got = await query(v, { type: "schedule_text", scheduleId: entry.id });
+  assert.equal(got.ok, true, JSON.stringify(got));
+  assert.equal(got.data.id, entry.id);
+  assert.equal(got.data.text, longText, "按需帧回全文");
+
+  const missing = await query(v, { type: "schedule_text", scheduleId: "sch_0000000000000000" });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, "not_found");
 });

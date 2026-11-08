@@ -208,3 +208,24 @@ export function switchDisplayStateOf(
   if (view.mode === "legacy") return "legacy"
   return identity != null && identity.hasIdentity && identity.registered ? "pending" : "identity-required"
 }
+
+/* ------------------------------------------------------------------ */
+/* Adopted values for the prefs dual-write (E5)                        */
+
+/**
+ * The switch values one device report adopted, field by field: a field
+ * is present only when that switch's fold actually adopted the report
+ * (an in-flight push keeps its field out, so the viewer's just-chosen
+ * value is never overwritten by the report that predates the push).
+ * useRelay publishes these so the app root can write them into the
+ * PiPrefs copy (act.setPref) as well as the legacy key -- adoption
+ * used to rewrite only the legacy key, leaving any direct reader of
+ * prefs.dialogRemoteAnswer / prefs.askUserEnabled /
+ * prefs.approvalGateEnabled with the stale local copy.
+ */
+export type AdoptedSwitchValues = {
+  dialogRemoteAnswer?: boolean
+  askUserEnabled?: boolean
+  approvalGateEnabled?: boolean
+  approvalGateTier?: string
+}

@@ -98,6 +98,33 @@ export type OutboxAction =
 
 export const EMPTY_OUTBOX: OutboxState = { byRoom: {} }
 
+/**
+ * E1/E2: one terminal delivery outcome as re-sent by the relay on room
+ * snapshots (additive `finalFrames` field). A viewer that was not
+ * subscribed when the delivered / failed frame first went out settles
+ * its pending entries from these instead of waiting for the confirm
+ * sweep: same cids, same two dispositions as the live frames.
+ */
+export type FinalFrame = { cid: string; disposition: "delivered" | "failed"; at: number }
+
+/**
+ * Validate a snapshot's `finalFrames` field. Anything malformed is
+ * dropped item by item (never guessed); a missing field (old relay)
+ * yields an empty list, so behavior is exactly the pre-E1 behavior.
+ */
+export function finalFramesOf(raw: unknown): FinalFrame[] {
+  if (!Array.isArray(raw)) return []
+  const out: FinalFrame[] = []
+  for (const item of raw) {
+    if (!isRecord(item)) continue
+    const { cid, disposition, at } = item
+    if (!isCid(cid)) continue
+    if (disposition !== "delivered" && disposition !== "failed") continue
+    out.push({ cid, disposition, at: typeof at === "number" && Number.isFinite(at) ? at : 0 })
+  }
+  return out
+}
+
 export function outboxOf(state: OutboxState, roomId: string | null | undefined): readonly OutboxEntry[] {
   return (roomId && state.byRoom[roomId]) || []
 }

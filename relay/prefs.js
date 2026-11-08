@@ -61,6 +61,20 @@ function fsyncFile(file) {
   }
 }
 
+/**
+ * Subset equality for the no-change short-circuit in PrefsStore.set. Cleaned
+ * subsets are flat maps of primitives (strings plus the integer `size`) over a
+ * fixed field whitelist, so comparing field by field over PREFS_FIELDS is a
+ * full deep comparison here — no nested values can exist after cleaning.
+ */
+function prefsSubsetsEqual(left, right) {
+  if (!left || !right) return false;
+  for (const field of PREFS_FIELDS) {
+    if (left[field] !== right[field]) return false;
+  }
+  return true;
+}
+
 /** 落盘记录形状校验：坏文件/坏行当作无记录，不让一份坏偏好挡住整个通道。 */
 function cleanRecord(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -106,17 +120,24 @@ class PrefsStore {
    * rev 在现有值上 +1（无记录从 1 起），updatedAt 由 relay 时钟打（不信客户端时钟）。
    * 先更内存再试落盘：落盘失败只降级、不回滚——同步语义以内存态为准，重启恢复尽力而为。
    * 返回裁决后的记录。
+   * No-change short-circuit: when the merged subset deep-equals the current
+   * one, the write is an echo, not a change — return the live record flagged
+   * changed:false without bumping rev, touching updatedAt, or persisting.
+   * The viewer handler uses the flag to skip the prefs_changed broadcast
+   * while still answering the sender with prefs_saved. The flag rides on a
+   * shallow copy so the stored record (and its on-disk JSON) never carries it.
    */
   set(accountId, subset, now = Date.now(), baseRev = null) {
     const current = this.get(accountId);
     const merged = current && current.subset ? { ...current.subset, ...subset } : { ...subset };
+    if (current && prefsSubsetsEqual(merged, current.subset)) return { ...current, changed: false };
     if (current && Number.isInteger(baseRev) && baseRev >= 0 && baseRev < current.rev) {
       log("prefs 同步：baseRev 落后（baseRev=" + baseRev + "，当前 rev=" + current.rev + "），按字段合并后仍以到达顺序裁决");
     }
     const record = { subset: merged, rev: (current ? current.rev : 0) + 1, updatedAt: now };
     this.cache.set(accountId, record);
     this._persist(accountId, record);
-    return record;
+    return { ...record, changed: true };
   }
 
   _persist(accountId, record) {

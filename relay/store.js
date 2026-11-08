@@ -984,6 +984,11 @@ class RoomStore {
       fullScanned = true;
     }
     if (!room.rev) room.rev = newRev();
+    // The idle-eviction clock starts from the file's own last write, not from
+    // this process opening the room: a stored room nobody has touched since
+    // startup must age by its on-disk record, not by the boot time. Later
+    // touches still refresh the stamp through _room().
+    if (layout.active.mtimeMs) room.lastActivity = layout.active.mtimeMs;
     this.rooms.set(roomId, room);
     if (room._captureFilled) {
       this._writeManifest(room);
@@ -1936,6 +1941,10 @@ class RoomStore {
         } else if (!job.error) {
           // 没人等它（构造器预热）：先补检查点（可能追加一行、改变文件大小），再记接管指纹。
           this._maybeCheckpoint(staging, { minBytes: 0 });
+          // Preheat is not activity: stamp the entry with the file's recorded
+          // last write (from the layout this scan was based on), so a prewarmed
+          // room ages by its on-disk record instead of the boot time.
+          if (job.layout && job.layout.active && job.layout.active.mtimeMs) staging.lastActivity = job.layout.active.mtimeMs;
           const lay = this._layoutIn(job.id, staging.dir);
           if (lay.exists) {
             this._rememberPrewarmed(job.id, {
@@ -3123,6 +3132,20 @@ class RoomStore {
     this._encProbeCache.delete(roomId);
     this._seedAll(room, candidates, false);
     return { ok: true, msgCount: candidates.length, lastHash };
+  }
+
+  /** The store's own last-activity record for a room, without materializing or
+   *  refreshing anything: the live entry's stamp when the room is in memory,
+   *  otherwise the active segment's on-disk mtime (the last time the transcript
+   *  file was written). Returns null when the store holds nothing for the id.
+   *  Callers must not use info() for this: info() goes through _room(), which
+   *  counts as activity and would pin every room it is asked about. */
+  lastActivityOf(roomId) {
+    const room = this.rooms.get(roomId);
+    if (room) return room.lastActivity || null;
+    if (!this.persist || !safeRoomId(roomId)) return null;
+    const layout = this._layoutIn(roomId, this._roomDir(roomId));
+    return layout.active.mtimeMs || null;
   }
 
   /** 对齐锚点（扩展重连时据此决定只传尾部还是全量）。

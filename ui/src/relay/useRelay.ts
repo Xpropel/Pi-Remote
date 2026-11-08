@@ -108,10 +108,10 @@ import {
   type RoomTurnTracker,
 } from "@/relay/attention"
 import { applyInboxUpdate, inboxTurnSeedsOf, parseInboxEntries, type InboxEntry } from "@/relay/inbox"
-import { parseScheduleEntries, scheduleMapOfRooms, type ScheduleCreateInput, type ScheduleEntry } from "@/relay/schedule"
+import { parseScheduleEntries, parseScheduleTextData, scheduleMapOfRooms, type ScheduleCreateInput, type ScheduleEntry } from "@/relay/schedule"
 import { saveLegacyStyle, useAskGatePrefs, useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
 import { askGatePrefsOf, legacyStyleOf, LEGACY_STYLE_KEY } from "@/pi/model/legacyStyle"
-import { SWITCH_SYNC_PENDING_VIEW, switchSyncAfterPush, switchSyncEntryInit, switchSyncOnReport, switchSyncShouldPush, switchSyncViewFromEntries, type SwitchSyncEntry, type SwitchSyncView } from "@/pi/model/switchSync"
+import { SWITCH_SYNC_PENDING_VIEW, switchSyncAfterPush, switchSyncEntryInit, switchSyncOnReport, switchSyncShouldPush, switchSyncViewFromEntries, type AdoptedSwitchValues, type SwitchSyncEntry, type SwitchSyncView } from "@/pi/model/switchSync"
 import {
   TERMINAL_UPDATE_FLUSH_MS,
   TOOL_END_META_MAX,
@@ -178,6 +178,7 @@ import {
   EMPTY_OUTBOX,
   OUTBOX_DELIVERY_CONFIRM_MS,
   OUTBOX_STORAGE_KEY,
+  finalFramesOf,
   loadOutbox,
   newOutboxOwner,
   nextReplay,
@@ -317,6 +318,15 @@ const TRANSCRIPT_DELTA_MAX_PENDING = 512
 const KNOWN_ROOM_IDS_MAX = 4096
 const SUPPRESSED_STARTED_ROOMS_MAX = 512
 const LOCAL_ECHO_CIDS_MAX = 200
+/**
+ * B-3/E2 confirm-sweep failure copy: one wording for every surface the
+ * sweep settles (outbox entry and direct-send bubble alike) -- the
+ * device never confirmed pi consumed the message within the bound.
+ */
+const DELIVERY_CONFIRM_TIMEOUT_COPY = "设备长时间没有确认收到这条消息（可能仍堵在设备队列里，或已经丢失）"
+/** E1/E2: failure copy for a terminal outcome the relay re-sent on a
+ *  snapshot (finalFrames); the frame carries no error text of its own. */
+const FINAL_FRAME_FAILED_COPY = "设备报告这条消息注入失败"
 const TERMINAL_HISTORY_IDS_MAX = TOOL_END_META_MAX
 /** 同一条 assistant 消息的起始帧重复到达（重连 / 重复订阅）的去重窗口 */
 const MESSAGE_START_DEDUPE_MS = 60_000
@@ -756,6 +766,22 @@ export function useRelay() {
   const localEchoCidsRef = useRef(new Set<string>())
   /** 本标签页的 outbox 回放认领 id：跨标签页时区分"谁认领、谁的结果能改这条" */
   const outboxOwnerRef = useRef(newOutboxOwner())
+  /**
+   * E2: direct-send bubbles parked in "awaiting" that have NO outbox
+   * entry -- the confirm sweep only iterates outbox entries, so these
+   * bubbles are tracked here (cid -> ms when the bubble entered
+   * awaiting) and swept by the same timer with the same timeout and
+   * failure copy. An entry leaves the map when a terminal signal
+   * settles the cid (delivered / failed / echo) or the sweep gives up
+   * on it. Outbox-backed sends are never tracked here: their entry is
+   * the sweep's business.
+   */
+  const directAwaitingRef = useRef(new Map<string, number>())
+  const noteDirectAwaiting = (roomId: string, cid: string) => {
+    if (!cid || directAwaitingRef.current.has(cid)) return
+    if (roomId && outboxOf(outboxRef.current, roomId).some((entry) => entry.cid === cid)) return
+    directAwaitingRef.current.set(cid, Date.now())
+  }
   const noteLocalEchoCid = useCallback((cid?: string) => {
     if (!cid) return
     localEchoCidsRef.current.delete(cid)
@@ -2021,10 +2047,14 @@ export function useRelay() {
           settleTerminalsNow()
           break
         case "remote_message":
+          // The echo settles the bubble: it is no longer awaiting a
+          // delivery outcome, so the E2 sweep stops tracking its cid.
+          if (isCid(event.cid)) directAwaitingRef.current.delete(event.cid)
           dispatch({ type: "remote", text: String(event.text || ""), cid: isCid(event.cid) ? event.cid : undefined })
           break
         case "remote_message_delivered":
           if (isCid(event.cid)) {
+            directAwaitingRef.current.delete(event.cid)
             dispatch({ type: "delivered", cid: event.cid })
             // B-3: device-confirmed delivery is also the outbox entry's
             // terminal state -- only now may the queued marker clear.
@@ -2032,6 +2062,7 @@ export function useRelay() {
           }
           break
         case "remote_message_failed":
+          if (isCid(event.cid)) directAwaitingRef.current.delete(event.cid)
           dispatch({ type: "remote-failed", text: String(event.text || ""), error: String(event.error || "发送失败"), cid: isCid(event.cid) ? event.cid : undefined })
           // B-3: an outbox entry waiting on this cid gets its terminal
           // failure from the device too (no-op when the cid is not queued).
@@ -2057,6 +2088,15 @@ export function useRelay() {
             }
             remoteQueueRef.current = next
             setRemoteQueueState(next)
+            // E2: a pending queue entry can also be what parks a
+            // direct-send bubble in "awaiting" (queue-sync converges it
+            // there when the send result carried no disposition) --
+            // track those cids for the confirm sweep as well.
+            for (const item of next.items) {
+              if (item.cid && item.status === "pending" && localEchoCidsRef.current.has(item.cid)) {
+                noteDirectAwaiting(roomRef.current || "", item.cid)
+              }
+            }
             // 只有命中本页乐观气泡的 cid 才需要进 reducer（见 localEchoCidsRef 注释）
             if (hasLocalQueueCid(next.items)) dispatch({ type: "queue-sync", items: next.items })
           }
@@ -2423,6 +2463,32 @@ export function useRelay() {
       }
     }
     /**
+     * E1/E2: settle pending sends from the snapshot's additive
+     * finalFrames field. The relay re-sends the terminal outcome of
+     * recently finished deliveries with every snapshot, so a viewer
+     * that was not subscribed when the delivered / failed frame first
+     * went out (it had switched rooms, or reconnected) still converges
+     * its outbox entries and direct-send bubbles here instead of
+     * waiting for the confirm sweep. A snapshot without the field (old
+     * relay) settles nothing, exactly as before.
+     */
+    const applyFinalFrames = (msg: Record<string, unknown>) => {
+      const finals = finalFramesOf(msg.finalFrames)
+      if (!finals.length) return
+      const room = typeof msg.room === "string" && msg.room ? msg.room : roomRef.current
+      for (const fin of finals) {
+        directAwaitingRef.current.delete(fin.cid)
+        if (fin.disposition === "delivered") {
+          dispatch({ type: "delivered", cid: fin.cid })
+          if (room) commitOutbox({ type: "delivered", roomId: room, cid: fin.cid })
+        } else {
+          dispatch({ type: "send-failed", cid: fin.cid, error: FINAL_FRAME_FAILED_COPY, drop: false })
+          if (room) commitOutbox({ type: "delivery-failed", roomId: room, cid: fin.cid, error: FINAL_FRAME_FAILED_COPY })
+        }
+      }
+    }
+
+    /**
      * Apply one snapshot frame whose messages are already plaintext (the
      * plaintext path passes msg.messages verbatim; the enc path passes
      * the decrypted list). Extracted from onmessage so the async decrypt
@@ -2473,6 +2539,9 @@ export function useRelay() {
         // 增量快照也可能带来断线期间的工具块：同样等 transcript 落地后与已到的元数据合并。
         terminalHistoryPendingRef.current = true
       }
+      // E1/E2: terminal delivery outcomes ride the snapshot itself;
+      // settle pending sends from them now that the transcript landed.
+      applyFinalFrames(msg)
       setBusy(!!msg.busy)
       if (!msg.busy) {
         // 断线期间这一轮已跑完：用快照里的终版消息判错误，补发一次完成信号
@@ -3714,6 +3783,16 @@ export function useRelay() {
   // the local prefs value must not be presented as settled truth;
   // mode "device" carries the device-reported values.
   const [switchSyncView, setSwitchSyncView] = useState<SwitchSyncView>(SWITCH_SYNC_PENDING_VIEW)
+  /**
+   * E5: the switch values the latest device report adopted, published
+   * for the app root to dual-write into the PiPrefs copy (the legacy
+   * key is rewritten in noteSwitchReport; the prefs copy goes through
+   * its state owner, act.setPref, the same channel the mobileNav
+   * adoption uses). Deduped by serialized value so repeated identical
+   * reports do not churn the prefs state.
+   */
+  const [adoptedSwitches, setAdoptedSwitches] = useState<AdoptedSwitchValues | null>(null)
+  const adoptedSwitchesSigRef = useRef("")
   const refreshSwitchSyncView = (room: string | null) => {
     setSwitchSyncView(
       room
@@ -3733,10 +3812,15 @@ export function useRelay() {
     const switches = extStatusSwitchesOf(event as { switches?: unknown })
     // switches 字段在场但不合法 = 坏帧：整份报告忽略；字段根本不在场才是旧桥（落 legacy）。
     if (switches === null && event !== null && typeof event === "object" && "switches" in (event as Record<string, unknown>)) return
+    // E5: the values this report adopts, collected per switch for the
+    // prefs dual-write (published below). A field is collected only
+    // when its fold adopted -- an in-flight push stays protected.
+    const adopted: AdoptedSwitchValues = {}
     {
       const entry = dialogSyncRef.current.get(room) ?? switchSyncEntryInit()
       const next = switchSyncOnReport(entry, switches ? String(switches.dialogRemoteAnswer) : null, String(legacyStyleOf(readLegacyRaw()).dialogRemoteAnswer))
       dialogSyncRef.current.set(room, next.entry)
+      if (next.adopt !== null && switches) adopted.dialogRemoteAnswer = switches.dialogRemoteAnswer
       if (next.adopt !== null && switches && legacyStyleOf(readLegacyRaw()).dialogRemoteAnswer !== switches.dialogRemoteAnswer) {
         saveLegacyStyle({ dialogRemoteAnswer: switches.dialogRemoteAnswer })
       }
@@ -3747,6 +3831,10 @@ export function useRelay() {
       const next = switchSyncOnReport(entry, switches ? String(switches.approvalGate.enabled) + "|" + switches.approvalGate.tier : null, String(cur.approvalGateEnabled) + "|" + cur.approvalGateTier)
       gateSyncRef.current.set(room, next.entry)
       if (next.adopt !== null && switches) {
+        adopted.approvalGateEnabled = switches.approvalGate.enabled
+        adopted.approvalGateTier = switches.approvalGate.tier
+      }
+      if (next.adopt !== null && switches) {
         if (cur.approvalGateEnabled !== switches.approvalGate.enabled || cur.approvalGateTier !== switches.approvalGate.tier) {
           saveLegacyStyle({ approvalGateEnabled: switches.approvalGate.enabled, approvalGateTier: switches.approvalGate.tier as PiApprovalGateTier })
         }
@@ -3756,8 +3844,16 @@ export function useRelay() {
       const entry = askSyncRef.current.get(room) ?? switchSyncEntryInit()
       const next = switchSyncOnReport(entry, switches ? String(switches.askUserEnabled) : null, String(askGatePrefsOf(readLegacyRaw()).askUserEnabled))
       askSyncRef.current.set(room, next.entry)
+      if (next.adopt !== null && switches) adopted.askUserEnabled = switches.askUserEnabled
       if (next.adopt !== null && switches && askGatePrefsOf(readLegacyRaw()).askUserEnabled !== switches.askUserEnabled) {
         saveLegacyStyle({ askUserEnabled: switches.askUserEnabled })
+      }
+    }
+    if (switches && Object.keys(adopted).length) {
+      const sig = JSON.stringify(adopted)
+      if (sig !== adoptedSwitchesSigRef.current) {
+        adoptedSwitchesSigRef.current = sig
+        setAdoptedSwitches(adopted)
       }
     }
     if (room === roomRef.current) refreshSwitchSyncView(room)
@@ -3902,6 +3998,22 @@ export function useRelay() {
   /** 定时排期取消（D-§3）：结果同样经 schedule_update 对齐；回执失败抛给调用方提示。 */
   const cancelSchedule = useCallback(
     (scheduleId: string): Promise<void> => sendQuery({ type: "schedule_cancel", scheduleId }).then(() => undefined),
+    [sendQuery],
+  )
+
+  /**
+   * On-demand full body for one schedule (list entries carry only a
+   * preview): asks the relay for this schedule id via the schedule_text
+   * frame, which the relay answers to this viewer only. Any failure (an
+   * older relay that does not know the frame, a missing schedule) resolves
+   * to null — callers fall back to the preview text.
+   */
+  const fetchScheduleText = useCallback(
+    (scheduleId: string): Promise<string | null> =>
+      sendQuery({ type: "schedule_text", scheduleId }).then(
+        (msg) => parseScheduleTextData(msg.data)?.text ?? null,
+        () => null,
+      ),
     [sendQuery],
   )
 
@@ -4190,6 +4302,10 @@ export function useRelay() {
     const disposition = isRecord(data) && typeof data.disposition === "string" ? data.disposition : ""
     if (disposition === "queued" || (roomId !== "" && roomCryptoEntryOf(roomId).status === "crypto-required")) {
       dispatch({ type: "send-queued", cid })
+      // E2: the bubble just parked in "awaiting". Outbox-backed sends
+      // are swept through their entry; a direct send has no entry, so
+      // track the cid for the same confirm sweep (no-op when backed).
+      noteDirectAwaiting(roomId, cid)
     }
   }
 
@@ -4433,13 +4549,30 @@ export function useRelay() {
             type: "confirm-timeout",
             roomId: room,
             cid: entry.cid,
-            error: "设备长时间没有确认收到这条消息（可能仍堵在设备队列里，或已经丢失）",
+            error: DELIVERY_CONFIRM_TIMEOUT_COPY,
           })
+        }
+      }
+      // E2: direct-send bubbles parked in "awaiting" have no outbox
+      // entry for the loop above; sweep them on the same cycle, with
+      // the same confirm bound and the same failed (unknown) outcome.
+      // A tracked cid whose bubble is no longer in front of the user
+      // (room switched, snapshot replaced it) simply stops being
+      // tracked -- there is nothing left to mark.
+      if (directAwaitingRef.current.size) {
+        const items = transcriptRef.current.items
+        for (const [cid, since] of [...directAwaitingRef.current]) {
+          if (now - since < OUTBOX_DELIVERY_CONFIRM_MS) continue
+          directAwaitingRef.current.delete(cid)
+          const item = items.find((entry) => entry.kind === "user" && entry.cid === cid)
+          if (item && item.kind === "user" && item.status === "awaiting") {
+            dispatch({ type: "send-failed", cid, error: DELIVERY_CONFIRM_TIMEOUT_COPY, drop: false })
+          }
         }
       }
     }, 30_000)
     return () => window.clearInterval(timer)
-  }, [commitOutbox])
+  }, [commitOutbox, dispatch])
 
   /** 排队面板"取消"：queued / failed 可取消，正在发的不能 */
   const outboxCancel = useCallback((cid: string) => {
@@ -5797,9 +5930,11 @@ export function useRelay() {
     schedulesByRoom,
     createSchedule,
     cancelSchedule,
+    fetchScheduleText,
     extStatus,
     /** Current room's device-owned switch sync view (settings surfaces). */
     switchSyncView,
+    adoptedSwitches,
     activity,
     notice,
     /** 第 5 章通知栈（N1–N8）：可见卡、队列与全部交互。 */

@@ -18,7 +18,7 @@ const { commandTimeoutMs, MESSAGE_COMMANDS, DEVICE_COMMANDS, READONLY_DEVICE_COM
 const { MAX_DEVICE_NAME, UNREGISTERED_DEVICE, normPath, cwdAllowed, underRoots, boundAccount } = require("./devices");
 const { replaySessionArchives } = require("./sessionArchive");
 const { purgeSessions } = require("./purge");
-const { resendFallbackBody, queryKey, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, pushDialogGate, clearRoomTurnEnd, broadcastRoomAttention, devicesViewFor } = require("./rooms");
+const { resendFallbackBody, queryKey, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, pushDialogGate, clearRoomTurnEnd, broadcastRoomAttention, devicesViewFor, snapshotBodyWithFinalFrames } = require("./rooms");
 const { makeServeWeb, healthBody } = require("./web");
 
 // 认证失败记账的来源数上限（只在内存里）。满了挤掉最久没有活动的来源；正常部署远到不了这个数。
@@ -29,6 +29,35 @@ const DIALOG_ANSWER_RESULT_TIMEOUT_MS = 15000;
 
 /** G2 审批门档位（与桥侧 APPROVAL_GATE_TIERS 同值）：relay 只转发合法档位，非法值不带（桥保持当前值）。 */
 const APPROVAL_GATE_TIERS = ["high-risk", "all-non-readonly", "list"];
+
+/** prefs_set per-connection token bucket (storm backstop): 5 tokens/second
+ *  sustained, burst capacity 10. Legitimate prefs traffic — a human toggling
+ *  settings, the shell pushing one mobileNav change at a time — sits orders of
+ *  magnitude below this; the bucket only exists so a client that echoes
+ *  prefs_changed back into prefs_set cannot make the relay amplify the loop
+ *  with a rev bump, a disk write, and a broadcast per round trip. */
+const PREFS_SET_BUCKET_CAPACITY = 10;
+const PREFS_SET_BUCKET_REFILL_PER_MS = 5 / 1000;
+
+/** Take one prefs_set token from the connection's bucket; false when empty.
+ *  State rides on the socket (same pattern as socket._room) and dies with the
+ *  connection. Rejections are logged at most once per 5 s per connection so a
+ *  storming client cannot turn the rejection path into a log flood. */
+function takePrefsSetToken(socket, now) {
+  let bucket = socket._prefsSetBucket;
+  if (!bucket) bucket = socket._prefsSetBucket = { tokens: PREFS_SET_BUCKET_CAPACITY, refilledAt: now, limitedLoggedAt: 0 };
+  bucket.tokens = Math.min(PREFS_SET_BUCKET_CAPACITY, bucket.tokens + Math.max(0, now - bucket.refilledAt) * PREFS_SET_BUCKET_REFILL_PER_MS);
+  bucket.refilledAt = now;
+  if (bucket.tokens >= 1) {
+    bucket.tokens -= 1;
+    return true;
+  }
+  if (now - bucket.limitedLoggedAt > 5000) {
+    bucket.limitedLoggedAt = now;
+    log("prefs_set 超过单连接速率上限，本连接限流中（rate_limited）");
+  }
+  return false;
+}
 
 const ADMIN_REQUIRED = "admin_required";
 const ADMIN_REQUIRED_TEXT = "需要管理员令牌";
@@ -884,6 +913,23 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
             send(socket, ackFrame(origId, true, { room: roomId || undefined, data: { schedules: rooms.scheduleList(viewerAccount(), roomId) } }), config);
             break;
           }
+          case "schedule_text": {
+            // One schedule's full text on demand: room lists carry only a
+            // preview, so a viewer that needs the text asks for it by id and
+            // is the only one that receives it. Same cap gate as schedule_list.
+            const origId = frame.id ? String(frame.id) : null;
+            if (!hasCap(socket, "room.schedule")) {
+              send(socket, errorFrame("unsupported", "此端未声明 room.schedule 能力", { id: origId }), config);
+              return;
+            }
+            const found = rooms.scheduleText(viewerAccount(), typeof frame.scheduleId === "string" ? frame.scheduleId : "");
+            if (!found) {
+              send(socket, ackFrame(origId, false, { error: "定时消息不存在", code: "not_found" }), config);
+              return;
+            }
+            send(socket, ackFrame(origId, true, { room: found.roomId, data: { id: found.id, text: found.text } }), config);
+            break;
+          }
           case "get_sessions": {
             const origId = frame.id ? String(frame.id) : null;
             const deviceId = typeof frame.deviceId === "string" ? frame.deviceId.trim() : "";
@@ -1024,7 +1070,7 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
                     if (snapshot && snapshot.delta) delta = snapshot;
                   } catch {}
                   if (delta) {
-                    send(socket, snapshotFrame(room, snapshotBodyFrom(delta)), config);
+                    send(socket, snapshotFrame(room, snapshotBodyWithFinalFrames(snapshotBodyFrom(delta), room)), config);
                     if (room.usage) send(socket, { type: "usage_state", room: room.id, usage: room.usage }, config);
                     sendCachedQueue(socket, room, config);
                     sendCachedRemoteQueue(socket, room, config);
@@ -1286,9 +1332,18 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
             // prefs.sync 的 viewer（prefs_changed，发送端不收，防回声从通道层断掉）。
             // baseRev 只作信息：落后不拒绝（单用户冲突概率极低），发送端以回带 rev 为准。
             // 低-25：relay 侧按字段合并子集（客户端可只上行变化字段），baseRev 用于日志诊断。
+            // Storm backstops (design-debt item C): a per-connection token
+            // bucket below, plus the store's no-change short-circuit further
+            // down — an unchanged subset still earns the sender its
+            // prefs_saved receipt but no longer bumps rev, writes disk, or
+            // broadcasts prefs_changed.
             const origId = frame.id ? String(frame.id) : null;
             if (!hasCap(socket, "prefs.sync")) {
               send(socket, errorFrame("unsupported", "此端未声明 prefs.sync 能力", { id: origId }), config);
+              return;
+            }
+            if (!takePrefsSetToken(socket, Date.now())) {
+              send(socket, errorFrame("rate_limited", "偏好同步太频繁，请稍后再试", { id: origId }), config);
               return;
             }
             const maxBytes = (PROTOCOL.limits && PROTOCOL.limits.prefsSubsetMaxBytes) || 2048;
@@ -1306,12 +1361,17 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
             const baseRev = Number.isSafeInteger(frame.baseRev) && frame.baseRev >= 0 ? frame.baseRev : null;
             const prefsRecord = prefsStore.set(viewerAccount(), subset, Date.now(), baseRev);
             send(socket, { type: "prefs_saved", rev: prefsRecord.rev, updatedAt: prefsRecord.updatedAt }, config);
-            broadcast([...rooms.viewers].filter((viewerConnection) => viewerConnection !== socket && hasCap(viewerConnection, "prefs.sync")), {
-              type: "prefs_changed",
-              subset: prefsRecord.subset,
-              rev: prefsRecord.rev,
-              updatedAt: prefsRecord.updatedAt,
-            }, config);
+            // changed:false means the subset was already current: the sender
+            // still gets its receipt for rev alignment, but nobody else is
+            // woken up for a value they already hold.
+            if (prefsRecord.changed !== false) {
+              broadcast([...rooms.viewers].filter((viewerConnection) => viewerConnection !== socket && hasCap(viewerConnection, "prefs.sync")), {
+                type: "prefs_changed",
+                subset: prefsRecord.subset,
+                rev: prefsRecord.rev,
+                updatedAt: prefsRecord.updatedAt,
+              }, config);
+            }
             break;
           }
           case "dialog_answer": {

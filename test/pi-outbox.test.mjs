@@ -8,6 +8,7 @@ import {
   OUTBOX_DELIVERY_CONFIRM_MS,
   OUTBOX_ROOM_MAX,
   OUTBOX_STORAGE_KEY,
+  finalFramesOf,
   loadOutbox,
   nextReplay,
   outboxOf,
@@ -372,4 +373,37 @@ test("回放投递计划：同一轮里 prompt 开过回合，后面的条目按
   assert.match(replay, /let startedTurn = false/, "每一轮回放重新计")
   assert.match(replay, /const plan = deliveryPlan\(sendModeRef\.current, busyRef\.current \|\| startedTurn\)/)
   assert.match(replay, /await channel\.command\([^\n]*\)\n\s*if \(plan\.command === "prompt"\) startedTurn = true/, "送达以后才记开过回合")
+})
+
+test("E1/E2 finalFramesOf：快照 finalFrames 字段校验——合法项保留、坏项逐项丢弃、缺失 = 空", () => {
+  assert.deepEqual(finalFramesOf(undefined), [])
+  assert.deepEqual(finalFramesOf(null), [])
+  assert.deepEqual(finalFramesOf("nope"), [])
+  assert.deepEqual(finalFramesOf([]), [])
+  assert.deepEqual(
+    finalFramesOf([
+      { cid: "c1", disposition: "delivered", at: 123 },
+      { cid: "c2", disposition: "failed", at: 456 },
+      { cid: "c3", disposition: "failed" },
+      { cid: "bad cid!", disposition: "delivered", at: 1 },
+      { cid: "c4", disposition: "unknown", at: 1 },
+      { disposition: "delivered", at: 1 },
+      null,
+      "x",
+    ]),
+    [
+      { cid: "c1", disposition: "delivered", at: 123 },
+      { cid: "c2", disposition: "failed", at: 456 },
+      { cid: "c3", disposition: "failed", at: 0 },
+    ],
+  )
+})
+
+test("E2 接线：useRelay 消费快照 finalFrames 收敛未决条目；直发 awaiting 气泡纳入同一确认巡查", () => {
+  const relay = readFileSync(new URL("../ui/src/relay/useRelay.ts", import.meta.url), "utf8")
+  assert.match(relay, /finalFramesOf\(msg\.finalFrames\)/, "快照消费点解析 finalFrames")
+  assert.match(relay, /applyFinalFrames\(msg\)/, "快照处理路径调用终局收敛")
+  assert.match(relay, /directAwaitingRef/, "直发 awaiting 气泡有独立登记表")
+  assert.match(relay, /noteDirectAwaiting\(roomId, cid\)/, "直发被设备接单（queued）时登记")
+  assert.match(relay, /error: DELIVERY_CONFIRM_TIMEOUT_COPY/, "巡查对直发气泡用与 outbox 相同的失败文案收场")
 })

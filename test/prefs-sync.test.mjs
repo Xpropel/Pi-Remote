@@ -149,6 +149,33 @@ test("PrefsStore：rev 单调递增、整份替换、落盘恢复、文件 0o600
   assert.equal(again.get("other"), null)
 })
 
+test("PrefsStore 短路：合并结果与现值深度相等 → changed:false、不涨 rev、不落盘", () => {
+  const dir = tmpDir()
+  const store = new PrefsStore(dir)
+  const first = store.set("admin", { ...SUBSET_A }, 1000)
+  assert.equal(first.rev, 1)
+  assert.equal(first.changed, true)
+  // A full re-send of the same subset is an echo, not a change.
+  const echo = store.set("admin", { ...SUBSET_A }, 2000)
+  assert.equal(echo.changed, false)
+  assert.equal(echo.rev, 1, "相同子集不涨 rev")
+  assert.equal(echo.updatedAt, 1000, "短路不刷新 updatedAt")
+  // A partial send that merges back to the same record is also an echo.
+  const partialEcho = store.set("admin", { theme: SUBSET_A.theme }, 3000)
+  assert.equal(partialEcho.changed, false)
+  assert.equal(partialEcho.rev, 1)
+  // The persisted file still holds rev 1: the short-circuit never wrote disk.
+  const file = path.join(dir, safeKey("admin"), "prefs.json")
+  const onDisk = JSON.parse(fs.readFileSync(file, "utf8"))
+  assert.equal(onDisk.rev, 1)
+  assert.ok(!("changed" in onDisk), "落盘记录不带 changed 标记（标记只在返回值上）")
+  assert.ok(!("changed" in store.get("admin")), "内存记录不带 changed 标记")
+  // A real change still bumps rev and reports changed:true.
+  const real = store.set("admin", { ...SUBSET_B }, 4000)
+  assert.equal(real.changed, true)
+  assert.equal(real.rev, 2)
+})
+
 test("cleanPrefsSubset（relay 入口清洗）：白名单外字段丢弃、坏值丢弃、全坏返回 null", () => {
   const cleaned = cleanPrefsSubset({
     ...SUBSET_A,
@@ -284,6 +311,88 @@ test("relay 重启后新连 viewer 仍拿到最后值（落盘恢复）", async 
   t.after(() => b.c.close())
   assert.equal(b.auth.prefs.rev, 1)
   assert.deepEqual(b.auth.prefs.subset, SUBSET_B)
+})
+
+/* ---------------- 设计债 C：风暴抑制（短路 + 令牌桶） ---------------- */
+
+// Poll a condition over the client's collected frames (response counting for
+// the burst tests, where one request earns exactly one response frame).
+async function until(condition, ms = 5000, what = "condition") {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (condition()) return
+    await sleep(10)
+  }
+  throw new Error("等待超时: " + what)
+}
+
+test("相同子集连发：发送端照收 prefs_saved 对齐 rev、其他端不收 prefs_changed 广播", async (t) => {
+  const relay = await boot()
+  t.after(() => relay.close())
+  const a = await viewer(relay, CAPS)
+  const b = await viewer(relay, CAPS)
+  t.after(() => {
+    a.c.close()
+    b.c.close()
+  })
+
+  a.c.send({ type: "prefs_set", subset: { ...SUBSET_A }, baseRev: 0 })
+  assert.equal((await a.c.type("prefs_saved")).rev, 1)
+  assert.equal((await b.c.type("prefs_changed")).rev, 1)
+
+  // Two echoes: a full re-send, then a partial send that merges to the same
+  // record. Both must be answered (rev stays 1) and neither may broadcast.
+  a.c.send({ type: "prefs_set", subset: { ...SUBSET_A }, baseRev: 1 })
+  assert.equal((await a.c.type("prefs_saved")).rev, 1, "回声写入回执 rev 不涨")
+  a.c.send({ type: "prefs_set", subset: { theme: SUBSET_A.theme }, baseRev: 1 })
+  assert.equal((await a.c.type("prefs_saved")).rev, 1, "部分回声回执 rev 不涨")
+  await sleep(200)
+  assert.equal(b.c.frames.filter((f) => f.type === "prefs_changed").length, 1, "回声不广播：B 仍只有第一次的 prefs_changed")
+})
+
+test("prefs_set 令牌桶：突发 10 内全过、持续洪泛被 rate_limited 挡下", async (t) => {
+  const relay = await boot()
+  t.after(() => relay.close())
+  const a = await viewer(relay, CAPS)
+  t.after(() => a.c.close())
+
+  // Every frame carries a new size, so every admitted write really changes
+  // the record (rev climbs 1, 2, 3, ... per prefs_saved).
+  const TOTAL = 30
+  for (let i = 0; i < TOTAL; i++) {
+    a.c.send({ type: "prefs_set", id: "burst-" + i, subset: { theme: "sea", chrome: "codex", font: "inter", size: 10 + (i % 23), mono: "system" } })
+  }
+  const saved = () => a.c.frames.filter((f) => f.type === "prefs_saved")
+  const limited = () => a.c.frames.filter((f) => f.type === "error" && f.code === "rate_limited")
+  await until(() => saved().length + limited().length >= TOTAL, 8000, "burst responses")
+  assert.equal(saved().length + limited().length, TOTAL, "每帧恰好一个回应（saved 或 rate_limited）")
+  assert.ok(saved().length >= 10, `突发容量 10 应全过（实际 saved=${saved().length}）`)
+  assert.ok(limited().length >= 5, `持续洪泛应被挡下相当一部分（实际 limited=${limited().length}）`)
+  // Admitted writes changed the value every time, so their revs are 1..N in order.
+  assert.deepEqual(saved().map((f) => f.rev), saved().map((_, i) => i + 1), "被放行帧的 rev 连续递增、无空涨")
+  assert.ok(limited().every((f) => /^burst-\d+$/.test(f.id || "")), "rate_limited 回帧带请求 id")
+})
+
+test("prefs_set 令牌桶：限流后停顿回血，再发恢复正常裁决", async (t) => {
+  const relay = await boot()
+  t.after(() => relay.close())
+  const a = await viewer(relay, CAPS)
+  t.after(() => a.c.close())
+
+  const subsetFor = (i) => ({ theme: "sea", chrome: "codex", font: "inter", size: 10 + (i % 23), mono: "system" })
+  // Drain the burst capacity (10) plus a couple more: at least one rejection.
+  for (let i = 0; i < 12; i++) a.c.send({ type: "prefs_set", id: "drain-" + i, subset: subsetFor(i) })
+  const saved = () => a.c.frames.filter((f) => f.type === "prefs_saved")
+  const limited = () => a.c.frames.filter((f) => f.type === "error" && f.code === "rate_limited")
+  await until(() => saved().length + limited().length >= 12, 8000, "drain responses")
+  assert.ok(limited().length >= 1, "突发耗尽后应出现 rate_limited")
+  const lastRev = saved()[saved().length - 1].rev
+
+  // 5 tokens/second: a 1.2 s pause refills ~6 tokens, well past one send.
+  await sleep(1200)
+  a.c.send({ type: "prefs_set", id: "after-pause", subset: subsetFor(12) })
+  const recovered = await a.c.type("prefs_saved", (f) => f.rev === lastRev + 1)
+  assert.equal(recovered.rev, lastRev + 1, "回血后 prefs_set 恢复正常裁决、rev 继续单调")
 })
 
 /* ---------------- UI 纯函数 ---------------- */

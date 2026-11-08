@@ -91,6 +91,7 @@ For running the relay on a server (systemd setup, token management, troubleshoot
 - Anyone holding the viewer token can send messages to a session, and pi runs with tool permissions. Treat the token as a password. For access over the public internet, use a private network, a tunnel, or a TLS reverse proxy instead of exposing port 7002 directly.
 - Remote bash is disabled by default and must be enabled explicitly on the local machine; its working directory is restricted to session directories and registered projects.
 - Conversation content is not persisted by default. Persistence is opt-in, with a 30-day retention.
+- Accepted metadata-level plaintext: scheduled-message text is stored in plaintext in the relay's schedules file (mode 0600), and prompt commands cross the relay as plaintext command frames. The delivering side has to hold the text — the relay fires scheduled messages itself and has no room key — so this exception is accepted for a self-hosted, single-user relay. Room lists still never carry the full scheduled text, only a short preview.
 
 ## Known limitations
 

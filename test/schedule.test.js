@@ -111,6 +111,39 @@ test("落盘与恢复：primeAll 读回全部 armed；终态过期条目加载�
   assert.equal(store3.get(ACCT, "sch_deadbeefdeadbeef"), null);
 });
 
+test("列表形状收敛：wire 只带 textPreview/hasText 不带全文；落盘保留全文；textOf 按需取全文", () => {
+  const w = makeWorld();
+  w.addRoom("r1");
+  const longText = "定时".repeat(50); // 100 个字符，超 60 字预览
+  const res = w.engine.create(ACCT, { roomId: "r1", text: longText, segment: "steer", kind: "once", at: T0 + 60000 });
+  assert.ok(res.entry);
+  const e = res.entry;
+  // 上行清单（listRoom → wireOf）：无 text 字段、预览截断到 60 字、hasText 为真
+  const listed = w.store.listRoom(ACCT, "r1");
+  assert.equal(listed.length, 1);
+  assert.equal("text" in listed[0], false, "列表广播不带正文全文");
+  assert.equal(listed[0].textPreview, "定时".repeat(30));
+  assert.equal(Array.from(listed[0].textPreview).length, 60);
+  assert.equal(listed[0].hasText, true);
+  // 落盘文件（persistOf）：全文字段原样保留，否则重启读回会被 cleanEntry 整条丢弃
+  const acctDir = path.join(w.accountsDir, fs.readdirSync(w.accountsDir)[0]);
+  const raw = JSON.parse(fs.readFileSync(path.join(acctDir, "schedules.json"), "utf8"));
+  assert.equal(raw.entries[0].text, longText);
+  // 恢复后内部条目仍持全文（投递面不受收敛影响）
+  const store2 = new ScheduleStore(w.accountsDir, { now: w.now });
+  store2.primeAll();
+  assert.equal(store2.get(ACCT, e.id).text, longText);
+  // 按需取文：已知 id 回全文载荷，未知/坏 id 回 null
+  assert.deepEqual(w.engine.textOf(ACCT, e.id), { id: e.id, roomId: "r1", text: longText });
+  assert.equal(w.engine.textOf(ACCT, "sch_0000000000000000"), null);
+  assert.equal(w.engine.textOf(ACCT, 42), null);
+  // 短正文：预览即全文
+  const short = w.engine.create(ACCT, { roomId: "r1", text: "短消息", segment: "steer", kind: "once", at: T0 + 60000 });
+  const shortListed = w.store.listRoom(ACCT, "r1").find((x) => x.id === short.entry.id);
+  assert.equal(shortListed.textPreview, "短消息");
+  assert.equal(shortListed.hasText, true);
+});
+
 test("once 到点投递：成功即退休；同拍不重投（done 重复回调/后续 tick 都无效）", () => {
   const w = makeWorld();
   w.addRoom("r1");

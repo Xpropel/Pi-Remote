@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
 import { agoText, DELIVERY_LABEL, hostMessageText } from "./options"
 import type { CHostMessage } from "./types"
 import type { PiRemoteQueueItem, PiRemoteQueueState } from "@/components/pi/shared/types"
-import { scheduleSourceLabel, scheduleStatusLine, type ScheduleCreateInput, type ScheduleEntry } from "@/relay/schedule"
+import { scheduleDisplayText, scheduleSourceLabel, scheduleStatusLine, type ScheduleCreateInput, type ScheduleEntry } from "@/relay/schedule"
 import { C_ERROR, C_SECONDARY, rowText, TOUCH_44, type CVariant } from "./styles"
 
 export interface PiQueuePanelProps extends Omit<ComponentProps<"div">, "children"> {
@@ -573,9 +573,9 @@ export function PiQueuePanel({
             {scheduleItems.map((s) => (
               <div key={s.id} data-slot="pi-schedule-row" data-state={s.state} className="flex min-w-0 flex-col gap-0.5 py-2">
                 <div className="flex min-w-0 items-center gap-3">
-                  <span className={cn("min-w-0 flex-1 truncate text-(--cw-text)", t.main)}>{s.text}</span>
+                  <span className={cn("min-w-0 flex-1 truncate text-(--cw-text)", t.main)}>{scheduleDisplayText(s)}</span>
                   {!phone && s.state === "armed" && !isStatic && onScheduleCancel && (
-                    <TextButton variant={variant} label={`取消定时：${s.text}`} onClick={() => onScheduleCancel(s.id)}>
+                    <TextButton variant={variant} label={`取消定时：${scheduleDisplayText(s)}`} onClick={() => onScheduleCancel(s.id)}>
                       取消
                     </TextButton>
                   )}
@@ -583,7 +583,7 @@ export function PiQueuePanel({
                 <span className={cn(t.sub, s.state === "failed" ? C_ERROR : C_SECONDARY)}>{scheduleStatusLine(s, now)}</span>
                 {phone && s.state === "armed" && !isStatic && onScheduleCancel && (
                   <div className={cn("flex justify-end pt-1", t.sub)}>
-                    <TextButton variant={variant} label={`取消定时：${s.text}`} onClick={() => onScheduleCancel(s.id)}>
+                    <TextButton variant={variant} label={`取消定时：${scheduleDisplayText(s)}`} onClick={() => onScheduleCancel(s.id)}>
                       取消
                     </TextButton>
                   </div>

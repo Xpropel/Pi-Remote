@@ -208,6 +208,14 @@ export type RoomInfo = {
   viewers: number
   /** 房间最近活动时间（relay 内存态）。同 cwd 多房间时据此挑最新的；旧 relay 不下发时为 0 */
   lastActivity: number
+  /**
+   * Room creation time (ms epoch), immutable for the life of the room
+   * record. Display only: it disambiguates same-titled live rows in the
+   * session list and must never feed eviction or activity logic (the
+   * registration/activity clocks are separate on purpose). Absent when
+   * the relay did not say (old relay).
+   */
+  createdAt?: number
   accountId?: string
   deviceId?: string
   /** P9 A：这个房间的未决 dialog 摘要（旧 relay 不带；离线房间恒为空数组） */
@@ -304,6 +312,10 @@ export type ListedSession = {
   /** fork 谱系呈现（R3-3 第 3 项）：merge 时按父路径在同设备清单内解析——
    *  "源自 <父会话当前名>"；父已不在清单 → "源会话已删除"；非 fork 行不带此字段、不占位。 */
   parentLabel?: string
+  /** The backing live room's creation time (RoomInfo.createdAt); only
+   *  room-backed rows carry it. Display only (live-row title
+   *  disambiguation in mergeDeviceSessions). */
+  createdAt?: number
 }
 
 export function errorCode(error: unknown): string {
@@ -646,6 +658,9 @@ function withSessionLineage(rows: ListedSession[], sessions: SessionEntry[], lis
  *  listTruncated = 该设备清单帧带 truncated（不完整）：只喂 fork 谱系的诚实态判定（C-3）。 */
 export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions: SessionEntry[], listTruncated = false): ListedSession[] {
   const mine = rooms.filter((room) => roomDeviceId(room) === device.id)
+  // Live rows for the title disambiguation below: rows backed by one of
+  // this device's online rooms (see disambiguateLiveRowTitles).
+  const liveRoomIds = new Set(mine.filter((room) => room.online).map((room) => room.id))
   const byId = new Map(sessions.map((session) => [session.id, session]))
   // Secondary identity links between a room and a stored-session entry, for
   // the cases where the two sides spell the same session differently and the
@@ -754,7 +769,7 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
     const live = extras.filter((room) => room.online).map((room) => roomRow(room, false, entryForRoom(room)))
     const idle = extras.filter((room) => !room.online).map((room) => roomRow(room, false, entryForRoom(room)))
     fromIndex.sort((a, b) => b.updatedAt - a.updatedAt)
-    return withSessionLineage(uniqueRows([...live, ...fromIndex, ...idle]), sessions, listTruncated)
+    return withSessionLineage(disambiguateLiveRowTitles(uniqueRows([...live, ...fromIndex, ...idle]), liveRoomIds), sessions, listTruncated)
   }
   const roomById = new Map(mine.map((room) => [room.id, room]))
   const active = mine.filter((room) => room.online).map((room) => roomRow(room, true, entryForRoom(room)))
@@ -772,7 +787,7 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
   // 设备在线、但还没进索引的离线房间（刚关掉、清单还没推上来）：留在列表末尾可回看，不能直接丢
   const indexed = new Set(sessions.map((session) => session.id))
   const idle = mine.filter((room) => !room.online && !indexed.has(room.id) && !paired.has(room.id)).map((room) => roomRow(room, false, entryForRoom(room)))
-  return withSessionLineage(uniqueRows([...active, ...indexedActive, ...rest, ...idle]), sessions, listTruncated)
+  return withSessionLineage(disambiguateLiveRowTitles(uniqueRows([...active, ...indexedActive, ...rest, ...idle]), liveRoomIds), sessions, listTruncated)
 }
 
 /** Session id embedded in a session file name ("<timestamp>_<id>.jsonl"),
@@ -956,6 +971,7 @@ function parseRoom(raw: unknown): RoomInfo {
     busy: rec.busy === true,
     viewers: typeof rec.viewers === "number" ? rec.viewers : 0,
     lastActivity: typeof rec.lastActivity === "number" ? rec.lastActivity : 0,
+    ...(typeof rec.createdAt === "number" && Number.isFinite(rec.createdAt) && rec.createdAt > 0 ? { createdAt: rec.createdAt } : {}),
     accountId: typeof rec.accountId === "string" ? rec.accountId : undefined,
     deviceId: typeof rec.deviceId === "string" && rec.deviceId ? rec.deviceId : undefined,
     ...(waiting !== undefined ? { waiting } : {}),
@@ -1144,7 +1160,56 @@ function roomRow(room: RoomInfo, openable: boolean, session?: SessionEntry | nul
     // rows built from old relays keep their exact previous shape.
     ...(room.enc !== undefined ? { enc: room.enc } : {}),
     ...(room.encReason !== undefined ? { encReason: room.encReason } : {}),
+    // Same presence discipline for the room creation time: rows built
+    // from old relays keep their exact previous shape.
+    ...(room.createdAt !== undefined ? { createdAt: room.createdAt } : {}),
   }
+}
+
+/** Local wall-clock "HH:MM" (24h) for a ms-epoch timestamp. */
+function startTimeLabelOf(ms: number): string {
+  const date = new Date(ms)
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
+}
+
+/**
+ * D (U1 residual): two live sessions in one workspace that are both
+ * unnamed and have not exchanged a message yet collapse onto the same
+ * row title -- every step of the title chain is empty by construction,
+ * so both land on the folder name and the rows are indistinguishable.
+ * Stored-session rows can be told apart by first message / file time;
+ * brand-new live rows have neither, so group the live rows of this
+ * device by (cwd, title) and, where a group has more than one row,
+ * suffix each title with the room's start time ("· HH:MM", from the
+ * immutable createdAt). Rows created in the same minute additionally
+ * get a short id suffix. Only rows backed by an online room that
+ * carried createdAt take part; every other row keeps its exact title.
+ */
+function disambiguateLiveRowTitles(rows: ListedSession[], liveRoomIds: ReadonlySet<string>): ListedSession[] {
+  const groups = new Map<string, ListedSession[]>()
+  for (const row of rows) {
+    if (row.createdAt === undefined || !liveRoomIds.has(row.id)) continue
+    const key = `${normPath(row.cwd)}${row.title}`
+    const list = groups.get(key)
+    if (list) list.push(row)
+    else groups.set(key, [row])
+  }
+  const suffixById = new Map<string, string>()
+  for (const list of groups.values()) {
+    if (list.length < 2) continue
+    const stamps = list.map((row) => startTimeLabelOf(row.createdAt as number))
+    const stampCounts = new Map<string, number>()
+    for (const stamp of stamps) stampCounts.set(stamp, (stampCounts.get(stamp) ?? 0) + 1)
+    list.forEach((row, index) => {
+      const stamp = stamps[index]
+      suffixById.set(row.id, (stampCounts.get(stamp) as number) > 1 ? ` · ${stamp} · ${row.id.slice(0, 8)}` : ` · ${stamp}`)
+    })
+  }
+  if (!suffixById.size) return rows
+  return rows.map((row) => {
+    const suffix = suffixById.get(row.id)
+    return suffix ? { ...row, title: `${row.title}${suffix}` } : row
+  })
 }
 
 function normPath(value: string): string {

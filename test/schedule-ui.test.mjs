@@ -2,7 +2,7 @@
 // cid 来源标注、状态行文案（一次/心跳/终态三式）。
 import test from "node:test"
 import assert from "node:assert/strict"
-import { parseScheduleCid, parseScheduleEntries, scheduleMapOfRooms, scheduleSourceLabel, scheduleStatusLine } from "../ui/src/relay/schedule.ts"
+import { parseScheduleCid, parseScheduleEntries, parseScheduleTextData, scheduleDisplayText, scheduleMapOfRooms, scheduleSourceLabel, scheduleStatusLine } from "../ui/src/relay/schedule.ts"
 
 const NOW = new Date(2026, 9, 29, 14, 0, 0).getTime() // 本地 2026-10-29 14:00
 
@@ -12,7 +12,8 @@ function entry(extra = {}) {
     accountId: "admin",
     roomId: "room-a",
     deviceId: "dev-1",
-    text: "记得交周报",
+    textPreview: "记得交周报",
+    hasText: true,
     segment: "steer",
     kind: "once",
     at: NOW + 60 * 60 * 1000,
@@ -29,7 +30,10 @@ function entry(extra = {}) {
 test("清洗：合法条目过、坏形状整条丢、once/every 必备字段缺失丢", () => {
   const ok = parseScheduleEntries([entry()])
   assert.equal(ok.length, 1)
-  assert.equal(ok[0].text, "记得交周报")
+  assert.equal(ok[0].text, undefined, "新 relay 清单形状不带全文字段")
+  assert.equal(ok[0].textPreview, "记得交周报")
+  assert.equal(ok[0].hasText, true)
+  assert.equal(scheduleDisplayText(ok[0]), "记得交周报")
   assert.deepEqual(parseScheduleEntries([entry({ id: "bad-id" })]), [])
   assert.deepEqual(parseScheduleEntries([entry({ state: "flying" })]), [])
   assert.deepEqual(parseScheduleEntries([entry({ at: undefined })]), [], "once 缺 at 丢")
@@ -38,6 +42,24 @@ test("清洗：合法条目过、坏形状整条丢、once/every 必备字段缺
   assert.equal(every.length, 1)
   assert.deepEqual(parseScheduleEntries("nope"), [])
   assert.deepEqual(parseScheduleEntries(null), [])
+})
+
+test("清洗（旧 relay 兼容）：带全文字段照收并派生预览；两种正文形状都没有的整条丢", () => {
+  const legacy = parseScheduleEntries([entry({ text: "旧形状全文", textPreview: undefined, hasText: undefined })])
+  assert.equal(legacy.length, 1)
+  assert.equal(legacy[0].text, "旧形状全文")
+  assert.equal(legacy[0].textPreview, "旧形状全文", "预览由全文派生，展示面不分代际")
+  assert.equal(legacy[0].hasText, true)
+  assert.equal(scheduleDisplayText(legacy[0]), "旧形状全文")
+  assert.deepEqual(parseScheduleEntries([entry({ textPreview: undefined, hasText: undefined })]), [], "text 与 textPreview 都没有 → 坏条目丢弃")
+})
+
+test("按需全文回包：schedule_text 的 data 解出 {id, text}，坏形状回 null", () => {
+  assert.deepEqual(parseScheduleTextData({ id: "sch_0123456789abcdef", text: "全文正文" }), { id: "sch_0123456789abcdef", text: "全文正文" })
+  assert.equal(parseScheduleTextData({ id: "bad-id", text: "x" }), null)
+  assert.equal(parseScheduleTextData({ id: "sch_0123456789abcdef" }), null)
+  assert.equal(parseScheduleTextData(null), null)
+  assert.equal(parseScheduleTextData("nope"), null)
 })
 
 test("名册快照：带 schedules 的房进桶；整批无字段 seen=false（旧 relay 不动副本）", () => {

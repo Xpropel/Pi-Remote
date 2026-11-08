@@ -1526,3 +1526,46 @@ test("R-4：索引期间 reset 取消任务，排队操作随旧世代丢弃、�
   assert.equal(seed.seeded, 1);
   assert.deepEqual(texts(s.snapshot("big", LIMITS)), ["user:new-gen"], "旧世代历史与排队事件都不能复活");
 });
+
+test("evictIdle：store-only 房按文件最后活动时间保留 6h，超过 6h 才淘汰", () => {
+  const dir = tmpDir();
+  const writer = openStore(dir);
+  writer.record("recent", end(user("two hours old", 1)));
+  writer.record("recent", end(asst("reply", 2)));
+  writer.record("stale", end(user("seven hours old", 1)));
+  writer.record("stale", end(asst("reply", 2)));
+  writer.flushAll();
+  // The transcript file's mtime is the store's persisted last-activity record.
+  const now = Date.now();
+  const twoHoursAgo = new Date(now - 2 * 3600_000);
+  const sevenHoursAgo = new Date(now - 7 * 3600_000);
+  fs.utimesSync(path.join(dir, "recent.jsonl"), twoHoursAgo, twoHoursAgo);
+  fs.utimesSync(path.join(dir, "stale.jsonl"), sevenHoursAgo, sevenHoursAgo);
+
+  // Restart: a fresh store over the same directory. The first touch
+  // materializes each entry from disk (the path that used to stamp boot time).
+  const s = new RoomStore(dir, { persist: true, prewarm: false });
+  assert.equal(s.info("recent").seq, 2);
+  assert.equal(s.info("stale").seq, 2);
+  const recentRoom = s.rooms.get("recent");
+  assert.ok(recentRoom, "materialized entry is in the room table");
+  assert.ok(
+    Math.abs(recentRoom.lastActivity - twoHoursAgo.getTime()) < 10_000,
+    "materialized stamp must come from the file mtime, not the process start",
+  );
+
+  // The production keep predicate (relay/server.js): no registry room ->
+  // fall back to the store's own persisted last activity, keep within 6h.
+  const ROOM_IDLE_MS = 6 * 3600_000;
+  const keep = (roomId) => {
+    const stamp = s.lastActivityOf(roomId);
+    return stamp != null && stamp > Date.now() - ROOM_IDLE_MS;
+  };
+  const evicted = s.evictIdle(30 * 60_000, keep);
+  assert.equal(evicted, 1, "only the room past the 6h window is evicted");
+  assert.ok(s.rooms.has("recent"), "store-only room active 2h ago survives the 30min sweep");
+  assert.equal(s.rooms.has("stale"), false, "store-only room idle for 7h is evicted");
+  // Eviction safety premises unchanged: the file stays on disk and a later
+  // open rebuilds the index from it.
+  assert.equal(s.info("stale").seq, 2, "evicted room reopens from its file");
+});

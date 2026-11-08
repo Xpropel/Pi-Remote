@@ -13,7 +13,16 @@ export type ScheduleEntry = {
   id: string
   roomId: string
   deviceId: string | null
-  text: string
+  /**
+   * Full body text. Present only on entries from an older relay; the list
+   * wire shape of a current relay carries textPreview/hasText instead and
+   * the full body is fetched on demand (schedule_text) when needed.
+   */
+  text?: string
+  /** Leading preview of the body as carried by the list wire shape. */
+  textPreview?: string
+  /** Whether the relay holds body text for this entry. */
+  hasText?: boolean
   segment: ScheduleSegment
   kind: ScheduleKind
   /** once 的目标时刻 */
@@ -60,7 +69,11 @@ function cleanEntry(raw: unknown): ScheduleEntry | null {
   const r = raw as Record<string, unknown>
   if (typeof r.id !== "string" || !ID_RE.test(r.id)) return null
   if (typeof r.roomId !== "string" || !r.roomId) return null
-  if (typeof r.text !== "string" || !r.text) return null
+  // Body: a current relay sends only textPreview/hasText in lists; an older
+  // relay sends the full text. An entry with neither form is malformed.
+  const fullText = typeof r.text === "string" && r.text ? r.text : undefined
+  const preview = typeof r.textPreview === "string" ? r.textPreview : undefined
+  if (!fullText && preview === undefined) return null
   if (typeof r.segment !== "string" || !SEGMENTS.has(r.segment)) return null
   if (typeof r.kind !== "string" || !KINDS.has(r.kind)) return null
   if (typeof r.state !== "string" || !STATES.has(r.state)) return null
@@ -72,7 +85,12 @@ function cleanEntry(raw: unknown): ScheduleEntry | null {
     id: r.id,
     roomId: r.roomId,
     deviceId: typeof r.deviceId === "string" ? r.deviceId : null,
-    text: r.text,
+    // Normalize both wire generations onto one shape: keep the full text
+    // when it rode along, and always derive preview/hasText so display code
+    // never has to care which generation produced the entry.
+    ...(fullText ? { text: fullText } : {}),
+    textPreview: preview ?? (fullText ? Array.from(fullText).slice(0, 60).join("") : undefined),
+    hasText: typeof r.hasText === "boolean" ? r.hasText : !!fullText,
     segment: r.segment as ScheduleSegment,
     kind: r.kind as ScheduleKind,
     nextAt,
@@ -97,6 +115,20 @@ function cleanEntry(raw: unknown): ScheduleEntry | null {
   if (lastFiredAt != null) entry.lastFiredAt = lastFiredAt
   if (typeof r.lastError === "string" && r.lastError) entry.lastError = r.lastError
   return entry
+}
+
+/** Row display text: the full body when it rode along (older relay), else the list preview. */
+export function scheduleDisplayText(entry: ScheduleEntry): string {
+  return entry.text ?? entry.textPreview ?? ""
+}
+
+/** schedule_text ack payload: the on-demand full body for one schedule ({ id, text }). */
+export function parseScheduleTextData(raw: unknown): { id: string; text: string } | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.id !== "string" || !ID_RE.test(r.id)) return null
+  if (typeof r.text !== "string") return null
+  return { id: r.id, text: r.text }
 }
 
 /** 一份排期清单清洗（schedule_update 帧 / room_list 条目 / ack 回包共用）。 */

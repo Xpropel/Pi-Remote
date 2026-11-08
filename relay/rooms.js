@@ -603,6 +603,71 @@ function sendCachedRemoteQueue(socket, room, config) {
   send(socket, frame, config);
 }
 
+/* ---------------- E1: recent delivery finals per room ----------------
+ * The delivered/failed verdict for a viewer-sent message is broadcast
+ * live to the room's current viewers only (see the event path in
+ * local.js). A viewer who sent a message and then switched rooms never
+ * sees the verdict, and its outbox entry lingers in "awaiting" until
+ * the 10-minute patrol fails it (possibly wrongly). The relay therefore
+ * keeps, per room, a small bounded table of recent finals; snapshot
+ * bodies assembled for the room carry the in-TTL entries as an
+ * additive `finalFrames` field, so a re-subscribing viewer settles its
+ * outbox on arrival. Old viewers ignore the unknown field.
+ * Bounds: at most FINAL_FRAMES_MAX_PER_ROOM entries per room and a
+ * FINAL_FRAMES_TTL_MS time-to-live (the same order as the outbox
+ * patrol), so the table cannot grow with the room's lifetime.
+ * In-memory only: a relay restart forgets the finals, which matches
+ * the outbox's own in-memory lifetime. */
+const FINAL_FRAMES_TTL_MS = 10 * 60 * 1000;
+const FINAL_FRAMES_MAX_PER_ROOM = 200;
+
+function pruneFinalFrames(room, now) {
+  const table = room.finalFrames;
+  if (!table) return;
+  for (const [cid, entry] of table) {
+    if (!entry || !(now - entry.at < FINAL_FRAMES_TTL_MS)) table.delete(cid);
+  }
+  // Map iteration order is insertion order: drop the oldest first.
+  while (table.size > FINAL_FRAMES_MAX_PER_ROOM) {
+    const oldest = table.keys().next().value;
+    if (oldest === undefined) break;
+    table.delete(oldest);
+  }
+}
+
+/** Record one delivery final for a room. disposition is "delivered" or
+ * "failed"; anything else is ignored. Re-recording a cid replaces its
+ * entry and makes it the newest one. */
+function recordFinalFrame(room, cid, disposition, at) {
+  if (!room || typeof cid !== "string" || !cid) return;
+  if (disposition !== "delivered" && disposition !== "failed") return;
+  if (!room.finalFrames) room.finalFrames = new Map();
+  const stamp = typeof at === "number" && Number.isFinite(at) ? at : Date.now();
+  room.finalFrames.delete(cid);
+  room.finalFrames.set(cid, { disposition, at: stamp });
+  pruneFinalFrames(room, Date.now());
+}
+
+/** The room's in-TTL finals as a wire array: [{cid, disposition, at}],
+ * oldest first. Prunes expired and overflow entries as a side effect. */
+function finalFramesOf(room, now) {
+  if (!room || !room.finalFrames) return [];
+  pruneFinalFrames(room, typeof now === "number" && Number.isFinite(now) ? now : Date.now());
+  const out = [];
+  for (const [cid, entry] of room.finalFrames) out.push({ cid, disposition: entry.disposition, at: entry.at });
+  return out;
+}
+
+/** Append the room's in-TTL finals to a snapshot body fragment (the
+ * `"rev":...,"messages":[...]` string that snapshotFrame wraps).
+ * Returns the body unchanged when the room has no in-TTL finals, so
+ * snapshot frames keep their exact previous shape in the common case. */
+function snapshotBodyWithFinalFrames(body, room) {
+  const finals = finalFramesOf(room);
+  if (!finals.length) return body;
+  return `${body},"finalFrames":${JSON.stringify(finals)}`;
+}
+
 /** resend 兜底帧正文：store 里有可交付记录就给真快照，否则给带真实 rev/seq 的空 pending 帧。
  *  读快照失败时**不能**直接落回 `"rev":null` —— 那是注释里明说要避免的错误形态（前端当成"世代变了"，
  *  会多打一次全量重订阅）。快照失败就单独再问一次锚点，尽量把真 rev/seq 带出去。 */
@@ -613,7 +678,7 @@ function resendFallbackBody(config, transcriptStore, room) {
   } catch (snapshotError) {
     log("resend 兜底快照读取失败，改用锚点帧:", room.id, snapshotError.message);
   }
-  if (snapshot && Array.isArray(snapshot.items) && snapshot.items.length) return snapshotBodyFrom(snapshot);
+  if (snapshot && Array.isArray(snapshot.items) && snapshot.items.length) return snapshotBodyWithFinalFrames(snapshotBodyFrom(snapshot), room);
   // 兜底帧也要带真实 rev/seq：rev:null 会被前端当成"世代变了"而多打一次全量重订阅
   let revision = null;
   let sequence = 0;
@@ -626,7 +691,7 @@ function resendFallbackBody(config, transcriptStore, room) {
   } catch (anchorError) {
     log("resend 兜底锚点读取失败，只能发 rev:null 空帧:", room.id, anchorError.message);
   }
-  return `"rev":${JSON.stringify(revision)},"seq":${sequence},"truncated":false,"snapshotPending":true,"messages":[]`;
+  return snapshotBodyWithFinalFrames(`"rev":${JSON.stringify(revision)},"seq":${sequence},"truncated":false,"snapshotPending":true,"messages":[]`, room);
 }
 
 /**
@@ -1291,6 +1356,12 @@ class Rooms {
     if (!this.schedule) return [];
     return this.schedule.store.listRoom(accountId, roomId);
   }
+  /** schedule_text command surface: one entry's full text on demand, answered
+   *  to the requesting viewer only (room lists carry just a preview). */
+  scheduleText(accountId, id) {
+    if (!this.schedule) return null;
+    return this.schedule.textOf(accountId, id);
+  }
   /** 变化广播：store 的脏房间 drain 出来后逐房全量替换下发（同 room_waiting 的听众
    *  纪律——设备级连接全体，不按房间订阅过滤），只发声明 room.schedule 的连接。 */
   _flushSchedule() {
@@ -1408,6 +1479,14 @@ class Rooms {
       instance: null,
       generation: 0,
       lastActivity: Date.now(),
+      // D (U1): immutable shell creation stamp, exposed on list entries
+      // so the UI can tell apart same-folder unnamed live rooms.
+      // Display only -- never an eviction or ordering input (the D-4
+      // lesson: registration/activity clocks must not be mixed).
+      createdAt: Date.now(),
+      // E1: recent delivery finals for this room (cid -> {disposition,
+      // at}), bounded by count and TTL; see recordFinalFrame above.
+      finalFrames: null,
       // D-4 observability only: when this shell last completed a
       // room_register. Never used as an eviction input (lastActivity is).
       lastRegisterAt: null,
@@ -1452,7 +1531,9 @@ class Rooms {
     if (room.snap && room.snap.at + this.config.snapshotCacheTtlMs > now) return room.snap.body;
     let body;
     try {
-      body = build();
+      // E1: full snapshots assembled here carry the room's in-TTL
+      // delivery finals (see snapshotBodyWithFinalFrames).
+      body = snapshotBodyWithFinalFrames(build(), room);
     } catch (buildError) {
       log("快照装配失败，退回截断空快照:", roomId, buildError.message);
       return this._fallbackSnapshotBody(roomId);
@@ -1480,7 +1561,7 @@ class Rooms {
         log("快照兜底锚点读取失败:", roomId, anchorError.message);
       }
     }
-    return `"rev":${JSON.stringify(revision)},"seq":${sequence},"truncated":true,"messages":[]`;
+    return snapshotBodyWithFinalFrames(`"rev":${JSON.stringify(revision)},"seq":${sequence},"truncated":true,"messages":[]`, this.map.get(roomId));
   }
   invalidate(roomId) {
     const room = this.map.get(roomId);
@@ -1557,6 +1638,10 @@ class Rooms {
         busy: !!(room.online && room.busy),
         viewers: room.viewers.size,
         lastActivity: room.lastActivity || 0,
+        // D (U1): immutable creation stamp (see the factory note in
+        // get()). Presentation only: not cap-stripped in roomsViewFor
+        // and never fed to any eviction or ordering decision.
+        createdAt: room.createdAt || 0,
         // 注意力恢复通道（R3-1）：订阅/重连时 UI 靠它把别房落定记录种回追踪器；只带 kind/at
         lastTurnEnd: room.lastTurnEnd ? { kind: room.lastTurnEnd.kind, at: room.lastTurnEnd.at } : null,
         // 最近事件摘要（设计 D §2.3）：只带 type/toolName/at 元数据；由 roomsViewFor 按 room.activity cap 裁剪
@@ -1900,4 +1985,4 @@ function clearSessionState(room) {
   return hadTurnEnd;
 }
 
-module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, requestExtStatus, EXT_STATUS_REQUEST_MIN_MS, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor, devicesViewFor, encReasonOf, inboxViewFor };
+module.exports = { cancelResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, requestExtStatus, EXT_STATUS_REQUEST_MIN_MS, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, toolEndMetaEntry, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, resendFallbackBody, restartResend, queryKey, Rooms, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, IMAGE_MAX_CHARS, IMAGE_TOTAL_MAX_CHARS, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, clearRoomTurnEnd, broadcastRoomAttention, waitingOf, broadcastRoomWaiting, roomListCapKey, roomsViewFor, devicesViewFor, encReasonOf, inboxViewFor, recordFinalFrame, finalFramesOf, snapshotBodyWithFinalFrames, FINAL_FRAMES_TTL_MS, FINAL_FRAMES_MAX_PER_ROOM };

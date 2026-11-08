@@ -4,7 +4,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { attentionItemsOf } from "../ui/src/relay/attention.ts"
-import { attributeSessionsAcrossDevices, mergeDeviceSessions } from "../ui/src/relay/devices.ts"
+import { attributeSessionsAcrossDevices, mergeDeviceSessions, parseRooms } from "../ui/src/relay/devices.ts"
 import { paletteSessionsOf } from "../ui/src/pi/model/palette.ts"
 import { searchSessions } from "../ui/src/shell/searchModel.ts"
 import { bootViewOf, listLoadingOf, relayHostOf, connectingText } from "../ui/src/pi/model/boot.ts"
@@ -141,6 +141,41 @@ test("G3：房间行的条数 / 时间回落到清单里同 id 的会话和房�
   assert.deepEqual(mergeDeviceSessions(dev, [room], [sess]).map((x) => [x.messageCount, x.updatedAt]), [[7, 500]], "房间更新：取 lastActivity")
   assert.deepEqual(mergeDeviceSessions(dev, [room], [{ ...sess, updatedAt: 900 }]).map((x) => [x.messageCount, x.updatedAt]), [[7, 900]], "会话文件更新：取 updatedAt")
   assert.deepEqual(mergeDeviceSessions(dev, [{ ...room, lastActivity: 0 }], []).map((x) => [x.messageCount, x.updatedAt]), [[0, 0]], "清单里没有、旧 relay 没有 lastActivity：仍是 0")
+})
+
+/* ---------------- D: same-name live-session disambiguation ---------------- */
+
+test("D（U1 残留）：同 cwd 两个未命名 live 会话按房间 createdAt 的起始时刻消歧", () => {
+  const dev = { id: "d1", accountId: "a", name: "PC", platform: "linux", online: true, projects: ["/w"], lastAttachAt: 1, firstSeenAt: 1, windowExpiresAt: null, auth: null, paired: true }
+  const at = (h, m) => new Date(2026, 0, 5, h, m).getTime()
+  const room = (id, createdAt) => ({ id, label: null, name: null, firstMessage: null, cwd: "/w/proj", online: true, busy: false, viewers: 1, lastActivity: 500, deviceId: "d1", ...(createdAt ? { createdAt } : {}) })
+  const titles = (rooms) => new Map(mergeDeviceSessions(dev, rooms, []).map((x) => [x.id, x.title]))
+  const two = titles([room("room-a", at(9, 30)), room("room-b", at(14, 5))])
+  assert.equal(two.get("room-a"), "proj · 09:30")
+  assert.equal(two.get("room-b"), "proj · 14:05")
+  // 同一分钟建房：再加 id 短后缀兜底
+  const sameMinute = titles([room("room-a", at(9, 30)), room("room-c", at(9, 30) + 30_000)])
+  assert.equal(sameMinute.get("room-a"), "proj · 09:30 · room-a")
+  assert.equal(sameMinute.get("room-c"), "proj · 09:30 · room-c")
+  // 只有一间：不加后缀
+  assert.equal(titles([room("room-a", at(9, 30))]).get("room-a"), "proj")
+  // 旧 relay 不带 createdAt：标题原样（不猜起始时刻）
+  const legacy = titles([room("room-a"), room("room-b")])
+  assert.equal(legacy.get("room-a"), "proj")
+  assert.equal(legacy.get("room-b"), "proj")
+  // 标题不同（一个已命名）：不构成同名组，不消歧
+  const named = titles([room("room-a", at(9, 30)), { ...room("room-b", at(14, 5)), name: "已命名" }])
+  assert.equal(named.get("room-a"), "proj")
+  assert.equal(named.get("room-b"), "已命名")
+})
+
+test("D：parseRooms 透出 createdAt（合法正数才带，旧帧/坏值不带）", () => {
+  const [withTs] = parseRooms([{ id: "r1", createdAt: 123_456 }])
+  assert.equal(withTs.createdAt, 123_456)
+  const [without] = parseRooms([{ id: "r2" }])
+  assert.equal("createdAt" in without, false)
+  const [bad] = parseRooms([{ id: "r3", createdAt: -5 }])
+  assert.equal("createdAt" in bad, false)
 })
 
 /* ---------------- 搜索 ---------------- */

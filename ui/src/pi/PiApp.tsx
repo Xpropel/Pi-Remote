@@ -4,6 +4,7 @@ import { usePiDevice } from "@/pi/hooks/usePiDevice"
 import { usePiTheme } from "@/pi/hooks/usePiTheme"
 import { usePiUiState } from "@/pi/hooks/usePiUiState"
 import type { PiMobileNavMode } from "@/pi/mobile/types"
+import type { PiApprovalGateTier } from "@/pi/model/prefs"
 import { PI_UI_IDS } from "@/pi/containers/types"
 import { PairLinkLanding } from "@/pi/PairLinkLanding"
 import { PiVariantBoundary } from "@/pi/PiVariantBoundary"
@@ -62,6 +63,43 @@ export default function PiApp() {
     lastPushedNav.current = value
     relay.pushMobileNav(value)
   }, [relay.authed, relay.pushMobileNav, ui.prefs.mobileNav])
+  // E5: device-report adoption dual-write. useRelay rewrites the legacy
+  // key (pi_remote_style) itself when a report is adopted; the PiPrefs
+  // copy belongs to usePiUiState, so the adopted values are applied
+  // here through act.setPref -- the same owner channel as the mobileNav
+  // adoption above. A raw localStorage write from the relay side would
+  // be clobbered by the next whole-object prefs write-back and would
+  // never reach direct readers of ui.prefs. Fields absent from an
+  // adoption (their fold protected an in-flight push) are left alone.
+  const adoptedSwitches = relay.adoptedSwitches
+  const localSwitchPrefsRef = useRef({
+    dialogRemoteAnswer: ui.prefs.dialogRemoteAnswer,
+    askUserEnabled: ui.prefs.askUserEnabled,
+    approvalGateEnabled: ui.prefs.approvalGateEnabled,
+    approvalGateTier: ui.prefs.approvalGateTier,
+  })
+  localSwitchPrefsRef.current = {
+    dialogRemoteAnswer: ui.prefs.dialogRemoteAnswer,
+    askUserEnabled: ui.prefs.askUserEnabled,
+    approvalGateEnabled: ui.prefs.approvalGateEnabled,
+    approvalGateTier: ui.prefs.approvalGateTier,
+  }
+  useEffect(() => {
+    if (!adoptedSwitches) return
+    const local = localSwitchPrefsRef.current
+    if (adoptedSwitches.dialogRemoteAnswer !== undefined && adoptedSwitches.dialogRemoteAnswer !== local.dialogRemoteAnswer) {
+      act.setPref("dialogRemoteAnswer", adoptedSwitches.dialogRemoteAnswer)
+    }
+    if (adoptedSwitches.askUserEnabled !== undefined && adoptedSwitches.askUserEnabled !== local.askUserEnabled) {
+      act.setPref("askUserEnabled", adoptedSwitches.askUserEnabled)
+    }
+    if (adoptedSwitches.approvalGateEnabled !== undefined && adoptedSwitches.approvalGateEnabled !== local.approvalGateEnabled) {
+      act.setPref("approvalGateEnabled", adoptedSwitches.approvalGateEnabled)
+    }
+    if (adoptedSwitches.approvalGateTier !== undefined && adoptedSwitches.approvalGateTier !== local.approvalGateTier) {
+      act.setPref("approvalGateTier", adoptedSwitches.approvalGateTier as PiApprovalGateTier)
+    }
+  }, [adoptedSwitches, act])
   // Room-scoped notices (e.g. the encrypted-room notice) describe the room
   // on screen. Leaving the session view ends that context in every shell,
   // so retract them here, at the one root all variants share (PiAppBody

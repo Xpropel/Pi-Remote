@@ -6,7 +6,7 @@ import { mobileRouteUrl } from "@/mobile/model"
 import { sessionDeleteErrorText, sessionDeleteRouteOf, sessionMenuOf, type PiSessionDeleteRoute, type PiSessionMenuModel } from "@/pi/model/sessionMenu"
 import { openSessionRow, sidebarDataOf, type PiDeviceListedSession, type PiSidebarData } from "@/pi/model/sidebarSource"
 import { deviceErrorText, type Device } from "@/relay/devices"
-import { scheduleStatusLine } from "@/relay/schedule"
+import { scheduleDisplayText, scheduleStatusLine } from "@/relay/schedule"
 import { closePiDialog, openPiDialog, PI_UI_IDS, piDialogOf, piLayoutOf, type PiContainerProps } from "./types"
 
 /** 手机长按 / 对话页顶栏 … 的会话菜单 sheet（ui.sheet）；桌面静态态（#/live 对图）摆右键菜单（ui.menu）。arg = 会话 id */
@@ -181,12 +181,12 @@ function ScheduleListDialog(props: PiContainerProps & { t: MenuTarget; onClose: 
           {list.map((s) => (
             <div key={s.id} className="flex min-w-0 flex-col gap-0.5 py-2">
               <div className="flex min-w-0 items-center gap-3">
-                <span className="min-w-0 flex-1 truncate text-(length:--cw-text-md) text-(--cw-text)">{s.text}</span>
+                <span className="min-w-0 flex-1 truncate text-(length:--cw-text-md) text-(--cw-text)">{scheduleDisplayText(s)}</span>
                 {s.state === "armed" && (
                   <button
                     type="button"
                     className="shrink-0 rounded-[4px] px-0.5 text-(length:--cw-text-sm) text-(--cw-text-2) hover:underline"
-                    aria-label={`取消定时：${s.text}`}
+                    aria-label={`取消定时：${scheduleDisplayText(s)}`}
                     onClick={() => {
                       void relay.cancelSchedule(s.id).catch(() => relay.pushNotice({ level: "error", title: "取消定时失败，请重试" }))
                     }}

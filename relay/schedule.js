@@ -38,6 +38,10 @@ const SCHEDULE_ROOM_ARMED_MAX = 10;
 const SCHEDULE_ACCOUNT_ARMED_MAX = 30;
 /** 正文落盘上限：沿队列全文口径 1MB（§3.3）；UI 编辑框上限 10 万字在 UI 侧。 */
 const SCHEDULE_TEXT_MAX_BYTES = 1024 * 1024;
+/** List-wire preview: rooms lists and schedule updates carry only this many
+ * leading characters of the body (see wireOf); the full text stays in the
+ * store and is fetched on demand. */
+const SCHEDULE_TEXT_PREVIEW_CHARS = 60;
 /** at 允许的时钟容差：略早于 now 也收（§3.6 的 10 秒容差）。 */
 const SCHEDULE_AT_TOLERANCE_MS = 10 * 1000;
 
@@ -126,8 +130,14 @@ function cleanEntry(raw) {
   return entry;
 }
 
-/** 上行/落盘形状：内部瞬时字段（_firing/_missedOffline）不外泄。 */
-function wireOf(entry) {
+/**
+ * Persistence shape (schedules.json on disk): the ONLY serializer that
+ * carries the full body text. The store has to hold the text so the engine
+ * can deliver it when the schedule fires, and the entry is read back through
+ * cleanEntry, which requires the full `text`. Transient internal fields
+ * (_firing/_missedOffline) never leak into this shape.
+ */
+function persistOf(entry) {
   const wire = {
     id: entry.id,
     accountId: entry.accountId,
@@ -149,6 +159,26 @@ function wireOf(entry) {
   if (entry.retireReason) wire.retireReason = entry.retireReason;
   if (entry.lastFiredAt) wire.lastFiredAt = entry.lastFiredAt;
   if (entry.lastError) wire.lastError = entry.lastError;
+  return wire;
+}
+
+/**
+ * List/broadcast shape (rooms list, schedule_update, schedule_list, and the
+ * schedule_create / schedule_cancel acks): metadata-level only. The full
+ * body is deliberately not fanned out to every viewer of the account; it is
+ * replaced by a leading preview plus a hasText flag. A viewer that needs
+ * the full body fetches it on demand for one schedule id (the schedule_text
+ * request surface, ScheduleEngine.textOf), which the relay answers to the
+ * requesting viewer only. The store record itself keeps the full text —
+ * see persistOf. Classification background: README "Security model" lists
+ * scheduled-message text as accepted metadata-level plaintext at the relay.
+ */
+function wireOf(entry) {
+  const wire = persistOf(entry);
+  const fullText = typeof entry.text === "string" ? entry.text : "";
+  delete wire.text;
+  wire.textPreview = Array.from(fullText).slice(0, SCHEDULE_TEXT_PREVIEW_CHARS).join("");
+  wire.hasText = fullText.length > 0;
   return wire;
 }
 
@@ -263,7 +293,7 @@ class ScheduleStore {
     for (const [scheduleId, entry] of bucket) {
       if (entry.state !== "armed" && now - entry.stateAt > SCHEDULE_RETAIN_MS) bucket.delete(scheduleId);
     }
-    const payload = { v: 1, accountId, entries: [...bucket.values()].map(wireOf) };
+    const payload = { v: 1, accountId, entries: [...bucket.values()].map(persistOf) };
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const temporaryFile = `${file}.${process.pid}.tmp`;
@@ -481,6 +511,18 @@ class ScheduleEngine {
     return { entry };
   }
 
+  /**
+   * On-demand full-text fetch (the schedule_text command surface): the list
+   * wire shape never carries the body, so this is the one path that hands
+   * it out — as a payload for the requesting viewer only, never broadcast.
+   * Returns { id, roomId, text } or null when the id is unknown.
+   */
+  textOf(accountId, id) {
+    const entry = typeof id === "string" ? this.store.get(accountId, id) : null;
+    if (!entry) return null;
+    return { id: entry.id, roomId: entry.roomId, text: entry.text };
+  }
+
   /** 取消：只有 armed 能取消（终态条目本来就不会再触发）。返回被取消条目或 null。 */
   cancel(accountId, id, now = this._now()) {
     const entry = typeof id === "string" ? this.store.get(accountId, id) : null;
@@ -662,4 +704,5 @@ module.exports = {
   SCHEDULE_ROOM_ARMED_MAX,
   SCHEDULE_ACCOUNT_ARMED_MAX,
   SCHEDULE_TEXT_MAX_BYTES,
+  SCHEDULE_TEXT_PREVIEW_CHARS,
 };

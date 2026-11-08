@@ -82,7 +82,11 @@ export function SettingsContainer(props: PiContainerProps) {
       onMobileNavChange={(mode) => act.setPref("mobileNav", mode)}
       // Device-owned switches: inert until the current room's device
       // report arrives (the local value is not settled truth before).
-      switchesPending={relay.switchSyncView.mode === "pending"}
+      // E4: only while a room is actually entered -- with no current
+      // room there is no adoption in flight, so the switches stay live
+      // and record a local intent; on entry the switchSync discipline
+      // pushes it only where it deviates from the device baseline.
+      switchesPending={relay.switchSyncView.mode === "pending" && !!relay.roomId}
       // D-1: with no usable viewer identity the report can never
       // arrive; the page renders an identity-required state instead of
       // the local values.

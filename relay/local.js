@@ -11,7 +11,7 @@ const { attachCommon, keepalive } = require("./conn");
 const { PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, b64buf, verifyEd25519, cleanPubKeys, cleanPairKeys, popPayload, authPayload, keyUpdatePayload, p256PubKey, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken } = require("./pairing");
 const { REMOTE_MESSAGE_EVENTS, finishWaiter, settleEntry } = require("./commands");
 const { MAX_DEVICE_NAME, normalizePlatform, cleanProjects, blankDevice, boundAccount } = require("./devices");
-const { cancelResend, restartResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, broadcastRoomAttention, broadcastRoomWaiting } = require("./rooms");
+const { cancelResend, restartResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, broadcastRoomAttention, broadcastRoomWaiting, recordFinalFrame, snapshotBodyWithFinalFrames } = require("./rooms");
 const { ackTrackerOf, isAckFp } = require("./acktrack");
 const { createNotifier } = require("./notify");
 const { storeSessionArchive, broadcastSessionArchive } = require("./sessionArchive");
@@ -1181,14 +1181,15 @@ function startLocalServer(config, rooms, store, relayContext, onListening, onErr
     let full = false;
     if (storeResult.reset || storeResult.seeded) {
       const snap = store.snapshot(room.id, { limit: config.maxSnapshotRecords, maxBytes: config.maxSnapshotBytes });
-      broadcast(snapViewers(room), snapshotFrame(room, snapshotBodyFrom(snap)), config);
+      // E1: published snapshots carry the room's in-TTL delivery finals.
+      broadcast(snapViewers(room), snapshotFrame(room, snapshotBodyWithFinalFrames(snapshotBodyFrom(snap), room)), config);
       sent = true;
       full = true;
     } else if (storeResult.merged) {
       const info = store.info(room.id);
       const encMeta = store.encInfo(room.id);
       const encFields = encMeta ? { enc: 1, keyInfo: { ackFp: encMeta.ackFp || null, rckWrap: encMeta.rckWrap || null } } : {};
-      broadcast(snapViewers(room), snapshotFrame(room, snapshotBodyFrom({ rev: info.rev, seq: info.seq, truncated: false, delta: true, baseSeq: storeResult.baseSeq, items: storeResult.items, ...encFields })), config);
+      broadcast(snapViewers(room), snapshotFrame(room, snapshotBodyWithFinalFrames(snapshotBodyFrom({ rev: info.rev, seq: info.seq, truncated: false, delta: true, baseSeq: storeResult.baseSeq, items: storeResult.items, ...encFields }), room)), config);
       sent = true;
     }
     if (sent) {
@@ -1826,6 +1827,19 @@ function startLocalServer(config, rooms, store, relayContext, onListening, onErr
               }
             }
             if (assignedSeq || type === "remote_message_failed") rooms.invalidate(room.id);
+            // E1: remember delivery finals per room (see recordFinalFrame
+            // in rooms.js). The live broadcast below only reaches the
+            // viewers subscribed right now; the recorded final rides the
+            // next snapshot for this room as finalFrames, so a viewer who
+            // switched away still settles the cid. The cached snapshot
+            // body is dropped explicitly: delivered events are not
+            // store-recorded, so the invalidate above does not cover them.
+            if ((type === "remote_message_delivered" || type === "remote_message_failed") && typeof frame.event.cid === "string" && frame.event.cid) {
+              try {
+                recordFinalFrame(room, frame.event.cid, type === "remote_message_delivered" ? "delivered" : "failed", Date.now());
+                rooms.invalidate(room.id);
+              } catch (finalRecordError) { log("终局帧记录失败:", finalRecordError.message); }
+            }
             // 出口帧整体序列化后原样广播：流式事件不带 seq/rev，落盘事件带（增量契约）
             const roomEventFrame = assignedSeq
               ? `{"type":"room_event","room":${JSON.stringify(room.id)},"seq":${assignedSeq},"rev":${JSON.stringify(store.info(room.id).rev)},"event":${JSON.stringify(frame.event)}}`
@@ -1924,7 +1938,8 @@ function startLocalServer(config, rooms, store, relayContext, onListening, onErr
               const info = store.info(room.id);
               if (!info.msgCount) {
                 cancelResend(room);
-                broadcast(room.viewers, snapshotFrame(room, snapshotBodyFrom({ rev: info.rev, seq: info.seq, truncated: false, items: [] })), config);
+                // E1: even an authoritative empty snapshot carries finals.
+                broadcast(room.viewers, snapshotFrame(room, snapshotBodyWithFinalFrames(snapshotBodyFrom({ rev: info.rev, seq: info.seq, truncated: false, items: [] }), room)), config);
                 log("空快照：本机确认会话还没有消息", room.id);
                 return;
               }
@@ -2065,6 +2080,14 @@ function startLocalServer(config, rooms, store, relayContext, onListening, onErr
             const cid = cleanCid(frame.cid);
             if (cid) event.cid = cid;
             try { if (store.markRemoteFailed(room.id, event.text, cid)) rooms.invalidate(room.id); } catch {}
+            // E1: same per-room finals table as the event path, so a
+            // re-subscribing viewer settles this cid from its snapshot.
+            if (cid) {
+              try {
+                recordFinalFrame(room, cid, "failed", event.at);
+                rooms.invalidate(room.id);
+              } catch (finalRecordError) { log("终局帧记录失败:", finalRecordError.message); }
+            }
             broadcast(room.viewers, { type: "room_event", room: room.id, event }, config);
             break;
           }

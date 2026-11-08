@@ -155,7 +155,12 @@ export function GeneralPage() {
   // room's bridge report arrives (switchSyncView "pending"), the local
   // value is not settled truth, so the switches stay inert rather than
   // presenting -- or recording -- a local guess.
-  const switchesPending = relay.switchSyncView.mode === "pending"
+  // E4: the lock applies only while a room is actually entered and its
+  // report is still in flight. With no current room the switches stay
+  // live and record a local intent; entering a room never pushes that
+  // intent unconditionally -- the switchSync push effects send it only
+  // where it deviates from the device baseline.
+  const switchesPending = relay.switchSyncView.mode === "pending" && !!relay.roomId
   // D-1: without a usable viewer identity no device report can ever
   // reach this viewer, so the pending state would never resolve and the
   // local values rendered under it would masquerade as device truth
