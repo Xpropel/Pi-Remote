@@ -26,29 +26,29 @@ const USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
 const USAGE_CACHE_VERSION = 1;
 const FORBIDDEN_KEYS = new Set(["cost", "content", "cwd", "title", "text", "path", "body", "prompt"]);
 
-const isRecord = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-const isNonNegInt = (v) => typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0;
+const isRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+const isNonNegInt = (value) => typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
 // 时区偏移沿用扩展的 -getTimezoneOffset() 口径：东半球为正、西半球为负，合法范围 UTC-14..UTC+14。
 const TZ_OFFSET_MIN = -840;
 const TZ_OFFSET_MAX = 840;
-const isTimezoneOffset = (v) => typeof v === "number" && Number.isInteger(v) && v >= TZ_OFFSET_MIN && v <= TZ_OFFSET_MAX;
+const isTimezoneOffset = (value) => typeof value === "number" && Number.isInteger(value) && value >= TZ_OFFSET_MIN && value <= TZ_OFFSET_MAX;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const isDate = (v) => typeof v === "string" && DATE_RE.test(v) && !Number.isNaN(Date.parse(v + "T00:00:00Z"));
-const keyHash = (v) => crypto.createHash("sha1").update(String(v)).digest("hex").slice(0, 24);
+const isDate = (value) => typeof value === "string" && DATE_RE.test(value) && !Number.isNaN(Date.parse(value + "T00:00:00Z"));
+const keyHash = (value) => crypto.createHash("sha1").update(String(value)).digest("hex").slice(0, 24);
 
 /** 敏感键深度扫描（快照只允许聚合计数；发现即拒收）。返回命中路径或 null。 */
 function sensitivePath(value, at = "$") {
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) {
-      const hit = sensitivePath(value[i], at + "[" + i + "]");
+    for (let itemIndex = 0; itemIndex < value.length; itemIndex++) {
+      const hit = sensitivePath(value[itemIndex], at + "[" + itemIndex + "]");
       if (hit) return hit;
     }
     return null;
   }
   if (!isRecord(value)) return null;
-  for (const [k, v] of Object.entries(value)) {
-    if (FORBIDDEN_KEYS.has(k)) return at + "." + k;
-    const hit = sensitivePath(v, at + "." + k);
+  for (const [key, nested] of Object.entries(value)) {
+    if (FORBIDDEN_KEYS.has(key)) return at + "." + key;
+    const hit = sensitivePath(nested, at + "." + key);
     if (hit) return hit;
   }
   return null;
@@ -73,24 +73,24 @@ function validateUsageSnapshot(raw) {
     daysOk = false;
   } else {
     if (raw.days.length > USAGE_DAYS_MAX) errors.push("days 超上限");
-    let prev = "";
-    for (let i = 0; i < raw.days.length; i++) {
-      const d = raw.days[i];
-      if (!isRecord(d) || !isDate(d.date) || !isRecord(d.tokens) || !isRecord(d.messages) || !isNonNegInt(d.sessions)) { errors.push("days[" + i + "] 非法"); daysOk = false; break; }
-      if (d.date <= prev) { errors.push("days 必须升序去重"); daysOk = false; break; }
-      prev = d.date;
+    let previousDate = "";
+    for (let dayIndex = 0; dayIndex < raw.days.length; dayIndex++) {
+      const day = raw.days[dayIndex];
+      if (!isRecord(day) || !isDate(day.date) || !isRecord(day.tokens) || !isRecord(day.messages) || !isNonNegInt(day.sessions)) { errors.push("days[" + dayIndex + "] 非法"); daysOk = false; break; }
+      if (day.date <= previousDate) { errors.push("days 必须升序去重"); daysOk = false; break; }
+      previousDate = day.date;
       let dayOk = true;
-      for (const k of ["total", "input", "output", "cacheRead", "cacheWrite"]) if (!isNonNegInt(d.tokens[k])) { errors.push("tokens." + k + " 非法"); dayOk = false; break; }
-      for (const k of ["user", "assistant"]) if (!isNonNegInt(d.messages[k])) { errors.push("messages." + k + " 非法"); dayOk = false; break; }
+      for (const tokenKey of ["total", "input", "output", "cacheRead", "cacheWrite"]) if (!isNonNegInt(day.tokens[tokenKey])) { errors.push("tokens." + tokenKey + " 非法"); dayOk = false; break; }
+      for (const messageKey of ["user", "assistant"]) if (!isNonNegInt(day.messages[messageKey])) { errors.push("messages." + messageKey + " 非法"); dayOk = false; break; }
       if (!dayOk) { daysOk = false; break; }
-      dayStats.dates.add(d.date);
-      dayStats.tokens += d.tokens.total;
-      dayStats.user += d.messages.user;
-      dayStats.assistant += d.messages.assistant;
-      dayStats.sessions += d.sessions;
-      if (d.sessions > 0 || d.messages.user > 0 || d.messages.assistant > 0 || d.tokens.total > 0) dayStats.activeDays++;
-      if (d.tokens.total > dayStats.maxTokens) dayStats.maxTokens = d.tokens.total;
-      const messagesOfDay = d.messages.user + d.messages.assistant;
+      dayStats.dates.add(day.date);
+      dayStats.tokens += day.tokens.total;
+      dayStats.user += day.messages.user;
+      dayStats.assistant += day.messages.assistant;
+      dayStats.sessions += day.sessions;
+      if (day.sessions > 0 || day.messages.user > 0 || day.messages.assistant > 0 || day.tokens.total > 0) dayStats.activeDays++;
+      if (day.tokens.total > dayStats.maxTokens) dayStats.maxTokens = day.tokens.total;
+      const messagesOfDay = day.messages.user + day.messages.assistant;
       if (messagesOfDay > dayStats.maxMessages) dayStats.maxMessages = messagesOfDay;
     }
     if (isRecord(raw.range) && isNonNegInt(raw.range.days) && raw.range.days !== raw.days.length) errors.push("range.days 不一致");
@@ -102,9 +102,9 @@ function validateUsageSnapshot(raw) {
     let totalsOk = isRecord(totals);
     if (!totalsOk) errors.push("summary.totals 非法");
     else {
-      for (const k of ["tokens", "messagesUser", "messagesAssistant", "sessions", "activeDays"]) {
-        if (isNonNegInt(totals[k])) continue;
-        errors.push("summary.totals." + k + " 非法");
+      for (const totalKey of ["tokens", "messagesUser", "messagesAssistant", "sessions", "activeDays"]) {
+        if (isNonNegInt(totals[totalKey])) continue;
+        errors.push("summary.totals." + totalKey + " 非法");
         totalsOk = false;
         break;
       }
@@ -116,10 +116,10 @@ function validateUsageSnapshot(raw) {
     else if (!Object.prototype.hasOwnProperty.call(peaks, "tokens") || !Object.prototype.hasOwnProperty.call(peaks, "messages")) errors.push("summary.peaks 字段不全");
     if (!Array.isArray(summary.models) || summary.models.length > USAGE_MODELS_MAX) errors.push("summary.models 非法/超上限");
     else {
-      for (let i = 0; i < summary.models.length; i++) {
-        const m = summary.models[i];
-        if (!isRecord(m) || typeof m.provider !== "string" || typeof m.model !== "string" || !isNonNegInt(m.tokens)) {
-          errors.push("summary.models[" + i + "] 非法");
+      for (let modelIndex = 0; modelIndex < summary.models.length; modelIndex++) {
+        const model = summary.models[modelIndex];
+        if (!isRecord(model) || typeof model.provider !== "string" || typeof model.model !== "string" || !isNonNegInt(model.tokens)) {
+          errors.push("summary.models[" + modelIndex + "] 非法");
           break;
         }
       }
@@ -134,12 +134,12 @@ function validateUsageSnapshot(raw) {
       if (totals.activeDays > dayStats.activeDays || totals.activeDays > raw.days.length) errors.push("summary.totals.activeDays 与 days 不一致");
     }
     if (daysOk && isRecord(peaks)) {
-      for (const name of ["tokens", "messages"]) {
-        const p = peaks[name];
-        if (p == null) continue;
-        if (!isRecord(p) || !isDate(p.date) || !isNonNegInt(p.value)) { errors.push("summary.peaks." + name + " 非法"); continue; }
-        if (!dayStats.dates.has(p.date)) errors.push("summary.peaks." + name + " 日期不在 days 里");
-        if (p.value > (name === "tokens" ? dayStats.maxTokens : dayStats.maxMessages)) errors.push("summary.peaks." + name + " 与 days 明细不一致");
+      for (const peakName of ["tokens", "messages"]) {
+        const peak = peaks[peakName];
+        if (peak == null) continue;
+        if (!isRecord(peak) || !isDate(peak.date) || !isNonNegInt(peak.value)) { errors.push("summary.peaks." + peakName + " 非法"); continue; }
+        if (!dayStats.dates.has(peak.date)) errors.push("summary.peaks." + peakName + " 日期不在 days 里");
+        if (peak.value > (peakName === "tokens" ? dayStats.maxTokens : dayStats.maxMessages)) errors.push("summary.peaks." + peakName + " 与 days 明细不一致");
       }
     }
   }
@@ -159,8 +159,8 @@ function usageUnavailable(reason, requestId) {
 }
 
 class UsageBroker {
-  constructor({ cfg, index, devices, rooms }) {
-    this.cfg = cfg;
+  constructor({ config, index, devices, rooms }) {
+    this.config = config;
     this.index = index;
     this.devices = devices;
     this.rooms = rooms;
@@ -192,11 +192,11 @@ class UsageBroker {
     try {
       fs.mkdirSync(this.cacheDir, { recursive: true });
       const file = this.cacheFile(accountId, deviceId);
-      const tmp = file + "." + process.pid + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify({ v: USAGE_CACHE_VERSION, accountId, deviceId, receivedAt: Date.now(), snapshot }), { encoding: "utf8", mode: 0o600 });
-      fs.renameSync(tmp, file);
-    } catch (e) {
-      log("usage 缓存写入失败（忽略）:", e && e.message);
+      const temporaryFile = file + "." + process.pid + ".tmp";
+      fs.writeFileSync(temporaryFile, JSON.stringify({ v: USAGE_CACHE_VERSION, accountId, deviceId, receivedAt: Date.now(), snapshot }), { encoding: "utf8", mode: 0o600 });
+      fs.renameSync(temporaryFile, file);
+    } catch (writeError) {
+      log("usage 缓存写入失败（忽略）:", writeError && writeError.message);
     }
   }
 
@@ -224,7 +224,7 @@ class UsageBroker {
     clearTimeout(pending.timer);
     const frame = { type: "usage_snapshot", available: true, snapshot: checked.snapshot, receivedAt: Date.now(), stale: false };
     for (const viewer of pending.viewers) {
-      try { send(viewer.ws, { ...frame, requestId: viewer.requestId }, this.cfg); } catch {}
+      try { send(viewer.ws, { ...frame, requestId: viewer.requestId }, this.config); } catch {}
     }
   }
 
@@ -234,8 +234,8 @@ class UsageBroker {
    * usage.activity.v1 的连接，否则会发到 attach（忽略未知帧）→ 8s 超时。返回该设备可用的 usage 连接。
    */
   usageConnOf(deviceId) {
-    const dev = this.devices.get(deviceId);
-    if (dev && dev.conn && hasCap(dev.conn, USAGE_CAP)) return dev.conn;
+    const deviceRecord = this.devices.get(deviceId);
+    if (deviceRecord && deviceRecord.conn && hasCap(deviceRecord.conn, USAGE_CAP)) return deviceRecord.conn;
     for (const room of this.rooms.map.values()) {
       if (room.deviceId !== deviceId) continue;
       if (room.local && hasCap(room.local, USAGE_CAP)) return room.local;
@@ -248,31 +248,31 @@ class UsageBroker {
     const deviceId = typeof msg.deviceId === "string" ? msg.deviceId.trim() : "";
     const requestId = typeof msg.requestId === "string" ? msg.requestId.slice(0, 64) : "";
     const force = msg.force === true;
-    if (!deviceId) { send(ws, usageUnavailable("no_data", requestId), this.cfg); return; }
+    if (!deviceId) { send(ws, usageUnavailable("no_data", requestId), this.config); return; }
     const cached = this.readCache(accountId, deviceId);
     const fresh = cached && !force && Date.now() - cached.receivedAt <= USAGE_CACHE_TTL_MS;
-    const dev = this.devices.get(deviceId);
+    const deviceRecord = this.devices.get(deviceId);
     if (fresh) {
       // 缓存新鲜仍要看设备是否在线：设备离线/名册里没有（relay 重启）时标记 stale，UI 可提示"可能不是最新"。
       // 低-21：stale 必须看**能刷新 usage 的那条连接**（usage.activity.v1 在 extension 的 room 连接上），
       // 旧实现看 dev.conn（attach 窗口）——attach 在线但没有 usage 能力时误报"新鲜"，反之也误报。
       const usageConn = this.usageConnOf(deviceId);
-      const stale = !dev || !dev.online || !usageConn || usageConn.readyState !== 1;
-      send(ws, { type: "usage_snapshot", available: true, requestId, snapshot: cached.snapshot, receivedAt: cached.receivedAt, stale }, this.cfg);
+      const stale = !deviceRecord || !deviceRecord.online || !usageConn || usageConn.readyState !== 1;
+      send(ws, { type: "usage_snapshot", available: true, requestId, snapshot: cached.snapshot, receivedAt: cached.receivedAt, stale }, this.config);
       return;
     }
     // 设备不在名册（relay 重启后/已删除）：有缓存回 stale，否则空态
-    if (!dev) {
-      if (cached && cached.accountId === accountId) send(ws, { type: "usage_snapshot", available: true, requestId, snapshot: cached.snapshot, receivedAt: cached.receivedAt, stale: true }, this.cfg);
-      else send(ws, usageUnavailable("no_data", requestId), this.cfg);
+    if (!deviceRecord) {
+      if (cached && cached.accountId === accountId) send(ws, { type: "usage_snapshot", available: true, requestId, snapshot: cached.snapshot, receivedAt: cached.receivedAt, stale: true }, this.config);
+      else send(ws, usageUnavailable("no_data", requestId), this.config);
       return;
     }
-    if (dev.accountId !== accountId) { send(ws, usageUnavailable("no_data", requestId), this.cfg); return; }
+    if (deviceRecord.accountId !== accountId) { send(ws, usageUnavailable("no_data", requestId), this.config); return; }
     // 真实链路：能力在 extension 的 room 连接上（不是 attach 窗口的 dev.conn）
     const usageConn = this.usageConnOf(deviceId);
     if (!usageConn || usageConn.readyState !== 1) {
-      if (cached) send(ws, { type: "usage_snapshot", available: true, requestId, snapshot: cached.snapshot, receivedAt: cached.receivedAt, stale: true }, this.cfg);
-      else send(ws, usageUnavailable(dev.online ? "unsupported" : "device_offline", requestId), this.cfg);
+      if (cached) send(ws, { type: "usage_snapshot", available: true, requestId, snapshot: cached.snapshot, receivedAt: cached.receivedAt, stale: true }, this.config);
+      else send(ws, usageUnavailable(deviceRecord.online ? "unsupported" : "device_offline", requestId), this.config);
       return;
     }
     const existing = this.pending.get(deviceId);
@@ -288,13 +288,13 @@ class UsageBroker {
       this.pending.delete(deviceId);
       const last = this.readCache(accountId, deviceId);
       for (const viewer of entry.viewers) {
-        if (last) send(viewer.ws, { type: "usage_snapshot", available: true, requestId: viewer.requestId, snapshot: last.snapshot, receivedAt: last.receivedAt, stale: true }, this.cfg);
-        else send(viewer.ws, usageUnavailable("timeout", viewer.requestId), this.cfg);
+        if (last) send(viewer.ws, { type: "usage_snapshot", available: true, requestId: viewer.requestId, snapshot: last.snapshot, receivedAt: last.receivedAt, stale: true }, this.config);
+        else send(viewer.ws, usageUnavailable("timeout", viewer.requestId), this.config);
       }
     }, USAGE_REQUEST_TIMEOUT_MS);
     if (entry.timer.unref) entry.timer.unref();
     this.pending.set(deviceId, entry);
-    try { send(usageConn, { type: "usage_refresh", deviceId, requestId: relayRequestId }, this.cfg); } catch (e) { log("usage_refresh 发送失败:", e && e.message); }
+    try { send(usageConn, { type: "usage_refresh", deviceId, requestId: relayRequestId }, this.config); } catch (sendError) { log("usage_refresh 发送失败:", sendError && sendError.message); }
   }
 
   dispose() {

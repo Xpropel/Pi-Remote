@@ -62,22 +62,22 @@ function scheduleCid(entry, fireNo) {
 /** 解析定时 cid → { scheduleId, fireNo }；不是定时 cid 返回 null。 */
 function parseScheduleCid(cid) {
   if (typeof cid !== "string") return null;
-  const m = CID_RE.exec(cid);
-  if (!m) return null;
-  const fireNo = Number(m[2]);
+  const match = CID_RE.exec(cid);
+  if (!match) return null;
+  const fireNo = Number(match[2]);
   if (!Number.isSafeInteger(fireNo) || fireNo < 1) return null;
-  return { scheduleId: m[1], fireNo };
+  return { scheduleId: match[1], fireNo };
 }
 
-function capStr(v, n) {
-  if (typeof v !== "string" || !v) return null;
-  const chars = Array.from(v);
-  return chars.length > n ? chars.slice(0, n).join("") : v;
+function capStr(value, maxChars) {
+  if (typeof value !== "string" || !value) return null;
+  const chars = Array.from(value);
+  return chars.length > maxChars ? chars.slice(0, maxChars).join("") : value;
 }
 
-function numOr(v, fallback) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
+function numOr(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 /** 落盘记录清洗：形状不对整条丢弃（坏排期宁缺毋滥，与 inbox cleanEntry 同纪律）。 */
@@ -211,8 +211,8 @@ function fsyncFile(file) {
     fd = fs.openSync(file, "r");
     fs.fsyncSync(fd);
     return true;
-  } catch (e) {
-    log("排期表 fsync 失败（数据可能只在页缓存）:", file, e.message);
+  } catch (fsyncError) {
+    log("排期表 fsync 失败（数据可能只在页缓存）:", file, fsyncError.message);
     return false;
   } finally {
     if (fd !== undefined) try { fs.closeSync(fd); } catch {}
@@ -260,18 +260,18 @@ class ScheduleStore {
     if (!file) return;
     const bucket = this._load(accountId);
     const now = this._now();
-    for (const [id, entry] of bucket) {
-      if (entry.state !== "armed" && now - entry.stateAt > SCHEDULE_RETAIN_MS) bucket.delete(id);
+    for (const [scheduleId, entry] of bucket) {
+      if (entry.state !== "armed" && now - entry.stateAt > SCHEDULE_RETAIN_MS) bucket.delete(scheduleId);
     }
     const payload = { v: 1, accountId, entries: [...bucket.values()].map(wireOf) };
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
-      if (!fsyncFile(tmp)) throw new Error("tmp fsync 失败");
-      fs.renameSync(tmp, file);
-    } catch (e) {
-      log("排期表落盘失败（继续内存服务）:", e && e.message ? e.message : e);
+      const temporaryFile = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(temporaryFile, JSON.stringify(payload), { mode: 0o600 });
+      if (!fsyncFile(temporaryFile)) throw new Error("临时文件 fsync 失败");
+      fs.renameSync(temporaryFile, file);
+    } catch (writeError) {
+      log("排期表落盘失败（继续内存服务）:", writeError && writeError.message ? writeError.message : writeError);
     }
   }
 
@@ -373,7 +373,7 @@ class ScheduleStore {
       if (entry.state !== "armed" && now - entry.stateAt > SCHEDULE_RETAIN_MS) continue;
       out.push(wireOf(entry));
     }
-    out.sort((a, b) => a.createdAt - b.createdAt);
+    out.sort((left, right) => left.createdAt - right.createdAt);
     return out;
   }
 
@@ -389,18 +389,18 @@ class ScheduleStore {
   }
 
   armedCount(accountId, roomId = null) {
-    let n = 0;
+    let armed = 0;
     for (const entry of this._load(accountId).values()) {
       if (entry.state !== "armed") continue;
       if (roomId && entry.roomId !== roomId) continue;
-      n += 1;
+      armed += 1;
     }
-    return n;
+    return armed;
   }
 
   /** 某房全部 armed 条目（会话结束退休用），跨账号。 */
   armedOfRoom(roomId) {
-    return this.armedEntries().filter((e) => e.roomId === roomId);
+    return this.armedEntries().filter((entry) => entry.roomId === roomId);
   }
 }
 
@@ -448,9 +448,9 @@ class ScheduleEngine {
     if (this._timer) return;
     this._startedAt = this._now();
     // 启动先跑一遍过期处理（§3.4：排期表读回后按 nextAt 与 now 的关系算账），再起 tick。
-    try { this.tick(); } catch (e) { log("排期启动算账失败:", e.message); }
+    try { this.tick(); } catch (startupError) { log("排期启动算账失败:", startupError.message); }
     this._timer = setInterval(() => {
-      try { this.tick(); } catch (e) { log("排期 tick 失败:", e.message); }
+      try { this.tick(); } catch (tickError) { log("排期 tick 失败:", tickError.message); }
     }, this.tickMs);
     if (typeof this._timer.unref === "function") this._timer.unref();
   }
@@ -464,17 +464,17 @@ class ScheduleEngine {
 
   /** 创建：校验 + 上限裁决 + 落表。返回 { entry } 或 { code, error }。 */
   create(accountId, raw, now = this._now()) {
-    const v = validateScheduleInput(raw, now);
-    if (!v.fields) return v;
-    if (this.store.armedCount(accountId, v.fields.roomId) >= SCHEDULE_ROOM_ARMED_MAX) {
+    const validated = validateScheduleInput(raw, now);
+    if (!validated.fields) return validated;
+    if (this.store.armedCount(accountId, validated.fields.roomId) >= SCHEDULE_ROOM_ARMED_MAX) {
       return { code: "queue_locked", error: `这个会话的定时消息已达上限（${SCHEDULE_ROOM_ARMED_MAX} 条）` };
     }
     if (this.store.armedCount(accountId) >= SCHEDULE_ACCOUNT_ARMED_MAX) {
       return { code: "queue_locked", error: `定时消息总数已达上限（${SCHEDULE_ACCOUNT_ARMED_MAX} 条）` };
     }
-    const room = this.host && typeof this.host.peekRoom === "function" ? this.host.peekRoom(v.fields.roomId) : null;
+    const room = this.host && typeof this.host.peekRoom === "function" ? this.host.peekRoom(validated.fields.roomId) : null;
     const entry = this.store.create(accountId, {
-      ...v.fields,
+      ...validated.fields,
       deviceId: room && room.deviceId ? room.deviceId : null,
     }, now);
     this._changed();
@@ -521,21 +521,21 @@ class ScheduleEngine {
         at: now,
       }, now);
       if (typeof this.host?.flushInbox === "function") this.host.flushInbox();
-    } catch (e) {
-      log("排期失败写账本失败:", entry.id, e.message);
+    } catch (inboxError) {
+      log("排期失败写账本失败:", entry.id, inboxError.message);
     }
   }
 
   /** 会话结束/换代（rooms 的 clearSessionState 钩子）：该房 armed 全部退休 + 账本提示。 */
   retireRoom(roomId, now = this._now()) {
-    let n = 0;
+    let retired = 0;
     for (const entry of this.store.armedOfRoom(roomId)) {
       this._retire(entry, "session_ended", now);
       this._inboxError(entry, "session_ended", now);
-      n += 1;
+      retired += 1;
     }
-    if (n) this._changed();
-    return n;
+    if (retired) this._changed();
+    return retired;
   }
 
   /**
@@ -618,29 +618,29 @@ class ScheduleEngine {
       // token 守卫：同一拍只结案一次（命令结果/超时/送达失败谁先到谁算，迟到一律忽略）。
       if (!entry._firing || entry._firing.fireNo !== fireNo) return;
       entry._firing = null;
-      const t2 = this._now();
+      const settledAt = this._now();
       if (entry.state !== "armed") return; // 在飞期间被取消/退休：结果不再推进状态
       if (outcome && outcome.ok) {
         entry.firedCount = fireNo;
-        entry.lastFiredAt = t2;
+        entry.lastFiredAt = settledAt;
         delete entry.lastError;
         if (entry.kind === "once") {
-          this._retire(entry, "max_fires", t2); // once 完成即退休（§3.4：max_fires 语义即完成）
+          this._retire(entry, "max_fires", settledAt); // once 完成即退休（§3.4：max_fires 语义即完成）
         } else if (entry.maxFires && entry.firedCount >= entry.maxFires) {
-          this._retire(entry, "max_fires", t2);
+          this._retire(entry, "max_fires", settledAt);
         } else {
           // 按计划节律推进：max(现在, 上一拍) + 间隔——投递耗时不拖偏、落后多拍不追赶。
-          entry.nextAt = Math.max(t2, prevNextAt) + entry.intervalMs;
-          this.store.update(entry, t2);
+          entry.nextAt = Math.max(settledAt, prevNextAt) + entry.intervalMs;
+          this.store.update(entry, settledAt);
         }
       } else {
-        this._fail(entry, t2, (outcome && outcome.error) || "投递失败");
+        this._fail(entry, settledAt, (outcome && outcome.error) || "投递失败");
       }
     };
     try {
       this.host.deliver(room, entry, fireNo, done);
-    } catch (e) {
-      done({ ok: false, error: e && e.message ? e.message : "投递失败" });
+    } catch (deliverError) {
+      done({ ok: false, error: deliverError && deliverError.message ? deliverError.message : "投递失败" });
     }
   }
 }

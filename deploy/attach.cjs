@@ -753,10 +753,10 @@ function restrictEnvFileMode(envPath) {
  * 文件里已有非空编号，或环境变量里已有编号，则原文件不动，不另生成一个。
  * 无论新建还是追加，落盘后都收紧到 0600（里面可能有共享令牌）。
  */
-function initEnvFile(envPath, opts = {}) {
-  const environ = opts.env || process.env;
-  const platform = opts.platform || HOST_PLATFORM;
-  const uuid = opts.uuid || crypto.randomUUID();
+function initEnvFile(envPath, options = {}) {
+  const environ = options.env || process.env;
+  const platform = options.platform || HOST_PLATFORM;
+  const uuid = options.uuid || crypto.randomUUID();
   let text = "";
   if (fs.existsSync(envPath)) {
     // 已有 .env 可能带着 0644：--init 时顺手收紧，早退分支也不漏
@@ -771,7 +771,7 @@ function initEnvFile(envPath, opts = {}) {
   const lines = [`PI_REMOTE_DEVICE_ID=${uuid}`];
   if (!vars.PI_REMOTE_ACCOUNT || !String(vars.PI_REMOTE_ACCOUNT).trim()) lines.push("PI_REMOTE_ACCOUNT=admin");
   if (!vars.PI_REMOTE_DEVICE_NAME || !String(vars.PI_REMOTE_DEVICE_NAME).trim()) {
-    const display = String(opts.deviceName || "").trim() || defaultDeviceName(platform);
+    const display = String(options.deviceName || "").trim() || defaultDeviceName(platform);
     lines.push(`PI_REMOTE_DEVICE_NAME=${display}`);
   }
   if (!vars.PI_REMOTE_RELAY || !String(vars.PI_REMOTE_RELAY).trim()) lines.push("PI_REMOTE_RELAY=ws://127.0.0.1:7001");
@@ -811,15 +811,15 @@ function writeEnvVars(envPath, vars) {
   }
   for (const [key, value] of pending) lines.push(`${key}=${value}`);
   fs.mkdirSync(path.dirname(envPath), { recursive: true });
-  const tmp = `${envPath}.${process.pid}.tmp`;
+  const tempPath = `${envPath}.${process.pid}.tmp`;
   try {
-    fs.rmSync(tmp, { force: true });
-    fs.writeFileSync(tmp, bom + lines.join(eol) + eol, { encoding: "utf8", mode: 0o600 });
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, envPath);
+    fs.rmSync(tempPath, { force: true });
+    fs.writeFileSync(tempPath, bom + lines.join(eol) + eol, { encoding: "utf8", mode: 0o600 });
+    fs.chmodSync(tempPath, 0o600);
+    fs.renameSync(tempPath, envPath);
   } catch (e) {
     try {
-      fs.rmSync(tmp, { force: true });
+      fs.rmSync(tempPath, { force: true });
     } catch {}
     throw e;
   }
@@ -852,15 +852,15 @@ function removeEnvVars(envPath, keysToRemove) {
     return !drop.has(s.slice(0, eq).trim());
   });
   if (kept.length === lines.length) return;
-  const tmp = `${envPath}.${process.pid}.tmp`;
+  const tempPath = `${envPath}.${process.pid}.tmp`;
   try {
-    fs.rmSync(tmp, { force: true });
-    fs.writeFileSync(tmp, bom + kept.join(eol) + eol, { encoding: "utf8", mode: 0o600 });
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, envPath);
+    fs.rmSync(tempPath, { force: true });
+    fs.writeFileSync(tempPath, bom + kept.join(eol) + eol, { encoding: "utf8", mode: 0o600 });
+    fs.chmodSync(tempPath, 0o600);
+    fs.renameSync(tempPath, envPath);
   } catch (e) {
     try {
-      fs.rmSync(tmp, { force: true });
+      fs.rmSync(tempPath, { force: true });
     } catch {}
     throw e;
   }
@@ -893,9 +893,9 @@ function formatFingerprint(fp) {
  * 钥文件路径解析：显式入参 > 环境变量 > .env 文件里的 PI_REMOTE_DEVICE_KEY_FILE > .env 同目录缺省名。
  * attach 落盘时只写绝对路径；手写相对路径按 .env 所在目录解析，不许随 cwd 漂移。
  */
-function deviceKeyFilePath(envPath, opts = {}) {
-  if (opts.keyFilePath) return path.resolve(String(opts.keyFilePath));
-  const environ = opts.env || process.env;
+function deviceKeyFilePath(envPath, options = {}) {
+  if (options.keyFilePath) return path.resolve(String(options.keyFilePath));
+  const environ = options.env || process.env;
   const fromEnv = environ && typeof environ[DEVICE_KEY_PATH_VAR] === "string" ? environ[DEVICE_KEY_PATH_VAR].trim() : "";
   if (fromEnv) return path.resolve(fromEnv);
   const dir = path.dirname(envPath || ENV_PATH);
@@ -912,15 +912,15 @@ function deviceKeyFilePath(envPath, opts = {}) {
 /** 钥文件落盘：临时文件 + 0600 + rename（沿 writeEnvVars 的原子写纪律）；收紧失败直接报错，不降级成宽权限 */
 function writeDeviceKeyFile(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
+  const tempPath = `${file}.${process.pid}.tmp`;
   try {
-    fs.rmSync(tmp, { force: true });
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, file);
+    fs.rmSync(tempPath, { force: true });
+    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    fs.chmodSync(tempPath, 0o600);
+    fs.renameSync(tempPath, file);
   } catch (e) {
     try {
-      fs.rmSync(tmp, { force: true });
+      fs.rmSync(tempPath, { force: true });
     } catch {}
     throw e;
   }
@@ -1001,8 +1001,8 @@ function hasUsableDeviceKey(envPath, deviceId) {
  *  - "corrupt":      the file exists but fails validation (see error).
  *  - "missing":      no key file at all.
  */
-function deviceKeyState(envPath, opts = {}) {
-  const file = deviceKeyFilePath(envPath, opts);
+function deviceKeyState(envPath, options = {}) {
+  const file = deviceKeyFilePath(envPath, options);
   let keys = null;
   try {
     keys = loadDeviceKeys(file);
@@ -1010,7 +1010,7 @@ function deviceKeyState(envPath, opts = {}) {
     return { state: "corrupt", file, keys: null, error: e };
   }
   if (!keys) return { state: "missing", file, keys: null, error: null };
-  const want = typeof opts.deviceId === "string" ? opts.deviceId : "";
+  const want = typeof options.deviceId === "string" ? options.deviceId : "";
   if (keys.deviceId && keys.deviceId !== want) return { state: "mismatch", file, keys, error: null };
   if (!keys.deviceId) return { state: "unregistered", file, keys, error: null };
   return { state: "ok", file, keys, error: null };
@@ -1034,11 +1034,11 @@ function generateDeviceKeys(deviceId = "") {
  * 确保本机有身份钥：已有就读（损坏报错、绝不覆盖）；没有就生成并以 0600 落盘。
  * 返回 { file, keys, created }。deviceId 是生成当下已知的设备编号（可空，配对成功后由 persistPairResult 回填）。
  */
-function ensureDeviceKeys(envPath, opts = {}) {
-  const file = deviceKeyFilePath(envPath, opts);
+function ensureDeviceKeys(envPath, options = {}) {
+  const file = deviceKeyFilePath(envPath, options);
   const existing = loadDeviceKeys(file);
   if (existing) return { file, keys: existing, created: false };
-  const keys = generateDeviceKeys(typeof opts.deviceId === "string" ? opts.deviceId : "");
+  const keys = generateDeviceKeys(typeof options.deviceId === "string" ? options.deviceId : "");
   writeDeviceKeyFile(file, keys);
   return { file, keys, created: true };
 }
@@ -1184,21 +1184,21 @@ function signAuthResponse(keys, deviceId, relayNonceB64, clientNonceB64) {
  *    「没令牌」不是失败；contentKeyGrant / ackFp / hasKeyHolder 若在场原样带回（ACK 交付判定在落盘处）。
  * 都不满足 → 按失败归一 {ok:false, code, error}。
  */
-function pairResultFromMsg(msg) {
-  if (!msg || msg.type !== "pair_result") return null;
-  if (msg.ok && typeof msg.deviceId === "string" && msg.deviceId) {
-    if (typeof msg.deviceToken === "string" && msg.deviceToken) {
-      return { ok: true, accountId: msg.accountId || "admin", deviceId: msg.deviceId, deviceToken: msg.deviceToken };
+function pairResultFromMsg(frame) {
+  if (!frame || frame.type !== "pair_result") return null;
+  if (frame.ok && typeof frame.deviceId === "string" && frame.deviceId) {
+    if (typeof frame.deviceToken === "string" && frame.deviceToken) {
+      return { ok: true, accountId: frame.accountId || "admin", deviceId: frame.deviceId, deviceToken: frame.deviceToken };
     }
-    if (msg.keyRegistered === true) {
-      const out = { ok: true, accountId: msg.accountId || "admin", deviceId: msg.deviceId, deviceToken: "", keyRegistered: true };
-      if (msg.contentKeyGrant && typeof msg.contentKeyGrant === "object") out.contentKeyGrant = msg.contentKeyGrant;
-      if (typeof msg.ackFp === "string" && msg.ackFp) out.ackFp = msg.ackFp;
-      if (typeof msg.hasKeyHolder === "boolean") out.hasKeyHolder = msg.hasKeyHolder;
+    if (frame.keyRegistered === true) {
+      const out = { ok: true, accountId: frame.accountId || "admin", deviceId: frame.deviceId, deviceToken: "", keyRegistered: true };
+      if (frame.contentKeyGrant && typeof frame.contentKeyGrant === "object") out.contentKeyGrant = frame.contentKeyGrant;
+      if (typeof frame.ackFp === "string" && frame.ackFp) out.ackFp = frame.ackFp;
+      if (typeof frame.hasKeyHolder === "boolean") out.hasKeyHolder = frame.hasKeyHolder;
       return out;
     }
   }
-  return { ok: false, code: msg.code || "pair_invalid", error: msg.error || PROTOCOL.errors.pair_invalid.message };
+  return { ok: false, code: frame.code || "pair_invalid", error: frame.error || PROTOCOL.errors.pair_invalid.message };
 }
 
 /**
@@ -1258,18 +1258,18 @@ function requestPairing({ relay, code, deviceId, deviceName, deviceToken, device
       }
     };
     const onMessage = (data) => {
-      let msg;
+      let frame;
       try {
-        msg = JSON.parse(typeof data === "string" ? data : String(data));
+        frame = JSON.parse(typeof data === "string" ? data : String(data));
       } catch {
         return;
       }
-      if (!msg) return;
-      if (msg.type === "pair_result") {
-        finish(pairResultFromMsg(msg));
+      if (!frame) return;
+      if (frame.type === "pair_result") {
+        finish(pairResultFromMsg(frame));
         return;
       }
-      if (msg.type === "error" && msg.code === "unknown_type") {
+      if (frame.type === "error" && frame.code === "unknown_type") {
         finish({ ok: false, code: "unsupported", error: "relay 版本太旧，不支持配对（先升级服务器上的 relay）" });
       }
     };
@@ -1335,30 +1335,30 @@ function probeKeyAuth({ relay, deviceId, keys, platform = HOST_PLATFORM, WebSock
       }
     };
     const onMessage = (data) => {
-      let msg;
+      let frame;
       try {
-        msg = JSON.parse(typeof data === "string" ? data : String(data));
+        frame = JSON.parse(typeof data === "string" ? data : String(data));
       } catch {
         return;
       }
-      if (!msg) return;
-      if (msg.type === "auth_challenge") {
+      if (!frame) return;
+      if (frame.type === "auth_challenge") {
         try {
-          ws.send(JSON.stringify({ type: "auth_response", sig: signAuthResponse(keys, deviceId, msg.nonce, clientNonce) }));
+          ws.send(JSON.stringify({ type: "auth_response", sig: signAuthResponse(keys, deviceId, frame.nonce, clientNonce) }));
         } catch (e) {
           finish({ ok: false, auth: null, code: "internal", error: "挑战应答失败（本机钥不可用）：" + (e && e.message ? e.message : e) });
         }
         return;
       }
-      if (msg.type === "auth_result") {
+      if (frame.type === "auth_result") {
         finish(
-          msg.ok
-            ? { ok: true, auth: typeof msg.auth === "string" ? msg.auth : null, code: "", error: "" }
-            : { ok: false, auth: null, code: msg.code || "auth_failed", error: msg.error || "relay 鉴权失败" },
+          frame.ok
+            ? { ok: true, auth: typeof frame.auth === "string" ? frame.auth : null, code: "", error: "" }
+            : { ok: false, auth: null, code: frame.code || "auth_failed", error: frame.error || "relay 鉴权失败" },
         );
         return;
       }
-      if (msg.type === "error" && msg.code === "unknown_type") {
+      if (frame.type === "error" && frame.code === "unknown_type") {
         finish({ ok: false, auth: null, code: "unsupported", error: "relay 版本太旧，不支持钥鉴权（先升级服务器上的 relay）" });
       }
     };
@@ -1674,13 +1674,13 @@ function hasTrashCommand(platform = HOST_PLATFORM, environ = process.env) {
  */
 function runTrash(trash, target, platform, environ) {
   const args = target.startsWith("-") ? ["--", target] : [target];
-  const opts = { encoding: "utf8", timeout: 10000, env: environ };
-  if (platform !== "win32" || !/\.(cmd|bat)$/i.test(trash)) return spawnSync(trash, args, opts);
+  const options = { encoding: "utf8", timeout: 10000, env: environ };
+  if (platform !== "win32" || !/\.(cmd|bat)$/i.test(trash)) return spawnSync(trash, args, options);
   const env = { ...(environ || process.env), PI_REMOTE_TRASH_TARGET: target };
   const comspec = String((environ && environ.ComSpec) || process.env.ComSpec || "cmd.exe");
   const quote = (s) => '"' + String(s).replace(/"/g, '""') + '"';
   const line = quote(trash) + (target.startsWith("-") ? " --" : "") + ' "%PI_REMOTE_TRASH_TARGET%"';
-  return spawnSync(comspec, ["/d", "/s", "/c", `"${line}"`], { ...opts, env, windowsVerbatimArguments: true });
+  return spawnSync(comspec, ["/d", "/s", "/c", `"${line}"`], { ...options, env, windowsVerbatimArguments: true });
 }
 
 /**
@@ -2033,9 +2033,9 @@ function statusText({ connected, reconnecting, expiresAt, now, activeCount, view
 
 function writeJsonAtomic(file, obj) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(obj), "utf8");
-  fs.renameSync(tmp, file);
+  const tempPath = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(obj), "utf8");
+  fs.renameSync(tempPath, file);
 }
 
 function removeQuiet(file) {
@@ -2045,109 +2045,109 @@ function removeQuiet(file) {
 }
 
 class AttachController {
-  constructor(opts = {}) {
-    const now = Number(opts.now) || Date.now();
-    this.platform = opts.platform || HOST_PLATFORM;
-    this.relay = opts.relay || "";
-    this.token = opts.token || "";
-    this.deviceToken = opts.deviceToken || "";
+  constructor(options = {}) {
+    const now = Number(options.now) || Date.now();
+    this.platform = options.platform || HOST_PLATFORM;
+    this.relay = options.relay || "";
+    this.token = options.token || "";
+    this.deviceToken = options.deviceToken || "";
     /** 设备身份钥（阶段 1）：main() 从钥文件加载后传入；非空且有 deviceId 时窗口走挑战-签名鉴权，不再用令牌 */
-    this.deviceKeys = opts.deviceKeys || null;
+    this.deviceKeys = options.deviceKeys || null;
     /** Key file path (Phase 3): lets archive sealing re-read the file so an ACK the extension persisted after this window started is still picked up. */
-    this.keyFilePath = opts.keyFilePath || "";
+    this.keyFilePath = options.keyFilePath || "";
     /** 本次连接 auth 帧带出的 clientNonce：auth_challenge 回来时按它签名；每次 connect 新生成 */
     this.pendingClientNonce = "";
     /** relay 回的鉴权方式：token（设备令牌）/ legacy（共享令牌）；旧 relay 不回为 null */
     this.authMode = null;
-    this.accountId = opts.accountId || "admin";
-    this.deviceId = opts.deviceId || "";
-    this.deviceName = opts.deviceName || defaultDeviceName(this.platform);
-    const picked = resolveLauncher(opts.launcher, this.platform);
+    this.accountId = options.accountId || "admin";
+    this.deviceId = options.deviceId || "";
+    this.deviceName = options.deviceName || defaultDeviceName(this.platform);
+    const picked = resolveLauncher(options.launcher, this.platform);
     this.launcher = picked.launcher;
     this.launcherWarning = picked.warning;
-    this.terminalApp = opts.terminalApp || "Terminal";
-    this.scriptDir = opts.scriptDir || null;
+    this.terminalApp = options.terminalApp || "Terminal";
+    this.scriptDir = options.scriptDir || null;
     /**
      * Terminal 拉起后等"会话真的上线"的上限。open 返回 0 只代表 Terminal 收下了脚本，
      * 不代表 pi 起来了：不等这一下，失败时网页要干等 60s 才知道，而且这个目录还会被
      * 占用标记挡住 10 分钟。0 = 不等待（老行为，测试用）。
      */
-    this.launchWaitMs = opts.launchWaitMs != null
-      ? Math.max(0, Number(opts.launchWaitMs) || 0)
+    this.launchWaitMs = options.launchWaitMs != null
+      ? Math.max(0, Number(options.launchWaitMs) || 0)
       : this.platform === "win32"
         ? WIN_LAUNCH_WAIT_MS
         : (this.platform === "darwin" && picked.launcher === "terminal" ? TERMINAL_LAUNCH_WAIT_MS : 0);
     /** 正在等房间上线的拉起请求：{ kind: "cwd"|"session", key, resolve } */
     this.launchWaiters = new Set();
-    this.claimGraceMs = opts.claimGraceMs != null ? Math.max(0, Number(opts.claimGraceMs) || 0) : TERMINAL_CLAIM_GRACE_MS;
+    this.claimGraceMs = options.claimGraceMs != null ? Math.max(0, Number(options.claimGraceMs) || 0) : TERMINAL_CLAIM_GRACE_MS;
     /** 软超时后的占用宽限计时器：key -> {timer, claim}；房间上线时取消，关闭窗口时一并清掉 */
     this.claimGraces = new Map();
     /** macOS 用 caffeinate、Linux 用 systemd-inhibit；缺省关，由 main() 按 .env 打开（测试不会意外起子进程） */
-    this.keepAwake = opts.keepAwake === true && (this.platform === "darwin" || this.platform === "linux");
+    this.keepAwake = options.keepAwake === true && (this.platform === "darwin" || this.platform === "linux");
     this.awakeChild = null;
     /** 退出码落盘契约：本窗口自己的落盘文件 + 子 pi 的落盘目录（默认家目录，测试可指向沙箱） */
-    this.env = opts.env || process.env;
-    this.exitFile = String(opts.exitFile != null ? opts.exitFile : this.env.PI_REMOTE_EXIT_FILE || "").trim();
-    this.exitHome = opts.exitHome || os.homedir();
+    this.env = options.env || process.env;
+    this.exitFile = String(options.exitFile != null ? options.exitFile : this.env.PI_REMOTE_EXIT_FILE || "").trim();
+    this.exitHome = options.exitHome || os.homedir();
     this._exitCodeWritten = false;
     /** tmux 客户端 locale 只探一次；undefined = 还没探，空串 = 探过但没有可注入的 UTF-8 locale */
     this.tmuxLocale = undefined;
     this._tmuxEnv = null;
-    this.projects = Array.isArray(opts.projects) ? opts.projects.slice() : [];
+    this.projects = Array.isArray(options.projects) ? options.projects.slice() : [];
     /**
      * P9 C：网页能浏览/能在下面新建会话的根目录。main() 从 loadConfig 传进来；
      * 直接构造控制器（测试、Linux device.cjs）时缺省为空 = 浏览关闭，绝不意外放开家目录。
      */
-    this.browseRoots = Array.isArray(opts.browseRoots) ? opts.browseRoots.slice(0, BROWSE_ROOTS_MAX) : [];
+    this.browseRoots = Array.isArray(options.browseRoots) ? options.browseRoots.slice(0, BROWSE_ROOTS_MAX) : [];
     /** P9 B：反向同步状态——上次发出去的会话 id 集合 / 每个 id 的 mtime，以及扫描定时器 */
     this.publishedIds = new Set();
     this.publishedMtimes = new Map();
     /** P1-1：每个会话上次补发正文（session_archive）的时刻；10 分钟内不重复发 */
     this.archiveSentAt = new Map();
     this.rescanTimer = null;
-    const rescanRaw = Number(opts.libraryRescanMs);
+    const rescanRaw = Number(options.libraryRescanMs);
     this.libraryRescanMs = Number.isFinite(rescanRaw) && rescanRaw > 0 ? Math.max(LIBRARY_RESCAN_MIN_MS, rescanRaw) : LIBRARY_RESCAN_MS;
-    this.dirs = Array.isArray(opts.dirs) ? opts.dirs.slice() : [];
-    this.attachFile = opts.attachFile || defaultAttachFile();
+    this.dirs = Array.isArray(options.dirs) ? options.dirs.slice() : [];
+    this.attachFile = options.attachFile || defaultAttachFile();
     // Env handed to every pi this window launches (piChildEnv); empty in the
     // default layout, where start-pi reads the same env file attach did.
-    this.childEnv = opts.childEnv && typeof opts.childEnv === "object" ? { ...opts.childEnv } : {};
-    this.maxHours = Number(opts.maxHours) > 0 ? Number(opts.maxHours) : DEFAULT_MAX_HOURS;
+    this.childEnv = options.childEnv && typeof options.childEnv === "object" ? { ...options.childEnv } : {};
+    this.maxHours = Number(options.maxHours) > 0 ? Number(options.maxHours) : DEFAULT_MAX_HOURS;
     this.startedAt = now;
     this.expiresAt = now + Math.round(this.maxHours * 3600 * 1000);
     // viewer 端口可配（--viewer-port / PI_REMOTE_VIEWER_PORT），状态行提示的地址才对得上
-    this.viewerPort = Number(opts.viewerPort) > 0 ? Number(opts.viewerPort) : (Number(process.env.PI_REMOTE_VIEWER_PORT) > 0 ? Number(process.env.PI_REMOTE_VIEWER_PORT) : 7002);
+    this.viewerPort = Number(options.viewerPort) > 0 ? Number(options.viewerPort) : (Number(process.env.PI_REMOTE_VIEWER_PORT) > 0 ? Number(process.env.PI_REMOTE_VIEWER_PORT) : 7002);
     /** 免服务器模式：状态行的 viewer 地址走管家的当前出示源（隧道网址/局域网地址会动态变）；缺省仍按 relay 推导 */
-    this.viewerUrlProvider = typeof opts.viewerUrlProvider === "function" ? opts.viewerUrlProvider : null;
+    this.viewerUrlProvider = typeof options.viewerUrlProvider === "function" ? options.viewerUrlProvider : null;
     /** 窗口关闭时的额外清理（免服务器模式管家回收子进程）；同步发起即可，控制器不等它完成 */
-    this.onShutdown = typeof opts.onShutdown === "function" ? opts.onShutdown : null;
-    this.startPi = opts.startPi || startPiFor(this.platform);
+    this.onShutdown = typeof options.onShutdown === "function" ? options.onShutdown : null;
+    this.startPi = options.startPi || startPiFor(this.platform);
     /** sessionId 形态拉起的占用记录（按会话 id，不按目录）：id -> { at, tmuxSession? } */
     this.spawnedBySession = new Map();
-    this.spawnImpl = opts.spawnImpl || spawn;
+    this.spawnImpl = options.spawnImpl || spawn;
     /** tmux 拉起时查版本、查会话死活用（同步，几毫秒） */
-    this.spawnSyncImpl = opts.spawnSyncImpl || spawnSync;
+    this.spawnSyncImpl = options.spawnSyncImpl || spawnSync;
     this.tmuxInfo = null;
-    this.tmuxSettleMs = opts.tmuxSettleMs != null ? Number(opts.tmuxSettleMs) : TMUX_SETTLE_MS;
-    this.tmuxExitWaitMs = opts.tmuxExitWaitMs != null ? Number(opts.tmuxExitWaitMs) : TMUX_EXIT_WAIT_MS;
-    this.WebSocketImpl = opts.WebSocketImpl || null;
+    this.tmuxSettleMs = options.tmuxSettleMs != null ? Number(options.tmuxSettleMs) : TMUX_SETTLE_MS;
+    this.tmuxExitWaitMs = options.tmuxExitWaitMs != null ? Number(options.tmuxExitWaitMs) : TMUX_EXIT_WAIT_MS;
+    this.WebSocketImpl = options.WebSocketImpl || null;
     /**
      * P9 C：sessionId 形态拉起时在**整个会话根目录**里按 id 找文件（含会话头里的 cwd），
      * 不再只查白名单项目；测试可注入。
      */
-    this.sessionLookup = opts.sessionLookup || ((id) => defaultSessionFindAnywhere(id, this.platform));
-    this.existsDir = opts.existsDir || ((p) => {
+    this.sessionLookup = options.sessionLookup || ((id) => defaultSessionFindAnywhere(id, this.platform));
+    this.existsDir = options.existsDir || ((p) => {
       try {
         return fs.statSync(p).isDirectory();
       } catch {
         return false;
       }
     });
-    this.exit = typeof opts.exit === "function" ? opts.exit : null;
-    this.writeOut = typeof opts.writeOut === "function" ? opts.writeOut : (line) => console.log(line);
-    this.bindSignals = opts.bindSignals === true;
-    this.statusEnabled = opts.status !== false;
-    this.stdout = opts.stdout || process.stdout;
+    this.exit = typeof options.exit === "function" ? options.exit : null;
+    this.writeOut = typeof options.writeOut === "function" ? options.writeOut : (line) => console.log(line);
+    this.bindSignals = options.bindSignals === true;
+    this.statusEnabled = options.status !== false;
+    this.stdout = options.stdout || process.stdout;
     this.starting = false;
     this.spawnedByCwd = new Map();
     this.seenOnline = new Set();
@@ -2478,13 +2478,13 @@ class AttachController {
     const onMessage = (data) => {
       if (this.ws !== ws) return;
       this.lastSeen = Date.now();
-      let msg;
+      let frame;
       try {
-        msg = JSON.parse(typeof data === "string" ? data : String(data));
+        frame = JSON.parse(typeof data === "string" ? data : String(data));
       } catch {
         return;
       }
-      this.handleMessage(msg);
+      this.handleMessage(frame);
     };
     const onClose = () => {
       if (this.ws !== ws) return;
@@ -2820,29 +2820,29 @@ class AttachController {
     }
   }
 
-  handleMessage(msg) {
-    if (!msg || typeof msg.type !== "string") return;
-    if (msg.type === "auth_challenge") {
+  handleMessage(frame) {
+    if (!frame || typeof frame.type !== "string") return;
+    if (frame.type === "auth_challenge") {
       // 钥模式才作答：用 DIK 对挑战签名回 auth_response。材料不合口径就别乱回——
       // 不作答等 relay 的鉴权截止关连接（与扩展同口径），错误会在 auth 失败路径上显形
       if (this.deviceKeys && this.pendingClientNonce) {
         try {
-          this.send({ type: "auth_response", sig: signAuthResponse(this.deviceKeys, this.deviceId, msg.nonce, this.pendingClientNonce) });
+          this.send({ type: "auth_response", sig: signAuthResponse(this.deviceKeys, this.deviceId, frame.nonce, this.pendingClientNonce) });
         } catch (e) {
           this.writeOut("鉴权挑战应答失败（本机钥不可用）：" + (e && e.message ? e.message : e));
         }
       }
       return;
     }
-    if (msg.type === "auth_result") {
-      if (!msg.ok) {
-        const reason = "relay 鉴权失败：" + (msg.error || "token 不正确");
-        const repair = msg.code === "device_revoked" || msg.code === "device_mismatch" || ((this.deviceToken || this.deviceKeys) && msg.code === "auth_failed");
+    if (frame.type === "auth_result") {
+      if (!frame.ok) {
+        const reason = "relay 鉴权失败：" + (frame.error || "token 不正确");
+        const repair = frame.code === "device_revoked" || frame.code === "device_mismatch" || ((this.deviceToken || this.deviceKeys) && frame.code === "auth_failed");
         this.shutdown(repair ? `${reason}。在网页上生成配对码后运行：${pairHint(this.platform)}` : reason, 1);
         return;
       }
       this.authed = true;
-      this.authMode = typeof msg.auth === "string" ? msg.auth : null;
+      this.authMode = typeof frame.auth === "string" ? frame.auth : null;
       // 首次认证写状态文件；重连时只在文件不在或仍归本窗口时重写，
       // 不把别的窗口写下的状态（它的 pid / expiresAt）抢回来
       if (!this.stateWritten || this.ownsStateFile() || !fs.existsSync(this.attachFile)) {
@@ -2870,12 +2870,12 @@ class AttachController {
       }
       return;
     }
-    if (msg.type === "device_replaced") {
+    if (frame.type === "device_replaced") {
       this.shutdown("另一个窗口已开启");
       return;
     }
-    if (msg.type === "room_list") {
-      this.observeRooms(msg.rooms);
+    if (frame.type === "room_list") {
+      this.observeRooms(frame.rooms);
       this.paintStatus();
       if (this.pendingBoot) {
         this.pendingBoot = false;
@@ -2887,19 +2887,19 @@ class AttachController {
       }
       return;
     }
-    if (msg.type === "command") {
+    if (frame.type === "command") {
       // P9 §4.5.3：按命令名分派；不认识的也要回结果，否则 relay 只能白等到超时
-      const name = String(msg.command || "");
-      if (name === "harness_start") return void this.onHarness(msg);
-      if (name === "delete_session") return void this.onDeleteSession(msg);
-      if (name === "list_dirs") return void this.onListDirs(msg);
-      this.reply(msg.id, { ok: false, code: "unknown_command", error: "这台设备的连接窗口不支持 " + name });
+      const name = String(frame.command || "");
+      if (name === "harness_start") return void this.onHarness(frame);
+      if (name === "delete_session") return void this.onDeleteSession(frame);
+      if (name === "list_dirs") return void this.onListDirs(frame);
+      this.reply(frame.id, { ok: false, code: "unknown_command", error: "这台设备的连接窗口不支持 " + name });
       return;
     }
-    if (msg.type === "error" && msg.code === "unknown_type") {
+    if (frame.type === "error" && frame.code === "unknown_type") {
       if (!this._unknownLogged) {
         this._unknownLogged = true;
-        this.writeOut("relay 尚未识别设备帧（窗口仍保持，待 relay 升级）：" + (msg.message || ""));
+        this.writeOut("relay 尚未识别设备帧（窗口仍保持，待 relay 升级）：" + (frame.message || ""));
       }
     }
   }
@@ -2908,7 +2908,7 @@ class AttachController {
    * Terminal 拉起后等会话上线。resolve({roomId}) 表示成功；resolve({failed}) 表示失败/超时。
    * 没有等待上限（或不是 Terminal）时返回 null，保持原来的"立刻 started"。
    */
-  armLaunchWaiter(kind, key, timeoutMs, opts = {}) {
+  armLaunchWaiter(kind, key, timeoutMs, options = {}) {
     if (!(timeoutMs > 0) || !key) return null;
     const waiter = { kind, key, resolve: null };
     let timer = null;
@@ -2921,10 +2921,10 @@ class AttachController {
       };
     });
     timer = setTimeout(() => {
-      if (opts.timeoutIsFailure) {
+      if (options.timeoutIsFailure) {
         // Windows 新控制台：start 返回 0 只代表控制台开了，pi 没装/启动失败时房间永远不会上线。
         // 超时按失败回馈并释放占用，让用户能立刻重试；稍后真上线了仍可在网页看到房间。
-        waiter.resolve({ failed: opts.timeoutMessage || `${Math.round(timeoutMs / 1000)} 秒内没看到会话上线` });
+        waiter.resolve({ failed: options.timeoutMessage || `${Math.round(timeoutMs / 1000)} 秒内没看到会话上线` });
         return;
       }
       // 软超时：open 已经成功，Terminal 可能只是还没跑起来。绝不删脚本、绝不清占用——
@@ -3033,10 +3033,10 @@ class AttachController {
     }
   }
 
-  async onHarness(msg) {
-    const args = msg && msg.args && typeof msg.args === "object" ? msg.args : {};
+  async onHarness(frame) {
+    const args = frame && frame.args && typeof frame.args === "object" ? frame.args : {};
     const result = await this.launch({ cwd: args.cwd, sessionId: args.sessionId, source: "remote" });
-    this.reply(msg && msg.id, result);
+    this.reply(frame && frame.id, result);
   }
 
   /**
@@ -3067,14 +3067,14 @@ class AttachController {
    * 原则：网络上传来的路径一律不信，只按 sessionId 在自己的会话根目录里找文件；
    * realpath 之后必须在 realpath(root) 内（防符号链接逃逸）；动作和 pi 一样（trash 优先）。
    */
-  async onDeleteSession(msg) {
-    const sessionId = String((msg.args && msg.args.sessionId) || "").trim();
+  async onDeleteSession(frame) {
+    const sessionId = String((frame.args && frame.args.sessionId) || "").trim();
     if (!/^[A-Za-z0-9_-]{1,200}$/.test(sessionId)) {
-      return this.reply(msg.id, { ok: false, code: "bad_args", error: "会话 id 不合法" });
+      return this.reply(frame.id, { ok: false, code: "bad_args", error: "会话 id 不合法" });
     }
     // 和 pi 一样：正在用的会话不能删（本机在线房间 = 有 pi 开着它）
     if ((this.onlineRooms || []).some((room) => String(room && room.id) === sessionId)) {
-      return this.reply(msg.id, { ok: false, code: "session_running", error: "会话正在运行，不能删除" });
+      return this.reply(frame.id, { ok: false, code: "session_running", error: "会话正在运行，不能删除" });
     }
     const root = this.sessionRoot();
     const file = findSessionFileAnywhere(root, sessionId, this.platform);
@@ -3082,14 +3082,14 @@ class AttachController {
       // P1-3：relay 会带索引里的 pathHint。提示指向的文件真实存在、文件名对得上这个 id，
       // 但 realpath 不在会话根目录里（pi 用了自定义会话目录）→ 明确回 session_outside_root，
       // 不发 removed、不清服务器副本（设备上的文件还在，让用户去 pi 里删）。
-      const hint = msg.args && typeof msg.args.pathHint === "string" ? msg.args.pathHint.trim() : "";
+      const hint = frame.args && typeof frame.args.pathHint === "string" ? frame.args.pathHint.trim() : "";
       if (hint && this.pathHintOutsideRoot(hint, sessionId, root)) {
         const message = (PROTOCOL.errors.session_outside_root && PROTOCOL.errors.session_outside_root.message) || "这个会话不在设备的会话目录里，请在 pi 里删除";
-        return this.reply(msg.id, { ok: false, code: "session_outside_root", error: message });
+        return this.reply(frame.id, { ok: false, code: "session_outside_root", error: message });
       }
       // 真的不在了也算成功（幂等）：顺手让 relay 把服务器上的副本清掉
       this.sendRemoved([sessionId]);
-      return this.reply(msg.id, { ok: true, status: "already_deleted", data: { method: null } });
+      return this.reply(frame.id, { ok: true, status: "already_deleted", data: { method: null } });
     }
     let realFile;
     let realRoot;
@@ -3097,16 +3097,16 @@ class AttachController {
       realFile = fs.realpathSync.native(file);
       realRoot = fs.realpathSync.native(root);
     } catch (e) {
-      return this.reply(msg.id, { ok: false, code: "internal", error: "读取会话路径失败：" + (e && e.message ? e.message : e) });
+      return this.reply(frame.id, { ok: false, code: "internal", error: "读取会话路径失败：" + (e && e.message ? e.message : e) });
     }
     if (!insideDir(realFile, realRoot, this.platform)) {
-      return this.reply(msg.id, { ok: false, code: "bad_args", error: "会话路径越界" });
+      return this.reply(frame.id, { ok: false, code: "bad_args", error: "会话路径越界" });
     }
-    const res = deleteLikePi(file, this.platform);
-    if (!res.ok) return this.reply(msg.id, { ok: false, code: "internal", error: res.error });
-    this.writeOut("已删除会话 " + sessionId + "（" + res.method + "）");
+    const response = deleteLikePi(file, this.platform);
+    if (!response.ok) return this.reply(frame.id, { ok: false, code: "internal", error: response.error });
+    this.writeOut("已删除会话 " + sessionId + "（" + response.method + "）");
     this.sendRemoved([sessionId]);
-    this.reply(msg.id, { ok: true, status: "deleted", data: { method: res.method } });
+    this.reply(frame.id, { ok: true, status: "deleted", data: { method: response.method } });
   }
 
   /**
@@ -3144,47 +3144,47 @@ class AttachController {
    * 安全规则（spec §5.3.3 十条）：关闭时 browse_disabled；path 过 unsafePath + 绝对路径；
    * realpath 后必须落在某个根目录里；不递归；单层 readdir 上限 500。
    */
-  onListDirs(msg) {
-    const args = msg && msg.args && typeof msg.args === "object" ? msg.args : {};
+  onListDirs(frame) {
+    const args = frame && frame.args && typeof frame.args === "object" ? frame.args : {};
     const roots = this.browseRoots || [];
     if (!roots.length) {
-      return this.reply(msg.id, { ok: false, code: "browse_disabled", error: "这台设备没有开启文件夹浏览" });
+      return this.reply(frame.id, { ok: false, code: "browse_disabled", error: "这台设备没有开启文件夹浏览" });
     }
     let target = args.path == null ? "" : String(args.path).trim();
     if (!target) target = roots[0];
     if (unsafePath(target, this.platform)) {
-      return this.reply(msg.id, { ok: false, code: "bad_args", error: "路径包含不允许的字符" });
+      return this.reply(frame.id, { ok: false, code: "bad_args", error: "路径包含不允许的字符" });
     }
     const pApi = pathApi(this.platform);
     if (!pApi.isAbsolute(target)) {
-      return this.reply(msg.id, { ok: false, code: "bad_args", error: "path 必须是绝对路径" });
+      return this.reply(frame.id, { ok: false, code: "bad_args", error: "path 必须是绝对路径" });
     }
     let real;
     try {
       // realpathSync.native 才能解开 Windows 的 junction（spec §5.3.2）
       real = fs.realpathSync.native(target);
     } catch (e) {
-      return this.replyPathError(msg.id, e);
+      return this.replyPathError(frame.id, e);
     }
     const root = matchedRoot(real, roots, this.platform);
     if (!root) {
-      return this.reply(msg.id, { ok: false, code: "fs_outside_root", error: "不在允许浏览的范围内" });
+      return this.reply(frame.id, { ok: false, code: "fs_outside_root", error: "不在允许浏览的范围内" });
     }
     let st;
     try {
       st = fs.statSync(real);
     } catch (e) {
-      return this.replyPathError(msg.id, e);
+      return this.replyPathError(frame.id, e);
     }
     if (!st.isDirectory()) {
-      return this.reply(msg.id, { ok: false, code: "fs_not_dir", error: "这不是文件夹" });
+      return this.reply(frame.id, { ok: false, code: "fs_not_dir", error: "这不是文件夹" });
     }
     const showHidden = args.showHidden === true;
     let dirents = [];
     try {
       dirents = fs.readdirSync(real, { withFileTypes: true });
     } catch (e) {
-      return this.replyPathError(msg.id, e);
+      return this.replyPathError(frame.id, e);
     }
     const entries = [];
     for (const dirent of dirents) {
@@ -3218,7 +3218,7 @@ class AttachController {
     entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     const truncated = entries.length > DIR_LIST_MAX;
     const atRoot = rootCompareKey(real, this.platform) === rootCompareKey(root, this.platform);
-    this.reply(msg.id, {
+    this.reply(frame.id, {
       ok: true,
       status: "ok",
       data: {
@@ -3868,11 +3868,11 @@ function authPostureOf({ deviceId = "", deviceToken = "", sharedToken = "", keyS
   return { mode: fallbackMode, upgrade, leftoverToken: false };
 }
 
-async function doctorMain(args, envPath, opts = {}) {
-  const out = opts.writeOut || ((line) => console.log(line));
-  const platform = opts.platform || HOST_PLATFORM;
-  const spawnSyncImpl = opts.spawnSyncImpl || spawnSync;
-  const probe = opts.probe || tcpProbe;
+async function doctorMain(args, envPath, options = {}) {
+  const out = options.writeOut || ((line) => console.log(line));
+  const platform = options.platform || HOST_PLATFORM;
+  const spawnSyncImpl = options.spawnSyncImpl || spawnSync;
+  const probe = options.probe || tcpProbe;
   const rows = [];
   let fails = 0;
   const add = (level, name, detail = "") => {
@@ -3885,20 +3885,20 @@ async function doctorMain(args, envPath, opts = {}) {
   const minor = Number(String(process.versions.node).split(".")[1]);
   if (major < 22 || (major === 22 && minor < 18)) add("fail", "Node 版本太低", "需要 Node ≥ 22.18（前端测试与 pi 都依赖内置类型剥离）");
 
-  const cfg = loadConfig(envPath, opts.env || process.env, platform);
+  const config = loadConfig(envPath, options.env || process.env, platform);
   if (!fs.existsSync(envPath)) add("fail", "找不到 .env", envPath + "；先运行 node deploy/setup.cjs <relay地址>");
   else add("ok", ".env", envPath);
-  if (!cfg.relay) add("fail", "没有 PI_REMOTE_RELAY", "在 .env 里填 ws://<服务器>:7001");
-  else add("ok", "relay 地址", cfg.relay);
-  if (!cfg.deviceId) add("fail", "没有设备编号", "运行 " + initHint(platform) + "、" + pairHint(platform) + " 或 " + linkHint(platform));
-  else add("ok", "设备编号", cfg.deviceId);
+  if (!config.relay) add("fail", "没有 PI_REMOTE_RELAY", "在 .env 里填 ws://<服务器>:7001");
+  else add("ok", "relay 地址", config.relay);
+  if (!config.deviceId) add("fail", "没有设备编号", "运行 " + initHint(platform) + "、" + pairHint(platform) + " 或 " + linkHint(platform));
+  else add("ok", "设备编号", config.deviceId);
   // 设备身份钥（阶段 1）先读一次：钥设备按设计就没有设备令牌，令牌行的判定要参考它（只读，不生成）
-  const keyState = deviceKeyState(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+  const keyState = deviceKeyState(envPath, { env: options.env || process.env, deviceId: config.deviceId });
   const keyFile = keyState.file;
   const devKeys = keyState.state === "ok" || keyState.state === "unregistered" ? keyState.keys : null;
   const keyErr = keyState.state === "corrupt" ? keyState.error : null;
-  if (cfg.deviceToken) add("ok", "设备令牌", "已配对（不会打印）");
-  else if (cfg.token) add("warn", "只有共享令牌", "建议在网页「添加或管理设备」生成配对码，再运行 " + pairHint(platform) + "；或运行 " + linkHint(platform) + " 在本机出示二维码扫码链接");
+  if (config.deviceToken) add("ok", "设备令牌", "已配对（不会打印）");
+  else if (config.token) add("warn", "只有共享令牌", "建议在网页「添加或管理设备」生成配对码，再运行 " + pairHint(platform) + "；或运行 " + linkHint(platform) + " 在本机出示二维码扫码链接");
   else if (keyState.state === "ok") add("ok", "设备令牌", "无（本机已改用身份钥配对，见下一行）");
   else add("fail", "没有任何令牌", "先配对：" + pairHint(platform) + "，或扫码链接：" + linkHint(platform));
 
@@ -3917,7 +3917,7 @@ async function doctorMain(args, envPath, opts = {}) {
   // whether a revoked token is still lying in .env, and whether the
   // one-command upgrade applies. Read-only inference; no connection is
   // opened here (the live check lives in --upgrade-to-key's verification).
-  const posture = authPostureOf({ deviceId: cfg.deviceId, deviceToken: cfg.deviceToken, sharedToken: cfg.token, keyState: keyState.state });
+  const posture = authPostureOf({ deviceId: config.deviceId, deviceToken: config.deviceToken, sharedToken: config.token, keyState: keyState.state });
   if (posture.mode === "key") add("ok", "鉴权姿态", "钥鉴权（auth=key）：连接走挑战-签名，relay 对已登记公钥的设备拒绝令牌降级");
   else if (posture.mode === "token") add("warn", "鉴权姿态", "令牌鉴权（auth=token）：设备在 relay 名册里显示为令牌登录（旧）");
   else if (posture.mode === "legacy") add("warn", "鉴权姿态", "只有共享令牌（auth=legacy）：没有本机设备身份，建议配对领取本机凭据");
@@ -3929,15 +3929,15 @@ async function doctorMain(args, envPath, opts = {}) {
   else if (posture.upgrade === "blocked-corrupt") add("warn", "升级到钥模式", "被损坏的钥文件挡住：先按上方提示处理，再运行 " + upgradeHint(platform));
   else add("info", "升级到钥模式", "先配对一次（" + pairHint(platform) + "）：配对本身就会登记钥、停发令牌");
 
-  if (cfg.relay) {
-    const safety = attachRelaySafetyError(cfg.relay, { allowRemote: args.allowRemote });
+  if (config.relay) {
+    const safety = attachRelaySafetyError(config.relay, { allowRemote: args.allowRemote });
     if (safety) add("warn", "非本地 relay（--doctor 只做 TCP 探测，不鉴权）", "本地真实测试请用 127.0.0.1 + --env；确需远端时加 --allow-remote");
-    const r = await probe(cfg.relay);
-    if (r.ok) add("ok", "relay 端口可达", cfg.relay);
-    else add("fail", "relay 连不上", `${cfg.relay}：${r.error || "未知错误"}；检查地址、安全组、服务是否在跑`);
+    const r = await probe(config.relay);
+    if (r.ok) add("ok", "relay 端口可达", config.relay);
+    else add("fail", "relay 连不上", `${config.relay}：${r.error || "未知错误"}；检查地址、安全组、服务是否在跑`);
   }
 
-  const piInfo = findPiInfo(spawnSyncImpl, opts.env || process.env, platform);
+  const piInfo = findPiInfo(spawnSyncImpl, options.env || process.env, platform);
   if (!piInfo) add("fail", "找不到 pi", "安装 pi 或设置 PI_REMOTE_PI_BIN");
   else {
     // P13 deploy 低-6：用户写死的路径要先验存在 + 可执行（Windows 还按扩展名），不能 spawn 失败还报 ✓
@@ -3955,7 +3955,7 @@ async function doctorMain(args, envPath, opts = {}) {
     }
   }
 
-  const extDir = path.join(opts.env && opts.env.PI_CODING_AGENT_DIR ? String(opts.env.PI_CODING_AGENT_DIR) : path.join(os.homedir(), ".pi", "agent"), "extensions");
+  const extDir = path.join(options.env && options.env.PI_CODING_AGENT_DIR ? String(options.env.PI_CODING_AGENT_DIR) : path.join(os.homedir(), ".pi", "agent"), "extensions");
   const extFile = path.join(extDir, "pi-remote-sync.ts");
   const repoExt = path.join(ROOT, "extension", "pi-remote-sync.ts");
   if (!fs.existsSync(extFile)) add("fail", "pi 扩展未安装", "运行 deploy/sync-extension.sh" + (platform === "win32" ? "（Windows：deploy\\sync-extension.ps1）" : ""));
@@ -3968,7 +3968,7 @@ async function doctorMain(args, envPath, opts = {}) {
 
   // Same resolution as the window itself: an override that lives only in the
   // --env file must not make doctor report "no window" for a running window.
-  const stateFile = resolveAttachFile(envPath, opts.env || process.env);
+  const stateFile = resolveAttachFile(envPath, options.env || process.env);
   let state = null;
   try {
     state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
@@ -3989,7 +3989,7 @@ async function doctorMain(args, envPath, opts = {}) {
     else add("ok", "连接窗口", `pid ${pid} · 剩余 ${formatRemain(remain)}`);
   }
 
-  const picked = resolveLauncher(cfg.launcher, platform);
+  const picked = resolveLauncher(config.launcher, platform);
   if (platform === "darwin" && picked.launcher === "terminal") {
     let terminalOk = fs.existsSync("/System/Applications/Utilities/Terminal.app") || fs.existsSync("/Applications/Utilities/Terminal.app");
     if (!terminalOk) {
@@ -3998,7 +3998,7 @@ async function doctorMain(args, envPath, opts = {}) {
         terminalOk = !!(r && !r.error && r.status === 0);
       } catch {}
     }
-    add(terminalOk ? "ok" : "fail", "Terminal 拉起方式", terminalOk ? `Terminal 新窗口 · 等会话上线 ${cfg.launchWaitMs || TERMINAL_LAUNCH_WAIT_MS}ms` : "找不到 Terminal.app；改设 PI_REMOTE_LAUNCHER=tmux");
+    add(terminalOk ? "ok" : "fail", "Terminal 拉起方式", terminalOk ? `Terminal 新窗口 · 等会话上线 ${config.launchWaitMs || TERMINAL_LAUNCH_WAIT_MS}ms` : "找不到 Terminal.app；改设 PI_REMOTE_LAUNCHER=tmux");
   } else if (picked.launcher === "tmux") {
     const tmux = probeTmux(spawnSyncImpl);
     // P13 deploy 低-1：提示按平台/发行版给（Linux 上不能让人 brew install tmux）
@@ -4009,13 +4009,13 @@ async function doctorMain(args, envPath, opts = {}) {
       "ok",
       "拉起方式",
       platform === "win32"
-        ? `新控制台 · 等会话上线 ${cfg.launchWaitMs || WIN_LAUNCH_WAIT_MS}ms`
+        ? `新控制台 · 等会话上线 ${config.launchWaitMs || WIN_LAUNCH_WAIT_MS}ms`
         : picked.launcher,
     );
   }
   if (picked.warning) add("warn", "拉起方式配置", picked.warning);
 
-  const doctorEnv = opts.env || process.env;
+  const doctorEnv = options.env || process.env;
   if (platform !== "win32" && (picked.launcher === "tmux" || platform === "linux")) {
     const locale = currentLocale(doctorEnv);
     const injected = tmuxLocaleOverride(spawnSyncImpl, doctorEnv, platform);
@@ -4024,12 +4024,12 @@ async function doctorMain(args, envPath, opts = {}) {
     else add("warn", "语言环境", `${locale || "未设置"}：本机没有可用的 UTF-8 locale，tmux 输出按兼容格式解析（中文可能乱码）；建议 export LANG=C.UTF-8`);
   }
 
-  if (platform === "darwin" && cfg.keepAwake) {
+  if (platform === "darwin" && config.keepAwake) {
     const ok = isExecutableFile("/usr/bin/caffeinate");
     add(ok ? "ok" : "warn", "防休眠", ok ? "caffeinate 可用" : "找不到 caffeinate；不影响连接");
-  } else if (platform === "linux" && cfg.keepAwake) {
+  } else if (platform === "linux" && config.keepAwake) {
     // 不只看文件在不在：没有可执行位同样起不来（P13 deploy 低-2 的核对项）
-    const ok = ["/usr/bin/systemd-inhibit", "/bin/systemd-inhibit"].some((p) => isExecutableFile(p)) || !!findOnPath(["systemd-inhibit"], "linux", opts.env || process.env);
+    const ok = ["/usr/bin/systemd-inhibit", "/bin/systemd-inhibit"].some((p) => isExecutableFile(p)) || !!findOnPath(["systemd-inhibit"], "linux", options.env || process.env);
     add(
       ok ? "ok" : "warn",
       "防休眠",
@@ -4037,8 +4037,8 @@ async function doctorMain(args, envPath, opts = {}) {
     );
   }
 
-  if (cfg.projects.length) {
-    const missing = cfg.projects.filter((p) => {
+  if (config.projects.length) {
+    const missing = config.projects.filter((p) => {
       try {
         return !fs.statSync(p).isDirectory();
       } catch {
@@ -4046,41 +4046,41 @@ async function doctorMain(args, envPath, opts = {}) {
       }
     });
     if (missing.length) add("warn", "项目白名单有目录不存在", missing.map(displayPathOf).join("；"));
-    else add("ok", "项目白名单", cfg.projects.map(displayPathOf).join("；"));
+    else add("ok", "项目白名单", config.projects.map(displayPathOf).join("；"));
   } else {
     add("warn", "项目白名单为空", "网页上看不到可新建会话的目录；在 .env 填 PI_REMOTE_PROJECTS");
   }
 
   // P9 C：浏览根目录（网页「打开文件夹…」只用这些根目录；空 = 关闭）
-  if (cfg.browseRoots && cfg.browseRoots.length) {
-    add("ok", "浏览根目录", cfg.browseRoots.join("；"));
+  if (config.browseRoots && config.browseRoots.length) {
+    add("ok", "浏览根目录", config.browseRoots.join("；"));
   } else {
     add("info", "浏览根目录", "已关闭（PI_REMOTE_BROWSE_ROOTS 为空时缺省家目录；off/0/false 关闭浏览）");
   }
   // P9 B：删除方式与反向同步
-  const trash = hasTrashCommand(platform, opts.env || process.env);
+  const trash = hasTrashCommand(platform, options.env || process.env);
   add(trash ? "ok" : "info", "删除方式", trash ? "PATH 里有 trash：网页删除会先移进废纸篓" : "PATH 里没有 trash：网页删除会直接删文件（不可恢复）");
-  const rescanMs = Number(cfg.libraryRescanMs) > 0 ? Math.max(LIBRARY_RESCAN_MIN_MS, Number(cfg.libraryRescanMs)) : LIBRARY_RESCAN_MS;
+  const rescanMs = Number(config.libraryRescanMs) > 0 ? Math.max(LIBRARY_RESCAN_MIN_MS, Number(config.libraryRescanMs)) : LIBRARY_RESCAN_MS;
   add("info", "清单反扫", `每 ${Math.round(rescanMs / 1000)}s 对一次本机会话目录（PI_REMOTE_LIBRARY_RESCAN_MS，下限 5s）`);
 
-  const viewerPort = Number((opts.env && opts.env.PI_REMOTE_VIEWER_PORT) || process.env.PI_REMOTE_VIEWER_PORT) || 7002;
-  const viewer = viewerUrlFromRelay(cfg.relay, viewerPort);
-  if (cfg.relay) add("ok", "viewer 地址", viewer);
+  const viewerPort = Number((options.env && options.env.PI_REMOTE_VIEWER_PORT) || process.env.PI_REMOTE_VIEWER_PORT) || 7002;
+  const viewer = viewerUrlFromRelay(config.relay, viewerPort);
+  if (config.relay) add("ok", "viewer 地址", viewer);
 
   // 免服务器（本地）模式：配置一致性、本地 relay 存活、cloudflared 准备情况、
   // 以及对管家记录在案的运行中隧道参数做目标核对（设计 §5.3：只许指向 viewer 端口）
-  const modeInfo = localModeInfo(cfg.relay, opts.root || ROOT);
+  const modeInfo = localModeInfo(config.relay, options.root || ROOT);
   if (modeInfo.configExists) {
     if (modeInfo.local) add("ok", "免服务器模式", "本地 relay 配置在位（" + modeInfo.configPath + "），attach 开窗时当管家拉起本机 relay");
     else add("warn", "本地 relay 配置对不上", "relay/config.json 在，但 .env 的 PI_REMOTE_RELAY 不是指向它的本机回环地址；attach 不会接管这个 relay");
-    const healthy = await (opts.healthProbe || ((port) => httpHealthz(port, 1500)))(modeInfo.viewerPort);
+    const healthy = await (options.healthProbe || ((port) => httpHealthz(port, 1500)))(modeInfo.viewerPort);
     if (healthy) add("ok", "本地 relay", `http://127.0.0.1:${modeInfo.viewerPort}/healthz 正常`);
     else add("info", "本地 relay", "当前没在跑（开 attach 窗口时自动拉起，不用手动管）");
     const cfLib = loadCloudflaredLib();
     let cfDetail = "";
     if (cfLib) {
       try {
-        const resolved = await (opts.resolveCloudflared || ((o) => cfLib.resolveCloudflared(o)))({ allowDownload: false, env: opts.env || process.env });
+        const resolved = await (options.resolveCloudflared || ((o) => cfLib.resolveCloudflared(o)))({ allowDownload: false, env: options.env || process.env });
         cfDetail = `${resolved.bin}（${resolved.source === "path" ? "系统已装" : resolved.source === "cache" ? "已下载缓存" : "已指定"}）`;
       } catch {}
     }
@@ -4088,7 +4088,7 @@ async function doctorMain(args, envPath, opts = {}) {
     else add("info", "cloudflared", "还没准备：第一次开隧道（--tunnel / --share）时自动从官方 Release 下载钉死版本并校验哈希（约 40MB）");
     let keeperRec = null;
     try {
-      keeperRec = JSON.parse(fs.readFileSync(keeperStatePath(opts.env || process.env), "utf8"));
+      keeperRec = JSON.parse(fs.readFileSync(keeperStatePath(options.env || process.env), "utf8"));
     } catch {}
     if (keeperRec && Array.isArray(keeperRec.tunnelArgs) && keeperRec.tunnelArgs.length) {
       const verdict = cfLib ? cfLib.verifyTunnelArgsSafe(keeperRec.tunnelArgs, { viewerPort: modeInfo.viewerPort, localPort: modeInfo.localPort }) : "cloudflared 模块缺失，无法核对";
@@ -4136,15 +4136,15 @@ async function main(argv) {
     else console.log("PI_REMOTE_DEVICE_ID 已存在，未修改 .env");
     return 0;
   }
-  const cfg = loadConfig(envPath);
+  const config = loadConfig(envPath);
   // The pi sessions this window launches must resolve the SAME config from
   // piChildEnv (F2 / A3-F1). Both sides read the same sources, so a mismatch
   // here means the propagation contract itself broke: stop loudly instead of
   // starting a window whose pi children would silently bind elsewhere.
   const childEnv = piChildEnv(envPath);
   if (
-    (cfg.relay && childEnv.PI_REMOTE_RELAY !== cfg.relay) ||
-    (cfg.deviceId && childEnv.PI_REMOTE_DEVICE_ID !== cfg.deviceId)
+    (config.relay && childEnv.PI_REMOTE_RELAY !== config.relay) ||
+    (config.deviceId && childEnv.PI_REMOTE_DEVICE_ID !== config.deviceId)
   ) {
     console.error(
       "配置传播不一致：attach 解析出的 relay/设备编号与要传给 pi 的不一致，已停止启动（否则 pi 会静默连错目标）。relay=" +
@@ -4154,29 +4154,29 @@ async function main(argv) {
     );
     return 1;
   }
-  if (!cfg.deviceId) {
+  if (!config.deviceId) {
     console.error("缺少 PI_REMOTE_DEVICE_ID。请先配对：" + pairHint() + "，或扫码链接：" + linkHint() + "（或 " + initHint() + "）");
     return 1;
   }
-  if (!cfg.relay || (!cfg.token && !cfg.deviceToken && !hasUsableDeviceKey(envPath, cfg.deviceId))) {
+  if (!config.relay || (!config.token && !config.deviceToken && !hasUsableDeviceKey(envPath, config.deviceId))) {
     console.error("缺少 PI_REMOTE_RELAY，或 PI_REMOTE_TOKEN 与设备令牌都没配。请先配对：" + pairHint() + "，或扫码链接：" + linkHint());
     return 1;
   }
   // ② 本地安全 guard：非 localhost relay 默认直接退出，必须 --allow-remote 显式确认
-  const relaySafety = attachRelaySafetyError(cfg.relay, { allowRemote: args.allowRemote });
+  const relaySafety = attachRelaySafetyError(config.relay, { allowRemote: args.allowRemote });
   if (relaySafety) {
     console.error(relaySafety);
     return 2;
   }
-  if (!isLocalRelayHost(relayHostOf(cfg.relay) || "")) printRemoteRelayWarning(cfg.relay, envPath);
+  if (!isLocalRelayHost(relayHostOf(config.relay) || "")) printRemoteRelayWarning(config.relay, envPath);
   // 免服务器模式：attach 当管家——先把本机 relay 拉起来并等就绪（控制器写状态文件放行扩展在那之后，
   // 顺序不能反，否则扩展连空端口白白退避）；--tunnel 按需顺带开公网隧道。关窗时控制器 shutdown 钩子回收管家。
   let keeper = null;
-  const modeInfo = localModeInfo(cfg.relay);
+  const modeInfo = localModeInfo(config.relay);
   if (modeInfo.local) {
     keeper = createLocalKeeper({
       config: modeInfo.config,
-      relay: cfg.relay,
+      relay: config.relay,
       viewerPort: args.viewerPort || undefined,
       out: (line) => console.log(line),
       onTunnel: (t) => {
@@ -4208,22 +4208,22 @@ async function main(argv) {
     console.error("设备钥文件不可用，本次窗口回退令牌鉴权：" + (e && e.message ? e.message : e));
   }
   const ctl = new AttachController({
-    relay: cfg.relay,
-    token: cfg.token,
-    deviceToken: cfg.deviceToken,
+    relay: config.relay,
+    token: config.token,
+    deviceToken: config.deviceToken,
     deviceKeys,
     keyFilePath: deviceKeyFilePath(envPath),
-    accountId: cfg.accountId,
-    deviceId: cfg.deviceId,
-    deviceName: cfg.deviceName,
-    projects: cfg.projects,
+    accountId: config.accountId,
+    deviceId: config.deviceId,
+    deviceName: config.deviceName,
+    projects: config.projects,
     // P9 B/C：会话根目录反扫与文件夹浏览都由 loadConfig 解析后传进控制器
-    browseRoots: cfg.browseRoots,
-    libraryRescanMs: cfg.libraryRescanMs,
-    launcher: cfg.launcher,
-    terminalApp: cfg.terminalApp,
-    keepAwake: cfg.keepAwake,
-    launchWaitMs: cfg.launchWaitMs !== "" && Number.isFinite(Number(cfg.launchWaitMs)) ? Number(cfg.launchWaitMs) : undefined,
+    browseRoots: config.browseRoots,
+    libraryRescanMs: config.libraryRescanMs,
+    launcher: config.launcher,
+    terminalApp: config.terminalApp,
+    keepAwake: config.keepAwake,
+    launchWaitMs: config.launchWaitMs !== "" && Number.isFinite(Number(config.launchWaitMs)) ? Number(config.launchWaitMs) : undefined,
     dirs: args.dirs,
     maxHours: args.maxHours,
     viewerPort: args.viewerPort,
@@ -4249,11 +4249,11 @@ async function main(argv) {
  * 登记钥时已作废该设备的令牌行（设计 §3.4），本机留着残值只会诱使扩展误走令牌路；
  * 随后回填钥文件的 deviceId，并在本机是首台钥设备时生成自持 ACK（finalizePairKeys）。
  */
-function persistPairResult(args, envPath, cfg, result, keyCtx = null) {
+function persistPairResult(args, envPath, config, result, keyCtx = null) {
   const vars = { PI_REMOTE_DEVICE_ID: result.deviceId, PI_REMOTE_DEVICE_TOKEN: result.deviceToken || "" };
   if (keyCtx) vars[DEVICE_KEY_PATH_VAR] = keyCtx.file;
-  if (args.relay && args.relay !== cfg.relay) vars.PI_REMOTE_RELAY = args.relay;
-  if (!cfg.deviceName || !fs.existsSync(envPath)) vars.PI_REMOTE_DEVICE_NAME = cfg.deviceName;
+  if (args.relay && args.relay !== config.relay) vars.PI_REMOTE_RELAY = args.relay;
+  if (!config.deviceName || !fs.existsSync(envPath)) vars.PI_REMOTE_DEVICE_NAME = config.deviceName;
   writeEnvVars(envPath, vars);
   // 设备令牌已落盘：再显式收紧一次，避免旧 .env 的宽权限被 writeEnvVars 之外的路径沿用
   restrictEnvFileMode(envPath);
@@ -4264,19 +4264,19 @@ function persistPairResult(args, envPath, cfg, result, keyCtx = null) {
 }
 
 /** --pair：换设备令牌并写进 .env；已有的设备编号带上，名册和会话清单保持不变 */
-async function pairMain(args, envPath, opts = {}) {
-  const out = opts.writeOut || ((line) => console.log(line));
-  const err = opts.writeErr || ((line) => console.error(line));
-  const cfg = loadConfig(envPath, opts.env || process.env, opts.platform || HOST_PLATFORM);
-  const relay = args.relay || cfg.relay;
+async function pairMain(args, envPath, options = {}) {
+  const out = options.writeOut || ((line) => console.log(line));
+  const error = options.writeErr || ((line) => console.error(line));
+  const config = loadConfig(envPath, options.env || process.env, options.platform || HOST_PLATFORM);
+  const relay = args.relay || config.relay;
   if (!relay) {
-    err("不知道 relay 地址：加上 --relay ws://<服务器>:7001，或先在 .env 里配 PI_REMOTE_RELAY");
+    error("不知道 relay 地址：加上 --relay ws://<服务器>:7001，或先在 .env 里配 PI_REMOTE_RELAY");
     return 1;
   }
-  if (opts.enforceSafety === true) {
+  if (options.enforceSafety === true) {
     const relaySafety = attachRelaySafetyError(relay, { allowRemote: args.allowRemote });
     if (relaySafety) {
-      err(relaySafety);
+      error(relaySafety);
       return 2;
     }
     if (!isLocalRelayHost(relayHostOf(relay) || "")) printRemoteRelayWarning(relay, envPath);
@@ -4285,33 +4285,33 @@ async function pairMain(args, envPath, opts = {}) {
   // 不许悄悄退回令牌配对——那会把损坏伪装成「新设备」，还可能把已登记的身份顶掉
   let keyCtx = null;
   try {
-    keyCtx = ensureDeviceKeys(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+    keyCtx = ensureDeviceKeys(envPath, { env: options.env || process.env, deviceId: config.deviceId });
   } catch (e) {
-    err(e && e.message ? e.message : String(e));
+    error(e && e.message ? e.message : String(e));
     return 1;
   }
   out(`正在向 ${relay} 配对…`);
   const result = await requestPairing({
     relay,
     code: args.pair,
-    deviceId: cfg.deviceId,
-    deviceName: cfg.deviceName,
-    deviceToken: cfg.deviceToken,
+    deviceId: config.deviceId,
+    deviceName: config.deviceName,
+    deviceToken: config.deviceToken,
     deviceKeys: keyCtx.keys,
-    platform: opts.platform || HOST_PLATFORM,
-    WebSocketImpl: opts.WebSocketImpl,
-    timeoutMs: opts.timeoutMs,
+    platform: options.platform || HOST_PLATFORM,
+    WebSocketImpl: options.WebSocketImpl,
+    timeoutMs: options.timeoutMs,
   });
   if (!result.ok) {
-    err(`配对失败（${result.code}）：${result.error}`);
+    error(`配对失败（${result.code}）：${result.error}`);
     return 1;
   }
-  persistPairResult(args, envPath, cfg, result, keyCtx);
+  persistPairResult(args, envPath, config, result, keyCtx);
   // The plain pair flow recognizes the token-to-key upgrade on its own
   // (Phase 4 design 3.3): this install presented an old device token and the
   // relay registered keys (revoking that token), so the token line comes out
   // of .env entirely instead of being left blanked.
-  const pairWasUpgrade = !!(result.keyRegistered && cfg.deviceToken);
+  const pairWasUpgrade = !!(result.keyRegistered && config.deviceToken);
   if (pairWasUpgrade) removeEnvVars(envPath, ["PI_REMOTE_DEVICE_TOKEN"]);
   if (result.keyRegistered) {
     out(`配对成功：设备 ${result.deviceId}，身份钥已登记（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}），本机不再使用设备令牌`);
@@ -4341,20 +4341,20 @@ async function pairMain(args, envPath, opts = {}) {
  * explanation); 1 when preconditions fail, the relay is too old, or the
  * post-upgrade self-check does not pass.
  */
-async function upgradeMain(args, envPath, opts = {}) {
-  const out = opts.writeOut || ((line) => console.log(line));
-  const err = opts.writeErr || ((line) => console.error(line));
-  const platform = opts.platform || HOST_PLATFORM;
-  const cfg = loadConfig(envPath, opts.env || process.env, platform);
-  const relay = args.relay || cfg.relay;
+async function upgradeMain(args, envPath, options = {}) {
+  const out = options.writeOut || ((line) => console.log(line));
+  const error = options.writeErr || ((line) => console.error(line));
+  const platform = options.platform || HOST_PLATFORM;
+  const config = loadConfig(envPath, options.env || process.env, platform);
+  const relay = args.relay || config.relay;
   if (!relay) {
-    err("不知道 relay 地址：加上 --relay ws://<服务器>:7001，或先在 .env 里配 PI_REMOTE_RELAY");
+    error("不知道 relay 地址：加上 --relay ws://<服务器>:7001，或先在 .env 里配 PI_REMOTE_RELAY");
     return 1;
   }
-  if (opts.enforceSafety === true) {
+  if (options.enforceSafety === true) {
     const relaySafety = attachRelaySafetyError(relay, { allowRemote: args.allowRemote });
     if (relaySafety) {
-      err(relaySafety);
+      error(relaySafety);
       return 2;
     }
     if (!isLocalRelayHost(relayHostOf(relay) || "")) printRemoteRelayWarning(relay, envPath);
@@ -4365,18 +4365,18 @@ async function upgradeMain(args, envPath, opts = {}) {
   // deviceId and a token must be on disk; a usable key must NOT already be
   // bound to this device (that install is done), and a key file belonging to
   // a different device must never be presented for this one.
-  const ks = deviceKeyState(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+  const ks = deviceKeyState(envPath, { env: options.env || process.env, deviceId: config.deviceId });
   if (ks.state === "corrupt") {
-    err(ks.error && ks.error.message ? ks.error.message : String(ks.error));
+    error(ks.error && ks.error.message ? ks.error.message : String(ks.error));
     return 1;
   }
   if (ks.state === "mismatch") {
-    err(`钥文件属于另一台设备（编号 ${ks.keys.deviceId}），不能拿来给本机升级：${ks.file}。先备份并移走该钥文件，再重新运行本命令；本机文件未做任何更改。`);
+    error(`钥文件属于另一台设备（编号 ${ks.keys.deviceId}），不能拿来给本机升级：${ks.file}。先备份并移走该钥文件，再重新运行本命令；本机文件未做任何更改。`);
     return 1;
   }
   if (ks.state === "ok") {
     out(`本机已是钥模式（指纹 ${formatFingerprint(keyFingerprint(ks.keys.sign.pub))}），无需升级。`);
-    if (cfg.deviceToken) {
+    if (config.deviceToken) {
       // Key mode is in effect but a token line is still on disk: dead weight
       // (the relay refuses token auth for key-registered devices) — remove
       // the whole line, like a completed upgrade would have.
@@ -4385,12 +4385,12 @@ async function upgradeMain(args, envPath, opts = {}) {
     }
     return 0;
   }
-  if (!cfg.deviceId) {
-    err("本机还没有设备编号：先运行 " + initHint(platform) + " 并配对一次，拿到设备编号与令牌后再升级。");
+  if (!config.deviceId) {
+    error("本机还没有设备编号：先运行 " + initHint(platform) + " 并配对一次，拿到设备编号与令牌后再升级。");
     return 1;
   }
-  if (!cfg.deviceToken) {
-    err("本机没有设备令牌可供出示：升级校验需要旧令牌证明这台设备归你。没有令牌就直接 " + pairHint(platform) + " 重新配对——配对本身就会登记钥。");
+  if (!config.deviceToken) {
+    error("本机没有设备令牌可供出示：升级校验需要旧令牌证明这台设备归你。没有令牌就直接 " + pairHint(platform) + " 重新配对——配对本身就会登记钥。");
     return 1;
   }
 
@@ -4400,9 +4400,9 @@ async function upgradeMain(args, envPath, opts = {}) {
   // orphan fingerprints from aborted attempts (design 3.3 step 6).
   let keyCtx = null;
   try {
-    keyCtx = ensureDeviceKeys(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+    keyCtx = ensureDeviceKeys(envPath, { env: options.env || process.env, deviceId: config.deviceId });
   } catch (e) {
-    err(e && e.message ? e.message : String(e));
+    error(e && e.message ? e.message : String(e));
     return 1;
   }
   out(keyCtx.created ? `已生成设备身份钥（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}），钥文件：${keyCtx.file}（0600，含私钥，切勿外传）` : `使用本机已有的身份钥（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}）`);
@@ -4412,16 +4412,16 @@ async function upgradeMain(args, envPath, opts = {}) {
   const result = await requestPairing({
     relay,
     code: args.upgradeToKey,
-    deviceId: cfg.deviceId,
-    deviceName: cfg.deviceName,
-    deviceToken: cfg.deviceToken,
+    deviceId: config.deviceId,
+    deviceName: config.deviceName,
+    deviceToken: config.deviceToken,
     deviceKeys: keyCtx.keys,
     platform,
-    WebSocketImpl: opts.WebSocketImpl,
-    timeoutMs: opts.timeoutMs,
+    WebSocketImpl: options.WebSocketImpl,
+    timeoutMs: options.timeoutMs,
   });
   if (!result.ok) {
-    err(`升级配对失败（${result.code}）：${result.error}。钥文件已保留，修好后重跑本命令会复用同一把钥。`);
+    error(`升级配对失败（${result.code}）：${result.error}。钥文件已保留，修好后重跑本命令会复用同一把钥。`);
     return 1;
   }
   if (!result.keyRegistered) {
@@ -4430,32 +4430,32 @@ async function upgradeMain(args, envPath, opts = {}) {
     // NOT happen — say so loudly, keep the freshly issued token on disk so
     // the device stays online exactly as before, and leave the key file in
     // place for the retry after the relay is upgraded.
-    persistPairResult(args, envPath, cfg, result, keyCtx);
-    err("relay 版本太旧：它忽略了本机的钥登记请求，仍按令牌模式签发（升级未完成）。本机未做任何更改，设备仍以设备令牌在线；先升级服务器上的 relay，再重新运行本命令。");
+    persistPairResult(args, envPath, config, result, keyCtx);
+    error("relay 版本太旧：它忽略了本机的钥登记请求，仍按令牌模式签发（升级未完成）。本机未做任何更改，设备仍以设备令牌在线；先升级服务器上的 relay，再重新运行本命令。");
     return 1;
   }
 
   // Step 5: keys are registered and the relay has revoked the token row.
   // Persist, then remove the token line outright (not blanked), then verify
   // live: a fresh challenge-response auth must come back classified "key".
-  persistPairResult(args, envPath, cfg, result, keyCtx);
+  persistPairResult(args, envPath, config, result, keyCtx);
   removeEnvVars(envPath, ["PI_REMOTE_DEVICE_TOKEN"]);
-  const freshCfg = loadConfig(envPath, opts.env || process.env, platform);
+  const freshCfg = loadConfig(envPath, options.env || process.env, platform);
   const freshKeys = loadDeviceKeys(keyCtx.file) || keyCtx.keys;
-  const probe = await (opts.probeKeyAuth || probeKeyAuth)({
+  const probe = await (options.probeKeyAuth || probeKeyAuth)({
     relay,
     deviceId: result.deviceId,
     keys: freshKeys,
     platform,
-    WebSocketImpl: opts.WebSocketImpl,
-    timeoutMs: opts.timeoutMs,
+    WebSocketImpl: options.WebSocketImpl,
+    timeoutMs: options.timeoutMs,
   });
   if (freshCfg.deviceToken) {
-    err("自检未过：.env 里仍读得到设备令牌（落盘可能被改回）。升级登记已在 relay 侧完成，请手动删掉 PI_REMOTE_DEVICE_TOKEN 这一行后运行 " + doctorHint(platform) + " 复查。");
+    error("自检未过：.env 里仍读得到设备令牌（落盘可能被改回）。升级登记已在 relay 侧完成，请手动删掉 PI_REMOTE_DEVICE_TOKEN 这一行后运行 " + doctorHint(platform) + " 复查。");
     return 1;
   }
   if (!probe.ok || probe.auth !== "key") {
-    err(`自检未过：钥已登记、令牌行已删，但向 relay 做的挑战-签名鉴权没有按钥模式通过（${probe.code || "auth=" + String(probe.auth)}${probe.error ? "：" + probe.error : ""}）。请运行 ${doctorHint(platform)} 查看鉴权姿态，或重跑本命令。`);
+    error(`自检未过：钥已登记、令牌行已删，但向 relay 做的挑战-签名鉴权没有按钥模式通过（${probe.code || "auth=" + String(probe.auth)}${probe.error ? "：" + probe.error : ""}）。请运行 ${doctorHint(platform)} 查看鉴权姿态，或重跑本命令。`);
     return 1;
   }
   out(`升级完成：设备 ${result.deviceId} 已切换为钥模式（指纹 ${formatFingerprint(keyFingerprint(freshKeys.sign.pub))}）。`);
@@ -4890,33 +4890,33 @@ function renderLinkPage(state) {
 }
 
 /** 本机窗口页服务：只绑 127.0.0.1 随机端口；GET / 出页面、GET /state 出状态、POST /regen 请求重新生成 */
-function startLinkWindowServer(state, opts = {}) {
-  const onRegen = typeof opts.onRegen === "function" ? opts.onRegen : () => {};
-  const server = http.createServer((req, res) => {
+function startLinkWindowServer(state, options = {}) {
+  const onRegen = typeof options.onRegen === "function" ? options.onRegen : () => {};
+  const server = http.createServer((request, response) => {
     try {
-      const u = new URL(String(req.url || "/"), "http://127.0.0.1");
-      if (req.method === "GET" && u.pathname === "/state") {
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-        res.end(JSON.stringify(linkWindowStateJson(state)));
+      const u = new URL(String(request.url || "/"), "http://127.0.0.1");
+      if (request.method === "GET" && u.pathname === "/state") {
+        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+        response.end(JSON.stringify(linkWindowStateJson(state)));
         return;
       }
-      if (req.method === "POST" && u.pathname === "/regen") {
+      if (request.method === "POST" && u.pathname === "/regen") {
         onRegen();
-        res.writeHead(204, { "Cache-Control": "no-store" });
-        res.end();
+        response.writeHead(204, { "Cache-Control": "no-store" });
+        response.end();
         return;
       }
-      if (req.method === "GET" && (u.pathname === "/" || u.pathname === "/index.html")) {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-        res.end(renderLinkPage(state));
+      if (request.method === "GET" && (u.pathname === "/" || u.pathname === "/index.html")) {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        response.end(renderLinkPage(state));
         return;
       }
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("not found");
+      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("not found");
     } catch {
       try {
-        res.writeHead(500);
-        res.end();
+        response.writeHead(500);
+        response.end();
       } catch {}
     }
   });
@@ -5003,57 +5003,57 @@ function requestLinkAttempt({ relay, deviceId, deviceName, deviceToken, deviceKe
       }
     };
     const onMessage = (data) => {
-      let msg;
+      let frame;
       try {
-        msg = JSON.parse(typeof data === "string" ? data : String(data));
+        frame = JSON.parse(typeof data === "string" ? data : String(data));
       } catch {
         return;
       }
-      if (!msg || typeof msg.type !== "string") return;
-      if (msg.type === "pair_request_result") {
+      if (!frame || typeof frame.type !== "string") return;
+      if (frame.type === "pair_request_result") {
         // 失败形态（relay 契约）：{ok:false, code:错误码, error}——这里的 code 是错误码不是配对码，别当码解析
-        if (msg.ok === false) {
-          finish({ ok: false, code: typeof msg.code === "string" && msg.code ? msg.code : "pair_invalid", error: msg.error || "relay 拒绝了链接请求" });
+        if (frame.ok === false) {
+          finish({ ok: false, code: typeof frame.code === "string" && frame.code ? frame.code : "pair_invalid", error: frame.error || "relay 拒绝了链接请求" });
           return;
         }
         clearTimeout(hardTimer);
-        const code = String(msg.code || "").toUpperCase().replace(/[\s-]+/g, "");
-        const expiresAt = Number(msg.expiresAt) || 0;
+        const code = String(frame.code || "").toUpperCase().replace(/[\s-]+/g, "");
+        const expiresAt = Number(frame.expiresAt) || 0;
         if (!code || !expiresAt) {
           finish({ ok: false, code: "pair_invalid", error: "relay 回的链接码不完整" });
           return;
         }
-        const info = { code, expiresAt, checkDigits: msg.checkDigits == null ? "" : String(msg.checkDigits) };
+        const info = { code, expiresAt, checkDigits: frame.checkDigits == null ? "" : String(frame.checkDigits) };
         try {
           if (onCode) onCode(info);
         } catch {}
         expiryTimer = setTimeout(() => finish(expiredResult()), Math.max(0, expiresAt - Date.now()));
         return;
       }
-      if (msg.type === "pair_claimed") {
+      if (frame.type === "pair_claimed") {
         try {
           if (onClaimed) onClaimed();
         } catch {}
         return;
       }
-      if (msg.type === "pair_expired") {
+      if (frame.type === "pair_expired") {
         finish(expiredResult());
         return;
       }
-      if (msg.type === "pair_result") {
-        const r = pairResultFromMsg(msg);
+      if (frame.type === "pair_result") {
+        const r = pairResultFromMsg(frame);
         if (r && r.ok) finish(r);
-        else if ((msg.code || "") === "pair_expired") finish(expiredResult());
+        else if ((frame.code || "") === "pair_expired") finish(expiredResult());
         else finish(r);
         return;
       }
-      if (msg.type === "error" && typeof msg.code === "string") {
-        if (msg.code === "unknown_type") {
+      if (frame.type === "error" && typeof frame.code === "string") {
+        if (frame.code === "unknown_type") {
           finish({ ok: false, code: "unsupported", error: "relay 版本太旧，不支持扫码链接（先升级服务器上的 relay）" });
-        } else if (msg.code === "pair_expired") {
+        } else if (frame.code === "pair_expired") {
           finish(expiredResult());
         } else {
-          finish({ ok: false, code: msg.code, error: msg.error || "relay 拒绝了链接请求" });
+          finish({ ok: false, code: frame.code, error: frame.error || "relay 拒绝了链接请求" });
         }
       }
     };
@@ -5073,20 +5073,20 @@ function requestLinkAttempt({ relay, deviceId, deviceName, deviceToken, deviceKe
 }
 
 /** --link：向 relay 申请链接码 → 终端 + 本机窗口出示 → 等手机批准 → 复用 persistPairResult 落盘 */
-async function linkMain(args, envPath, opts = {}) {
-  const out = opts.writeOut || ((line) => console.log(line));
-  const err = opts.writeErr || ((line) => console.error(line));
-  const platform = opts.platform || HOST_PLATFORM;
-  const cfg = loadConfig(envPath, opts.env || process.env, platform);
-  const relay = args.relay || cfg.relay;
+async function linkMain(args, envPath, options = {}) {
+  const out = options.writeOut || ((line) => console.log(line));
+  const error = options.writeErr || ((line) => console.error(line));
+  const platform = options.platform || HOST_PLATFORM;
+  const config = loadConfig(envPath, options.env || process.env, platform);
+  const relay = args.relay || config.relay;
   if (!relay) {
-    err("不知道 relay 地址：加上 --relay ws://<服务器>:7001，或先在 .env 里配 PI_REMOTE_RELAY");
+    error("不知道 relay 地址：加上 --relay ws://<服务器>:7001，或先在 .env 里配 PI_REMOTE_RELAY");
     return 1;
   }
-  if (opts.enforceSafety === true) {
+  if (options.enforceSafety === true) {
     const relaySafety = attachRelaySafetyError(relay, { allowRemote: args.allowRemote });
     if (relaySafety) {
-      err(relaySafety);
+      error(relaySafety);
       return 2;
     }
     if (!isLocalRelayHost(relayHostOf(relay) || "")) printRemoteRelayWarning(relay, envPath);
@@ -5094,13 +5094,13 @@ async function linkMain(args, envPath, opts = {}) {
   // 身份钥（阶段 1）：与 --pair 同口径——出示前确保本机有钥，损坏直接报错，不静默退回令牌路
   let keyCtx = null;
   try {
-    keyCtx = ensureDeviceKeys(envPath, { env: opts.env || process.env, deviceId: cfg.deviceId });
+    keyCtx = ensureDeviceKeys(envPath, { env: options.env || process.env, deviceId: config.deviceId });
   } catch (e) {
-    err(e && e.message ? e.message : String(e));
+    error(e && e.message ? e.message : String(e));
     return 1;
   }
-  const deviceName = cfg.deviceName || defaultDeviceName(platform);
-  const viewerPort = args.viewerPort || Number((opts.env || process.env).PI_REMOTE_VIEWER_PORT) || 7002;
+  const deviceName = config.deviceName || defaultDeviceName(platform);
+  const viewerPort = args.viewerPort || Number((options.env || process.env).PI_REMOTE_VIEWER_PORT) || 7002;
   // 本地模式下会被管家的当前出示源覆盖（见下方管家接入段），故用 let
   let viewer = viewerUrlFromRelay(relay, viewerPort);
   const state = {
@@ -5142,52 +5142,52 @@ async function linkMain(args, envPath, opts = {}) {
     });
 
   let win = null;
-  if (opts.linkWindow !== false) {
+  if (options.linkWindow !== false) {
     win = await startLinkWindowServer(state, { onRegen: () => pokeRegen("regen") });
-    if (win && opts.openBrowser !== false) openBrowserDefault(win.url, platform, opts.spawnImpl || spawn);
+    if (win && options.openBrowser !== false) openBrowserDefault(win.url, platform, options.spawnImpl || spawn);
   }
 
   let aborted = false;
   let abortAttempt = null;
-  const signalSource = opts.signalSource || process;
+  const signalSource = options.signalSource || process;
   const onSignal = () => {
     aborted = true;
     if (abortAttempt) abortAttempt();
     pokeRegen("abort");
   };
-  const bindSignals = opts.bindSignals !== false;
+  const bindSignals = options.bindSignals !== false;
   if (bindSignals) {
     signalSource.on("SIGINT", onSignal);
     signalSource.on("SIGTERM", onSignal);
   }
 
-  const terminalWidth = Number(opts.terminalWidth) || (process.stdout && process.stdout.columns) || 80;
+  const terminalWidth = Number(options.terminalWidth) || (process.stdout && process.stdout.columns) || 80;
 
   // 免服务器模式：先当管家把本机 relay 拉起来（就绪后才发 pair_request，否则必然连空端口）；
   // --tunnel 时顺带开隧道，网址就绪后出示源变了——同一枚码换新地址重出示（码与地址无关，
-  // 手机已经打开的确认页照常批准）。opts.keeperFactory === null 时测试可显式关掉这段。
-  if (opts.keeperFactory !== null) {
-    const info = localModeInfo(relay, opts.root || ROOT);
-    if (info.local || opts.keeperFactory) {
-      const factory = opts.keeperFactory || ((o) => createLocalKeeper(o));
+  // 手机已经打开的确认页照常批准）。options.keeperFactory === null 时测试可显式关掉这段。
+  if (options.keeperFactory !== null) {
+    const info = localModeInfo(relay, options.root || ROOT);
+    if (info.local || options.keeperFactory) {
+      const factory = options.keeperFactory || ((keeperOptions) => createLocalKeeper(keeperOptions));
       keeper = factory({
         config: info.config || {},
         relay,
-        root: opts.root || ROOT,
+        root: options.root || ROOT,
         platform,
         out,
-        env: opts.env || process.env,
-        stateFile: opts.stateFile,
-        healthz: opts.healthz,
-        spawnImpl: opts.keeperSpawnImpl,
-        spawnSyncImpl: opts.spawnSyncImpl,
-        readyTimeoutMs: opts.readyTimeoutMs,
-        lanDeps: opts.lanDeps,
-        resolveCloudflared: opts.resolveCloudflared,
-        tunnelSpawnImpl: opts.tunnelSpawnImpl,
-        tunnelHome: opts.tunnelHome,
+        env: options.env || process.env,
+        stateFile: options.stateFile,
+        healthz: options.healthz,
+        spawnImpl: options.keeperSpawnImpl,
+        spawnSyncImpl: options.spawnSyncImpl,
+        readyTimeoutMs: options.readyTimeoutMs,
+        lanDeps: options.lanDeps,
+        resolveCloudflared: options.resolveCloudflared,
+        tunnelSpawnImpl: options.tunnelSpawnImpl,
+        tunnelHome: options.tunnelHome,
         onTunnel: (t) => {
-          if (t.status === "failed") err(tunnelStatusLine(t));
+          if (t.status === "failed") error(tunnelStatusLine(t));
         },
       });
     }
@@ -5195,7 +5195,7 @@ async function linkMain(args, envPath, opts = {}) {
       try {
         await keeper.ensureRelay();
       } catch (e) {
-        err("本地 relay 没能启动：" + (e && e.message ? e.message : e));
+        error("本地 relay 没能启动：" + (e && e.message ? e.message : e));
         if (bindSignals) {
           signalSource.removeListener("SIGINT", onSignal);
           signalSource.removeListener("SIGTERM", onSignal);
@@ -5233,15 +5233,15 @@ async function linkMain(args, envPath, opts = {}) {
       state.ttlMs = 0;
       const result = await requestLinkAttempt({
         relay,
-        deviceId: cfg.deviceId,
+        deviceId: config.deviceId,
         deviceName,
-        deviceToken: cfg.deviceToken,
+        deviceToken: config.deviceToken,
         deviceKeys: keyCtx.keys,
         platform,
-        WebSocketImpl: opts.WebSocketImpl,
-        timeoutMs: opts.timeoutMs,
-        registerAbort: (fn) => {
-          abortAttempt = fn;
+        WebSocketImpl: options.WebSocketImpl,
+        timeoutMs: options.timeoutMs,
+        registerAbort: (callback) => {
+          abortAttempt = callback;
         },
         onClaimed: () => {
           state.phase = "processing";
@@ -5265,12 +5265,12 @@ async function linkMain(args, envPath, opts = {}) {
         break;
       }
       if (result.ok) {
-        persistPairResult(args, envPath, cfg, result, keyCtx);
+        persistPairResult(args, envPath, config, result, keyCtx);
         state.phase = "done";
         // Same auto-recognition as --pair (design 3.3): an old device token
         // was presented and keys got registered, so this link was also the
         // token-to-key upgrade — drop the token line instead of blanking it.
-        const linkWasUpgrade = !!(result.keyRegistered && cfg.deviceToken);
+        const linkWasUpgrade = !!(result.keyRegistered && config.deviceToken);
         if (linkWasUpgrade) removeEnvVars(envPath, ["PI_REMOTE_DEVICE_TOKEN"]);
         if (result.keyRegistered) {
           out(`链接成功：设备 ${result.deviceId}，身份钥已登记（指纹 ${formatFingerprint(keyFingerprint(keyCtx.keys.sign.pub))}），本机不再使用设备令牌`);
@@ -5283,7 +5283,7 @@ async function linkMain(args, envPath, opts = {}) {
           out(`链接成功：设备 ${result.deviceId}，令牌已写入 ${envPath}（令牌不打印，.env 权限 600）`);
           out("下一步：重启正在运行的 pi（扩展启动时读取令牌），然后运行 attach 打开连接窗口。");
         }
-        const linger = opts.doneLingerMs == null ? 6000 : Number(opts.doneLingerMs);
+        const linger = options.doneLingerMs == null ? 6000 : Number(options.doneLingerMs);
         const why = await waitRegen(linger);
         if (why === "regen" && !aborted) continue;
         exitCode = aborted ? 130 : 0;
@@ -5291,9 +5291,9 @@ async function linkMain(args, envPath, opts = {}) {
       }
       if (result.expired || result.code === "pair_expired") {
         state.phase = "expired";
-        err("这枚链接码已过期，没有完成链接。");
+        error("这枚链接码已过期，没有完成链接。");
         out("重新运行 " + linkHint(platform) + " 会生成新码；也可以改用手输配对码：" + pairHint(platform));
-        const grace = opts.regenGraceMs == null ? (win ? 30000 : 0) : Number(opts.regenGraceMs);
+        const grace = options.regenGraceMs == null ? (win ? 30000 : 0) : Number(options.regenGraceMs);
         const why = grace > 0 ? await waitRegen(grace) : "timeout";
         if (why === "regen" && !aborted) {
           out("正在生成新的链接码…");
@@ -5302,8 +5302,8 @@ async function linkMain(args, envPath, opts = {}) {
         exitCode = aborted ? 130 : 1;
         break;
       }
-      err(`链接失败（${result.code}）：${result.error}`);
-      if (result.code === "unsupported") err("改用手输配对码：" + pairHint(platform) + "（先在网页「添加设备」里生成配对码）");
+      error(`链接失败（${result.code}）：${result.error}`);
+      if (result.code === "unsupported") error("改用手输配对码：" + pairHint(platform) + "（先在网页「添加设备」里生成配对码）");
       exitCode = 1;
       break;
     }
@@ -5354,8 +5354,8 @@ function keeperStatePath(environ = process.env) {
 /** 读 relay/config.json（setup --local 的产物）；不存在/解析失败返回 null */
 function readLocalRelayConfig(root = ROOT) {
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(root, "relay", "config.json"), "utf8"));
-    return cfg && typeof cfg === "object" && !Array.isArray(cfg) ? cfg : null;
+    const config = JSON.parse(fs.readFileSync(path.join(root, "relay", "config.json"), "utf8"));
+    return config && typeof config === "object" && !Array.isArray(config) ? config : null;
   } catch {
     return null;
   }
@@ -5484,21 +5484,21 @@ function currentViewerOrigin({ relay, viewerPort, tunnelUrl = "", lan = "" } = {
 /** GET http://127.0.0.1:<port>/healthz 是否 200（relay 的存活口径，不带任何令牌） */
 function httpHealthz(port, timeoutMs = 1500, httpImpl = http) {
   return new Promise((resolve) => {
-    let req;
+    let request;
     try {
-      req = httpImpl.get({ host: "127.0.0.1", port: Number(port), path: "/healthz", timeout: timeoutMs }, (res) => {
-        res.resume();
-        resolve(res.statusCode === 200);
+      request = httpImpl.get({ host: "127.0.0.1", port: Number(port), path: "/healthz", timeout: timeoutMs }, (response) => {
+        response.resume();
+        resolve(response.statusCode === 200);
       });
     } catch {
       resolve(false);
       return;
     }
-    req.on("timeout", () => {
-      req.destroy();
+    request.on("timeout", () => {
+      request.destroy();
       resolve(false);
     });
-    req.on("error", () => resolve(false));
+    request.on("error", () => resolve(false));
   });
 }
 
@@ -5571,18 +5571,18 @@ function waitForExit(child, timeoutMs) {
  *   startTunnel：按需开 quick tunnel（失败只报状态、绝不抛——隧道故障不影响局域网）。
  *   stop：先关隧道 → 再关自有 relay → 最后删管家状态文件。
  */
-function createLocalKeeper(opts = {}) {
-  const root = opts.root || ROOT;
-  const config = opts.config || {};
-  const platform = opts.platform || HOST_PLATFORM;
+function createLocalKeeper(options = {}) {
+  const root = options.root || ROOT;
+  const config = options.config || {};
+  const platform = options.platform || HOST_PLATFORM;
   const localPort = Number(config.localPort) || 7001;
-  const viewerPort = Number(opts.viewerPort) || Number(config.viewerPort) || 7002;
-  const relay = opts.relay || `ws://127.0.0.1:${localPort}`;
-  const out = typeof opts.out === "function" ? opts.out : (line) => console.log(line);
-  const spawnImpl = opts.spawnImpl || spawn;
-  const healthz = opts.healthz || ((port) => httpHealthz(port, 1500, opts.httpImpl));
-  const readyTimeoutMs = opts.readyTimeoutMs != null ? Number(opts.readyTimeoutMs) : LOCAL_RELAY_READY_TIMEOUT_MS;
-  const stateFile = opts.stateFile || keeperStatePath(opts.env || process.env);
+  const viewerPort = Number(options.viewerPort) || Number(config.viewerPort) || 7002;
+  const relay = options.relay || `ws://127.0.0.1:${localPort}`;
+  const out = typeof options.out === "function" ? options.out : (line) => console.log(line);
+  const spawnImpl = options.spawnImpl || spawn;
+  const healthz = options.healthz || ((port) => httpHealthz(port, 1500, options.httpImpl));
+  const readyTimeoutMs = options.readyTimeoutMs != null ? Number(options.readyTimeoutMs) : LOCAL_RELAY_READY_TIMEOUT_MS;
+  const stateFile = options.stateFile || keeperStatePath(options.env || process.env);
   const relayEntry = path.join(root, "relay", "server.js");
 
   let active = false;
@@ -5599,7 +5599,7 @@ function createLocalKeeper(opts = {}) {
   let tunnelUrlValue = "";
   let tunnelStatus = "off";
   let wroteState = false;
-  let originChangeCb = typeof opts.onOriginChange === "function" ? opts.onOriginChange : null;
+  let originChangeCb = typeof options.onOriginChange === "function" ? options.onOriginChange : null;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -5614,9 +5614,9 @@ function createLocalKeeper(opts = {}) {
     return outputTail.slice(-12).join("\n");
   }
   function notifyTunnel(info) {
-    if (typeof opts.onTunnel === "function") {
+    if (typeof options.onTunnel === "function") {
       try {
-        opts.onTunnel(info);
+        options.onTunnel(info);
       } catch {}
     }
   }
@@ -5666,7 +5666,7 @@ function createLocalKeeper(opts = {}) {
     const killed = [];
     const relayPid = Number(rec.relayPid);
     if (pidAlive(relayPid)) {
-      const cmd = processCmdline(relayPid, platform, opts.spawnSyncImpl || spawnSync);
+      const cmd = processCmdline(relayPid, platform, options.spawnSyncImpl || spawnSync);
       if (cmd && cmd.includes(relayEntry)) {
         try {
           process.kill(relayPid, "SIGTERM");
@@ -5677,7 +5677,7 @@ function createLocalKeeper(opts = {}) {
     }
     const tunnelPid = Number(rec.tunnelPid);
     if (pidAlive(tunnelPid)) {
-      const cmd = processCmdline(tunnelPid, platform, opts.spawnSyncImpl || spawnSync);
+      const cmd = processCmdline(tunnelPid, platform, options.spawnSyncImpl || spawnSync);
       if (cmd && cmd.includes("cloudflared")) {
         try {
           process.kill(tunnelPid, "SIGTERM");
@@ -5700,7 +5700,7 @@ function createLocalKeeper(opts = {}) {
       cwd: root,
       detached: platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...(opts.env || process.env) },
+      env: { ...(options.env || process.env) },
     });
     relayChild = child;
     relayOwned = true;
@@ -5759,10 +5759,10 @@ function createLocalKeeper(opts = {}) {
     const child = relayChild;
     relayChild = null;
     if (!child) return;
-    killProcessGroup(child, "SIGTERM", platform, opts.killImpl);
+    killProcessGroup(child, "SIGTERM", platform, options.killImpl);
     const exited = await waitForExit(child, 3000);
     if (!exited) {
-      killProcessGroup(child, "SIGKILL", platform, opts.killImpl);
+      killProcessGroup(child, "SIGKILL", platform, options.killImpl);
       await waitForExit(child, 1000);
     }
   }
@@ -5771,7 +5771,7 @@ function createLocalKeeper(opts = {}) {
     if (active) return { owned: relayOwned, healthy: await healthz(viewerPort), foreignOwner };
     active = true;
     await cleanupStale();
-    lan = await lanOrigin(viewerPort, opts.lanDeps);
+    lan = await lanOrigin(viewerPort, options.lanDeps);
     if (await healthz(viewerPort)) {
       relayOwned = false;
       return { owned: false, healthy: true, foreignOwner };
@@ -5803,7 +5803,7 @@ function createLocalKeeper(opts = {}) {
     notifyTunnel({ status: "starting", url: "" });
     let resolved;
     try {
-      resolved = await (opts.resolveCloudflared || ((o) => cf.resolveCloudflared(o)))({ log: out });
+      resolved = await (options.resolveCloudflared || ((o) => cf.resolveCloudflared(o)))({ log: out });
     } catch (e) {
       tunnelStatus = "failed";
       notifyTunnel({ status: "failed", url: "", error: e && e.message ? e.message : String(e) });
@@ -5811,12 +5811,12 @@ function createLocalKeeper(opts = {}) {
     }
     if (stopped) return { status: "failed", url: "" };
     out(`隧道启动中（cloudflared ${resolved.version || cf.CLOUDFLARED_VERSION}，来源：${resolved.source === "path" ? "系统已装" : resolved.source}）…`);
-    tunnel = (opts.tunnelStartImpl || ((o) => cf.startTunnel(o)))({
+    tunnel = (options.tunnelStartImpl || ((o) => cf.startTunnel(o)))({
       bin: resolved.bin,
       viewerPort,
       localPort,
-      home: opts.tunnelHome || path.join(os.homedir(), ".pi-remote", "cloudflared", "tunnel-home"),
-      spawnImpl: opts.tunnelSpawnImpl,
+      home: options.tunnelHome || path.join(os.homedir(), ".pi-remote", "cloudflared", "tunnel-home"),
+      spawnImpl: options.tunnelSpawnImpl,
       onUrl: (url) => {
         tunnelUrlValue = url;
         writeState();
@@ -5885,10 +5885,10 @@ function createLocalKeeper(opts = {}) {
   /** 进程 exit 时的同步兜底：来不及 await stop() 时至少把信号发出去，不留孤儿进程 */
   function killAllSync() {
     try {
-      if (tunnel && tunnel.child()) killProcessGroup(tunnel.child(), "SIGKILL", platform, opts.killImpl);
+      if (tunnel && tunnel.child()) killProcessGroup(tunnel.child(), "SIGKILL", platform, options.killImpl);
     } catch {}
     try {
-      if (relayOwned && relayChild) killProcessGroup(relayChild, "SIGKILL", platform, opts.killImpl);
+      if (relayOwned && relayChild) killProcessGroup(relayChild, "SIGKILL", platform, options.killImpl);
     } catch {}
   }
 
@@ -5898,8 +5898,8 @@ function createLocalKeeper(opts = {}) {
     stop,
     killAllSync,
     origin,
-    setOnOriginChange: (fn) => {
-      originChangeCb = typeof fn === "function" ? fn : null;
+    setOnOriginChange: (callback) => {
+      originChangeCb = typeof callback === "function" ? callback : null;
     },
     lanInfo: () => lan,
     tunnelUrl: () => tunnelUrlValue,
@@ -6116,25 +6116,25 @@ function renderSharePage(state) {
 
 /** 分享窗口服务：与 link 窗口同一骨架（只绑 127.0.0.1 随机端口，/state 轮询） */
 function startShareWindowServer(state) {
-  const server = http.createServer((req, res) => {
+  const server = http.createServer((request, response) => {
     try {
-      const u = new URL(String(req.url || "/"), "http://127.0.0.1");
-      if (req.method === "GET" && u.pathname === "/state") {
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-        res.end(JSON.stringify(shareWindowStateJson(state)));
+      const u = new URL(String(request.url || "/"), "http://127.0.0.1");
+      if (request.method === "GET" && u.pathname === "/state") {
+        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+        response.end(JSON.stringify(shareWindowStateJson(state)));
         return;
       }
-      if (req.method === "GET" && (u.pathname === "/" || u.pathname === "/index.html")) {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-        res.end(renderSharePage(state));
+      if (request.method === "GET" && (u.pathname === "/" || u.pathname === "/index.html")) {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        response.end(renderSharePage(state));
         return;
       }
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("not found");
+      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("not found");
     } catch {
       try {
-        res.writeHead(500);
-        res.end();
+        response.writeHead(500);
+        response.end();
       } catch {}
     }
   });
@@ -6190,49 +6190,49 @@ function printTunnelOffer(url, { out, terminalWidth }) {
 }
 
 /** --share：本地模式专用。管家拉起 relay + 开隧道，只出示双源地址，常驻到 Ctrl-C */
-async function shareMain(args, envPath, opts = {}) {
-  const out = opts.writeOut || ((line) => console.log(line));
-  const err = opts.writeErr || ((line) => console.error(line));
-  const platform = opts.platform || HOST_PLATFORM;
-  const root = opts.root || ROOT;
-  const terminalWidth = Number(opts.terminalWidth) || (process.stdout && process.stdout.columns) || 80;
-  const cfg = loadConfig(envPath, opts.env || process.env, platform);
-  const relay = args.relay || cfg.relay;
+async function shareMain(args, envPath, options = {}) {
+  const out = options.writeOut || ((line) => console.log(line));
+  const error = options.writeErr || ((line) => console.error(line));
+  const platform = options.platform || HOST_PLATFORM;
+  const root = options.root || ROOT;
+  const terminalWidth = Number(options.terminalWidth) || (process.stdout && process.stdout.columns) || 80;
+  const config = loadConfig(envPath, options.env || process.env, platform);
+  const relay = args.relay || config.relay;
   if (!relay) {
-    err("不知道 relay 地址：先运行 node deploy/setup.cjs --local 初始化免服务器模式");
+    error("不知道 relay 地址：先运行 node deploy/setup.cjs --local 初始化免服务器模式");
     return 1;
   }
   const info = localModeInfo(relay, root);
   if (!info.local) {
-    err("--share 只用于免服务器（本地 relay）模式：当前 .env 的 relay 不是本机本地模式。");
-    err("  先运行 node deploy/setup.cjs --local 生成本地配置，再运行 attach --share。");
+    error("--share 只用于免服务器（本地 relay）模式：当前 .env 的 relay 不是本机本地模式。");
+    error("  先运行 node deploy/setup.cjs --local 生成本地配置，再运行 attach --share。");
     return 1;
   }
   const state = {
-    deviceName: cfg.deviceName || defaultDeviceName(platform),
+    deviceName: config.deviceName || defaultDeviceName(platform),
     platformLabel: platformLabel(platform),
     lanUrl: "",
     lanCandidates: [],
     tunnel: { status: "off", url: "", error: "" },
   };
   let tunnelPrinted = false;
-  const factory = opts.keeperFactory || ((o) => createLocalKeeper(o));
+  const factory = options.keeperFactory || ((o) => createLocalKeeper(o));
   const keeper = factory({
     config: info.config,
     relay,
     root,
     platform,
     out,
-    env: opts.env || process.env,
-    stateFile: opts.stateFile,
-    healthz: opts.healthz,
-    spawnImpl: opts.spawnImpl,
-    spawnSyncImpl: opts.spawnSyncImpl,
-    readyTimeoutMs: opts.readyTimeoutMs,
-    lanDeps: opts.lanDeps,
-    resolveCloudflared: opts.resolveCloudflared,
-    tunnelSpawnImpl: opts.tunnelSpawnImpl,
-    tunnelHome: opts.tunnelHome,
+    env: options.env || process.env,
+    stateFile: options.stateFile,
+    healthz: options.healthz,
+    spawnImpl: options.spawnImpl,
+    spawnSyncImpl: options.spawnSyncImpl,
+    readyTimeoutMs: options.readyTimeoutMs,
+    lanDeps: options.lanDeps,
+    resolveCloudflared: options.resolveCloudflared,
+    tunnelSpawnImpl: options.tunnelSpawnImpl,
+    tunnelHome: options.tunnelHome,
     onTunnel: (t) => {
       state.tunnel.status = t.status;
       if (t.url) state.tunnel.url = t.url;
@@ -6248,8 +6248,8 @@ async function shareMain(args, envPath, opts = {}) {
 
   let win = null;
   let aborted = false;
-  const signalSource = opts.signalSource || process;
-  const bindSignals = opts.bindSignals !== false;
+  const signalSource = options.signalSource || process;
+  const bindSignals = options.bindSignals !== false;
   let resolveWait = null;
   const waitPromise = new Promise((resolve) => {
     resolveWait = resolve;
@@ -6267,16 +6267,16 @@ async function shareMain(args, envPath, opts = {}) {
     try {
       ensured = await keeper.ensureRelay();
     } catch (e) {
-      err("本地 relay 没能启动：" + (e && e.message ? e.message : e));
+      error("本地 relay 没能启动：" + (e && e.message ? e.message : e));
       return 1;
     }
     const lan = keeper.lanInfo();
     state.lanUrl = lan.origin;
     state.lanCandidates = lan.alternatives;
     out(ensured.owned ? "免服务器模式：本地 relay 已拉起" : "免服务器模式：本地 relay 已在运行（不是本窗口拉起的，不接管）");
-    if (opts.shareWindow !== false) {
+    if (options.shareWindow !== false) {
       win = await startShareWindowServer(state);
-      if (win && opts.openBrowser !== false) openBrowserDefault(win.url, platform, opts.spawnImplForBrowser || spawn);
+      if (win && options.openBrowser !== false) openBrowserDefault(win.url, platform, options.spawnImplForBrowser || spawn);
     }
     printShareOffer(state, { out, terminalWidth });
     if (win) out(`分享窗口：${win.url}（只在本机 127.0.0.1 打开；隧道网址就绪后页面会自动更新）`);

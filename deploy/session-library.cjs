@@ -24,9 +24,9 @@ function textOf(message) {
   return parts.join("\n");
 }
 
-function readArchive(file, opts = {}) {
-  const budget = opts.textBudget || TEXT_BUDGET;
-  const perMessage = opts.perMessage || PER_MESSAGE;
+function readArchive(file, options = {}) {
+  const budget = options.textBudget || TEXT_BUDGET;
+  const perMessage = options.perMessage || PER_MESSAGE;
   const raw = fs.readFileSync(file, "utf8");
   const stat = fs.statSync(file);
   let header = null;
@@ -58,11 +58,11 @@ function readArchive(file, opts = {}) {
   }
   let used = 0;
   let start = messages.length;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const next = messages[i].text.length;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const next = messages[index].text.length;
     if (used + next > budget && start < messages.length) break;
     used += next;
-    start = i;
+    start = index;
   }
   const kept = messages.slice(start);
   const first = messages.find((item) => item.role === "user");

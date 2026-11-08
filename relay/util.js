@@ -7,11 +7,11 @@ function safeId(id) {
   return typeof id === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(id) && id !== "." && id !== "..";
 }
 
-function safeEqual(a, b) {
-  const ab = Buffer.from(String(a));
-  const bb = Buffer.from(String(b));
-  if (ab.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ab, bb);
+function safeEqual(left, right) {
+  const leftBytes = Buffer.from(String(left));
+  const rightBytes = Buffer.from(String(right));
+  if (leftBytes.length !== rightBytes.length) return false;
+  return crypto.timingSafeEqual(leftBytes, rightBytes);
 }
 
 /** 公钥指纹（加密设计 §2.2）：公钥字节 SHA-256 的前 8 字节 = 16 位小写 hex，
@@ -23,18 +23,18 @@ function keyFingerprint(pub) {
 }
 
 /** 指纹的人读形态：每 4 位 hex 一组空格分隔（"3f9a c41d …"），供名册展示与人工核对。 */
-function formatFingerprint(fp) {
-  const hex = String(fp).replace(/[^0-9a-f]/gi, "").toLowerCase();
+function formatFingerprint(fingerprintHex) {
+  const hex = String(fingerprintHex).replace(/[^0-9a-f]/gi, "").toLowerCase();
   return hex.replace(/(.{4})(?=.)/g, "$1 ");
 }
 
 let QUIET = false;
-function setQuiet(v) {
-  QUIET = !!v;
+function setQuiet(quiet) {
+  QUIET = !!quiet;
 }
-function log(...a) {
+function log(...parts) {
   if (QUIET) return;
-  console.log(new Date().toISOString(), "[relay]", ...a);
+  console.log(new Date().toISOString(), "[relay]", ...parts);
 }
 
 module.exports = { safeId, safeEqual, keyFingerprint, formatFingerprint, setQuiet, log };

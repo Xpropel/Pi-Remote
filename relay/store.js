@@ -87,8 +87,8 @@ const MSG_PREFIX = /^\{"k":"msg","seq":(\d+),"m":/;
  *  fields follow seq in pinned order (enc, role, h, ct), so the fast path can slice
  *  the frame-form envelope out of the stored line without a JSON round trip. */
 const MSG_ENC_PREFIX = /^\{"k":"msg","seq":(\d+),"enc":1,/;
-const HMAC_HEX_RE = /^[0-9a-f]{64}$/; // envelope h: HMAC-SHA256 hex
-const ACK_FP_RE = /^[0-9a-f]{16}$/;   // content-key fingerprint (protocol limit contentKeyFpChars)
+const HMAC_HEX_RE = /^[0-9a-segmentFile]{64}$/; // envelope h: HMAC-SHA256 hex
+const ACK_FP_RE = /^[0-9a-segmentFile]{16}$/;   // content-key fingerprint (protocol limit contentKeyFpChars)
 const CID_RE = /^[A-Za-z0-9_-]{1,64}$/; // 与协议 limits.cidMax 一致
 // ended-tool 元数据：很小，但也不能让一条坏帧/异常会话无限占内存。
 // 默认每房保留最近 2000 条（旧的 200 条上限会让长会话的终端胶囊历史持续滚出）：
@@ -116,7 +116,7 @@ const ROOM_FILE_WARN_RATIO = 0.8;
 // 检查点指针临时文件（<room>.ckpt.json.<pid>.<hex>.tmp）只在一次同步写路径内存活，
 // 进程被强杀会留下孤儿；启动时只清理一小时以前的，避免误删另一个进程正在写的临时文件。
 // 清单文件（<room>.index.json）用同一套临时文件纪律，一并覆盖。
-const CKPT_TMP_RE = /\.(?:ckpt|index)\.json\.\d+\.[0-9a-f]+\.tmp$/;
+const CKPT_TMP_RE = /\.(?:ckpt|index)\.json\.\d+\.[0-9a-segmentFile]+\.tmp$/;
 const CKPT_TMP_MAX_AGE_MS = 60 * 60 * 1000;
 // 现役段封存阈值：写满即封存为 <room>.NNNN.jsonl 再开新现役段（见文件头第 8 条）。
 // 8MB 的来历：与既有常量同锚——热缓存上限 16MB 的一半、构造器预热阈值同为 8MB；
@@ -166,17 +166,17 @@ function sha1(buf) {
 
 /** superseded 的 seq 集合压成 [start,end] 区间数组：连续 seq 很常见，落盘体积远小于逐个数字。
  *  单个区间不超过 SEQ_RANGE_MAX 就强制切段，保证 pack 的输出一定能通过 unpack 的上限校验。 */
-function packSeqs(set) {
-  const seqs = [];
-  for (const s of set) if (Number.isInteger(s) && s > 0) seqs.push(s);
-  seqs.sort((a, b) => a - b);
-  const out = [];
-  for (const s of seqs) {
-    const last = out[out.length - 1];
-    if (last && s === last[1] + 1 && last[1] - last[0] + 1 < SEQ_RANGE_MAX) last[1] = s;
-    else out.push([s, s]);
+function packSeqs(supersededSet) {
+  const sequenceNumbers = [];
+  for (const sequenceNumber of supersededSet) if (Number.isInteger(sequenceNumber) && sequenceNumber > 0) sequenceNumbers.push(sequenceNumber);
+  sequenceNumbers.sort((left, right) => left - right);
+  const packed = [];
+  for (const sequenceNumber of sequenceNumbers) {
+    const lastRange = packed[packed.length - 1];
+    if (lastRange && sequenceNumber === lastRange[1] + 1 && lastRange[1] - lastRange[0] + 1 < SEQ_RANGE_MAX) lastRange[1] = sequenceNumber;
+    else packed.push([sequenceNumber, sequenceNumber]);
   }
-  return out;
+  return packed;
 }
 
 /** 校验 packed superseded 的结构与规模；不分配 Set。maxSeq 用于拦越界 seq。
@@ -186,11 +186,11 @@ function packedSeqsValid(packed, maxSeq = Infinity) {
   let total = 0;
   for (const range of packed) {
     if (!Array.isArray(range) || range.length !== 2) return false;
-    const [a, b] = range;
-    if (!Number.isInteger(a) || !Number.isInteger(b) || a <= 0 || b < a || b > maxSeq) return false;
-    const len = b - a + 1;
-    if (len > SEQ_RANGE_MAX) return false;
-    total += len;
+    const [rangeStart, rangeEnd] = range;
+    if (!Number.isInteger(rangeStart) || !Number.isInteger(rangeEnd) || rangeStart <= 0 || rangeEnd < rangeStart || rangeEnd > maxSeq) return false;
+    const rangeLength = rangeEnd - rangeStart + 1;
+    if (rangeLength > SEQ_RANGE_MAX) return false;
+    total += rangeLength;
     if (total > SEQ_UNPACK_MAX) return false;
   }
   return true;
@@ -199,14 +199,14 @@ function packedSeqsValid(packed, maxSeq = Infinity) {
 /** 展开 packed superseded；非法/超限返回 null（由调用方回退全量扫描，绝不静默丢一部分）。 */
 function unpackSeqs(packed, maxSeq = Infinity) {
   if (!packedSeqsValid(packed, maxSeq)) return null;
-  const out = new Set();
-  for (const [a, b] of packed) for (let s = a; s <= b; s++) out.add(s);
-  return out;
+  const expanded = new Set();
+  for (const [rangeStart, rangeEnd] of packed) for (let sequenceNumber = rangeStart; sequenceNumber <= rangeEnd; sequenceNumber++) expanded.add(sequenceNumber);
+  return expanded;
 }
 
 /** 远程消息的客户端 id；不合法的当没带 */
-function cleanCid(v) {
-  return typeof v === "string" && CID_RE.test(v) ? v : null;
+function cleanCid(value) {
+  return typeof value === "string" && CID_RE.test(value) ? value : null;
 }
 
 /**
@@ -230,8 +230,8 @@ function cleanToolMeta(raw) {
 }
 
 /** 两条元数据的业务字段完全相同（toolCallId 由调用方保证相同）。 */
-function toolMetaSame(a, b) {
-  return TOOLMETA_FIELDS.every((k) => a[k] === b[k]);
+function toolMetaSame(left, right) {
+  return TOOLMETA_FIELDS.every((field) => left[field] === right[field]);
 }
 
 /** room id 只允许安全字符（防路径穿越/怪文件名）；调用方（server）已校验，这里双保险 */
@@ -261,20 +261,20 @@ function deviceSegment(deviceId) {
   return safeKey(raw);
 }
 
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function contentText(m) {
-  const c = m && m.content;
-  if (typeof c === "string") return c;
-  if (Array.isArray(c)) {
-    return c
-      .map((b) => (b && b.type === "text" ? b.text || "" : b && b.type === "toolCall" ? `[tool:${b.name}]` : ""))
+function contentText(message) {
+  const content = message && message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => (block && block.type === "text" ? block.text || "" : block && block.type === "toolCall" ? `[tool:${block.name}]` : ""))
       .join("");
   }
-  if (m && typeof m.summary === "string") return m.summary;
-  if (m && typeof m.output === "string") return `${m.command || ""}\n${m.output}`;
+  if (message && typeof message.summary === "string") return message.summary;
+  if (message && typeof message.output === "string") return `${message.command || ""}\n${message.output}`;
   return "";
 }
 
@@ -283,45 +283,45 @@ const STAMPED_ROLES = new Set(["user", "assistant", "toolResult", "bashExecution
 
 /** 内容指纹：sha1 前 12 位。扩展侧有逐字相同的实现（append 模式对齐用），改这里必须同步改扩展。
  *  只取文本前 2048 字符：超大消息过线时被截断（保留头部），指纹不能跟着变 */
-function hashOf(m) {
-  if (!m || typeof m !== "object") return "";
-  const ts = STAMPED_ROLES.has(m.role) ? m.timestamp || "" : "";
-  const raw = `${m.role}|${ts}|${contentText(m).slice(0, 2048)}`;
+function hashOf(message) {
+  if (!message || typeof message !== "object") return "";
+  const timestamp = STAMPED_ROLES.has(message.role) ? message.timestamp || "" : "";
+  const raw = `${message.role}|${timestamp}|${contentText(message).slice(0, 2048)}`;
   return crypto.createHash("sha1").update(raw).digest("hex").slice(0, 12);
 }
 
 /** hash 是否真的把时间戳算进去了：只有 STAMPED_ROLES 且 timestamp 非空才满足。
  *  截断快照兜底对齐要求重叠窗口里至少有一条这样的消息，否则同内容摘要/工具结果会撞 hash。 */
-function hashPinsTimestamp(m) {
-  return !!m && STAMPED_ROLES.has(m.role) && !!m.timestamp;
+function hashPinsTimestamp(message) {
+  return !!message && STAMPED_ROLES.has(message.role) && !!message.timestamp;
 }
 
 
 /** Frame/record envelope shape (crypto Phase 3, design section 4.1): {enc:1, role, h, ct}.
  *  The relay never decrypts: it only checks the shape, stores the envelope verbatim,
  *  and compares h values for anchoring and remote supersede. */
-function isEnvelope(v) {
-  return !!v && typeof v === "object" && v.enc === 1 &&
-    typeof v.role === "string" && !!v.role &&
-    typeof v.h === "string" && HMAC_HEX_RE.test(v.h) &&
-    typeof v.ct === "string" && v.ct.length > 0;
+function isEnvelope(value) {
+  return !!value && typeof value === "object" && value.enc === 1 &&
+    typeof value.role === "string" && !!value.role &&
+    typeof value.h === "string" && HMAC_HEX_RE.test(value.h) &&
+    typeof value.ct === "string" && value.ct.length > 0;
 }
 
 /** The envelope as delivered inside frames / snapshot items: {enc:1, role, h, ct}. */
-function envelopeFrameJson(env) {
-  return JSON.stringify({ enc: 1, role: env.role, h: env.h, ct: env.ct });
+function envelopeFrameJson(envelope) {
+  return JSON.stringify({ enc: 1, role: envelope.role, h: envelope.h, ct: envelope.ct });
 }
 
 /** Snapshot item for an encrypted remote record: the envelope plus the remote
  *  marker fields the plaintext form carries (role/timestamp/cid stay readable). */
-function remoteEnvelopeJson(rec) {
-  const o = { enc: 1, role: "user", remote: true };
-  if (typeof rec.at === "number" && Number.isFinite(rec.at)) o.timestamp = rec.at;
-  o.h = rec.h;
-  o.ct = rec.ct;
-  const cid = cleanCid(rec.cid);
-  if (cid) o.cid = cid;
-  return JSON.stringify(o);
+function remoteEnvelopeJson(record) {
+  const envelopeObject = { enc: 1, role: "user", remote: true };
+  if (typeof record.at === "number" && Number.isFinite(record.at)) envelopeObject.timestamp = record.at;
+  envelopeObject.h = record.h;
+  envelopeObject.ct = record.ct;
+  const cid = cleanCid(record.cid);
+  if (cid) envelopeObject.cid = cid;
+  return JSON.stringify(envelopeObject);
 }
 
 /** The envelope fields of a remote_message event ({enc:1, h, ct} flattened onto
@@ -349,12 +349,12 @@ function cleanEncMeta(raw) {
  *  plaintext rooms. Fields that fail validation are dropped, never trusted. */
 function encMetaOf(metaExtra) {
   if (!metaExtra || metaExtra.enc !== 1) return null;
-  const out = { enc: 1 };
-  if (typeof metaExtra.ackFp === "string" && ACK_FP_RE.test(metaExtra.ackFp)) out.ackFp = metaExtra.ackFp;
+  const encMeta = { enc: 1 };
+  if (typeof metaExtra.ackFp === "string" && ACK_FP_RE.test(metaExtra.ackFp)) encMeta.ackFp = metaExtra.ackFp;
   if (typeof metaExtra.rckWrap === "string" && metaExtra.rckWrap.length <= PROTOCOL.limits.wrappedKeyMaxBytes) {
-    out.rckWrap = metaExtra.rckWrap;
+    encMeta.rckWrap = metaExtra.rckWrap;
   }
-  return out;
+  return encMeta;
 }
 
 /** Alignment anchor for a snapshot item: envelopes anchor on their keyed h,
@@ -369,9 +369,9 @@ function newRev() {
 }
 
 function remoteJson(text, at, cid) {
-  const m = { role: "user", remote: true, content: [{ type: "text", text }], timestamp: at };
-  if (cid) m.cid = cid;
-  return JSON.stringify(m);
+  const message = { role: "user", remote: true, content: [{ type: "text", text }], timestamp: at };
+  if (cid) message.cid = cid;
+  return JSON.stringify(message);
 }
 
 /** user 消息是否就是这条 remote 回显。精确相等，或只在末尾多了 pi 的图片提示。
@@ -463,8 +463,8 @@ class RoomStore {
     setImmediate(() => {
       try {
         this._cleanupOrphanTemps();
-      } catch (e) {
-        console.warn("[store] 清理检查点临时文件失败:", e.message);
+      } catch (cleanupError) {
+        console.warn("[store] 清理检查点临时文件失败:", cleanupError.message);
       }
     });
     if (this.prewarm) {
@@ -474,8 +474,8 @@ class RoomStore {
         this._prewarmScheduled = false;
         try {
           this._prewarmAll();
-        } catch (e) {
-          console.warn("[store] 构造器预热启动失败:", e.message);
+        } catch (prewarmError) {
+          console.warn("[store] 构造器预热启动失败:", prewarmError.message);
           this._notifyPrewarm();
         }
       });
@@ -497,24 +497,24 @@ class RoomStore {
 
   /** 等某房间的异步索引落地（没有在飞任务时立即 resolved）。测试/运维观测用，
    *  与 prewarmReady() 同风格；读 API 本身仍是同步占位语义（见 _placeholderRoom）。 */
-  whenIndexed(id) {
-    const job = this._indexJobs.get(id);
+  whenIndexed(roomId) {
+    const job = this._indexJobs.get(roomId);
     if (!job) return Promise.resolve();
     return job.promise;
   }
 
   /** 某房间是否正在异步建索引（此时它的读锚点不可信、快照必带 truncated）。 */
-  indexing(id) {
-    const r = this.rooms.get(id);
-    return !!(r && r._indexing);
+  indexing(roomId) {
+    const room = this.rooms.get(roomId);
+    return !!(room && room._indexing);
   }
 
   /** 丢弃一个还没被打开的预热索引（首次打开接管 / reset / drop / 超过上限 / TTL）。 */
-  _dropPrewarmed(id) {
-    const pre = this._prewarmed.get(id);
-    if (!pre) return false;
-    this._prewarmed.delete(id);
-    if (pre.timer) clearTimeout(pre.timer);
+  _dropPrewarmed(roomId) {
+    const prewarmed = this._prewarmed.get(roomId);
+    if (!prewarmed) return false;
+    this._prewarmed.delete(roomId);
+    if (prewarmed.timer) clearTimeout(prewarmed.timer);
     return true;
   }
 
@@ -522,32 +522,32 @@ class RoomStore {
    *  每个最多保留 prewarmTtlMs（期间没被首次打开就丢弃，下次打开按大小重新索引）。
    *  TTL 只管"还没被打开"的条目：_room 接管时 _dropPrewarmed 已清掉计时器，
    *  接管后的索引跟随房间缓存自身的空闲淘汰纪律，不再被 TTL 单独过期（R-4 第 3 条）。 */
-  _rememberPrewarmed(id, entry) {
-    this._dropPrewarmed(id);
+  _rememberPrewarmed(roomId, entry) {
+    this._dropPrewarmed(roomId);
     while (this._prewarmed.size >= this.prewarmMaxRooms) {
-      const oldest = this._prewarmed.keys().next().value;
-      if (!this._dropPrewarmed(oldest)) break;
+      const oldestRoomId = this._prewarmed.keys().next().value;
+      if (!this._dropPrewarmed(oldestRoomId)) break;
     }
     if (this.prewarmTtlMs > 0) {
       entry.timer = setTimeout(() => {
-        const cur = this._prewarmed.get(id);
-        if (cur === entry) this._prewarmed.delete(id);
+        const current = this._prewarmed.get(roomId);
+        if (current === entry) this._prewarmed.delete(roomId);
       }, this.prewarmTtlMs);
       if (entry.timer.unref) entry.timer.unref();
     }
-    this._prewarmed.set(id, entry);
+    this._prewarmed.set(roomId, entry);
   }
 
-  _file(id) {
-    return path.join(this._roomDir(id), `${id}.jsonl`);
+  _file(roomId) {
+    return path.join(this._roomDir(roomId), `${roomId}.jsonl`);
   }
 
-  _ckptFile(id) {
-    return path.join(this._roomDir(id), `${id}.ckpt.json`);
+  _ckptFile(roomId) {
+    return path.join(this._roomDir(roomId), `${roomId}.ckpt.json`);
   }
 
-  _manifestFile(id, dir) {
-    return path.join(dir || this._roomDir(id), `${id}.index.json`);
+  _manifestFile(roomId, dir) {
+    return path.join(dir || this._roomDir(roomId), `${roomId}.index.json`);
   }
 
   /** 接入房间定位器（Rooms.bindStore 调用）：id -> {deviceId, cwd} | null。
@@ -557,37 +557,37 @@ class RoomStore {
     if (this._locator) {
       try {
         this._migrateFlatRooms();
-      } catch (e) {
-        console.warn("[store] 存量房文件迁移失败（保留平铺，下次接入重试）:", e.message);
+      } catch (migrationError) {
+        console.warn("[store] 存量房文件迁移失败（保留平铺，下次接入重试）:", migrationError.message);
       }
     }
   }
 
-  _locate(id) {
+  _locate(roomId) {
     if (!this._locator) return null;
     try {
-      const loc = this._locator(id);
-      return loc && (loc.deviceId || loc.cwd) ? loc : null;
+      const location = this._locator(roomId);
+      return location && (location.deviceId || location.cwd) ? location : null;
     } catch {
       return null;
     }
   }
 
   /** 定位结果 → 分组目录。缺哪级用 _未分类 占位（两级结构恒定，枚举/迁移口径统一）。 */
-  _groupedDir(loc) {
-    const dev = loc && loc.deviceId ? deviceSegment(loc.deviceId) : UNCLASSIFIED_SEG;
-    const ws = loc && loc.cwd ? encodeCwdSegment(loc.cwd) || UNCLASSIFIED_SEG : UNCLASSIFIED_SEG;
-    return path.join(this.dir, dev, ws);
+  _groupedDir(location) {
+    const deviceSegmentName = location && location.deviceId ? deviceSegment(location.deviceId) : UNCLASSIFIED_SEG;
+    const workspaceSegmentName = location && location.cwd ? encodeCwdSegment(location.cwd) || UNCLASSIFIED_SEG : UNCLASSIFIED_SEG;
+    return path.join(this.dir, deviceSegmentName, workspaceSegmentName);
   }
 
   /** 枚举一个目录里某房间的全部段文件（封存段按序号排序）与指针/清单存在性。
    *  只 stat 不读内容；冷打开/预热/迁移共用。 */
-  _layoutIn(id, dir) {
+  _layoutIn(roomId, dir) {
     const layout = {
       dir,
-      sealed: [],        // [{n, name, file, bytes}]，序号小→大
+      sealed: [],        // [{segmentNumber, name, file, bytes}]，序号小→大
       sealedBytes: 0,
-      active: { file: path.join(dir, `${id}.jsonl`), size: 0, exists: false, ino: null, mtimeMs: null },
+      active: { file: path.join(dir, `${roomId}.jsonl`), size: 0, exists: false, ino: null, mtimeMs: null },
       total: 0,
       exists: false,     // 有现役段或任一封存段
       hasMeta: false,    // 有检查点指针或清单（房已删净数据但元文件还在时定位仍认这里）
@@ -598,31 +598,31 @@ class RoomStore {
     } catch {
       return layout;
     }
-    const segRe = new RegExp(`^${escapeRegExp(id)}\\.(\\d{4})\\.jsonl$`);
+    const segmentNameRe = new RegExp(`^${escapeRegExp(roomId)}\\.(\\d{4})\\.jsonl$`);
     const found = [];
     for (const name of names) {
-      const m = segRe.exec(name);
-      if (m) found.push({ n: Number(m[1]), name });
-      else if (name === `${id}.ckpt.json` || name === `${id}.index.json`) layout.hasMeta = true;
+      const match = segmentNameRe.exec(name);
+      if (match) found.push({ segmentNumber: Number(match[1]), name });
+      else if (name === `${roomId}.ckpt.json` || name === `${roomId}.index.json`) layout.hasMeta = true;
     }
-    found.sort((a, b) => a.n - b.n);
-    for (const f of found) {
-      const file = path.join(dir, f.name);
+    found.sort((left, right) => left.segmentNumber - right.segmentNumber);
+    for (const sealedSegment of found) {
+      const file = path.join(dir, sealedSegment.name);
       let size;
       try {
         size = fs.statSync(file).size;
       } catch {
         continue;
       }
-      layout.sealed.push({ n: f.n, name: f.name, file, bytes: size });
+      layout.sealed.push({ segmentNumber: sealedSegment.segmentNumber, name: sealedSegment.name, file, bytes: size });
       layout.sealedBytes += size;
     }
     try {
-      const st = fs.statSync(layout.active.file);
-      layout.active.size = st.size;
+      const activeStat = fs.statSync(layout.active.file);
+      layout.active.size = activeStat.size;
       layout.active.exists = true;
-      layout.active.ino = st.ino;
-      layout.active.mtimeMs = st.mtimeMs;
+      layout.active.ino = activeStat.ino;
+      layout.active.mtimeMs = activeStat.mtimeMs;
     } catch {}
     layout.total = layout.sealedBytes + layout.active.size;
     layout.exists = layout.active.exists || layout.sealed.length > 0;
@@ -630,30 +630,30 @@ class RoomStore {
   }
 
   /** 在整个数据目录里找某房间现在的家：分组两级逐层看，最后看平铺。找不到返回 null。 */
-  _findRoomDir(id) {
-    let devs;
+  _findRoomDir(roomId) {
+    let deviceSegmentEntries;
     try {
-      devs = fs.readdirSync(this.dir, { withFileTypes: true });
+      deviceSegmentEntries = fs.readdirSync(this.dir, { withFileTypes: true });
     } catch {
       return null;
     }
-    for (const d of devs) {
-      if (!d.isDirectory()) continue;
-      const devDir = path.join(this.dir, d.name);
-      let wss;
+    for (const deviceSegmentEntry of deviceSegmentEntries) {
+      if (!deviceSegmentEntry.isDirectory()) continue;
+      const deviceSegmentDir = path.join(this.dir, deviceSegmentEntry.name);
+      let workspaceEntries;
       try {
-        wss = fs.readdirSync(devDir, { withFileTypes: true });
+        workspaceEntries = fs.readdirSync(deviceSegmentDir, { withFileTypes: true });
       } catch {
         continue;
       }
-      for (const w of wss) {
-        if (!w.isDirectory()) continue;
-        const dir = path.join(devDir, w.name);
-        const layout = this._layoutIn(id, dir);
+      for (const workspaceEntry of workspaceEntries) {
+        if (!workspaceEntry.isDirectory()) continue;
+        const dir = path.join(deviceSegmentDir, workspaceEntry.name);
+        const layout = this._layoutIn(roomId, dir);
         if (layout.exists || layout.hasMeta) return dir;
       }
     }
-    const flat = this._layoutIn(id, this.dir);
+    const flat = this._layoutIn(roomId, this.dir);
     if (flat.exists || flat.hasMeta) return this.dir;
     return null;
   }
@@ -662,19 +662,19 @@ class RoomStore {
    *  （存量房可能在别的分组或平铺处，稳定性优先于新定位）；都没有且要新建 → 定位分组
    *  （无定位器时平铺 = 旧形态；有定位器但查不到 → _未分类 组）。查无此房且不新建时
    *  返回 this.dir 但不定格——之后房间真出现了还能按真定位归位。 */
-  _roomDir(id, { create = false } = {}) {
-    const cached = this._roomDirs.get(id);
+  _roomDir(roomId, { create = false } = {}) {
+    const cached = this._roomDirs.get(roomId);
     if (cached) return cached;
     let dir = null;
-    const loc = this._locate(id);
-    if (loc) {
-      const grouped = this._groupedDir(loc);
-      if (this._layoutIn(id, grouped).exists) dir = grouped;
+    const location = this._locate(roomId);
+    if (location) {
+      const grouped = this._groupedDir(location);
+      if (this._layoutIn(roomId, grouped).exists) dir = grouped;
     }
-    if (!dir) dir = this._findRoomDir(id);
-    if (!dir && create) dir = this._locator ? this._groupedDir(loc) : this.dir;
+    if (!dir) dir = this._findRoomDir(roomId);
+    if (!dir && create) dir = this._locator ? this._groupedDir(location) : this.dir;
     if (!dir) return this.dir;
-    this._roomDirs.set(id, dir);
+    this._roomDirs.set(roomId, dir);
     return dir;
   }
 
@@ -700,22 +700,22 @@ class RoomStore {
       return;
     }
     const byRoom = new Map();
-    const segRe = /^(.+)\.(\d{4})\.jsonl$/;
+    const sealedSegmentRe = /^(.+)\.(\d{4})\.jsonl$/;
     for (const name of names) {
-      let id = null;
+      let roomId = null;
       if (name.endsWith(".jsonl")) {
-        const m = segRe.exec(name);
-        id = m ? m[1] : name.slice(0, -".jsonl".length);
-      } else if (name.endsWith(".ckpt.json")) id = name.slice(0, -".ckpt.json".length);
-      else if (name.endsWith(".index.json")) id = name.slice(0, -".index.json".length);
-      if (!id || !safeRoomId(id)) continue;
-      if (!byRoom.has(id)) byRoom.set(id, []);
-      byRoom.get(id).push(name);
+        const match = sealedSegmentRe.exec(name);
+        roomId = match ? match[1] : name.slice(0, -".jsonl".length);
+      } else if (name.endsWith(".ckpt.json")) roomId = name.slice(0, -".ckpt.json".length);
+      else if (name.endsWith(".index.json")) roomId = name.slice(0, -".index.json".length);
+      if (!roomId || !safeRoomId(roomId)) continue;
+      if (!byRoom.has(roomId)) byRoom.set(roomId, []);
+      byRoom.get(roomId).push(name);
     }
     let moved = 0;
-    for (const [id, files] of byRoom) {
-      if (this.rooms.has(id) || this._indexJobs.has(id)) continue;
-      const destDir = this._groupedDir(this._locate(id));
+    for (const [roomId, files] of byRoom) {
+      if (this.rooms.has(roomId) || this._indexJobs.has(roomId)) continue;
+      const destDir = this._groupedDir(this._locate(roomId));
       this._ensureRoomDir(destDir);
       let roomMoved = false;
       for (const name of files) {
@@ -729,12 +729,12 @@ class RoomStore {
           fs.renameSync(src, dst);
           roomMoved = true;
           moved++;
-        } catch (e) {
-          console.warn("[store] 迁移房文件失败（保留原地）:", id, name, e.message);
+        } catch (renameError) {
+          console.warn("[store] 迁移房文件失败（保留原地）:", roomId, name, renameError.message);
         }
       }
       if (roomMoved) {
-        this._roomDirs.set(id, destDir);
+        this._roomDirs.set(roomId, destDir);
         this._fsyncDir(destDir);
       }
     }
@@ -758,37 +758,37 @@ class RoomStore {
       for (const name of names) {
         if (!name.endsWith(".jsonl")) continue;
         const base = name.slice(0, -".jsonl".length);
-        const m = /^(.+)\.\d{4}$/.exec(base);
-        const id = m ? m[1] : base;
-        if (safeRoomId(id)) ids.add(id);
+        const match = /^(.+)\.\d{4}$/.exec(base);
+        const roomId = match ? match[1] : base;
+        if (safeRoomId(roomId)) ids.add(roomId);
       }
     };
     collect(this.dir);
-    let devs;
+    let deviceSegmentEntries;
     try {
-      devs = fs.readdirSync(this.dir, { withFileTypes: true });
+      deviceSegmentEntries = fs.readdirSync(this.dir, { withFileTypes: true });
     } catch {
-      devs = [];
+      deviceSegmentEntries = [];
     }
-    for (const d of devs) {
-      if (!d.isDirectory()) continue;
-      const devDir = path.join(this.dir, d.name);
-      let wss;
+    for (const deviceSegmentEntry of deviceSegmentEntries) {
+      if (!deviceSegmentEntry.isDirectory()) continue;
+      const deviceSegmentDir = path.join(this.dir, deviceSegmentEntry.name);
+      let workspaceEntries;
       try {
-        wss = fs.readdirSync(devDir, { withFileTypes: true });
+        workspaceEntries = fs.readdirSync(deviceSegmentDir, { withFileTypes: true });
       } catch {
         continue;
       }
-      for (const w of wss) if (w.isDirectory()) collect(path.join(devDir, w.name));
+      for (const workspaceEntry of workspaceEntries) if (workspaceEntry.isDirectory()) collect(path.join(deviceSegmentDir, workspaceEntry.name));
     }
     const out = [];
-    for (const id of ids) out.push({ id, layout: this._layoutIn(id, this._roomDir(id)) });
+    for (const roomId of ids) out.push({ id: roomId, layout: this._layoutIn(roomId, this._roomDir(roomId)) });
     return out;
   }
 
-  _newRoom(id, file) {
+  _newRoom(roomId, file) {
     return {
-      id,
+      id: roomId,
       file,
       rev: null,
       metaWritten: false,
@@ -849,165 +849,165 @@ class RoomStore {
   }
 
   /** 清空索引态，回到"还没读盘"的空白房间（换 rev 等身份字段由调用方处理） */
-  _resetRoomData(r) {
-    r.rev = null;
-    r.metaWritten = false;
-    r.metaExtra = null; // 回到"还没读盘"的空白：随后扫描会从盘上的 meta 行重新装回
-    r.headTruncated = false;
-    r.seq = 0;
-    r.recent = [];
-    r.recentBytes = 0;
-    r.superseded = new Set();
-    r.pendingRemotes = [];
-    r.toolMetas = new Map();
-    r.msgCount = 0;
-    r.firstMsgHash = null;
-    r.lastMsgHash = null;
-    r.ckpt = null;
-    r._indexFailed = false;
-    r.indexPartial = false;
+  _resetRoomData(room) {
+    room.rev = null;
+    room.metaWritten = false;
+    room.metaExtra = null; // 回到"还没读盘"的空白：随后扫描会从盘上的 meta 行重新装回
+    room.headTruncated = false;
+    room.seq = 0;
+    room.recent = [];
+    room.recentBytes = 0;
+    room.superseded = new Set();
+    room.pendingRemotes = [];
+    room.toolMetas = new Map();
+    room.msgCount = 0;
+    room.firstMsgHash = null;
+    room.lastMsgHash = null;
+    room.ckpt = null;
+    room._indexFailed = false;
+    room.indexPartial = false;
   }
 
-  _room(id, { create = false } = {}) {
-    let r = this.rooms.get(id);
-    if (r) { r.lastActivity = Date.now(); return r; }
-    if (!safeRoomId(id)) return null;
-    const dir = this._roomDir(id, { create });
-    const layout = this.persist ? this._layoutIn(id, dir) : null;
+  _room(roomId, { create = false } = {}) {
+    let room = this.rooms.get(roomId);
+    if (room) { room.lastActivity = Date.now(); return room; }
+    if (!safeRoomId(roomId)) return null;
+    const dir = this._roomDir(roomId, { create });
+    const layout = this.persist ? this._layoutIn(roomId, dir) : null;
     const onDisk = !!(layout && layout.exists);
     if (!create && !onDisk) {
-      this._dropPrewarmed(id);
+      this._dropPrewarmed(roomId);
       return null;
     }
     if (onDisk) {
       // 构造器预热好的索引：文件指纹（全段总字节 + 现役段 stat + 封存规模）没变就直接接管。
-      const pre = this._prewarmed.get(id);
-      if (pre) {
-        this._dropPrewarmed(id);
-        if (this._layoutMatchesFp(layout, pre.fp)) {
-          r = pre.room;
-          r.lastActivity = Date.now();
-          r.buf = [];
-          r.timer = null;
-          r.dirSynced = true; // 预热只针对已存在的文件，目录项早就落过盘
-          this.rooms.set(id, r);
-          return r;
+      const prewarmed = this._prewarmed.get(roomId);
+      if (prewarmed) {
+        this._dropPrewarmed(roomId);
+        if (this._layoutMatchesFp(layout, prewarmed.fingerprint)) {
+          room = prewarmed.room;
+          room.lastActivity = Date.now();
+          room.buf = [];
+          room.timer = null;
+          room.dirSynced = true; // 预热只针对已存在的文件，目录项早就落过盘
+          this.rooms.set(roomId, room);
+          return room;
         }
       }
       // 索引任务已在飞（构造器预热或更早的首次触碰）：占位接管、等它落地，
       // 绝不另起一份重复扫描（R-4）。占位期间的读写语义见 _placeholderRoom。
-      const flying = this._indexJobs.get(id);
-      if (flying) return this._placeholderRoom(id, layout, flying);
+      const flying = this._indexJobs.get(roomId);
+      if (flying) return this._placeholderRoom(roomId, layout, flying);
       // 要扫的字节数（总量 − 起点覆盖：检查点/清单谁靠前用谁）超过同步阈值 →
       // 异步分块索引；阈值内仍走下面的同步路径（数毫秒，异步调度开销反而更大）。
-      const base = this._probeBase(id, layout);
+      const base = this._probeBase(roomId, layout);
       const scanBytes = Math.max(0, layout.total - base.end);
       if (scanBytes > this.syncScanMaxBytes) {
-        return this._placeholderRoom(id, layout, this._startIndexJob(id, layout, base));
+        return this._placeholderRoom(roomId, layout, this._startIndexJob(roomId, layout, base));
       }
-      return this._openRoomSync(id, layout, base);
+      return this._openRoomSync(roomId, layout, base);
     }
-    this._dropPrewarmed(id);
-    r = this._newRoom(id, path.join(dir, `${id}.jsonl`));
-    r.dir = dir;
+    this._dropPrewarmed(roomId);
+    room = this._newRoom(roomId, path.join(dir, `${roomId}.jsonl`));
+    room.dir = dir;
     if (this.persist) this._ensureRoomDir(dir);
-    r.dirSynced = false; // 新建文件等首次 flush 后补目录项同步
-    if (!r.rev) r.rev = newRev();
-    this.rooms.set(id, r);
-    return r;
+    room.dirSynced = false; // 新建文件等首次 flush 后补目录项同步
+    if (!room.rev) room.rev = newRev();
+    this.rooms.set(roomId, room);
+    return room;
   }
 
   /** 预热指纹对账：总量/封存规模/现役段指纹全对得上才许接管预热索引。 */
-  _layoutMatchesFp(layout, fp) {
-    if (!fp) return false;
-    return layout.total === fp.total &&
-      layout.sealedBytes === fp.sealedBytes &&
-      layout.sealed.length === fp.segCount &&
-      layout.active.size === fp.activeSize &&
-      (fp.ino == null || layout.active.ino === fp.ino) &&
-      (fp.mtimeMs == null || layout.active.mtimeMs === fp.mtimeMs);
+  _layoutMatchesFp(layout, fingerprint) {
+    if (!fingerprint) return false;
+    return layout.total === fingerprint.total &&
+      layout.sealedBytes === fingerprint.sealedBytes &&
+      layout.sealed.length === fingerprint.segCount &&
+      layout.active.size === fingerprint.activeSize &&
+      (fingerprint.ino == null || layout.active.ino === fingerprint.ino) &&
+      (fingerprint.mtimeMs == null || layout.active.mtimeMs === fingerprint.mtimeMs);
   }
 
   /** 异步索引在飞时的占位房间：先注册进房间表，让并发触碰都汇到同一个任务上。
    *  索引落地前它不暴露任何锚点（rev 为 null、seq/msgCount 为 0），快照一律 truncated、
    *  info() 带 indexing:true；写操作不碰半份索引，一律进 _journal 按到达顺序排队，
    *  任务落地时先移植完整索引、再按序重放（见 _settleIndexJob），不丢不乱序。 */
-  _placeholderRoom(id, layout, job) {
-    const r = this._newRoom(id, layout.active.file);
-    r.dir = layout.dir;
-    r.segs = layout.sealed.map((s) => ({ ...s }));
-    r.sealedBytes = layout.sealedBytes;
-    r._segLines = -1; // 现役段是继承来的：行数未知，封存时按 \n 计数兜底（见 _sealSegment）
-    r.dirSynced = true; // 文件已存在，目录项早就落过盘
-    r._indexing = true;
-    r._indexJob = job;
-    r._journal = [];
-    this.rooms.set(id, r);
-    return r;
+  _placeholderRoom(roomId, layout, job) {
+    const room = this._newRoom(roomId, layout.active.file);
+    room.dir = layout.dir;
+    room.segs = layout.sealed.map((sealedSegment) => ({ ...sealedSegment }));
+    room.sealedBytes = layout.sealedBytes;
+    room._segLines = -1; // 现役段是继承来的：行数未知，封存时按 \n 计数兜底（见 _sealSegment）
+    room.dirSynced = true; // 文件已存在，目录项早就落过盘
+    room._indexing = true;
+    room._indexJob = job;
+    room._journal = [];
+    this.rooms.set(roomId, room);
+    return room;
   }
 
   /** 同步打开：起点（检查点/清单 base）已由 _room 探好，只扫它之后的尾巴；
    *  base 为 none 时全量扫描。语义与旧实现一致，只是扫描对象从单文件变成段序列。 */
-  _openRoomSync(id, layout, base) {
-    const r = this._newRoom(id, layout.active.file);
-    r.dir = layout.dir;
-    r.segs = layout.sealed.map((s) => ({ ...s }));
-    r.sealedBytes = layout.sealedBytes;
-    r._manifestEntries = base.entries;
-    r._segLines = -1; // 现役段是继承来的：行数未知，封存时按 \n 计数兜底（见 _sealSegment）
-    r.dirSynced = true; // 已存在的文件不需要再同步目录项
+  _openRoomSync(roomId, layout, base) {
+    const room = this._newRoom(roomId, layout.active.file);
+    room.dir = layout.dir;
+    room.segs = layout.sealed.map((sealedSegment) => ({ ...sealedSegment }));
+    room.sealedBytes = layout.sealedBytes;
+    room._manifestEntries = base.entries;
+    room._segLines = -1; // 现役段是继承来的：行数未知，封存时按 \n 计数兜底（见 _sealSegment）
+    room.dirSynced = true; // 已存在的文件不需要再同步目录项
     let fullScanned = false;
     let restored = false;
     if (base.kind !== "none") {
       try {
         // 只从起点末尾往回修残行，避免又摸一遍前缀；repair 在现役段内工作，
         // 已知换行边界 = 起点在现役段里的局部偏移（起点落在封存段时现役段整体都是尾巴）。
-        const tailOk = this._repairTail(r, Math.max(0, base.end - layout.sealedBytes));
+        const tailOk = this._repairTail(room, Math.max(0, base.end - layout.sealedBytes));
         // 清单 state 有洞且本次扫描会从段首经过 → 顺路捕获重建（降级路径的一部分）。
-        r._captureNeed = this._captureNeedFor(layout, base.entries, base.end);
-        restored = this._restoreFromBase(r, base);
+        room._captureNeed = this._captureNeedFor(layout, base.entries, base.end);
+        restored = this._restoreFromBase(room, base);
         // 起点之后的尾巴整体没有换行边界：恢复只能丢掉这段残行，
         // 交付的就是"缺了尾巴"的历史，同样必须标 truncated 而不是当正常房交付。
-        if (restored && !tailOk) this._markIndexFailed(r, "检查点之后的末行残缺且无法修复");
-      } catch (e) {
-        console.warn("[store] 起点状态恢复失败，回退全量扫描:", id, e.message);
+        if (restored && !tailOk) this._markIndexFailed(room, "检查点之后的末行残缺且无法修复");
+      } catch (restoreError) {
+        console.warn("[store] 起点状态恢复失败，回退全量扫描:", roomId, restoreError.message);
         restored = false;
       }
     }
     if (!restored) {
-      this._resetRoomData(r);
-      r._captureNeed = this._captureNeedFor(layout, base.entries, 0);
-      const tailOk = this._repairTail(r); // 上次异常退出可能留下半截行：先修再索引
-      this._indexFile(r);
+      this._resetRoomData(room);
+      room._captureNeed = this._captureNeedFor(layout, base.entries, 0);
+      const tailOk = this._repairTail(room); // 上次异常退出可能留下半截行：先修再索引
+      this._indexFile(room);
       // 病态文件（整段找不到换行边界）只能装出一部分/空索引：必须标记，快照据此报 truncated。
-      if (!tailOk) this._markIndexFailed(r, "文件末行残缺且找不到完整换行边界");
+      if (!tailOk) this._markIndexFailed(room, "文件末行残缺且找不到完整换行边界");
       fullScanned = true;
     }
-    if (!r.rev) r.rev = newRev();
-    this.rooms.set(id, r);
-    if (r._captureFilled) {
-      this._writeManifest(r);
-      r._captureFilled = false;
+    if (!room.rev) room.rev = newRev();
+    this.rooms.set(roomId, room);
+    if (room._captureFilled) {
+      this._writeManifest(room);
+      room._captureFilled = false;
     }
-    r._captureNeed = null;
+    room._captureNeed = null;
     // 索引刚建完：内存聚合状态与盘面严格对齐，捕获为盘面状态（之后封存不必重扫）。
-    this._captureDiskState(r);
+    this._captureDiskState(room);
     // 旧文件第一次全量扫完就补检查点（不论大小：下次重启只读尾巴）；
     // 运行时新增则由 _flush 里的阈值控制，避免小房间每 200ms 写检查点。
-    this._maybeCheckpoint(r, fullScanned ? { minBytes: 0 } : undefined);
-    return r;
+    this._maybeCheckpoint(room, fullScanned ? { minBytes: 0 } : undefined);
+    return room;
   }
 
   /** 文件末行不是 \n 时，截掉残行（否则下次追加会与残行粘连，永久丢失一条）。
    *  minPos > 0 表示检查点恢复：已知 ckpt 行末尾是换行，只需检查它之后的尾巴。
    *  返回文件尾现在是否是完整换行（空文件/成功截断/本来就完整 → true）；
    *  病态文件（整段找不到换行）或修复失败 → false，调用方必须放弃追加而不是制造粘行。 */
-  _repairTail(r, minPos = 0) {
+  _repairTail(room, minPos = 0) {
     let fd;
     try {
-      const size = fs.statSync(r.file).size;
+      const size = fs.statSync(room.file).size;
       if (size <= minPos) return true;
-      fd = fs.openSync(r.file, "r+");
+      fd = fs.openSync(room.file, "r+");
       // 绝大多数 flush 尾字节就是换行：只读 1 字节，不做 64KB 回溯。
       const last = Buffer.alloc(1);
       fs.readSync(fd, last, 0, 1, size - 1);
@@ -1019,17 +1019,17 @@ class RoomStore {
         if (minPos > 0) {
           // 检查点之后整段都没有换行：截到检查点行末尾（那里一定是换行），残行丢弃。
           fs.ftruncateSync(fd, minPos);
-          console.warn(`[store] 房间 ${r.id} 检查点后的末行残缺，已截断到检查点末尾 ${minPos}（原 ${size}）`);
+          console.warn(`[store] 房间 ${room.id} 检查点后的末行残缺，已截断到检查点末尾 ${minPos}（原 ${size}）`);
           return true;
         }
-        console.error(`[store] 房间 ${r.id} 文件 ${size} 字节内没有完整换行，判为病态文件，不截断`);
+        console.error(`[store] 房间 ${room.id} 文件 ${size} 字节内没有完整换行，判为病态文件，不截断`);
         return false;
       }
       fs.ftruncateSync(fd, cut);
-      console.warn(`[store] 房间 ${r.id} 末行残缺，已截断到 ${cut}（原 ${size}）`);
+      console.warn(`[store] 房间 ${room.id} 末行残缺，已截断到 ${cut}（原 ${size}）`);
       return true;
-    } catch (e) {
-      console.warn("[store] 末行修复失败:", r.id, e.message);
+    } catch (repairError) {
+      console.warn("[store] 末行修复失败:", room.id, repairError.message);
       return false;
     } finally {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
@@ -1038,15 +1038,15 @@ class RoomStore {
 
   /** 在 [minPos, size) 内倒序分块找最后一个换行的结束偏移；没有返回 -1。 */
   _lastNewlinePos(fd, size, minPos = 0) {
-    let pos = size;
+    let position = size;
     const CH = 65536;
-    while (pos > minPos) {
-      const cnt = Math.min(CH, pos - minPos);
-      pos -= cnt;
-      const b = Buffer.alloc(cnt);
-      fs.readSync(fd, b, 0, cnt, pos);
-      const i = b.lastIndexOf(0x0a);
-      if (i >= 0) return pos + i + 1;
+    while (position > minPos) {
+      const chunkBytes = Math.min(CH, position - minPos);
+      position -= chunkBytes;
+      const chunk = Buffer.alloc(chunkBytes);
+      fs.readSync(fd, chunk, 0, chunkBytes, position);
+      const newlineOffset = chunk.lastIndexOf(0x0a);
+      if (newlineOffset >= 0) return position + newlineOffset + 1;
     }
     return -1;
   }
@@ -1064,80 +1064,80 @@ class RoomStore {
       tail: [],
       skipped: 0,
       lines: 0,    // 已喂入的行数（清单重建时按段记 events 用）
-      firstSeq: 0, // 本 ctx 喂入的第一条 seq>0 记录（清单重建时按段记 firstSeq 用）
+      firstSeq: 0, // 本 indexContext 喂入的第一条 seq>0 记录（清单重建时按段记 firstSeq 用）
     };
   }
 
   /** 解析一行并更新房间索引。全量扫描与检查点尾扫描共用，保证两条路径语义一致。
    *  ckpt 行在这里被显式忽略：旧实现不认识它，新实现也不能把它当消息。 */
-  _ingestLine(r, ctx, raw) {
-    const t = raw.trim();
-    if (!t) return;
-    if (ctx.firstLine === null) ctx.firstLine = t;
-    let rec;
-    try { rec = JSON.parse(t); } catch { ctx.skipped++; return; }
-    if (!rec || typeof rec.seq !== "number") { ctx.skipped++; return; }
-    if (rec.seq > 0 && !ctx.firstSeq) ctx.firstSeq = rec.seq;
+  _ingestLine(room, indexContext, raw) {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    if (indexContext.firstLine === null) indexContext.firstLine = trimmed;
+    let record;
+    try { record = JSON.parse(trimmed); } catch { indexContext.skipped++; return; }
+    if (!record || typeof record.seq !== "number") { indexContext.skipped++; return; }
+    if (record.seq > 0 && !indexContext.firstSeq) indexContext.firstSeq = record.seq;
     try {
       // 旧实现看到它：seq 是数字不计坏行，k 不是 msg/remote 不交付 —— 等价于忽略。
-      if (rec.k === "ckpt") return;
-      if (rec.k === "toolmeta") {
-        const meta = cleanToolMeta(rec);
-        if (meta) this._applyToolMeta(r, meta);
+      if (record.k === "ckpt") return;
+      if (record.k === "toolmeta") {
+        const toolMetadata = cleanToolMeta(record);
+        if (toolMetadata) this._applyToolMeta(room, toolMetadata);
         return;
       }
-      if (rec.k === "meta") {
-        if (typeof rec.rev === "string") r.rev = rec.rev;
-        r.headTruncated = !!rec.headTruncated;
-        r.metaWritten = true;
+      if (record.k === "meta") {
+        if (typeof record.rev === "string") room.rev = record.rev;
+        room.headTruncated = !!record.headTruncated;
+        room.metaWritten = true;
         // 标准字段之外的未知字段（含将来的 enc/ackFp/rckWrap）整份收下，下次写 meta 行时原样带回。
         const extra = {};
-        for (const key of Object.keys(rec)) {
+        for (const key of Object.keys(record)) {
           if (key === "k" || key === "seq" || key === "rev" || key === "headTruncated") continue;
-          extra[key] = rec[key];
+          extra[key] = record[key];
         }
-        r.metaExtra = Object.keys(extra).length ? extra : null;
+        room.metaExtra = Object.keys(extra).length ? extra : null;
         return;
       }
-      if (rec.k === "drop") {
-        if (typeof rec.ref === "number") {
-          r.superseded.add(rec.ref);
-          const i = r.pendingRemotes.findIndex((p) => p.seq === rec.ref);
-          if (i >= 0) r.pendingRemotes.splice(i, 1);
-          this._trimSuperseded(r);
+      if (record.k === "drop") {
+        if (typeof record.ref === "number") {
+          room.superseded.add(record.ref);
+          const pendingIndex = room.pendingRemotes.findIndex((pendingRemote) => pendingRemote.seq === record.ref);
+          if (pendingIndex >= 0) room.pendingRemotes.splice(pendingIndex, 1);
+          this._trimSuperseded(room);
         }
         return;
       }
-      if (rec.seq > r.seq) r.seq = rec.seq;
-      if (rec.k === "msg" && rec.enc === 1 && typeof rec.ct === "string") {
+      if (record.seq > room.seq) room.seq = record.seq;
+      if (record.k === "msg" && record.enc === 1 && typeof record.ct === "string") {
         // Encrypted record (design section 4.1): the body is an opaque envelope.
         // Anchors come from the keyed h the extension computed; the relay never
         // parses a body here, it only counts, caches the line and matches h.
-        if (rec.role === "system") return;
-        if (typeof rec.h === "string" && HMAC_HEX_RE.test(rec.h)) {
-          if (!ctx.firstHash) ctx.firstHash = rec.h;
-          ctx.lastHash = rec.h;
+        if (record.role === "system") return;
+        if (typeof record.h === "string" && HMAC_HEX_RE.test(record.h)) {
+          if (!indexContext.firstHash) indexContext.firstHash = record.h;
+          indexContext.lastHash = record.h;
         }
-        r.msgCount += 1;
-        ctx.tail.push({ rec, line: t });
-        if (rec.role === "user" && typeof rec.h === "string") this._supersedePendingByH(r, rec.h);
-      } else if (rec.k === "msg" && rec.m) {
-        if (rec.m.role === "system") return;
-        if (!ctx.firstMsg) ctx.firstMsg = rec.m;
-        ctx.lastMsg = rec.m;
-        r.msgCount += 1;
-        ctx.tail.push({ rec, line: t });
-        if (rec.m.role === "user") this._supersedePending(r, contentText(rec.m));
-      } else if (rec.k === "remote") {
-        if (rec.enc === 1 && typeof rec.ct === "string") {
-          this._rememberRemote(r, { seq: rec.seq, h: rec.h, ct: rec.ct, cid: cleanCid(rec.cid) });
+        room.msgCount += 1;
+        indexContext.tail.push({ record, line: trimmed });
+        if (record.role === "user" && typeof record.h === "string") this._supersedePendingByH(room, record.h);
+      } else if (record.k === "msg" && record.m) {
+        if (record.m.role === "system") return;
+        if (!indexContext.firstMsg) indexContext.firstMsg = record.m;
+        indexContext.lastMsg = record.m;
+        room.msgCount += 1;
+        indexContext.tail.push({ record, line: trimmed });
+        if (record.m.role === "user") this._supersedePending(room, contentText(record.m));
+      } else if (record.k === "remote") {
+        if (record.enc === 1 && typeof record.ct === "string") {
+          this._rememberRemote(room, { seq: record.seq, h: record.h, ct: record.ct, cid: cleanCid(record.cid) });
         } else {
-          this._rememberRemote(r, { seq: rec.seq, text: String(rec.text || ""), cid: cleanCid(rec.cid) });
+          this._rememberRemote(room, { seq: record.seq, text: String(record.text || ""), cid: cleanCid(record.cid) });
         }
-        ctx.tail.push({ rec, line: t });
+        indexContext.tail.push({ record, line: trimmed });
       }
-      if (ctx.tail.length > this.cacheSize * 2) ctx.tail = ctx.tail.slice(-this.cacheSize);
-    } catch { ctx.skipped++; }
+      if (indexContext.tail.length > this.cacheSize * 2) indexContext.tail = indexContext.tail.slice(-this.cacheSize);
+    } catch { indexContext.skipped++; }
   }
 
   /** 合并一条 ended-tool 元数据：同 toolCallId 只留一份。
@@ -1145,33 +1145,33 @@ class RoomStore {
    *  - endedAt 不回退（乱序的旧 end 不能把结束时刻改早）；
    *  - 新 id 才增长，超过 toolMetaMax 从最旧（Map 头部）丢。
    *  返回 {changed, meta}：changed=false 表示重复帧，调用方不必再写盘/补发。 */
-  _applyToolMeta(r, meta) {
-    const prev = r.toolMetas.get(meta.toolCallId);
-    let next;
-    if (!prev) {
-      next = { ...meta };
+  _applyToolMeta(room, toolMetadata) {
+    const previous = room.toolMetas.get(toolMetadata.toolCallId);
+    let merged;
+    if (!previous) {
+      merged = { ...toolMetadata };
     } else {
-      next = { ...prev };
-      for (const k of TOOLMETA_FIELDS) {
-        if (meta[k] === undefined) continue;
-        if (k === "endedAt" && prev.endedAt != null && meta.endedAt < prev.endedAt) continue;
-        next[k] = meta[k];
+      merged = { ...previous };
+      for (const field of TOOLMETA_FIELDS) {
+        if (toolMetadata[field] === undefined) continue;
+        if (field === "endedAt" && previous.endedAt != null && toolMetadata.endedAt < previous.endedAt) continue;
+        merged[field] = toolMetadata[field];
       }
     }
-    const changed = !prev || !toolMetaSame(prev, next);
+    const changed = !previous || !toolMetaSame(previous, merged);
     if (changed) {
-      r.toolMetas.set(meta.toolCallId, next);
-      this._trimToolMetas(r);
+      room.toolMetas.set(toolMetadata.toolCallId, merged);
+      this._trimToolMetas(room);
     }
-    return { changed, meta: next };
+    return { changed, meta: merged };
   }
 
   /** 每房上限：旧的可丢。Map 删除头元素是 O(1)，热路径正常只淘汰 0~1 条。 */
-  _trimToolMetas(r) {
-    while (r.toolMetas.size > this.toolMetaMax) {
-      const oldest = r.toolMetas.keys().next().value;
+  _trimToolMetas(room) {
+    while (room.toolMetas.size > this.toolMetaMax) {
+      const oldest = room.toolMetas.keys().next().value;
       if (oldest === undefined) break;
-      r.toolMetas.delete(oldest);
+      room.toolMetas.delete(oldest);
     }
   }
 
@@ -1179,106 +1179,106 @@ class RoomStore {
    *  没有显式 endedAt 时用 relay 收到 end 的时刻；重复 end 沿用第一次的时刻，保证幂等。
    *  返回 {changed, meta}；没有合法 toolCallId 时返回 {changed:false, meta:null}。 */
   recordToolEnd(roomId, event) {
-    const meta = cleanToolMeta(event);
-    if (!meta) return { changed: false, meta: null };
-    const r = this._room(roomId, { create: true });
-    if (!r) return { changed: false, meta: null };
+    const toolMetadata = cleanToolMeta(event);
+    if (!toolMetadata) return { changed: false, meta: null };
+    const room = this._room(roomId, { create: true });
+    if (!room) return { changed: false, meta: null };
     // 索引在飞：先排队，落地后按序重放（此刻报未变化，调用方不会误发实时 meta 广播）。
-    if (this._journalIfIndexing(r, { op: "toolEnd", event })) return { changed: false, meta: null };
-    const prev = r.toolMetas.get(meta.toolCallId);
-    if (meta.endedAt === undefined) {
-      meta.endedAt = prev && prev.endedAt != null ? prev.endedAt : Date.now();
+    if (this._journalIfIndexing(room, { op: "toolEnd", event })) return { changed: false, meta: null };
+    const previous = room.toolMetas.get(toolMetadata.toolCallId);
+    if (toolMetadata.endedAt === undefined) {
+      toolMetadata.endedAt = previous && previous.endedAt != null ? previous.endedAt : Date.now();
     }
-    const applied = this._applyToolMeta(r, meta);
+    const applied = this._applyToolMeta(room, toolMetadata);
     if (applied.changed) {
       const line = { k: "toolmeta", seq: 0 };
-      for (const k of ["toolCallId", ...TOOLMETA_FIELDS]) {
-        if (applied.meta[k] !== undefined) line[k] = applied.meta[k];
+      for (const field of ["toolCallId", ...TOOLMETA_FIELDS]) {
+        if (applied.meta[field] !== undefined) line[field] = applied.meta[field];
       }
       // toolmeta 不进消息历史、频率低；检查点要等很久才可能带上它，掉电不能丢最后一条结束元数据。
       // 立即 flush（连同缓冲里的消息一起）并 fsync，不额外制造重复写。
-      this._writeLine(r, JSON.stringify(line), { flush: true });
+      this._writeLine(room, JSON.stringify(line), { flush: true });
     }
     return applied;
   }
 
   /** 一条 ended-tool 元数据的只读拷贝；房间/条目不存在返回 null。 */
   toolEnd(roomId, toolCallId) {
-    const r = this.rooms.get(roomId);
-    if (!r || !r.toolMetas) return null;
-    const meta = r.toolMetas.get(toolCallId);
-    return meta ? { ...meta } : null;
+    const room = this.rooms.get(roomId);
+    if (!room || !room.toolMetas) return null;
+    const toolMetadata = room.toolMetas.get(toolCallId);
+    return toolMetadata ? { ...toolMetadata } : null;
   }
 
   /** 全部 ended-tool 元数据（旧→新，已按每房上限裁剪）。viewer 补发用。 */
   toolEnds(roomId) {
-    const r = this._room(roomId);
-    if (!r || !r.toolMetas) return [];
-    return [...r.toolMetas.values()].map((meta) => ({ ...meta }));
+    const room = this._room(roomId);
+    if (!room || !room.toolMetas) return [];
+    return [...room.toolMetas.values()].map((toolMetadata) => ({ ...toolMetadata }));
   }
 
   /** superseded 只增不减会线性膨胀：超过上限（带容差）就按 seq 保最新的一批，
    *  覆盖默认快照窗口（maxSnapshotRecords=10000）两倍以上；更旧的记录单体快照已经取不到。
    *  容差避免全量索引时每一条 drop 行都排序一次。 */
-  _trimSuperseded(r, force = false) {
+  _trimSuperseded(room, force = false) {
     const max = this.supersededMax;
     const slack = Math.min(SUPERSEDED_TRIM_SLACK, Math.max(1, max >> 2));
-    if (!force && r.superseded.size <= max + slack) return;
-    if (r.superseded.size <= max) return;
-    const seqs = [...r.superseded].sort((a, b) => a - b);
-    r.superseded = new Set(seqs.slice(seqs.length - max));
+    if (!force && room.superseded.size <= max + slack) return;
+    if (room.superseded.size <= max) return;
+    const sequenceNumbers = [...room.superseded].sort((left, right) => left - right);
+    room.superseded = new Set(sequenceNumbers.slice(sequenceNumbers.length - max));
   }
 
   /** 一条 user 消息只取代最早一条还没被取代的同文本回显（索引路径，不写 drop 行） */
-  _supersedePending(r, text) {
-    const i = r.pendingRemotes.findIndex((p) => !r.superseded.has(p.seq) && typeof p.text === "string" && remoteEchoMatches(p.text, text));
-    if (i < 0) return false;
-    r.superseded.add(r.pendingRemotes[i].seq);
-    r.pendingRemotes.splice(i, 1);
-    this._trimSuperseded(r);
+  _supersedePending(room, text) {
+    const pendingIndex = room.pendingRemotes.findIndex((pendingRemote) => !room.superseded.has(pendingRemote.seq) && typeof pendingRemote.text === "string" && remoteEchoMatches(pendingRemote.text, text));
+    if (pendingIndex < 0) return false;
+    room.superseded.add(room.pendingRemotes[pendingIndex].seq);
+    room.pendingRemotes.splice(pendingIndex, 1);
+    this._trimSuperseded(room);
     return true;
   }
 
   /** Enc rooms (index path): a user envelope supersedes the earliest pending
    *  remote envelope with the same keyed h (design section 4.1 — the HMAC
    *  equality check replaces the text comparison; same FIFO order). */
-  _supersedePendingByH(r, h) {
-    const i = r.pendingRemotes.findIndex((p) => !r.superseded.has(p.seq) && p.enc === 1 && p.h === h);
-    if (i < 0) return false;
-    r.superseded.add(r.pendingRemotes[i].seq);
-    r.pendingRemotes.splice(i, 1);
-    this._trimSuperseded(r);
+  _supersedePendingByH(room, contentHash) {
+    const pendingIndex = room.pendingRemotes.findIndex((pendingRemote) => !room.superseded.has(pendingRemote.seq) && pendingRemote.enc === 1 && pendingRemote.h === contentHash);
+    if (pendingIndex < 0) return false;
+    room.superseded.add(room.pendingRemotes[pendingIndex].seq);
+    room.pendingRemotes.splice(pendingIndex, 1);
+    this._trimSuperseded(room);
     return true;
   }
 
-  _finishIndex(r, ctx) {
-    if (!r.firstMsgHash) r.firstMsgHash = ctx.firstHash || (ctx.firstMsg ? hashOf(ctx.firstMsg) : null);
-    if (ctx.lastHash) r.lastMsgHash = ctx.lastHash;
-    else if (ctx.lastMsg) r.lastMsgHash = hashOf(ctx.lastMsg);
-    const keep = ctx.tail.length > this.cacheSize ? ctx.tail.slice(-this.cacheSize) : ctx.tail;
-    for (const { rec, line } of keep) this._cachePush(r, this._entryFromRecord(rec, line));
+  _finishIndex(room, indexContext) {
+    if (!room.firstMsgHash) room.firstMsgHash = indexContext.firstHash || (indexContext.firstMsg ? hashOf(indexContext.firstMsg) : null);
+    if (indexContext.lastHash) room.lastMsgHash = indexContext.lastHash;
+    else if (indexContext.lastMsg) room.lastMsgHash = hashOf(indexContext.lastMsg);
+    const keep = indexContext.tail.length > this.cacheSize ? indexContext.tail.slice(-this.cacheSize) : indexContext.tail;
+    for (const { record, line } of keep) this._cachePush(room, this._entryFromRecord(record, line));
     // 病态文件里 drop 行可能先于 remote 行：索引结束时统一过滤一次（正常文件是空操作）。
-    if (r.pendingRemotes.length) {
-      r.pendingRemotes = r.pendingRemotes.filter((p) => !r.superseded.has(p.seq));
+    if (room.pendingRemotes.length) {
+      room.pendingRemotes = room.pendingRemotes.filter((pendingRemote) => !room.superseded.has(pendingRemote.seq));
     }
     // 旧版本文件没有 meta 行：rev 由首行内容派生，relay 重启前后保持一致（viewer 增量重连仍可命中）
-    if (!r.rev && ctx.firstLine) {
-      r.rev = "l" + crypto.createHash("sha1").update(ctx.firstLine).digest("hex").slice(0, 11);
-      r.metaWritten = true;
+    if (!room.rev && indexContext.firstLine) {
+      room.rev = "l" + crypto.createHash("sha1").update(indexContext.firstLine).digest("hex").slice(0, 11);
+      room.metaWritten = true;
     }
   }
 
   /** 索引只装了一部分（扫描失败/病态文件）：房间不能继续被当成正常房交付部分历史。
    *  标记后 snapshot() 一律带 truncated:true（info().indexFailed 也可见），让 UI 明确显示"历史不完整"。
    *  _indexFailed 沿用既有语义（禁止写检查点），indexPartial 是本条修复引入的对外可见标志。 */
-  _markIndexFailed(r, why) {
-    if (!r) return;
-    r._indexFailed = true;
-    r.indexPartial = true;
-    if (!r._indexWarned) {
-      r._indexWarned = true;
+  _markIndexFailed(room, reason) {
+    if (!room) return;
+    room._indexFailed = true;
+    room.indexPartial = true;
+    if (!room._indexWarned) {
+      room._indexWarned = true;
       console.error(
-        `[store] 房间 ${r.id} 索引不完整（${why}）：快照将标记 truncated，重启后重新扫描`,
+        `[store] 房间 ${room.id} 索引不完整（${reason}）：快照将标记 truncated，重启后重新扫描`,
       );
     }
   }
@@ -1287,34 +1287,34 @@ class RoomStore {
    *  StringDecoder 把残缺字节交给下一块补齐；末尾无换行的残行由 _repairTail 提前截掉，这里丢弃。
    *  扫描逻辑只认「文件 + 字节范围」，不假设整文件——将来日志分段（每 ~10MB 一段）时，
    *  每一段就是一次独立的范围扫描，封存段可凭落盘索引整段跳过，不必改这套骨架。 */
-  _lineFeeder(r, ctx) {
-    const dec = new StringDecoder("utf8");
+  _lineFeeder(room, indexContext) {
+    const decoder = new StringDecoder("utf8");
     let carry = "";
     return (buf) => {
-      const lines = (carry + dec.write(buf)).split("\n");
+      const lines = (carry + decoder.write(buf)).split("\n");
       carry = lines.pop();
       for (const line of lines) {
-        ctx.lines++;
-        this._ingestLine(r, ctx, line);
+        indexContext.lines++;
+        this._ingestLine(room, indexContext, line);
       }
     };
   }
 
   /** 同步分块扫描 [start, EOF)。只许用在小文件/短尾巴（见 SYNC_SCAN_MAX_BYTES）。 */
-  _scanChunksSync(r, file, start, ctx) {
+  _scanChunksSync(room, file, start, indexContext) {
     let fd;
     try {
       fd = fs.openSync(file, "r");
       const size = fs.statSync(file).size;
-      let pos = Math.max(0, start);
-      const feed = this._lineFeeder(r, ctx);
-      while (pos < size) {
-        const n = Math.min(1024 * 1024, size - pos);
-        const buf = Buffer.alloc(n);
-        const got = fs.readSync(fd, buf, 0, n, pos);
-        if (got <= 0) break;
-        pos += got;
-        feed(buf.subarray(0, got));
+      let position = Math.max(0, start);
+      const feed = this._lineFeeder(room, indexContext);
+      while (position < size) {
+        const chunkBytes = Math.min(1024 * 1024, size - position);
+        const buf = Buffer.alloc(chunkBytes);
+        const bytesRead = fs.readSync(fd, buf, 0, chunkBytes, position);
+        if (bytesRead <= 0) break;
+        position += bytesRead;
+        feed(buf.subarray(0, bytesRead));
       }
     } finally {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
@@ -1323,30 +1323,30 @@ class RoomStore {
 
   /** 异步分块扫描 [start, end)：每块 PREWARM_CHUNK（256KB），块间 setImmediate 让出，
    *  与构造器预热同一节奏，事件循环在块间一定可调度（R-4）。
-   *  返回实际扫到的末尾偏移 {pos}；shouldStop() 为真或文件提前到 EOF 时 pos < end。
+   *  返回实际扫到的末尾偏移 {position}；shouldStop() 为真或文件提前到 EOF 时 position < end。
    *  I/O 异常 reject，由调用方（索引任务）按失败降级处理。 */
-  _scanRangeAsync(r, file, start, end, ctx, shouldStop) {
+  _scanRangeAsync(room, file, start, end, indexContext, shouldStop) {
     return new Promise((resolve, reject) => {
       let fd;
-      let pos = Math.max(0, start);
-      const feed = this._lineFeeder(r, ctx);
+      let position = Math.max(0, start);
+      const feed = this._lineFeeder(room, indexContext);
       const cleanup = () => {
         if (fd !== undefined) { try { fs.closeSync(fd); } catch {} fd = undefined; }
       };
       const step = () => {
         try {
-          if ((shouldStop && shouldStop()) || pos >= end) { cleanup(); resolve({ pos }); return; }
+          if ((shouldStop && shouldStop()) || position >= end) { cleanup(); resolve({ position }); return; }
           if (fd === undefined) fd = fs.openSync(file, "r");
-          const n = Math.min(PREWARM_CHUNK, end - pos);
-          const buf = Buffer.alloc(n);
-          const got = fs.readSync(fd, buf, 0, n, pos);
-          if (got <= 0) { cleanup(); resolve({ pos }); return; } // 文件被截短：按已扫到的位置收尾，调用方对指纹决定重扫
-          pos += got;
-          feed(buf.subarray(0, got));
+          const chunkBytes = Math.min(PREWARM_CHUNK, end - position);
+          const buf = Buffer.alloc(chunkBytes);
+          const bytesRead = fs.readSync(fd, buf, 0, chunkBytes, position);
+          if (bytesRead <= 0) { cleanup(); resolve({ position }); return; } // 文件被截短：按已扫到的位置收尾，调用方对指纹决定重扫
+          position += bytesRead;
+          feed(buf.subarray(0, bytesRead));
           setImmediate(step);
-        } catch (e) {
+        } catch (readError) {
           cleanup();
-          reject(e);
+          reject(readError);
         }
       };
       setImmediate(step);
@@ -1358,201 +1358,201 @@ class RoomStore {
    *  只用于"没有有效检查点"的旧文件首次打开；长文件由构造器异步预热，或随后补检查点。 */
   /** 房间的段序列（虚拟字节流）：封存段在前、现役段殿后。activeSize 可由调用方
    *  传入刚 stat 的值（异步索引主循环），缺省现 stat。 */
-  _segRanges(r, activeSize = null) {
-    const out = r.segs.map((s, i) => ({ file: s.file, bytes: s.bytes, sealed: true, idx: i }));
+  _segRanges(room, activeSize = null) {
+    const out = room.segs.map((sealedSegment, segmentIndex) => ({ file: sealedSegment.file, bytes: sealedSegment.bytes, sealed: true, idx: segmentIndex }));
     let size = activeSize;
     if (size == null) {
       size = 0;
-      try { size = fs.statSync(r.file).size; } catch {}
+      try { size = fs.statSync(room.file).size; } catch {}
     }
-    out.push({ file: r.file, bytes: size, sealed: false, idx: -1 });
+    out.push({ file: room.file, bytes: size, sealed: false, idx: -1 });
     return out;
   }
 
   /** 同步扫描虚拟偏移 [fromVirtual, 总量)：逐段调用既有分块扫描（每段以换行结尾，
-   *  一条记录不跨段，逐段喂入与整流喂入等价）。r._captureNeed 命中的封存段在段尾
-   *  捕获清单 state 并换新 ctx——返回的 ctx 才是调用方该 _finishIndex 的那一个。 */
-  _scanVirtual(r, fromVirtual, ctx) {
+   *  一条记录不跨段，逐段喂入与整流喂入等价）。room._captureNeed 命中的封存段在段尾
+   *  捕获清单 state 并换新 indexContext——返回的 indexContext 才是调用方该 _finishIndex 的那一个。 */
+  _scanVirtual(room, fromVirtual, indexContext) {
     let base = 0;
-    for (const seg of this._segRanges(r)) {
-      const segEnd = base + seg.bytes;
+    for (const segment of this._segRanges(room)) {
+      const segEnd = base + segment.bytes;
       if (segEnd > fromVirtual) {
         const localStart = Math.max(0, fromVirtual - base);
-        const linesAtStart = ctx.lines;
-        const firstSeqBefore = ctx.firstSeq;
-        if (seg.bytes > localStart) this._scanChunksSync(r, seg.file, localStart, ctx);
+        const linesAtSegmentStart = indexContext.lines;
+        const firstSeqBeforeSegment = indexContext.firstSeq;
+        if (segment.bytes > localStart) this._scanChunksSync(room, segment.file, localStart, indexContext);
         // 现役段从段首扫过：顺手记下它的 firstSeq（清单条目元数据，封存时用）
-        if (!seg.sealed && localStart === 0 && !firstSeqBefore && ctx.firstSeq && !r._segFirstSeq) {
-          r._segFirstSeq = ctx.firstSeq;
+        if (!segment.sealed && localStart === 0 && !firstSeqBeforeSegment && indexContext.firstSeq && !room._segFirstSeq) {
+          room._segFirstSeq = indexContext.firstSeq;
         }
-        if (seg.sealed && localStart === 0 && r._captureNeed && r._captureNeed.has(seg.idx)) {
-          r._scanSkipped = (r._scanSkipped || 0) + ctx.skipped;
-          this._captureSegState(r, ctx, seg.idx, ctx.lines - linesAtStart);
-          ctx = this._newIndexCtx();
+        if (segment.sealed && localStart === 0 && room._captureNeed && room._captureNeed.has(segment.idx)) {
+          room._scanSkipped = (room._scanSkipped || 0) + indexContext.skipped;
+          this._captureSegState(room, indexContext, segment.idx, indexContext.lines - linesAtSegmentStart);
+          indexContext = this._newIndexCtx();
         }
       }
       base = segEnd;
     }
-    return ctx;
+    return indexContext;
   }
 
-  _indexFile(r) {
+  _indexFile(room) {
     const started = Date.now();
-    this._resetRoomData(r);
-    r._scanSkipped = 0;
-    let ctx = this._newIndexCtx();
+    this._resetRoomData(room);
+    room._scanSkipped = 0;
+    let indexContext = this._newIndexCtx();
     try {
-      ctx = this._scanVirtual(r, 0, ctx);
-      this._finishIndex(r, ctx);
-      const skipped = (r._scanSkipped || 0) + ctx.skipped;
-      const ms = Date.now() - started;
-      if (skipped || ms > 500) {
-        console.warn(`[store] 房间 ${r.id} 索引完成：seq=${r.seq} 缓存=${r.recent.length} 跳过坏记录=${skipped} 耗时=${ms}ms`);
+      indexContext = this._scanVirtual(room, 0, indexContext);
+      this._finishIndex(room, indexContext);
+      const skipped = (room._scanSkipped || 0) + indexContext.skipped;
+      const elapsedMs = Date.now() - started;
+      if (skipped || elapsedMs > 500) {
+        console.warn(`[store] 房间 ${room.id} 索引完成：seq=${room.seq} 缓存=${room.recent.length} 跳过坏记录=${skipped} 耗时=${elapsedMs}ms`);
       }
-    } catch (e) {
-      // 扫描中断时 r 里只有半份索引：不能让它当"正常房的部分历史"交付（报告：索引损坏的房间不报错）。
-      this._markIndexFailed(r, `索引建立失败：${e.message}`);
-      console.warn("[store] 索引建立失败（该房间降级为热缓存读取）:", r.id, e.message);
+    } catch (scanError) {
+      // 扫描中断时 room 里只有半份索引：不能让它当"正常房的部分历史"交付（报告：索引损坏的房间不报错）。
+      this._markIndexFailed(room, `索引建立失败：${scanError.message}`);
+      console.warn("[store] 索引建立失败（该房间降级为热缓存读取）:", room.id, scanError.message);
     }
   }
 
-  /** 聚合状态 rec 的结构校验（检查点行与清单条目 state 同形态共用）。合法返回 null，否则返回判坏原因。
+  /** 聚合状态 record 的结构校验（检查点行与清单条目 state 同形态共用）。合法返回 null，否则返回判坏原因。
    *  superseded 区间超限/越界不是"旧格式可忽略"，必须判坏：否则展开时会静默丢一部分 seq，
    *  被丢掉的 remote 回显会在重启后复活。判坏后调用方回退扫描，与其它校验失败同一处理。
    *  toolMetas 同理：任何一条缺 toolCallId/字段类型不对都判坏（全量扫描会逐行跳过坏 toolmeta，
    *  不会静默丢一半有效元数据）。 */
-  _stateRecValid(rec) {
-    if (!rec || rec.k !== "ckpt" || rec.v !== CKPT_VERSION || typeof rec.rev !== "string") return "状态头非法";
-    if (!Number.isInteger(rec.seq) || rec.seq < 0 || !Number.isInteger(rec.msgCount) || rec.msgCount < 0) {
+  _stateRecValid(record) {
+    if (!record || record.k !== "ckpt" || record.v !== CKPT_VERSION || typeof record.rev !== "string") return "状态头非法";
+    if (!Number.isInteger(record.seq) || record.seq < 0 || !Number.isInteger(record.msgCount) || record.msgCount < 0) {
       return "检查点状态非法";
     }
-    if (!Number.isInteger(rec.maxSeq) || rec.maxSeq < 0) return "maxSeq 非法";
-    if (!Array.isArray(rec.recent) || !Array.isArray(rec.pending) || !Array.isArray(rec.superseded)) {
+    if (!Number.isInteger(record.maxSeq) || record.maxSeq < 0) return "maxSeq 非法";
+    if (!Array.isArray(record.recent) || !Array.isArray(record.pending) || !Array.isArray(record.superseded)) {
       return "检查点数组非法";
     }
-    if (!Array.isArray(rec.toolMetas) || rec.toolMetas.length > TOOLMETA_CKPT_MAX) {
+    if (!Array.isArray(record.toolMetas) || record.toolMetas.length > TOOLMETA_CKPT_MAX) {
       return "toolMetas 数组非法或超限";
     }
-    if (rec.firstHash != null && typeof rec.firstHash !== "string") return "firstHash 非法";
-    if (rec.lastHash != null && typeof rec.lastHash !== "string") return "lastHash 非法";
-    if (!packedSeqsValid(rec.superseded, rec.maxSeq)) return "superseded 区间非法或超限";
-    for (const e of rec.recent) {
+    if (record.firstHash != null && typeof record.firstHash !== "string") return "firstHash 非法";
+    if (record.lastHash != null && typeof record.lastHash !== "string") return "lastHash 非法";
+    if (!packedSeqsValid(record.superseded, record.maxSeq)) return "superseded 区间非法或超限";
+    for (const cacheEntry of record.recent) {
       if (
-        !e || (e.k !== "msg" && e.k !== "remote") || !Number.isInteger(e.seq) ||
-        e.seq <= 0 || e.seq > rec.maxSeq || typeof e.j !== "string"
+        !cacheEntry || (cacheEntry.k !== "msg" && cacheEntry.k !== "remote") || !Number.isInteger(cacheEntry.seq) ||
+        cacheEntry.seq <= 0 || cacheEntry.seq > record.maxSeq || typeof cacheEntry.j !== "string"
       ) {
         return "recent 条目非法";
       }
     }
-    if (rec.encMeta != null) {
-      const em = rec.encMeta;
-      if (!em || em.enc !== 1 ||
-          (em.ackFp != null && (typeof em.ackFp !== "string" || !ACK_FP_RE.test(em.ackFp))) ||
-          (em.rckWrap != null && (typeof em.rckWrap !== "string" || !em.rckWrap || em.rckWrap.length > PROTOCOL.limits.wrappedKeyMaxBytes))) {
+    if (record.encMeta != null) {
+      const encMeta = record.encMeta;
+      if (!encMeta || encMeta.enc !== 1 ||
+          (encMeta.ackFp != null && (typeof encMeta.ackFp !== "string" || !ACK_FP_RE.test(encMeta.ackFp))) ||
+          (encMeta.rckWrap != null && (typeof encMeta.rckWrap !== "string" || !encMeta.rckWrap || encMeta.rckWrap.length > PROTOCOL.limits.wrappedKeyMaxBytes))) {
         return "encMeta 非法";
       }
     }
-    for (const q of rec.pending) {
-      if (!q || !Number.isInteger(q.seq) || q.seq <= 0 || q.seq > rec.maxSeq) {
+    for (const pendingRemote of record.pending) {
+      if (!pendingRemote || !Number.isInteger(pendingRemote.seq) || pendingRemote.seq <= 0 || pendingRemote.seq > record.maxSeq) {
         return "pending 条目非法";
       }
       // Enc pending entries carry the envelope (ct+h) instead of text (section 4.1).
-      if (q.enc === 1) {
-        if (typeof q.h !== "string" || !HMAC_HEX_RE.test(q.h) || typeof q.ct !== "string" || !q.ct) {
+      if (pendingRemote.enc === 1) {
+        if (typeof pendingRemote.h !== "string" || !HMAC_HEX_RE.test(pendingRemote.h) || typeof pendingRemote.ct !== "string" || !pendingRemote.ct) {
           return "pending 条目非法";
         }
-      } else if (typeof q.text !== "string") {
+      } else if (typeof pendingRemote.text !== "string") {
         return "pending 条目非法";
       }
     }
-    for (const m of rec.toolMetas) {
-      const meta = cleanToolMeta(m);
-      if (!meta || meta.toolCallId !== m.toolCallId) return "toolMetas 条目非法";
+    for (const storedToolMeta of record.toolMetas) {
+      const toolMetadata = cleanToolMeta(storedToolMeta);
+      if (!toolMetadata || toolMetadata.toolCallId !== storedToolMeta.toolCallId) return "toolMetas 条目非法";
     }
     return null;
   }
 
   /** 读取并校验 <room>.ckpt.json + 它指向的 ckpt 行。任何不一致都返回 null（回退全量扫描）。
-   *  校验项：版本/房间/rev、偏移与长度、行 sha1、行内 k/v/rev、状态字段基本类型、superseded 区间规模。
+   *  校验项：版本/房间/rev、偏移与长度、行 sha1、行内 k/value/rev、状态字段基本类型、superseded 区间规模。
    *  sha1 让"文件被轮转成另一份更长文件、偏移恰好落在别的行上"也能被发现。
    *  指针里的 off/len 是**虚拟偏移**（段序列拼成的连续字节流，见文件头第 8 条）：分段前写下的
    *  旧指针指向单文件，迁移/封存不改字节内容与相对次序，虚拟偏移与旧文件偏移恰好一致，继续有效。 */
-  _readCheckpoint(id, layout, { quiet = false } = {}) {
-    const ptrFile = this._ckptFile(id);
+  _readCheckpoint(roomId, layout, { quiet = false } = {}) {
+    const pointerFile = this._ckptFile(roomId);
     let raw;
-    try { raw = fs.readFileSync(ptrFile, "utf8"); } catch { return null; }
-    const bad = (why) => {
-      if (!quiet) console.warn(`[store] 房间 ${id} 检查点无效（${why}），回退全量扫描`);
-      try { fs.unlinkSync(ptrFile); } catch {}
+    try { raw = fs.readFileSync(pointerFile, "utf8"); } catch { return null; }
+    const bad = (reason) => {
+      if (!quiet) console.warn(`[store] 房间 ${roomId} 检查点无效（${reason}），回退全量扫描`);
+      try { fs.unlinkSync(pointerFile); } catch {}
       return null;
     };
     if (raw.length > 64 * 1024) return bad("指针文件过大");
-    let p;
-    try { p = JSON.parse(raw); } catch { return bad("指针不是 JSON"); }
+    let pointer;
+    try { pointer = JSON.parse(raw); } catch { return bad("指针不是 JSON"); }
     if (
-      !p || p.v !== CKPT_VERSION || p.room !== id || typeof p.rev !== "string" ||
-      !Number.isInteger(p.off) || p.off < 0 ||
-      !Number.isInteger(p.len) || p.len <= 0 || p.len > this.ckptPayloadMaxBytes ||
-      typeof p.sum !== "string"
+      !pointer || pointer.v !== CKPT_VERSION || pointer.room !== roomId || typeof pointer.rev !== "string" ||
+      !Number.isInteger(pointer.off) || pointer.off < 0 ||
+      !Number.isInteger(pointer.len) || pointer.len <= 0 || pointer.len > this.ckptPayloadMaxBytes ||
+      typeof pointer.sum !== "string"
     ) return bad("指针字段非法");
     if (!layout || !layout.exists) return bad("房文件不存在");
     const size = layout.total;
-    if (p.off + p.len > size) return bad(`文件被截断（${size} < ${p.off + p.len}）`);
+    if (pointer.off + pointer.len > size) return bad(`文件被截断（${size} < ${pointer.off + pointer.len}）`);
     // 虚拟偏移 → (段文件, 段内偏移)：ckpt 行由一次 _appendBatch 写进现役段，永不跨段。
     let segFile = null;
     let segOff = 0;
     {
       let base = 0;
       const all = [...layout.sealed, { file: layout.active.file, bytes: layout.active.size }];
-      for (const seg of all) {
-        if (p.off >= base && p.off + p.len <= base + seg.bytes) {
-          segFile = seg.file;
-          segOff = p.off - base;
+      for (const segment of all) {
+        if (pointer.off >= base && pointer.off + pointer.len <= base + segment.bytes) {
+          segFile = segment.file;
+          segOff = pointer.off - base;
           break;
         }
-        base += seg.bytes;
+        base += segment.bytes;
       }
     }
     if (!segFile) return bad("检查点行跨段或越界");
-    let buf;
+    let checkpointLine;
     try {
-      buf = Buffer.alloc(p.len);
+      checkpointLine = Buffer.alloc(pointer.len);
       const fd = fs.openSync(segFile, "r");
-      try { fs.readSync(fd, buf, 0, p.len, segOff); } finally { fs.closeSync(fd); }
-    } catch (e) { return bad(`读取检查点行失败：${e.message}`); }
-    if (buf.length && buf[buf.length - 1] === 0x0a) buf = buf.subarray(0, buf.length - 1);
-    if (sha1(buf) !== p.sum) return bad("校验和不匹配（文件被改写/轮转）");
-    let rec;
-    try { rec = JSON.parse(buf.toString("utf8")); } catch { return bad("检查点行不是 JSON"); }
-    if (!rec || rec.k !== "ckpt" || rec.v !== CKPT_VERSION || rec.rev !== p.rev) return bad("检查点行与指针不一致");
-    const recBad = this._stateRecValid(rec);
+      try { fs.readSync(fd, checkpointLine, 0, pointer.len, segOff); } finally { fs.closeSync(fd); }
+    } catch (readError) { return bad(`读取检查点行失败：${readError.message}`); }
+    if (checkpointLine.length && checkpointLine[checkpointLine.length - 1] === 0x0a) checkpointLine = checkpointLine.subarray(0, checkpointLine.length - 1);
+    if (sha1(checkpointLine) !== pointer.sum) return bad("校验和不匹配（文件被改写/轮转）");
+    let record;
+    try { record = JSON.parse(checkpointLine.toString("utf8")); } catch { return bad("检查点行不是 JSON"); }
+    if (!record || record.k !== "ckpt" || record.v !== CKPT_VERSION || record.rev !== pointer.rev) return bad("检查点行与指针不一致");
+    const recBad = this._stateRecValid(record);
     if (recBad) return bad(recBad);
-    return { off: p.off, len: p.len, end: p.off + p.len, sum: p.sum, rev: p.rev, rec };
+    return { off: pointer.off, len: pointer.len, end: pointer.off + pointer.len, sum: pointer.sum, rev: pointer.rev, record };
   }
 
   /** 当前房间的聚合状态（检查点 payload / 清单 state 同一份形态，见 _writeCheckpoint 与 _sealSegment）。 */
-  _statePayload(r) {
+  _statePayload(room) {
     return {
       k: "ckpt",
       v: CKPT_VERSION,
-      seq: 0, // 旧实现要求 seq 是数字（0 不会抬高 r.seq），且 k 未知 => 被忽略
-      maxSeq: r.seq, // 真正的 seq 上限单独存（上面的 seq 只为旧实现兼容）
-      rev: r.rev,
-      msgCount: r.msgCount,
-      firstHash: r.firstMsgHash,
-      lastHash: r.lastMsgHash,
-      headTruncated: !!r.headTruncated,
-      metaWritten: !!r.metaWritten,
+      seq: 0, // 旧实现要求 seq 是数字（0 不会抬高 room.seq），且 k 未知 => 被忽略
+      maxSeq: room.seq, // 真正的 seq 上限单独存（上面的 seq 只为旧实现兼容）
+      rev: room.rev,
+      msgCount: room.msgCount,
+      firstHash: room.firstMsgHash,
+      lastHash: room.lastMsgHash,
+      headTruncated: !!room.headTruncated,
+      metaWritten: !!room.metaWritten,
       // The room's enc meta rides the state payload: a checkpoint/manifest-based
       // cold open never rescans the meta line (it sits before the state), so
       // without this field an enc room would resurrect as plaintext (Phase 0 gap).
-      encMeta: encMetaOf(r.metaExtra),
-      recent: this._packRecent(r.recent),
-      pending: r.pendingRemotes.map((p) => (p.enc === 1
-        ? { seq: p.seq, enc: 1, h: p.h, ct: p.ct, cid: p.cid || undefined }
-        : { seq: p.seq, text: p.text, cid: p.cid || undefined })),
-      toolMetas: [...r.toolMetas.values()].map((m) => ({ ...m })),
-      superseded: packSeqs(r.superseded),
+      encMeta: encMetaOf(room.metaExtra),
+      recent: this._packRecent(room.recent),
+      pending: room.pendingRemotes.map((pendingRemote) => (pendingRemote.enc === 1
+        ? { seq: pendingRemote.seq, enc: 1, h: pendingRemote.h, ct: pendingRemote.ct, cid: pendingRemote.cid || undefined }
+        : { seq: pendingRemote.seq, text: pendingRemote.text, cid: pendingRemote.cid || undefined })),
+      toolMetas: [...room.toolMetas.values()].map((toolMetadata) => ({ ...toolMetadata })),
+      superseded: packSeqs(room.superseded),
       at: Date.now(),
     };
   }
@@ -1561,11 +1561,11 @@ class RoomStore {
    *  state 过 _stateRecValid 才算数。返回 {entries, base}：entries 与 layout.sealed 对位
    *  （state 缺失/作废处为 null），base = 最后一个完全有效的条目 {state, end（虚拟偏移）, upto}。
    *  清单缺失/损坏/版本不对 → entries 全空、base 为 null（调用方走扫描降级并重建）。 */
-  _readManifest(id, layout) {
+  _readManifest(roomId, layout) {
     const empty = { entries: layout.sealed.map(() => null), base: null };
     let raw;
     try {
-      raw = fs.readFileSync(this._manifestFile(id, layout.dir), "utf8");
+      raw = fs.readFileSync(this._manifestFile(roomId, layout.dir), "utf8");
     } catch {
       return empty;
     }
@@ -1575,78 +1575,78 @@ class RoomStore {
     } catch {
       return empty;
     }
-    if (!data || data.v !== MANIFEST_VERSION || data.room !== id || !Array.isArray(data.segments)) return empty;
+    if (!data || data.v !== MANIFEST_VERSION || data.room !== roomId || !Array.isArray(data.segments)) return empty;
     // Room-dimension enc fields (design section 4.1 manifest rule): a fallback
     // source for the enc meta when segment states are missing/invalid.
     empty.encMeta = encMetaOf(data);
     const entries = layout.sealed.map(() => null);
     let base = null;
     let covered = 0;
-    for (let i = 0; i < layout.sealed.length; i++) {
-      const seg = layout.sealed[i];
-      covered += seg.bytes;
-      const e = data.segments[i];
-      if (!e || e.file !== seg.name || e.bytes !== seg.bytes) continue;
+    for (let segmentIndex = 0; segmentIndex < layout.sealed.length; segmentIndex++) {
+      const segment = layout.sealed[segmentIndex];
+      covered += segment.bytes;
+      const manifestSegment = data.segments[segmentIndex];
+      if (!manifestSegment || manifestSegment.file !== segment.name || manifestSegment.bytes !== segment.bytes) continue;
       const entry = {
-        file: seg.name,
-        bytes: seg.bytes,
-        events: Number.isInteger(e.events) && e.events >= 0 ? e.events : 0,
-        firstSeq: Number.isInteger(e.firstSeq) && e.firstSeq >= 0 ? e.firstSeq : 0,
-        lastSeq: Number.isInteger(e.lastSeq) && e.lastSeq >= 0 ? e.lastSeq : 0,
+        file: segment.name,
+        bytes: segment.bytes,
+        events: Number.isInteger(manifestSegment.events) && manifestSegment.events >= 0 ? manifestSegment.events : 0,
+        firstSeq: Number.isInteger(manifestSegment.firstSeq) && manifestSegment.firstSeq >= 0 ? manifestSegment.firstSeq : 0,
+        lastSeq: Number.isInteger(manifestSegment.lastSeq) && manifestSegment.lastSeq >= 0 ? manifestSegment.lastSeq : 0,
         state: null,
       };
-      if (!this._stateRecValid(e.state)) {
-        entry.state = e.state;
-        base = { state: e.state, end: covered, upto: i };
+      if (!this._stateRecValid(manifestSegment.state)) {
+        entry.state = manifestSegment.state;
+        base = { state: manifestSegment.state, end: covered, upto: segmentIndex };
       }
-      entries[i] = entry;
+      entries[segmentIndex] = entry;
     }
     return { entries, base };
   }
 
   /** 原子写清单（临时文件 + fsync + rename + 目录 fsync，与检查点指针同一套耐久纪律）。
-   *  只收 r._manifestEntries 里已成形的条目（与 r.segs 对位）；清单写失败只告警——它只是
+   *  只收 room._manifestEntries 里已成形的条目（与 room.segs 对位）；清单写失败只告警——它只是
    *  冷打开的加速器，丢了下次重扫重建，绝不能反过来阻断写路径。 */
-  _writeManifest(r) {
-    if (!this.persist || !r.dir) return false;
+  _writeManifest(room) {
+    if (!this.persist || !room.dir) return false;
     const segments = [];
-    for (let i = 0; i < r.segs.length; i++) {
-      const e = r._manifestEntries[i];
-      if (!e) return false; // 条目与段不对位：宁可不写，也不写一份错位的清单
+    for (let segmentIndex = 0; segmentIndex < room.segs.length; segmentIndex++) {
+      const manifestEntry = room._manifestEntries[segmentIndex];
+      if (!manifestEntry) return false; // 条目与段不对位：宁可不写，也不写一份错位的清单
       segments.push({
-        file: r.segs[i].name,
-        bytes: r.segs[i].bytes,
-        events: e.events || 0,
-        firstSeq: e.firstSeq || 0,
-        lastSeq: e.lastSeq || 0,
-        state: e.state || null,
+        file: room.segs[segmentIndex].name,
+        bytes: room.segs[segmentIndex].bytes,
+        events: manifestEntry.events || 0,
+        firstSeq: manifestEntry.firstSeq || 0,
+        lastSeq: manifestEntry.lastSeq || 0,
+        state: manifestEntry.state || null,
       });
     }
-    const file = this._manifestFile(r.id, r.dir);
-    const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+    const file = this._manifestFile(room.id, room.dir);
+    const temporaryFile = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
     let fd;
     try {
-      fd = fs.openSync(tmp, "w");
-      const doc = { v: MANIFEST_VERSION, room: r.id, rev: r.rev, updatedAt: Date.now(), segments };
+      fd = fs.openSync(temporaryFile, "w");
+      const doc = { v: MANIFEST_VERSION, room: room.id, rev: room.rev, updatedAt: Date.now(), segments };
       // Room-dimension enc fields (design section 4.1): the manifest is the cold
       // open's first read, so the enc flag must be visible here even before any
       // segment state is consulted. rckWrap stays an opaque blob.
-      const em = encMetaOf(r.metaExtra);
-      if (em) {
+      const manifestEncMeta = encMetaOf(room.metaExtra);
+      if (manifestEncMeta) {
         doc.enc = 1;
-        if (em.ackFp) doc.ackFp = em.ackFp;
-        if (em.rckWrap) doc.rckWrap = em.rckWrap;
+        if (manifestEncMeta.ackFp) doc.ackFp = manifestEncMeta.ackFp;
+        if (manifestEncMeta.rckWrap) doc.rckWrap = manifestEncMeta.rckWrap;
       }
       fs.writeFileSync(fd, JSON.stringify(doc) + "\n", "utf8");
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = undefined;
-      fs.renameSync(tmp, file);
-      this._fsyncDir(r.dir);
+      fs.renameSync(temporaryFile, file);
+      this._fsyncDir(room.dir);
       return true;
-    } catch (e) {
-      console.warn("[store] 写清单失败（下次打开重扫重建）:", r.id, e.message);
-      try { fs.unlinkSync(tmp); } catch {}
+    } catch (writeError) {
+      console.warn("[store] 写清单失败（下次打开重扫重建）:", room.id, writeError.message);
+      try { fs.unlinkSync(temporaryFile); } catch {}
       return false;
     } finally {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
@@ -1654,32 +1654,32 @@ class RoomStore {
   }
 
   /** 冷打开的起点裁决：检查点与清单 base 谁覆盖的虚拟偏移大用谁（两者都按各自校验独立成立）。
-   *  返回 {kind:"ckpt"|"manifest"|"none", end, ck?, state?, entries}；entries 恒为与 layout.sealed
+   *  返回 {kind:"ckpt"|"manifest"|"none", end, checkpoint?, state?, entries}；entries 恒为与 layout.sealed
    *  对位的清单条目（无清单则全 null），顺路指出哪些封存段的 state 缺失/作废（_captureNeed）。 */
-  _probeBase(id, layout, { quiet = false } = {}) {
-    const ck = this._readCheckpoint(id, layout, { quiet });
-    const man = this._readManifest(id, layout);
-    const ckEnd = ck ? ck.end : -1;
-    const manEnd = man.base ? man.base.end : -1;
-    if (man.base && manEnd >= ckEnd) {
-      return { kind: "manifest", end: manEnd, state: man.base.state, ck, entries: man.entries, encMeta: man.encMeta || null };
+  _probeBase(roomId, layout, { quiet = false } = {}) {
+    const checkpoint = this._readCheckpoint(roomId, layout, { quiet });
+    const manifest = this._readManifest(roomId, layout);
+    const checkpointEnd = checkpoint ? checkpoint.end : -1;
+    const manifestEnd = manifest.base ? manifest.base.end : -1;
+    if (manifest.base && manifestEnd >= checkpointEnd) {
+      return { kind: "manifest", end: manifestEnd, state: manifest.base.state, checkpoint, entries: manifest.entries, encMeta: manifest.encMeta || null };
     }
-    if (ck) return { kind: "ckpt", end: ckEnd, ck, entries: man.entries, encMeta: man.encMeta || null };
-    return { kind: "none", end: 0, ck: null, entries: man.entries, encMeta: man.encMeta || null };
+    if (checkpoint) return { kind: "ckpt", end: checkpointEnd, checkpoint, entries: manifest.entries, encMeta: manifest.encMeta || null };
+    return { kind: "none", end: 0, checkpoint: null, entries: manifest.entries, encMeta: manifest.encMeta || null };
   }
 
-  /** 由 base 在房间对象上装好起点状态（清单 base 不动 r.ckpt：它不是检查点，
+  /** 由 base 在房间对象上装好起点状态（清单 base 不动 room.ckpt：它不是检查点，
    *  但若同时探到检查点则把指针位置一并装上——_maybeCheckpoint 的间隔判据要用）。 */
-  _applyBase(r, base) {
+  _applyBase(room, base) {
     if (!base) return;
-    if (base.kind === "ckpt" && base.ck) {
-      this._applyCheckpointState(r, base.ck);
+    if (base.kind === "ckpt" && base.checkpoint) {
+      this._applyCheckpointState(room, base.checkpoint);
     } else if (base.kind === "manifest" && base.state) {
-      this._applyStateRec(r, base.state);
-      if (base.ck) r.ckpt = { off: base.ck.off, len: base.ck.len, end: base.ck.end, sum: base.ck.sum };
+      this._applyStateRec(room, base.state);
+      if (base.checkpoint) room.ckpt = { off: base.checkpoint.off, len: base.checkpoint.len, end: base.checkpoint.end, sum: base.checkpoint.sum };
     }
-    if (base.encMeta && !encMetaOf(r.metaExtra)) {
-      r.metaExtra = { ...(r.metaExtra || {}), ...base.encMeta };
+    if (base.encMeta && !encMetaOf(room.metaExtra)) {
+      room.metaExtra = { ...(room.metaExtra || {}), ...base.encMeta };
     }
   }
 
@@ -1687,83 +1687,83 @@ class RoomStore {
   _captureNeedFor(layout, entries, fromVirtual) {
     const need = new Set();
     let base = 0;
-    for (let i = 0; i < layout.sealed.length; i++) {
-      const segEnd = base + layout.sealed[i].bytes;
-      if (fromVirtual <= base && !(entries[i] && entries[i].state)) need.add(i);
-      base = segEnd;
+    for (let segmentIndex = 0; segmentIndex < layout.sealed.length; segmentIndex++) {
+      const segmentEnd = base + layout.sealed[segmentIndex].bytes;
+      if (fromVirtual <= base && !(entries[segmentIndex] && entries[segmentIndex].state)) need.add(segmentIndex);
+      base = segmentEnd;
     }
     return need.size ? need : null;
   }
 
-  /** 扫描经过一个封存段段尾时的清单 state 捕获：先把 ctx 物化（_finishIndex），
+  /** 扫描经过一个封存段段尾时的清单 state 捕获：先把 indexContext 物化（_finishIndex），
    *  此刻房间聚合状态恰好就是该段末尾的状态，写进对位条目。 */
-  _captureSegState(r, ctx, segIdx, segLines = 0) {
-    const seg = r.segs[segIdx];
-    if (!seg) return;
-    const firstSeq = ctx.firstSeq;
-    this._finishIndex(r, ctx);
-    const prev = r._manifestEntries[segIdx] || {};
-    r._manifestEntries[segIdx] = {
-      file: seg.name,
-      bytes: seg.bytes,
-      events: segLines || prev.events || 0,
-      firstSeq: firstSeq || prev.firstSeq || 0,
-      lastSeq: r.seq,
-      state: this._statePayload(r),
+  _captureSegState(room, indexContext, segIdx, segLines = 0) {
+    const segment = room.segs[segIdx];
+    if (!segment) return;
+    const firstSeq = indexContext.firstSeq;
+    this._finishIndex(room, indexContext);
+    const previousEntry = room._manifestEntries[segIdx] || {};
+    room._manifestEntries[segIdx] = {
+      file: segment.name,
+      bytes: segment.bytes,
+      events: segLines || previousEntry.events || 0,
+      firstSeq: firstSeq || previousEntry.firstSeq || 0,
+      lastSeq: room.seq,
+      state: this._statePayload(room),
     };
-    r._captureFilled = true;
+    room._captureFilled = true;
   }
 
   /** 把校验过的检查点状态装回房间（不含尾扫描）：同步恢复与异步恢复共用，保证两条路径语义一致。 */
-  _applyCheckpointState(r, ck) {
-    this._applyStateRec(r, ck.rec);
-    r.ckpt = { off: ck.off, len: ck.len, end: ck.end, sum: ck.sum };
+  _applyCheckpointState(room, checkpoint) {
+    this._applyStateRec(room, checkpoint.record);
+    room.ckpt = { off: checkpoint.off, len: checkpoint.len, end: checkpoint.end, sum: checkpoint.sum };
   }
 
-  /** 只装聚合状态本身（不碰 r.ckpt 指针）：清单条目的 state 与检查点 rec 同形态，共用这一份装回逻辑。 */
-  _applyStateRec(r, rec) {
-    const superseded = unpackSeqs(rec.superseded, rec.maxSeq);
+  /** 只装聚合状态本身（不碰 room.ckpt 指针）：清单条目的 state 与检查点 record 同形态，共用这一份装回逻辑。 */
+  _applyStateRec(room, record) {
+    const superseded = unpackSeqs(record.superseded, record.maxSeq);
     if (!superseded) throw new Error("superseded 区间非法或超限"); // 防御：_readCheckpoint 已拦截，调用方会回退全量扫描
     const pending = [];
-    for (const p of rec.pending) {
-      if (superseded.has(p.seq)) continue;
-      if (p.enc === 1) pending.push({ seq: p.seq, enc: 1, h: p.h, ct: p.ct, cid: cleanCid(p.cid) });
-      else pending.push({ seq: p.seq, text: p.text, cid: cleanCid(p.cid) });
+    for (const storedPending of record.pending) {
+      if (superseded.has(storedPending.seq)) continue;
+      if (storedPending.enc === 1) pending.push({ seq: storedPending.seq, enc: 1, h: storedPending.h, ct: storedPending.ct, cid: cleanCid(storedPending.cid) });
+      else pending.push({ seq: storedPending.seq, text: storedPending.text, cid: cleanCid(storedPending.cid) });
     }
-    if (rec.encMeta) {
-      r.metaExtra = { ...(r.metaExtra || {}), enc: 1 };
-      if (rec.encMeta.ackFp) r.metaExtra.ackFp = rec.encMeta.ackFp;
-      if (rec.encMeta.rckWrap) r.metaExtra.rckWrap = rec.encMeta.rckWrap;
+    if (record.encMeta) {
+      room.metaExtra = { ...(room.metaExtra || {}), enc: 1 };
+      if (record.encMeta.ackFp) room.metaExtra.ackFp = record.encMeta.ackFp;
+      if (record.encMeta.rckWrap) room.metaExtra.rckWrap = record.encMeta.rckWrap;
     }
-    r.rev = rec.rev;
-    r.metaWritten = !!rec.metaWritten;
-    r.headTruncated = !!rec.headTruncated;
-    r.seq = rec.maxSeq;
-    r.msgCount = rec.msgCount;
-    r.firstMsgHash = rec.firstHash == null ? null : rec.firstHash;
-    r.lastMsgHash = rec.lastHash == null ? null : rec.lastHash;
-    r.superseded = superseded;
-    this._trimSuperseded(r, true); // 旧版本检查点可能带了超过当前上限的集合：装回后立即裁到上限
-    r.pendingRemotes = pending;
-    r.toolMetas = new Map();
-    for (const m of rec.toolMetas) {
-      const meta = cleanToolMeta(m);
-      if (meta) this._applyToolMeta(r, meta);
+    room.rev = record.rev;
+    room.metaWritten = !!record.metaWritten;
+    room.headTruncated = !!record.headTruncated;
+    room.seq = record.maxSeq;
+    room.msgCount = record.msgCount;
+    room.firstMsgHash = record.firstHash == null ? null : record.firstHash;
+    room.lastMsgHash = record.lastHash == null ? null : record.lastHash;
+    room.superseded = superseded;
+    this._trimSuperseded(room, true); // 旧版本检查点可能带了超过当前上限的集合：装回后立即裁到上限
+    room.pendingRemotes = pending;
+    room.toolMetas = new Map();
+    for (const storedToolMeta of record.toolMetas) {
+      const toolMetadata = cleanToolMeta(storedToolMeta);
+      if (toolMetadata) this._applyToolMeta(room, toolMetadata);
     }
-    this._trimToolMetas(r);
-    r.recent = [];
-    r.recentBytes = 0;
-    for (const e of rec.recent) this._cachePush(r, { k: e.k, seq: e.seq, json: e.j });
+    this._trimToolMetas(room);
+    room.recent = [];
+    room.recentBytes = 0;
+    for (const cacheEntry of record.recent) this._cachePush(room, { k: cacheEntry.k, seq: cacheEntry.seq, json: cacheEntry.j });
   }
 
   /** （原 _restoreCheckpoint 已并入 _restoreFromBase：起点可以是检查点，也可以是清单 base。） */
   /** 从起点（检查点/清单 base）恢复：装回起点状态，然后只扫起点之后的尾巴（跨段）。
    *  同步恢复与异步恢复共用同一套起点语义。 */
-  _restoreFromBase(r, base) {
-    this._applyBase(r, base);
-    let ctx = this._newIndexCtx();
-    ctx = this._scanVirtual(r, base.end, ctx);
-    this._finishIndex(r, ctx);
+  _restoreFromBase(room, base) {
+    this._applyBase(room, base);
+    let indexContext = this._newIndexCtx();
+    indexContext = this._scanVirtual(room, base.end, indexContext);
+    this._finishIndex(room, indexContext);
     return true;
   }
 
@@ -1774,31 +1774,31 @@ class RoomStore {
    *  房间等它"二选一落地：有 → 索引状态移植进占位房间 + journal 按序重放；没有（构造器
    *  预热）→ 结果进 _prewarmed 等首次打开接管（与旧预热完全同义，含 TTL/上限纪律）。
    *  扫描以 (段文件, 字节范围) 组织：封存段是独立范围、现役段是会增长的尾巴。 */
-  _startIndexJob(id, layout, base) {
-    const existing = this._indexJobs.get(id);
+  _startIndexJob(roomId, layout, base) {
+    const existing = this._indexJobs.get(roomId);
     if (existing) return existing;
-    const staging = this._newRoom(id, layout.active.file);
+    const staging = this._newRoom(roomId, layout.active.file);
     staging.dir = layout.dir;
-    staging.segs = layout.sealed.map((s) => ({ ...s }));
+    staging.segs = layout.sealed.map((sealedSegment) => ({ ...sealedSegment }));
     staging.sealedBytes = layout.sealedBytes;
     staging._segLines = -1; // 现役段是继承来的：行数未知，封存时按 \n 计数兜底（见 _sealSegment）
     staging._manifestEntries = base ? base.entries : layout.sealed.map(() => null);
     staging.dirSynced = true; // 索引只针对已存在的文件，目录项早就落过盘
-    let plan = base || { kind: "none", end: 0, ck: null, entries: staging._manifestEntries };
+    let plan = base || { kind: "none", end: 0, checkpoint: null, entries: staging._manifestEntries };
     if (plan.kind !== "none") {
       try {
         this._applyBase(staging, plan);
       } catch {
-        plan = { kind: "none", end: 0, ck: null, entries: staging._manifestEntries }; // 起点已校验过，走到这里只剩防御：退回全量计划
+        plan = { kind: "none", end: 0, checkpoint: null, entries: staging._manifestEntries }; // 起点已校验过，走到这里只剩防御：退回全量计划
       }
     }
     staging._captureNeed = this._captureNeedFor(layout, staging._manifestEntries, plan.end);
     staging._scanSkipped = 0;
     const job = {
-      id, layout, file: layout.active.file, staging,
+      id: roomId, layout, file: layout.active.file, staging,
       base: plan,
-      ck: plan.kind === "ckpt" ? plan.ck : null,
-      ctx: this._newIndexCtx(),
+      checkpoint: plan.kind === "ckpt" ? plan.checkpoint : null,
+      indexContext: this._newIndexCtx(),
       cancelled: false,
       error: null,
       tailOk: true,
@@ -1808,36 +1808,36 @@ class RoomStore {
       _resolve: null,
     };
     job.promise = new Promise((resolve) => { job._resolve = resolve; });
-    this._indexJobs.set(id, job);
+    this._indexJobs.set(roomId, job);
     this._runIndexJob(job);
     return job;
   }
 
   /** 异步扫描虚拟范围 [from, total)：逐段走 _scanRangeAsync（256KB/块 + setImmediate 让出）。
    *  返回实际扫到的虚拟末尾；中途文件变短/任务取消时 < total，调用方回主循环重新对账。
-   *  _captureNeed 命中的封存段在段尾捕获清单 state 并换新 ctx（与 _scanVirtual 同口径）。 */
+   *  _captureNeed 命中的封存段在段尾捕获清单 state 并换新 indexContext（与 _scanVirtual 同口径）。 */
   async _scanVirtualAsync(job, from, total) {
     const { staging } = job;
     const ranges = this._segRanges(staging, total - staging.sealedBytes);
     let base = 0;
-    for (const seg of ranges) {
-      const segEnd = base + seg.bytes;
+    for (const segment of ranges) {
+      const segEnd = base + segment.bytes;
       if (segEnd > from) {
         const localStart = Math.max(0, from - base);
-        const localEnd = Math.min(seg.bytes, total - base);
+        const localEnd = Math.min(segment.bytes, total - base);
         if (localEnd > localStart) {
-          const linesAtStart = job.ctx.lines;
-          const firstSeqBefore = job.ctx.firstSeq;
-          const { pos } = await this._scanRangeAsync(staging, seg.file, localStart, localEnd, job.ctx, () => job.cancelled);
-          from = base + pos;
-          if (!seg.sealed && localStart === 0 && !firstSeqBefore && job.ctx.firstSeq && !staging._segFirstSeq) {
-            staging._segFirstSeq = job.ctx.firstSeq;
+          const linesAtStart = job.indexContext.lines;
+          const firstSeqBefore = job.indexContext.firstSeq;
+          const { position } = await this._scanRangeAsync(staging, segment.file, localStart, localEnd, job.indexContext, () => job.cancelled);
+          from = base + position;
+          if (!segment.sealed && localStart === 0 && !firstSeqBefore && job.indexContext.firstSeq && !staging._segFirstSeq) {
+            staging._segFirstSeq = job.indexContext.firstSeq;
           }
-          if (pos < localEnd) return from;
-          if (seg.sealed && localStart === 0 && staging._captureNeed && staging._captureNeed.has(seg.idx)) {
-            staging._scanSkipped = (staging._scanSkipped || 0) + job.ctx.skipped;
-            this._captureSegState(staging, job.ctx, seg.idx, job.ctx.lines - linesAtStart);
-            job.ctx = this._newIndexCtx();
+          if (position < localEnd) return from;
+          if (segment.sealed && localStart === 0 && staging._captureNeed && staging._captureNeed.has(segment.idx)) {
+            staging._scanSkipped = (staging._scanSkipped || 0) + job.indexContext.skipped;
+            this._captureSegState(staging, job.indexContext, segment.idx, job.indexContext.lines - linesAtStart);
+            job.indexContext = this._newIndexCtx();
           }
         }
       }
@@ -1865,19 +1865,19 @@ class RoomStore {
           if (job.restarts >= 1) throw new Error("文件在索引期间反复变化，索引作废");
           job.restarts += 1;
           this._resetRoomData(staging);
-          const layout = this._layoutIn(job.id, staging.dir);
-          job.layout = layout;
-          staging.segs = layout.sealed.map((s) => ({ ...s }));
-          staging.sealedBytes = layout.sealedBytes;
-          job.base = this._probeBase(job.id, layout, { quiet: true });
+          const relayout = this._layoutIn(job.id, staging.dir);
+          job.layout = relayout;
+          staging.segs = relayout.sealed.map((sealedSegment) => ({ ...sealedSegment }));
+          staging.sealedBytes = relayout.sealedBytes;
+          job.base = this._probeBase(job.id, relayout, { quiet: true });
           staging._manifestEntries = job.base.entries;
           if (job.base.kind !== "none") {
-            try { this._applyBase(staging, job.base); } catch { job.base = { kind: "none", end: 0, ck: null, entries: staging._manifestEntries }; }
+            try { this._applyBase(staging, job.base); } catch { job.base = { kind: "none", end: 0, checkpoint: null, entries: staging._manifestEntries }; }
           }
-          job.ck = job.base.kind === "ckpt" ? job.base.ck : null;
+          job.checkpoint = job.base.kind === "ckpt" ? job.base.checkpoint : null;
           staging._captureNeed = this._captureNeedFor(layout, staging._manifestEntries, job.base.end);
           staging._scanSkipped = 0;
-          job.ctx = this._newIndexCtx();
+          job.indexContext = this._newIndexCtx();
           from = job.base.end;
           job.tailOk = this._repairTail(staging, Math.max(0, from - staging.sealedBytes));
           ino = null;
@@ -1888,8 +1888,8 @@ class RoomStore {
         // 扫完后回到循环顶部对一次大小，长出来的新增段接着扫，不漏行。
         from = await this._scanVirtualAsync(job, from, total);
       }
-    } catch (e) {
-      job.error = e;
+    } catch (scanError) {
+      job.error = scanError;
     }
     this._settleIndexJob(job);
   }
@@ -1905,14 +1905,14 @@ class RoomStore {
           this._markIndexFailed(staging, `索引建立失败：${job.error.message}`);
           console.warn("[store] 索引建立失败（该房间降级为热缓存读取）:", job.id, job.error.message);
         } else {
-          this._finishIndex(staging, job.ctx);
+          this._finishIndex(staging, job.indexContext);
           if (!staging.rev) staging.rev = newRev();
           // 索引刚建完：暂存状态与盘面严格对齐，捕获为盘面状态（落地后封存不必重扫）。
           this._captureDiskState(staging);
           // 病态文件（没有完整换行边界）：扫出来的只是半份/空索引，不能当正常房交付。
           if (!job.tailOk) this._markIndexFailed(staging, "文件末行残缺且找不到完整换行边界");
           const ms = Date.now() - job.startedAt;
-          const skipped = (staging._scanSkipped || 0) + job.ctx.skipped;
+          const skipped = (staging._scanSkipped || 0) + job.indexContext.skipped;
           if (skipped || ms > 1000) {
             console.warn(`[store] 房间 ${job.id} 异步索引完成：seq=${staging.seq} 跳过坏记录=${skipped} 耗时=${ms}ms`);
           }
@@ -1930,7 +1930,7 @@ class RoomStore {
           live.lastActivity = Date.now();
           const journal = live._journal || [];
           live._journal = null;
-          for (const op of journal) this._replayJournalOp(live, op);
+          for (const operation of journal) this._replayJournalOp(live, operation);
           // 与同步 _room 同口径：全量扫完补检查点（minBytes:0）；起点恢复来的走默认阈值。
           this._maybeCheckpoint(live, job.base.kind === "none" ? { minBytes: 0 } : undefined);
         } else if (!job.error) {
@@ -1940,7 +1940,7 @@ class RoomStore {
           if (lay.exists) {
             this._rememberPrewarmed(job.id, {
               room: staging,
-              fp: {
+              fingerprint: {
                 total: lay.total,
                 activeSize: lay.active.size,
                 ino: lay.active.ino,
@@ -1952,8 +1952,8 @@ class RoomStore {
           }
         }
       }
-    } catch (e) {
-      console.warn("[store] 索引任务落地异常:", job.id, e.message);
+    } catch (settleError) {
+      console.warn("[store] 索引任务落地异常:", job.id, settleError.message);
     } finally {
       job._resolve();
     }
@@ -1995,73 +1995,73 @@ class RoomStore {
 
   /** 索引在飞时写操作不许碰半份索引：一律按到达顺序记进 journal，索引落地后重放。
    *  返回 true 表示已排队，调用方直接给中性返回值（实时广播由重放后的既有补发路径覆盖）。 */
-  _journalIfIndexing(r, op) {
-    if (!r || !r._indexing) return false;
-    (r._journal || (r._journal = [])).push(op);
+  _journalIfIndexing(room, operation) {
+    if (!room || !room._indexing) return false;
+    (room._journal || (room._journal = [])).push(operation);
     return true;
   }
 
   /** 重放一条排队操作：此时 _indexing 已清除，走的就是平时的真实路径（含锚点校验）。 */
-  _replayJournalOp(r, op) {
+  _replayJournalOp(room, operation) {
     try {
-      if (op.op === "record") this.record(r.id, op.event);
-      else if (op.op === "toolEnd") this.recordToolEnd(r.id, op.event);
-      else if (op.op === "remoteFailed") this.markRemoteFailed(r.id, op.text, op.cid);
-      else if (op.op === "seed") this.seedOrMerge(r.id, op.messages, { truncated: op.truncated });
-      else if (op.op === "append") this.appendMessages(r.id, op.base, op.messages);
-    } catch (e) {
-      console.warn("[store] 索引期间排队的操作重放失败（跳过）:", r.id, op.op, e.message);
+      if (operation.op === "record") this.record(room.id, operation.event);
+      else if (operation.op === "toolEnd") this.recordToolEnd(room.id, operation.event);
+      else if (operation.op === "remoteFailed") this.markRemoteFailed(room.id, operation.text, operation.cid);
+      else if (operation.op === "seed") this.seedOrMerge(room.id, operation.messages, { truncated: operation.truncated });
+      else if (operation.op === "append") this.appendMessages(room.id, operation.base, operation.messages);
+    } catch (replayError) {
+      console.warn("[store] 索引期间排队的操作重放失败（跳过）:", room.id, operation.op, replayError.message);
     }
   }
 
   /** 取消在飞索引（reset/drop 用）：任务在下一个分块边界自行收尾，暂存结果整体丢弃。 */
-  _cancelIndexJob(id) {
-    const job = this._indexJobs.get(id);
+  _cancelIndexJob(roomId) {
+    const job = this._indexJobs.get(roomId);
     if (!job) return false;
     job.cancelled = true;
-    this._indexJobs.delete(id);
+    this._indexJobs.delete(roomId);
     return true;
   }
 
   /** 磁盘记录 → 热缓存条目。msg 行是本模块写出的固定前缀格式时直接切片，省一次 stringify */
-  _entryFromRecord(rec, line) {
-    if (rec.k === "remote") {
-      if (rec.enc === 1) return { k: "remote", seq: rec.seq, h: rec.h, json: remoteEnvelopeJson(rec) };
-      return { k: "remote", seq: rec.seq, text: rec.text, json: remoteJson(rec.text, rec.at || 0, cleanCid(rec.cid)) };
+  _entryFromRecord(record, line) {
+    if (record.k === "remote") {
+      if (record.enc === 1) return { k: "remote", seq: record.seq, h: record.h, json: remoteEnvelopeJson(record) };
+      return { k: "remote", seq: record.seq, text: record.text, json: remoteJson(record.text, record.at || 0, cleanCid(record.cid)) };
     }
     let json = null;
-    if (line && rec.enc === 1 && MSG_ENC_PREFIX.test(line) && line.endsWith("}")) {
+    if (line && record.enc === 1 && MSG_ENC_PREFIX.test(line) && line.endsWith("}")) {
       // Stored line is {"k":"msg","seq":N,"enc":1,"role":..,"h":..,"ct":..}:
       // the frame envelope is the same tail behind an {"enc":1, head.
-      const m = MSG_ENC_PREFIX.exec(line);
-      json = `{"enc":1,${line.slice(m[0].length, -1)}}`;
+      const encPrefixMatch = MSG_ENC_PREFIX.exec(line);
+      json = `{"enc":1,${line.slice(encPrefixMatch[0].length, -1)}}`;
     } else if (line && MSG_PREFIX.test(line) && line.endsWith("}")) {
-      const m = MSG_PREFIX.exec(line);
-      json = line.slice(m[0].length, -1);
+      const prefixMatch = MSG_PREFIX.exec(line);
+      json = line.slice(prefixMatch[0].length, -1);
     }
-    if (json === null) json = rec.enc === 1 ? envelopeFrameJson(rec) : JSON.stringify(rec.m);
-    const entry = { k: "msg", seq: rec.seq, json };
-    if (rec.enc === 1 && typeof rec.h === "string") entry.h = rec.h;
+    if (json === null) json = record.enc === 1 ? envelopeFrameJson(record) : JSON.stringify(record.m);
+    const entry = { k: "msg", seq: record.seq, json };
+    if (record.enc === 1 && typeof record.h === "string") entry.h = record.h;
     return entry;
   }
 
-  _cachePush(r, entry) {
-    r.recent.push(entry);
-    r.recentBytes += entry.json.length;
+  _cachePush(room, entry) {
+    room.recent.push(entry);
+    room.recentBytes += entry.json.length;
     let drop = 0;
-    let bytes = r.recentBytes;
+    let bytes = room.recentBytes;
     // 不落盘时条数上限会丢掉没有磁盘副本的头部。只按字节从最旧丢，至少留一条。
     // 落盘时条数和字节都裁热缓存，超出 cacheSize 的记录由 snapshot 从磁盘补回。
     while (
-      r.recent.length - drop > 1 &&
-      ((this.persist && r.recent.length - drop > this.cacheSize) || bytes > this.cacheMaxBytes)
+      room.recent.length - drop > 1 &&
+      ((this.persist && room.recent.length - drop > this.cacheSize) || bytes > this.cacheMaxBytes)
     ) {
-      bytes -= r.recent[drop].json.length;
+      bytes -= room.recent[drop].json.length;
       drop++;
     }
     if (drop) {
-      r.recent.splice(0, drop);
-      r.recentBytes = bytes;
+      room.recent.splice(0, drop);
+      room.recentBytes = bytes;
     }
   }
 
@@ -2078,7 +2078,7 @@ class RoomStore {
     }
     if (size === 0) return { records: [], hasMore: false, more: false, scanned: 0 };
     const out = [];
-    let pos = size;
+    let position = size;
     // carry 保存"下一块开头那一行的前缀字节"，停留在 Buffer 域：整段连续字节一次性解码，
     // 不存在跨块字符损坏。
     let carry = Buffer.alloc(0);
@@ -2087,15 +2087,15 @@ class RoomStore {
     let fd;
     try {
       fd = fs.openSync(file, "r");
-      while (pos > 0 && out.length <= limit && scanned < maxBytes && !reachedAfter) {
-        const n = Math.min(65536, pos);
-        pos -= n;
-        scanned += n;
-        const buf = Buffer.alloc(n);
-        fs.readSync(fd, buf, 0, n, pos);
+      while (position > 0 && out.length <= limit && scanned < maxBytes && !reachedAfter) {
+        const chunkBytes = Math.min(65536, position);
+        position -= chunkBytes;
+        scanned += chunkBytes;
+        const buf = Buffer.alloc(chunkBytes);
+        fs.readSync(fd, buf, 0, chunkBytes, position);
         const full = carry.length ? Buffer.concat([buf, carry]) : buf;
         let text;
-        if (pos > 0) {
+        if (position > 0) {
           const firstNl = full.indexOf(10);
           if (firstNl >= 0) {
             text = full.slice(firstNl + 1).toString("utf8");
@@ -2108,27 +2108,27 @@ class RoomStore {
           text = full.toString("utf8");
         }
         const lines = text.split("\n");
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const line = lines[i].trim();
+        for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex--) {
+          const line = lines[lineIndex].trim();
           if (!line) continue;
-          let rec;
+          let record;
           try {
-            rec = JSON.parse(line);
+            record = JSON.parse(line);
           } catch {
             continue;
           }
-          if (!rec || (rec.k !== "msg" && rec.k !== "remote") || typeof rec.seq !== "number") continue;
-          if (rec.seq >= before) continue;
-          if (rec.seq <= after) { reachedAfter = true; break; }
-          rec._line = line;
-          out.push(rec);
+          if (!record || (record.k !== "msg" && record.k !== "remote") || typeof record.seq !== "number") continue;
+          if (record.seq >= before) continue;
+          if (record.seq <= after) { reachedAfter = true; break; }
+          record._line = line;
+          out.push(record);
           if (out.length > limit) break;
         }
       }
     } finally {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
     }
-    const more = !reachedAfter && pos > 0 && scanned >= maxBytes && out.length <= limit;
+    const more = !reachedAfter && position > 0 && scanned >= maxBytes && out.length <= limit;
     const hasMore = out.length > limit;
     if (hasMore) out.pop();
     return { records: out, hasMore, more, scanned };
@@ -2137,22 +2137,22 @@ class RoomStore {
   /** 跨段反向扫描：从现役段到最旧封存段逐段调 _scanBack，结果拼接即全局新→旧
    *  （段内 seq 区间互不重叠且按段序递增）。hasMore/more 的口径与 _scanBack 一致，
    *  拿不准时往 true 标（调用方据此报 truncated，是安全方向）。未分段房间退化为单段直调。 */
-  _scanBackSegs(r, before, limit, maxBytes = 8 * 1024 * 1024, after = 0) {
-    const ranges = this._segRanges(r);
+  _scanBackSegs(room, before, limit, maxBytes = 8 * 1024 * 1024, after = 0) {
+    const ranges = this._segRanges(room);
     const out = [];
     let scanned = 0;
     let hasMore = false;
     let more = false;
-    for (let i = ranges.length - 1; i >= 0; i--) {
-      const seg = ranges[i];
-      if (seg.bytes <= 0) continue;
+    for (let rangeIndex = ranges.length - 1; rangeIndex >= 0; rangeIndex--) {
+      const segment = ranges[rangeIndex];
+      if (segment.bytes <= 0) continue;
       if (out.length >= limit) { hasMore = true; break; }
       if (scanned >= maxBytes) { more = true; break; }
-      const res = this._scanBack(seg.file, before, limit - out.length, maxBytes - scanned, after);
-      scanned += res.scanned || 0;
-      for (const rec of res.records) out.push(rec);
-      if (res.hasMore) { hasMore = true; break; }
-      if (res.more) { more = true; break; }
+      const scanResult = this._scanBack(segment.file, before, limit - out.length, maxBytes - scanned, after);
+      scanned += scanResult.scanned || 0;
+      for (const record of scanResult.records) out.push(record);
+      if (scanResult.hasMore) { hasMore = true; break; }
+      if (scanResult.more) { more = true; break; }
     }
     return { records: out, hasMore, more, scanned };
   }
@@ -2160,74 +2160,74 @@ class RoomStore {
   /** 追加一行到房间缓冲。flush=true 用于低频、必须尽快耐久的通用记录（如 toolmeta）：
    *  立即走一次批量 flush（连同缓冲里的其它记录）并 fsync，不等 200ms 定时器。
    *  房文件到顶（fileCapped）后不再缓冲新记录：重试没有意义，只会把缓冲撑到硬顶再狂丢。 */
-  _writeLine(r, line, { flush = false } = {}) {
+  _writeLine(room, line, { flush = false } = {}) {
     if (!this.persist) return;
-    if (r.fileCapped) {
-      r.dropped = (r.dropped || 0) + 1;
+    if (room.fileCapped) {
+      room.dropped = (room.dropped || 0) + 1;
       return;
     }
-    if (!r.metaWritten) {
-      r.metaWritten = true;
+    if (!room.metaWritten) {
+      room.metaWritten = true;
       // metaExtra 为空时与旧写法逐字节一致；有未知字段（如 enc 世代）才追加在标准字段之后。
       // reset() 换代不清 metaExtra：新世代的 meta 行继续带这些字段（设计 §5：不许借 reset 洗掉 enc）。
-      const metaObj = { k: "meta", seq: 0, rev: r.rev, headTruncated: r.headTruncated || undefined };
-      if (r.metaExtra) Object.assign(metaObj, r.metaExtra);
-      const metaLine = JSON.stringify(metaObj);
-      r.metaLine = metaLine;
-      r.buf.push(metaLine);
+      const metadataRecord = { k: "meta", seq: 0, rev: room.rev, headTruncated: room.headTruncated || undefined };
+      if (room.metaExtra) Object.assign(metadataRecord, room.metaExtra);
+      const metaLine = JSON.stringify(metadataRecord);
+      room.metaLine = metaLine;
+      room.buf.push(metaLine);
     }
-    r.buf.push(line);
-    if (flush) this._flush(r, { sync: true });
-    else this._scheduleFlush(r);
+    room.buf.push(line);
+    if (flush) this._flush(room, { sync: true });
+    else this._scheduleFlush(room);
   }
 
   /** Store one encrypted message record (design section 4.1): the envelope is
    *  written verbatim — nonce/ct are never re-generated relay-side — the room
    *  anchors track its keyed h, and a user envelope supersedes the earliest
    *  pending remote with the same h. */
-  _pushEnvelope(r, env) {
-    r.seq += 1;
-    const entry = { k: "msg", seq: r.seq, h: env.h, json: envelopeFrameJson(env) };
-    this._cachePush(r, entry);
-    r.lastMsgHash = env.h;
-    if (!r.firstMsgHash) r.firstMsgHash = env.h;
-    r.msgCount += 1;
-    const rec = { k: "msg", seq: r.seq, enc: 1, role: env.role, h: env.h, ct: env.ct };
-    this._writeLine(r, JSON.stringify(rec));
-    if (env.role === "user") this._supersedeRemoteByH(r, env.h);
+  _pushEnvelope(room, envelope) {
+    room.seq += 1;
+    const entry = { k: "msg", seq: room.seq, h: envelope.h, json: envelopeFrameJson(envelope) };
+    this._cachePush(room, entry);
+    room.lastMsgHash = envelope.h;
+    if (!room.firstMsgHash) room.firstMsgHash = envelope.h;
+    room.msgCount += 1;
+    const record = { k: "msg", seq: room.seq, enc: 1, role: envelope.role, h: envelope.h, ct: envelope.ct };
+    this._writeLine(room, JSON.stringify(record));
+    if (envelope.role === "user") this._supersedeRemoteByH(room, envelope.h);
     return entry;
   }
 
   /** Seed/append dispatch: snapshot items are envelopes for enc rooms and
    *  plaintext messages otherwise; each keeps its own storage form. */
-  _pushItem(r, item) {
-    return isEnvelope(item) ? this._pushEnvelope(r, item) : this._pushMsg(r, item);
+  _pushItem(room, item) {
+    return isEnvelope(item) ? this._pushEnvelope(room, item) : this._pushMsg(room, item);
   }
 
-  _pushMsg(r, m, json) {
-    r.seq += 1;
-    const j = json || JSON.stringify(m);
-    const entry = { k: "msg", seq: r.seq, json: j };
-    this._cachePush(r, entry);
-    const h = hashOf(m);
-    r.lastMsgHash = h;
-    if (!r.firstMsgHash) r.firstMsgHash = h;
-    r.msgCount += 1;
-    this._writeLine(r, `{"k":"msg","seq":${r.seq},"m":${j}}`);
+  _pushMsg(room, message, json) {
+    room.seq += 1;
+    const serializedJson = json || JSON.stringify(message);
+    const entry = { k: "msg", seq: room.seq, json: serializedJson };
+    this._cachePush(room, entry);
+    const messageHash = hashOf(message);
+    room.lastMsgHash = messageHash;
+    if (!room.firstMsgHash) room.firstMsgHash = messageHash;
+    room.msgCount += 1;
+    this._writeLine(room, `{"k":"msg","seq":${room.seq},"m":${serializedJson}}`);
     // 快照追加进来的 user 消息同样要盖掉 remote 回显：message_end 丢了时，只靠 record() 会留下一条永远在的回显
-    if (m && m.role === "user") this._supersedeRemote(r, contentText(m));
+    if (message && message.role === "user") this._supersedeRemote(room, contentText(message));
     return entry;
   }
 
-  _scheduleFlush(r) {
+  _scheduleFlush(room) {
     // 批量满 200 条立即落盘并 fsync；否则 200ms 定时 flush（同样 fsync）。不是每个 delta。
-    if (r.buf.length >= FLUSH_BATCH) this._flush(r, { sync: true });
-    else if (!r.timer) {
-      r.timer = setTimeout(() => {
-        r.timer = null;
-        this._flush(r, { sync: true });
+    if (room.buf.length >= FLUSH_BATCH) this._flush(room, { sync: true });
+    else if (!room.timer) {
+      room.timer = setTimeout(() => {
+        room.timer = null;
+        this._flush(room, { sync: true });
       }, this.flushIntervalMs);
-      if (r.timer.unref) r.timer.unref();
+      if (room.timer.unref) room.timer.unref();
     }
   }
 
@@ -2239,8 +2239,8 @@ class RoomStore {
       fd = fs.openSync(file, "r+");
       fs.fsyncSync(fd);
       return true;
-    } catch (e) {
-      console.warn("[store] fsync 失败（已写入页缓存；进程崩溃不丢，断电可能丢）:", file, e.message);
+    } catch (fsyncError) {
+      console.warn("[store] fsync 失败（已写入页缓存；进程崩溃不丢，断电可能丢）:", file, fsyncError.message);
       return false;
     } finally {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
@@ -2257,10 +2257,10 @@ class RoomStore {
       fd = fs.openSync(dir, "r");
       fs.fsyncSync(fd);
       return true;
-    } catch (e) {
+    } catch (dirFsyncError) {
       if (!this._dirFsyncWarned) {
         this._dirFsyncWarned = true;
-        console.warn("[store] 目录 fsync 失败（目录项耐久降级为尽力而为）:", dir, e.message);
+        console.warn("[store] 目录 fsync 失败（目录项耐久降级为尽力而为）:", dir, dirFsyncError.message);
       }
       return false;
     } finally {
@@ -2271,23 +2271,23 @@ class RoomStore {
   /** 目录项耐久的重试入口：成功一次就标 dirSynced；失败按退避重试，**绝不再"一次失败就永久算已同步"**。
    *  force=true 用于刚完成 rename 的指针写：即使这个房间此前目录项已同步过，这次 rename 的目录项
    *  也要单独落盘（否则掉电后指针可能"复活"成上一代）。 */
-  _syncRoomDir(r, { force = false } = {}) {
+  _syncRoomDir(room, { force = false } = {}) {
     const now = this._now();
-    if (!force && r.dirSynced) return true;
-    if (!force && r._dirSyncRetryAt && now < r._dirSyncRetryAt) return false;
-    if (this._fsyncDir(r.dir || path.dirname(r.file))) {
-      r.dirSynced = true;
-      r._dirSyncRetryAt = 0;
-      r._dirSyncTries = 0;
+    if (!force && room.dirSynced) return true;
+    if (!force && room._dirSyncRetryAt && now < room._dirSyncRetryAt) return false;
+    if (this._fsyncDir(room.dir || path.dirname(room.file))) {
+      room.dirSynced = true;
+      room._dirSyncRetryAt = 0;
+      room._dirSyncTries = 0;
       return true;
     }
-    r.dirSynced = false;
-    r._dirSyncTries = (r._dirSyncTries || 0) + 1;
+    room.dirSynced = false;
+    room._dirSyncTries = (room._dirSyncTries || 0) + 1;
     const delay = Math.min(
       DIR_FSYNC_RETRY_MAX_MS,
-      DIR_FSYNC_RETRY_MIN_MS * 2 ** Math.min(r._dirSyncTries - 1, 6),
+      DIR_FSYNC_RETRY_MIN_MS * 2 ** Math.min(room._dirSyncTries - 1, 6),
     );
-    r._dirSyncRetryAt = now + delay;
+    room._dirSyncRetryAt = now + delay;
     return false;
   }
 
@@ -2299,13 +2299,13 @@ class RoomStore {
   _cleanupOrphanTemps() {
     const dirs = [this.dir];
     try {
-      for (const d of fs.readdirSync(this.dir, { withFileTypes: true })) {
-        if (!d.isDirectory()) continue;
-        const devDir = path.join(this.dir, d.name);
-        dirs.push(devDir);
+      for (const deviceSegmentEntry of fs.readdirSync(this.dir, { withFileTypes: true })) {
+        if (!deviceSegmentEntry.isDirectory()) continue;
+        const deviceSegmentDir = path.join(this.dir, deviceSegmentEntry.name);
+        dirs.push(deviceSegmentDir);
         try {
-          for (const w of fs.readdirSync(devDir, { withFileTypes: true })) {
-            if (w.isDirectory()) dirs.push(path.join(devDir, w.name));
+          for (const workspaceEntry of fs.readdirSync(deviceSegmentDir, { withFileTypes: true })) {
+            if (workspaceEntry.isDirectory()) dirs.push(path.join(deviceSegmentDir, workspaceEntry.name));
           }
         } catch {}
       }
@@ -2338,15 +2338,15 @@ class RoomStore {
 
   /** 记一笔刚落盘成功的行（清单条目统计）：行数 + 首尾 seq（msg/remote 才有真 seq）。
    *  只许在 _appendBatch 确认整行写完后调用；部分落盘按 writtenLines 切片调用。 */
-  _noteAppended(r, batchLines) {
+  _noteAppended(room, batchLines) {
     if (!batchLines || !batchLines.length) return;
-    if (r._segLines >= 0) r._segLines += batchLines.length;
+    if (room._segLines >= 0) room._segLines += batchLines.length;
     for (const line of batchLines) {
-      const m = /^\{"k":"(?:msg|remote)","seq":(\d+)/.exec(line);
-      if (!m) continue;
-      const seq = Number(m[1]);
-      if (!r._segFirstSeq) r._segFirstSeq = seq;
-      if (seq > r._segLastSeq) r._segLastSeq = seq;
+      const seqMatch = /^\{"k":"(?:msg|remote)","seq":(\d+)/.exec(line);
+      if (!seqMatch) continue;
+      const sequenceNumber = Number(seqMatch[1]);
+      if (!room._segFirstSeq) room._segFirstSeq = sequenceNumber;
+      if (sequenceNumber > room._segLastSeq) room._segLastSeq = sequenceNumber;
     }
   }
 
@@ -2354,24 +2354,24 @@ class RoomStore {
    *  恰好一一对应（缓冲已排空）。封存时这份快照就是被封存前缀的状态，直接进清单，
    *  冷打开不必重扫封存段。出现过部分落盘/缓冲残留时内存与盘面不再对齐（_diskStateStale），
    *  封存改走 _rebuildSegState 重扫兜底，绝不用过期状态冒充。 */
-  _captureDiskState(r) {
+  _captureDiskState(room) {
     // 索引不完整的房间内存状态缺尾巴：捕获了会在封存时把缺失记录冒充成盘面状态，绝不许。
-    if (!this.persist || this.segmentMaxBytes <= 0 || r.fileCapped || r._indexFailed || r.indexPartial) return;
-    r._diskState = this._statePayload(r);
-    r._diskStateStale = false;
+    if (!this.persist || this.segmentMaxBytes <= 0 || room.fileCapped || room._indexFailed || room.indexPartial) return;
+    room._diskState = this._statePayload(room);
+    room._diskStateStale = false;
   }
 
   /** 封存兜底：没有可信的 _diskState 时（重启后第一次封存、或出现过部分落盘），
    *  把全部封存段 + 当前现役段按序重扫进暂存房间，取其聚合状态。慢但罕见且有界（≤总量上限）。 */
-  _rebuildSegState(r) {
-    const scratch = this._newRoom(r.id, r.file);
-    scratch.dir = r.dir;
-    scratch.segs = r.segs.map((s) => ({ ...s }));
-    scratch.sealedBytes = r.sealedBytes;
-    let ctx = this._newIndexCtx();
-    ctx = this._scanVirtual(scratch, 0, ctx);
-    this._finishIndex(scratch, ctx);
-    if (!scratch.rev) scratch.rev = r.rev;
+  _rebuildSegState(room) {
+    const scratch = this._newRoom(room.id, room.file);
+    scratch.dir = room.dir;
+    scratch.segs = room.segs.map((sealedSegment) => ({ ...sealedSegment }));
+    scratch.sealedBytes = room.sealedBytes;
+    let indexContext = this._newIndexCtx();
+    indexContext = this._scanVirtual(scratch, 0, indexContext);
+    this._finishIndex(scratch, indexContext);
+    if (!scratch.rev) scratch.rev = room.rev;
     return this._statePayload(scratch);
   }
 
@@ -2379,53 +2379,53 @@ class RoomStore {
    *  现役段补 events 用。 */
   _countLines(file) {
     let fd;
-    let n = 0;
+    let newlineCount = 0;
     try {
       fd = fs.openSync(file, "r");
       const buf = Buffer.alloc(1024 * 1024);
-      let got;
-      while ((got = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
-        for (let i = 0; i < got; i++) if (buf[i] === 0x0a) n++;
+      let bytesRead;
+      while ((bytesRead = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
+        for (let byteIndex = 0; byteIndex < bytesRead; byteIndex++) if (buf[byteIndex] === 0x0a) newlineCount++;
       }
     } catch {}
     finally {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
     }
-    return n;
+    return newlineCount;
   }
 
   /** 封存现役段：现役文件改名为 <room>.<NNNN>.jsonl，清单追加该段条目并原子落盘，
    *  后续追加自然在新现役文件上继续。前置条件：调用点保证盘面状态与 _diskState
    *  （或重扫结果）严格对齐——_appendBatch 写新批之前调用，待写批次还在缓冲里，
    *  不属于被封存前缀。顺序：先 fsync 现役文件（内容耐久）→ rename → fsync 目录
-   *  （改名耐久）→ 写清单（tmp+rename）。崩溃在 rename 后、清单前：清单缺这一段条目，
+   *  （改名耐久）→ 写清单（temporaryFile+rename）。崩溃在 rename 后、清单前：清单缺这一段条目，
    *  冷打开时该段按"无 state"重扫，不丢数据。 */
-  _sealSegment(r) {
+  _sealSegment(room) {
     let size = 0;
-    try { size = fs.statSync(r.file).size; } catch { return false; }
+    try { size = fs.statSync(room.file).size; } catch { return false; }
     if (size <= 0) return false;
-    const n = r.segs.length ? r.segs[r.segs.length - 1].n + 1 : 1;
-    const name = `${r.id}.${String(n).padStart(4, "0")}.jsonl`;
-    const dest = path.join(r.dir, name);
-    const state = !r._diskStateStale && r._diskState ? r._diskState : this._rebuildSegState(r);
+    const nextSegmentNumber = room.segs.length ? room.segs[room.segs.length - 1].n + 1 : 1;
+    const name = `${room.id}.${String(nextSegmentNumber).padStart(4, "0")}.jsonl`;
+    const dest = path.join(room.dir, name);
+    const state = !room._diskStateStale && room._diskState ? room._diskState : this._rebuildSegState(room);
     const entry = {
       file: name,
       bytes: size,
-      events: r._segLines >= 0 ? r._segLines : this._countLines(r.file),
-      firstSeq: r._segFirstSeq || 0,
-      lastSeq: r._segLastSeq || state.maxSeq || 0,
+      events: room._segLines >= 0 ? room._segLines : this._countLines(room.file),
+      firstSeq: room._segFirstSeq || 0,
+      lastSeq: room._segLastSeq || state.maxSeq || 0,
       state,
     };
-    this._fsyncFile(r.file);
-    fs.renameSync(r.file, dest);
-    this._fsyncDir(r.dir);
-    r.segs.push({ n, name, file: dest, bytes: size });
-    r.sealedBytes += size;
-    r._manifestEntries[r.segs.length - 1] = entry;
-    r._segLines = 0;
-    r._segFirstSeq = 0;
-    r._segLastSeq = 0;
-    this._writeManifest(r);
+    this._fsyncFile(room.file);
+    fs.renameSync(room.file, dest);
+    this._fsyncDir(room.dir);
+    room.segs.push({ n: nextSegmentNumber, name, file: dest, bytes: size });
+    room.sealedBytes += size;
+    room._manifestEntries[room.segs.length - 1] = entry;
+    room._segLines = 0;
+    room._segFirstSeq = 0;
+    room._segLastSeq = 0;
+    this._writeManifest(room);
     return true;
   }
 
@@ -2437,10 +2437,10 @@ class RoomStore {
    *  - 这一批会越过 maxRoomFileBytes 时整批拒写（tooLarge）：房文件本体的硬上限（分段后按
    *    全段总和判），不写出半条记录；
    *  - 现役段写满 segmentMaxBytes 时先封存再写（整批不越过段界，一条记录不跨段）；
-   *    返回的 off/size 恒为现役段内的局部偏移，检查点的虚拟偏移由调用方加 r.sealedBytes。
+   *    返回的 off/size 恒为现役段内的局部偏移，检查点的虚拟偏移由调用方加 room.sealedBytes。
    */
-  _appendBatch(r, data, lineCount) {
-    if (fs.existsSync(r.file) && !this._repairTail(r)) {
+  _appendBatch(room, data, lineCount) {
+    if (fs.existsSync(room.file) && !this._repairTail(room)) {
       return { ok: false, off: 0, error: new Error("文件末尾没有完整换行，拒绝追加（防粘行）"), writtenLines: 0, partial: false };
     }
     let fd;
@@ -2448,15 +2448,15 @@ class RoomStore {
     let haveOff = false;
     let written = 0;
     try {
-      fd = fs.openSync(r.file, "a+");
+      fd = fs.openSync(room.file, "a+");
       off = fs.fstatSync(fd).size;
       haveOff = true;
-      if (this.maxRoomFileBytes > 0 && r.sealedBytes + off + data.length > this.maxRoomFileBytes) {
+      if (this.maxRoomFileBytes > 0 && room.sealedBytes + off + data.length > this.maxRoomFileBytes) {
         return {
           ok: false,
           off,
           tooLarge: true,
-          error: new Error(`房文件将超过上限 ${this.maxRoomFileBytes} 字节（当前 ${r.sealedBytes + off} + ${data.length}）`),
+          error: new Error(`房文件将超过上限 ${this.maxRoomFileBytes} 字节（当前 ${room.sealedBytes + off} + ${data.length}）`),
           writtenLines: 0,
           partial: false,
         };
@@ -2468,28 +2468,28 @@ class RoomStore {
         fd = undefined;
         haveOff = false;
         let sealed = false;
-        try { sealed = this._sealSegment(r); } catch {}
+        try { sealed = this._sealSegment(room); } catch {}
         // 封存失败（rename 异常等）：不丢数据优先，继续往现役段写，下一批再试封存。
-        fd = fs.openSync(r.file, "a+");
+        fd = fs.openSync(room.file, "a+");
         off = sealed ? 0 : fs.fstatSync(fd).size;
         haveOff = true;
       }
       while (written < data.length) {
-        const n = fs.writeSync(fd, data, written, data.length - written);
-        if (!(n > 0)) throw new Error("writeSync 未写入任何字节");
-        written += n;
+        const bytesWritten = fs.writeSync(fd, data, written, data.length - written);
+        if (!(bytesWritten > 0)) throw new Error("writeSync 未写入任何字节");
+        written += bytesWritten;
       }
       return { ok: true, off, size: off + data.length, writtenLines: lineCount, partial: false };
-    } catch (e) {
+    } catch (writeError) {
       // 已完整写入的行保留（调用方从缓冲里丢掉，避免重写重复）；写了一半的行截掉。
       let complete = 0;
-      for (let i = 0; i < written; i++) if (data[i] === 0x0a) complete++;
+      for (let byteIndex = 0; byteIndex < written; byteIndex++) if (data[byteIndex] === 0x0a) complete++;
       let partial = false;
       // 只有拿到起始偏移后才允许截断：fstat 本身失败时 off 不可信，绝不能把文件截到 0。
       if (fd !== undefined && haveOff) {
         let cut = off;
-        for (let i = written - 1; i >= 0; i--) {
-          if (data[i] === 0x0a) { cut = off + i + 1; break; }
+        for (let byteIndex = written - 1; byteIndex >= 0; byteIndex--) {
+          if (data[byteIndex] === 0x0a) { cut = off + byteIndex + 1; break; }
         }
         try {
           // 失败的系统调用可能留下未计入 written 的字节：一律截回最后一个完整行边界。
@@ -2498,7 +2498,7 @@ class RoomStore {
           partial = true;
         }
       }
-      return { ok: false, off, error: e, writtenLines: complete, partial };
+      return { ok: false, off, error: writeError, writtenLines: complete, partial };
     } finally {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
     }
@@ -2506,26 +2506,26 @@ class RoomStore {
 
   /** 落盘失败后的缓冲硬顶：保留最新一端，丢最旧一端；但钉在缓冲里的 meta 行永不丢
    *  （丢了 metaWritten 仍是 true，重启后 rev 对不上、被删回显复活）。 */
-  _trimBuffer(r, drop) {
+  _trimBuffer(room, drop) {
     let removed = 0;
-    while (removed < drop && r.buf.length > 1) {
-      const i = r.buf[0] === r.metaLine ? 1 : 0;
-      if (i >= r.buf.length) break;
-      r.buf.splice(i, 1);
+    while (removed < drop && room.buf.length > 1) {
+      const dropIndex = room.buf[0] === room.metaLine ? 1 : 0;
+      if (dropIndex >= room.buf.length) break;
+      room.buf.splice(dropIndex, 1);
       removed++;
     }
     if (removed) {
-      r.dropped = (r.dropped || 0) + removed;
-      console.error(`[store] 房间 ${r.id} 落盘持续失败，丢弃最旧 ${removed} 条缓冲（累计 ${r.dropped}）`);
+      room.dropped = (room.dropped || 0) + removed;
+      console.error(`[store] 房间 ${room.id} 落盘持续失败，丢弃最旧 ${removed} 条缓冲（累计 ${room.dropped}）`);
     }
   }
 
   /** Tell the optional cap-state observer that a room crossed a cap
    *  threshold (soft warning or hard cap). Observer errors never break the
    *  write path: this is a presentation hook, not part of persistence. */
-  _notifyCapState(r) {
+  _notifyCapState(room) {
     if (typeof this.onCapState !== "function") return;
-    try { this.onCapState(r.id); } catch {}
+    try { this.onCapState(room.id); } catch {}
   }
 
   /** Soft warning at ROOM_FILE_WARN_RATIO of the cap: after a successful
@@ -2534,94 +2534,94 @@ class RoomStore {
    *  Writing continues; only the hard cap stops persistence. A room loaded
    *  from disk already past the warning point warns on its next append --
    *  the latch is per generation, same discipline as _capWarned. */
-  _noteCapWarn(r) {
-    if (!this.persist || this.maxRoomFileBytes <= 0 || r.fileCapped || r.capWarned) return;
-    let total = r.sealedBytes || 0;
-    try { total += fs.statSync(r.file).size; } catch { return; }
+  _noteCapWarn(room) {
+    if (!this.persist || this.maxRoomFileBytes <= 0 || room.fileCapped || room.capWarned) return;
+    let total = room.sealedBytes || 0;
+    try { total += fs.statSync(room.file).size; } catch { return; }
     if (total < Math.floor(this.maxRoomFileBytes * ROOM_FILE_WARN_RATIO)) return;
-    r.capWarned = true;
+    room.capWarned = true;
     console.error(
-      `[store] 房间 ${r.id} 房文件已达上限的 ${Math.round(ROOM_FILE_WARN_RATIO * 100)}%` +
+      `[store] 房间 ${room.id} 房文件已达上限的 ${Math.round(ROOM_FILE_WARN_RATIO * 100)}%` +
         `（${total} / ${this.maxRoomFileBytes} 字节）：继续落盘，达到上限后将停止保存新记录`,
     );
-    this._notifyCapState(r);
+    this._notifyCapState(room);
   }
 
   /** 房文件到达上限：停止落盘。缓冲里的这一批不再写（内存热缓存已有一份），只计数并告警一次。
    *  之后 _writeLine 直接丢弃新记录（seq 照常递增），快照靠 distinct seq 缺口/热缓存标记 truncated。 */
-  _markFileCapped(r) {
-    const dropped = r.buf.length;
-    r.buf = [];
-    r.metaLine = null;
-    r.fileCapped = true;
-    if (dropped) r.dropped = (r.dropped || 0) + dropped;
-    if (!r._capWarned) {
-      r._capWarned = true;
+  _markFileCapped(room) {
+    const dropped = room.buf.length;
+    room.buf = [];
+    room.metaLine = null;
+    room.fileCapped = true;
+    if (dropped) room.dropped = (room.dropped || 0) + dropped;
+    if (!room._capWarned) {
+      room._capWarned = true;
       console.error(
-        `[store] 房间 ${r.id} 房文件达到上限 ${this.maxRoomFileBytes} 字节，停止落盘` +
+        `[store] 房间 ${room.id} 房文件达到上限 ${this.maxRoomFileBytes} 字节，停止落盘` +
           `（内存热缓存继续服务；快照会按缺口标记 truncated，重启后旧历史仍可读）`,
       );
     }
-    this._notifyCapState(r);
+    this._notifyCapState(room);
   }
 
   /**
    * 批量追加落盘。sync 默认 true：每次 flush（200ms 定时、满 200 条、seed/尾部补传、
    * 空闲淘汰前、快照前、flushAll 关闭）都在追加后 fsync；store 只在 message_end /
    * remote_message 这类非流式事件上写，delta 根本不进这里，所以不是"每个 delta fsync"。
-   * 代价：硬断电唯一可能丢的是还在 r.buf 里、尚未 flush 的尾部（≤200ms / ≤200 条）；
+   * 代价：硬断电唯一可能丢的是还在 room.buf 里、尚未 flush 的尾部（≤200ms / ≤200 条）；
    * 进程崩溃/重启不丢（writeSync 已交给内核页缓存）。sync=false 只用于测试/调试。
    */
-  _flush(r, { sync = true, allowCkpt = true } = {}) {
-    if (!r.buf.length) return;
-    const batchLines = r.buf;
+  _flush(room, { sync = true, allowCheckpoint = true } = {}) {
+    if (!room.buf.length) return;
+    const batchLines = room.buf;
     const data = Buffer.from(batchLines.join("\n") + "\n", "utf8");
-    const res = this._appendBatch(r, data, batchLines.length);
-    if (res.ok) {
-      r.buf = [];
-      r.metaLine = null;
+    const appendResult = this._appendBatch(room, data, batchLines.length);
+    if (appendResult.ok) {
+      room.buf = [];
+      room.metaLine = null;
       // 清单统计记账 + 盘面状态捕获（此刻内存与盘面严格对齐，见 _captureDiskState）。
-      this._noteAppended(r, batchLines);
-      this._captureDiskState(r);
+      this._noteAppended(room, batchLines);
+      this._captureDiskState(room);
       // 80% soft warning: check the new on-disk total against the cap.
-      this._noteCapWarn(r);
-      const fsyncOk = !sync || this._fsyncFile(r.file);
+      this._noteCapWarn(room);
+      const fsyncSucceeded = !sync || this._fsyncFile(room.file);
       // 新建文件首次成功落盘后同步目录项：内容 fsync 不能保证文件名本身抗掉电。
       // 失败不再是"一次性放弃"：_syncRoomDir 保持 dirSynced=false 并按退避在后续 flush 重试。
-      if (fsyncOk && sync && !r.dirSynced) this._syncRoomDir(r);
-      if (allowCkpt && fsyncOk) this._maybeCheckpoint(r);
+      if (fsyncSucceeded && sync && !room.dirSynced) this._syncRoomDir(room);
+      if (allowCheckpoint && fsyncSucceeded) this._maybeCheckpoint(room);
       return;
     }
-    if (res.tooLarge) {
+    if (appendResult.tooLarge) {
       // 房文件到顶不是临时写失败：重试永远不会成功，重试只会让缓冲涨到硬顶再狂丢。
-      this._markFileCapped(r);
+      this._markFileCapped(room);
       return;
     }
     // 落盘失败不能影响实时流；保留没写完的缓冲稍后重试。
     // 已经完整写入的行从缓冲前面移除（不能整批重写，否则文件里出现重复记录）。
-    console.warn("[store] 落盘失败（稍后重试）:", r.id, res.error && res.error.message);
+    console.warn("[store] 落盘失败（稍后重试）:", room.id, appendResult.error && appendResult.error.message);
     // 部分落盘/缓冲残留：内存与盘面不再严格对齐，封存时不许用 _diskState 冒充（走重扫兜底）。
-    r._diskStateStale = true;
-    if (res.writtenLines) {
-      const done = r.buf.splice(0, res.writtenLines);
-      this._noteAppended(r, done);
-      if (r.metaLine && done.includes(r.metaLine)) r.metaLine = null;
+    room._diskStateStale = true;
+    if (appendResult.writtenLines) {
+      const done = room.buf.splice(0, appendResult.writtenLines);
+      this._noteAppended(room, done);
+      if (room.metaLine && done.includes(room.metaLine)) room.metaLine = null;
     }
     // 缓冲必须有硬顶（条数 + 字节），磁盘满/权限异常时持续失败不能把 relay 拖到 OOM。
-    let keep = r.buf.length;
+    let keep = room.buf.length;
     if (keep > FLUSH_BUF_MAX_COUNT) keep = FLUSH_BUF_MAX_COUNT;
     let bytes = 0;
-    for (let i = r.buf.length - 1, c = 0; i >= 0; i--, c++) {
-      bytes += r.buf[i].length + 1;
-      if (bytes > FLUSH_BUF_MAX_BYTES || c + 1 > FLUSH_BUF_MAX_COUNT) { keep = Math.min(keep, c); break; }
+    for (let bufferIndex = room.buf.length - 1, keptFromTail = 0; bufferIndex >= 0; bufferIndex--, keptFromTail++) {
+      bytes += room.buf[bufferIndex].length + 1;
+      if (bytes > FLUSH_BUF_MAX_BYTES || keptFromTail + 1 > FLUSH_BUF_MAX_COUNT) { keep = Math.min(keep, keptFromTail); break; }
     }
-    if (keep < r.buf.length) this._trimBuffer(r, r.buf.length - keep);
-    if (!r.timer) {
-      r.timer = setTimeout(() => {
-        r.timer = null;
-        this._flush(r);
+    if (keep < room.buf.length) this._trimBuffer(room, room.buf.length - keep);
+    if (!room.timer) {
+      room.timer = setTimeout(() => {
+        room.timer = null;
+        this._flush(room);
       }, 1000);
-      if (r.timer.unref) r.timer.unref();
+      if (room.timer.unref) room.timer.unref();
     }
   }
 
@@ -2632,64 +2632,64 @@ class RoomStore {
   _packRecent(recent) {
     if (!recent.length) return [];
     let start = Math.max(0, recent.length - CKPT_RECENT_MAX);
-    let msgs = 0;
-    for (let i = recent.length - 1; i >= start; i--) if (recent[i].k === "msg") msgs++;
-    while (start > 0 && msgs < CKPT_RECENT_MIN_MSGS) {
+    let messageCount = 0;
+    for (let entryIndex = recent.length - 1; entryIndex >= start; entryIndex--) if (recent[entryIndex].k === "msg") messageCount++;
+    while (start > 0 && messageCount < CKPT_RECENT_MIN_MSGS) {
       start--;
-      if (recent[start].k === "msg") msgs++;
+      if (recent[start].k === "msg") messageCount++;
     }
     const picked = recent.slice(start);
     let bytes = 0;
-    for (const e of picked) bytes += e.json.length;
+    for (const cacheEntry of picked) bytes += cacheEntry.json.length;
     while (bytes > CKPT_RECENT_MAX_BYTES && picked.length > CKPT_RECENT_MIN_MSGS) {
       bytes -= picked[0].json.length;
       picked.shift();
     }
-    return picked.map((e) => ({ k: e.k, seq: e.seq, j: e.json }));
+    return picked.map((cacheEntry) => ({ k: cacheEntry.k, seq: cacheEntry.seq, j: cacheEntry.json }));
   }
 
   /** 上次检查点因过大被拒后的冷却期内，直接跳过（不整包 stringify、不写盘、不打日志）。 */
-  _ckptCooling(r) {
-    if (!r._ckptReject) return false;
-    return this._now() - r._ckptReject.at < this.ckptRejectCooldownMs;
+  _ckptCooling(room) {
+    if (!room._ckptReject) return false;
+    return this._now() - room._ckptReject.at < this.ckptRejectCooldownMs;
   }
 
   /** 到点才写：文件够大、且距上一个检查点又长了 ckptIntervalBytes。
    *  全量扫描后的首次写入用 minBytes:0（旧文件无论大小都补一个）；运行时默认走 ckptMinBytes。 */
-  _maybeCheckpoint(r, { minBytes = this.ckptMinBytes } = {}) {
-    if (!this.persist || r._ckptWriting || r._indexFailed || r.fileCapped) return false;
-    if (this._ckptCooling(r)) return false;
-    if (!r.seq && !r.msgCount) return false;
+  _maybeCheckpoint(room, { minBytes = this.ckptMinBytes } = {}) {
+    if (!this.persist || room._ckptWriting || room._indexFailed || room.fileCapped) return false;
+    if (this._ckptCooling(room)) return false;
+    if (!room.seq && !room.msgCount) return false;
     // 大小与间隔都按虚拟口径：全段总字节、上个检查点的虚拟 end（分段前后语义一致）。
-    let size = r.sealedBytes || 0;
-    try { size += fs.statSync(r.file).size; } catch { return false; }
+    let size = room.sealedBytes || 0;
+    try { size += fs.statSync(room.file).size; } catch { return false; }
     if (size <= 0 || size < minBytes) return false;
-    if (r.ckpt && size - r.ckpt.end < this.ckptIntervalBytes) return false;
-    return this._writeCheckpoint(r);
+    if (room.ckpt && size - room.ckpt.end < this.ckptIntervalBytes) return false;
+    return this._writeCheckpoint(room);
   }
 
   /** 房文件末尾追加一行 {k:"ckpt",...}（含完整聚合状态 + 有界热缓存 + pending + superseded），
    *  fsync 成功后才原子更新 <room>.ckpt.json 指针。顺序保证任何时刻崩溃：旧指针仍指向旧检查点，
    *  多出来的 ckpt 行会被后续扫描当未知记录忽略。 */
-  _writeCheckpoint(r) {
-    if (!this.persist || r._ckptWriting || r._indexFailed || r.fileCapped) return false;
-    if (this._ckptCooling(r)) return false; // 直接调用（测试/内部）也遵守冷却，避免绕过限频
-    if (!r.rev || (!r.seq && !r.msgCount)) return false;
-    r._ckptWriting = true;
+  _writeCheckpoint(room) {
+    if (!this.persist || room._ckptWriting || room._indexFailed || room.fileCapped) return false;
+    if (this._ckptCooling(room)) return false; // 直接调用（测试/内部）也遵守冷却，避免绕过限频
+    if (!room.rev || (!room.seq && !room.msgCount)) return false;
+    room._ckptWriting = true;
     try {
       // 先落缓冲：检查点聚合的是"文件里已存在的记录 + 热缓存状态"，不能指向缺尾巴的状态。
-      this._flush(r, { sync: true, allowCkpt: false });
-      if (r.buf.length) return false; // 落盘失败，别写指向不完整状态的检查点
-      const payload = JSON.stringify(this._statePayload(r));
+      this._flush(room, { sync: true, allowCheckpoint: false });
+      if (room.buf.length) return false; // 落盘失败，别写指向不完整状态的检查点
+      const payload = JSON.stringify(this._statePayload(room));
       const lineBuf = Buffer.from(payload + "\n", "utf8");
       if (lineBuf.length > this.ckptPayloadMaxBytes) {
         const now = this._now();
-        r._ckptReject = { at: now, bytes: lineBuf.length };
+        room._ckptReject = { at: now, bytes: lineBuf.length };
         // 日志也限频：冷却期内不会重试，正常情况下每次拒绝最多一行；注入时钟/手动调用也不刷屏。
-        if (now - r._ckptRejectWarnAt >= this.ckptRejectCooldownMs) {
-          r._ckptRejectWarnAt = now;
+        if (now - room._ckptRejectWarnAt >= this.ckptRejectCooldownMs) {
+          room._ckptRejectWarnAt = now;
           console.warn(
-            `[store] 房间 ${r.id} 检查点过大（${lineBuf.length} 字节 > ${this.ckptPayloadMaxBytes}），` +
+            `[store] 房间 ${room.id} 检查点过大（${lineBuf.length} 字节 > ${this.ckptPayloadMaxBytes}），` +
               `跳过并在 ${Math.ceil(this.ckptRejectCooldownMs / 1000)}s 内不再重试`,
           );
         }
@@ -2697,63 +2697,63 @@ class RoomStore {
       }
       const started = Date.now();
       // 检查点行也是追加写：同样要防半截写入。失败时已写完整的行不会重复、残行会被截掉。
-      const appended = this._appendBatch(r, lineBuf, 1);
+      const appended = this._appendBatch(room, lineBuf, 1);
       if (!appended.ok) {
-        if (appended.tooLarge) this._markFileCapped(r);
-        console.warn("[store] 写检查点行失败（继续按文件追加/全量扫描）:", r.id, appended.error && appended.error.message);
+        if (appended.tooLarge) this._markFileCapped(room);
+        console.warn("[store] 写检查点行失败（继续按文件追加/全量扫描）:", room.id, appended.error && appended.error.message);
         return false;
       }
       // fsync 失败时不推进指针：旧指针仍然有效，绝不能让指针指向可能断电丢失的行。
-      if (!this._fsyncFile(r.file)) return false;
-      this._noteAppended(r, [payload]);
+      if (!this._fsyncFile(room.file)) return false;
+      this._noteAppended(room, [payload]);
       // _appendBatch 可能先修掉了残行，偏移必须用它回报的起点；指针存虚拟偏移
       // （封存段总字节 + 段内偏移），分段前后同一口径（见 _readCheckpoint）。
-      const off = r.sealedBytes + appended.off;
+      const off = room.sealedBytes + appended.off;
       const sum = sha1(Buffer.from(payload, "utf8"));
-      const ptr = { v: CKPT_VERSION, room: r.id, rev: r.rev, off, len: lineBuf.length, sum, at: Date.now() };
-      if (!this._writeCheckpointPointer(r, ptr)) return false;
-      r.ckpt = { off, len: lineBuf.length, end: off + lineBuf.length, sum };
-      r._ckptReject = null;
-      r._ckptRejectWarnAt = 0;
-      const ms = Date.now() - started;
-      if (ms > 200) console.warn(`[store] 房间 ${r.id} 写检查点较慢：${lineBuf.length} 字节 ${ms}ms`);
+      const pointer = { v: CKPT_VERSION, room: room.id, rev: room.rev, off, len: lineBuf.length, sum, at: Date.now() };
+      if (!this._writeCheckpointPointer(room, pointer)) return false;
+      room.ckpt = { off, len: lineBuf.length, end: off + lineBuf.length, sum };
+      room._ckptReject = null;
+      room._ckptRejectWarnAt = 0;
+      const elapsedMs = Date.now() - started;
+      if (elapsedMs > 200) console.warn(`[store] 房间 ${room.id} 写检查点较慢：${lineBuf.length} 字节 ${elapsedMs}ms`);
       return true;
-    } catch (e) {
-      console.warn("[store] 写检查点失败（继续按文件追加/全量扫描）:", r.id, e.message);
+    } catch (checkpointError) {
+      console.warn("[store] 写检查点失败（继续按文件追加/全量扫描）:", room.id, checkpointError.message);
       return false;
     } finally {
-      r._ckptWriting = false;
+      room._ckptWriting = false;
     }
   }
 
   /** 指针文件先写临时文件 + fsync + rename，避免半截 JSON 被当成有效指针。 */
-  _writeCheckpointPointer(r, ptr) {
-    const file = this._ckptFile(r.id);
-    const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  _writeCheckpointPointer(room, pointer) {
+    const file = this._ckptFile(room.id);
+    const temporaryFile = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
     let fd;
     try {
-      fd = fs.openSync(tmp, "w");
-      fs.writeFileSync(fd, JSON.stringify(ptr) + "\n", "utf8");
+      fd = fs.openSync(temporaryFile, "w");
+      fs.writeFileSync(fd, JSON.stringify(pointer) + "\n", "utf8");
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = undefined;
-      fs.renameSync(tmp, file);
+      fs.renameSync(temporaryFile, file);
       // rename 的目录项也要持久化。force：即使这个房间此前目录项已同步过，这次 rename 的
       // 目录项也必须单独落盘；失败时 dirSynced 保持 false，后续 flush 会按退避重试。
-      this._syncRoomDir(r, { force: true });
+      this._syncRoomDir(room, { force: true });
       return true;
-    } catch (e) {
-      console.warn("[store] 写检查点指针失败（保留旧指针）:", r.id, e.message);
-      try { fs.unlinkSync(tmp); } catch {}
+    } catch (pointerError) {
+      console.warn("[store] 写检查点指针失败（保留旧指针）:", room.id, pointerError.message);
+      try { fs.unlinkSync(temporaryFile); } catch {}
       return false;
     } finally {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
     }
   }
 
-  _removeCheckpointPointer(id) {
+  _removeCheckpointPointer(roomId) {
     let removed = false;
-    const file = this._ckptFile(id);
+    const file = this._ckptFile(roomId);
     try { fs.unlinkSync(file); removed = true; } catch {}
     // 删除目录项也要同步：掉电后旧指针不能"复活"。旧指针有 rev/sha1 校验，最坏只多一次全量扫描。
     if (removed) this._fsyncDir(path.dirname(file));
@@ -2766,11 +2766,11 @@ class RoomStore {
    *  待扫字节（总量 − 起点覆盖）不够 prewarmMinBytes 的不预热。 */
   _prewarmAll() {
     const jobs = [];
-    for (const { id, layout } of this._enumerateLayouts()) {
+    for (const { id: roomId, layout } of this._enumerateLayouts()) {
       if (!layout.exists || layout.total < this.prewarmMinBytes) continue;
-      const base = this._probeBase(id, layout, { quiet: true });
+      const base = this._probeBase(roomId, layout, { quiet: true });
       if (layout.total - base.end < this.prewarmMinBytes) continue;
-      jobs.push({ id, layout, base, size: layout.total, mtimeMs: layout.active.mtimeMs || 0 });
+      jobs.push({ id: roomId, layout, base, size: layout.total, mtimeMs: layout.active.mtimeMs || 0 });
     }
     if (!jobs.length) {
       this._notifyPrewarm();
@@ -2778,7 +2778,7 @@ class RoomStore {
     }
     // 构造器预热不是"把整个 data 目录搬进内存"：最多保留 prewarmMaxRooms 个索引。
     // 按 mtime 从新到旧排，优先预热最近活跃的房间（最可能被马上打开），其余首次打开按大小索引。
-    jobs.sort((a, b) => b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
+    jobs.sort((left, right) => right.mtimeMs - left.mtimeMs || left.id.localeCompare(right.id));
     if (jobs.length > this.prewarmMaxRooms) {
       console.warn(
         `[store] 待预热房间 ${jobs.length} 个，超过上限 ${this.prewarmMaxRooms}，只预热最近活跃的 ${this.prewarmMaxRooms} 个`,
@@ -2796,8 +2796,8 @@ class RoomStore {
           if (flying) { await flying.promise; continue; }
           try {
             await this._startIndexJob(spec.id, spec.layout, spec.base).promise;
-          } catch (e) {
-            console.warn("[store] 房间预热异常（首次打开时重新索引）:", spec.id, e.message);
+          } catch (prewarmError) {
+            console.warn("[store] 房间预热异常（首次打开时重新索引）:", spec.id, prewarmError.message);
           }
         }
       } finally {
@@ -2816,7 +2816,7 @@ class RoomStore {
     this._dropPrewarmed(roomId);
     // 在飞的异步索引同样作废：否则它落地时会把旧世代的状态移植进新房间/记进 _prewarmed。
     this._cancelIndexJob(roomId);
-    const r = this.rooms.get(roomId);
+    const room = this.rooms.get(roomId);
     // 指针先删：即使随后截断失败，旧指针也不能再把这代历史装回来。
     this._removeCheckpointPointer(roomId);
     const dir = this._roomDir(roomId);
@@ -2828,7 +2828,7 @@ class RoomStore {
         // 封存段与清单整房作废（换代后旧段绝不能被拼回新世代）；现役段截断为 0 而不是删除：
         // rmSync 失败（EACCES/EBUSY）时旧文件还在，新的 seed 会追加到旧文件尾部，
         // 重启后旧分支消息全部"复活"。删段失败同样进 catch，整次 reset 判失败。
-        for (const seg of layout.sealed) fs.unlinkSync(seg.file);
+        for (const segment of layout.sealed) fs.unlinkSync(segment.file);
         try { fs.unlinkSync(this._manifestFile(roomId, dir)); } catch {}
         fs.closeSync(fs.openSync(file, "w"));
         // 换代是可确认的状态转换：fsync 一下，别让断电把截断前的旧分支带回来
@@ -2837,64 +2837,64 @@ class RoomStore {
       } else if (fs.existsSync(file)) {
         // 默认不落盘：没有文件就别创建空文件；旧文件若还在，截断以免换代后被装配回来。
         fs.truncateSync(file, 0);
-        for (const seg of layout.sealed) { try { fs.unlinkSync(seg.file); } catch {} }
+        for (const segment of layout.sealed) { try { fs.unlinkSync(segment.file); } catch {} }
         try { fs.unlinkSync(this._manifestFile(roomId, dir)); } catch {}
       }
-    } catch (e) {
-      console.error("[store] 房间重置失败（旧文件可能残留，禁止继续 seed）:", roomId, e.message);
-      if (r) r.resetFailed = true;
+    } catch (resetError) {
+      console.error("[store] 房间重置失败（旧文件可能残留，禁止继续 seed）:", roomId, resetError.message);
+      if (room) room.resetFailed = true;
       return false;
     }
-    if (r) {
-      if (r.timer) { clearTimeout(r.timer); r.timer = null; }
-      r.buf = [];
-      r.metaLine = null;
-      r.dropped = 0;
-      r.seq = 0;
-      r.recent = [];
-      r.recentBytes = 0;
-      r.superseded = new Set();
-      r.pendingRemotes = [];
-      r.toolMetas = new Map();
-      r.lastMsgHash = null;
-      r.firstMsgHash = null;
-      r.msgCount = 0;
-      r.rev = newRev();
-      r.metaWritten = false;
-      r.headTruncated = false;
-      r.ckpt = null;
-      r._ckptWriting = false;
-      r._ckptReject = null;
-      r._ckptRejectWarnAt = 0;
-      r.resetFailed = false;
+    if (room) {
+      if (room.timer) { clearTimeout(room.timer); room.timer = null; }
+      room.buf = [];
+      room.metaLine = null;
+      room.dropped = 0;
+      room.seq = 0;
+      room.recent = [];
+      room.recentBytes = 0;
+      room.superseded = new Set();
+      room.pendingRemotes = [];
+      room.toolMetas = new Map();
+      room.lastMsgHash = null;
+      room.firstMsgHash = null;
+      room.msgCount = 0;
+      room.rev = newRev();
+      room.metaWritten = false;
+      room.headTruncated = false;
+      room.ckpt = null;
+      room._ckptWriting = false;
+      room._ckptReject = null;
+      room._ckptRejectWarnAt = 0;
+      room.resetFailed = false;
       // 换了个新（或刚截断的）文件：目录项要重新同步。失败时 _syncRoomDir 会保持 false 并稍后重试，
       // 不能像旧写法那样直接把 dirSynced 置成"已同步"（一次失败就永久放弃）。
-      r.dirSynced = false;
-      r._dirSyncRetryAt = 0;
-      r._dirSyncTries = 0;
-      r.fileCapped = false;
-      r._capWarned = false;
-      r.capWarned = false;
-      r.indexPartial = false;
-      r._indexFailed = false;
-      r._indexing = false;
-      r._indexJob = null;
-      r._journal = null; // 索引期间排队的操作属于旧世代，随换代一并丢弃
+      room.dirSynced = false;
+      room._dirSyncRetryAt = 0;
+      room._dirSyncTries = 0;
+      room.fileCapped = false;
+      room._capWarned = false;
+      room.capWarned = false;
+      room.indexPartial = false;
+      room._indexFailed = false;
+      room._indexing = false;
+      room._indexJob = null;
+      room._journal = null; // 索引期间排队的操作属于旧世代，随换代一并丢弃
       // 分段状态随换代清零：旧封存段已删，新世代从空现役段重新长。
-      r.segs = [];
-      r.sealedBytes = 0;
-      r._manifestEntries = [];
-      r._segLines = 0;
-      r._segFirstSeq = 0;
-      r._segLastSeq = 0;
-      r._diskState = null;
-      r._diskStateStale = false;
-      r._captureNeed = null;
-      r._captureFilled = false;
+      room.segs = [];
+      room.sealedBytes = 0;
+      room._manifestEntries = [];
+      room._segLines = 0;
+      room._segFirstSeq = 0;
+      room._segLastSeq = 0;
+      room._diskState = null;
+      room._diskStateStale = false;
+      room._captureNeed = null;
+      room._captureFilled = false;
     }
     if (this.persist) {
       // 文件可能是刚创建的：目录项同样要落盘，否则换代后的空文件/新 seed 可能随掉电消失。
-      if (r) this._syncRoomDir(r, { force: true });
+      if (room) this._syncRoomDir(room, { force: true });
       else this._fsyncDir(dir);
     }
     return true;
@@ -2908,59 +2908,59 @@ class RoomStore {
     if (!event || typeof event.type !== "string") return 0;
     if (event.type === "message_end" && event.message && typeof event.message.role === "string") {
       if (event.message.role === "system") return 0;
-      const r = this._room(roomId, { create: true });
-      if (!r) return 0;
-      if (this._journalIfIndexing(r, { op: "record", event })) return 0; // 索引落地后重放时才分配 seq
+      const room = this._room(roomId, { create: true });
+      if (!room) return 0;
+      if (this._journalIfIndexing(room, { op: "record", event })) return 0; // 索引落地后重放时才分配 seq
       if (isEnvelope(event.message)) {
         // Safety net: an envelope record marks the room enc even without a prior
         // declaration, so the version gates engage instead of leaking ciphertext
         // to incapable viewers as if it were a message.
-        if (!encMetaOf(r.metaExtra)) this._markEncUnknown(r);
-        this._pushEnvelope(r, event.message);
+        if (!encMetaOf(room.metaExtra)) this._markEncUnknown(room);
+        this._pushEnvelope(room, event.message);
       } else {
-        this._pushMsg(r, event.message);
+        this._pushMsg(room, event.message);
       }
-      return r.seq;
+      return room.seq;
     }
     if (event.type === "tool_execution_end") {
       this.recordToolEnd(roomId, event);
       return 0; // 元数据不是 transcript 记录，不占 seq
     }
     if (event.type === "remote_message" && (typeof event.text === "string" || remoteEnvelopeOf(event))) {
-      const r = this._room(roomId, { create: true });
-      if (!r) return 0;
-      if (this._journalIfIndexing(r, { op: "record", event })) return 0;
-      r.seq += 1;
+      const room = this._room(roomId, { create: true });
+      if (!room) return 0;
+      if (this._journalIfIndexing(room, { op: "record", event })) return 0;
+      room.seq += 1;
       const at = event.at || Date.now();
       const cid = cleanCid(event.cid);
-      const env = remoteEnvelopeOf(event);
-      if (env) {
-        if (!encMetaOf(r.metaExtra)) this._markEncUnknown(r);
-        const line = { k: "remote", seq: r.seq, enc: 1, at };
+      const envelope = remoteEnvelopeOf(event);
+      if (envelope) {
+        if (!encMetaOf(room.metaExtra)) this._markEncUnknown(room);
+        const line = { k: "remote", seq: room.seq, enc: 1, at };
         if (cid) line.cid = cid;
-        line.h = env.h;
-        line.ct = env.ct;
-        this._cachePush(r, { k: "remote", seq: r.seq, h: env.h, json: remoteEnvelopeJson(line) });
-        this._writeLine(r, JSON.stringify(line));
-        this._rememberRemote(r, { seq: r.seq, h: env.h, ct: env.ct, cid });
+        line.h = envelope.h;
+        line.ct = envelope.ct;
+        this._cachePush(room, { k: "remote", seq: room.seq, h: envelope.h, json: remoteEnvelopeJson(line) });
+        this._writeLine(room, JSON.stringify(line));
+        this._rememberRemote(room, { seq: room.seq, h: envelope.h, ct: envelope.ct, cid });
       } else {
-        this._cachePush(r, { k: "remote", seq: r.seq, text: event.text, json: remoteJson(event.text, at, cid) });
-        const line = { k: "remote", seq: r.seq, text: event.text, at };
+        this._cachePush(room, { k: "remote", seq: room.seq, text: event.text, json: remoteJson(event.text, at, cid) });
+        const line = { k: "remote", seq: room.seq, text: event.text, at };
         if (cid) line.cid = cid;
-        this._writeLine(r, JSON.stringify(line));
-        this._rememberRemote(r, { seq: r.seq, text: event.text, cid });
+        this._writeLine(room, JSON.stringify(line));
+        this._rememberRemote(room, { seq: room.seq, text: event.text, cid });
       }
-      return r.seq;
+      return room.seq;
     }
     if (event.type === "remote_message_failed") this.markRemoteFailed(roomId, event.text, event.cid);
     return 0;
   }
 
   /** 房间是否真实存在（在内存注册表，或磁盘有文件）——供 viewer 订阅前验真，防幻影房 */
-  exists(id) {
-    if (!safeRoomId(id)) return false;
-    if (this.rooms.has(id)) return true;
-    return this.persist && this._layoutIn(id, this._roomDir(id)).exists;
+  exists(roomId) {
+    if (!safeRoomId(roomId)) return false;
+    if (this.rooms.has(roomId)) return true;
+    return this.persist && this._layoutIn(roomId, this._roomDir(roomId)).exists;
   }
 
   /** A room's enc meta ({enc:1, ackFp?, rckWrap?}) or null when the room is
@@ -2988,15 +2988,15 @@ class RoomStore {
       const fd = fs.openSync(firstFile, "r");
       try {
         const buf = Buffer.alloc(64 * 1024);
-        const n = fs.readSync(fd, buf, 0, buf.length, 0);
-        const nl = buf.subarray(0, n).indexOf(0x0a);
-        const line = (nl >= 0 ? buf.subarray(0, nl) : buf.subarray(0, n)).toString("utf8").trim();
-        const rec = JSON.parse(line);
-        if (rec && rec.k === "meta") {
+        const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+        const newlineOffset = buf.subarray(0, bytesRead).indexOf(0x0a);
+        const line = (newlineOffset >= 0 ? buf.subarray(0, newlineOffset) : buf.subarray(0, bytesRead)).toString("utf8").trim();
+        const record = JSON.parse(line);
+        if (record && record.k === "meta") {
           const extra = {};
-          for (const key of Object.keys(rec)) {
+          for (const key of Object.keys(record)) {
             if (key === "k" || key === "seq" || key === "rev" || key === "headTruncated") continue;
-            extra[key] = rec[key];
+            extra[key] = record[key];
           }
           meta = encMetaOf(extra);
         }
@@ -3056,23 +3056,23 @@ class RoomStore {
    *  point rather than weaken this guard. A stored meta without an ackFp
    *  (the _markEncUnknown safety net) may still be completed by a
    *  declaration, and same-ackFp re-declarations keep working as before. */
-  setEncMeta(roomId, meta) {
-    const clean = cleanEncMeta(meta);
-    if (!clean) return false;
-    const r = this._room(roomId, { create: true });
-    if (!r) return false;
-    const prev = encMetaOf(r.metaExtra);
-    if (prev && prev.ackFp && prev.ackFp !== clean.ackFp) {
-      console.warn(`[store] refused enc meta ackFp transition (gate B): room=${roomId} ${prev.ackFp} -> ${clean.ackFp}`);
+  setEncMeta(roomId, declaration) {
+    const cleaned = cleanEncMeta(declaration);
+    if (!cleaned) return false;
+    const room = this._room(roomId, { create: true });
+    if (!room) return false;
+    const stored = encMetaOf(room.metaExtra);
+    if (stored && stored.ackFp && stored.ackFp !== cleaned.ackFp) {
+      console.warn(`[store] refused enc meta ackFp transition (gate B): room=${roomId} ${stored.ackFp} -> ${cleaned.ackFp}`);
       return false;
     }
-    r.metaExtra = { ...(r.metaExtra || {}), ...clean };
+    room.metaExtra = { ...(room.metaExtra || {}), ...cleaned };
     this._encProbeCache.delete(roomId);
-    if (prev && prev.ackFp === clean.ackFp && prev.rckWrap === clean.rckWrap) return true;
-    if (r.metaWritten && this.persist && !r._indexing) {
-      const metaObj = { k: "meta", seq: 0, rev: r.rev, headTruncated: r.headTruncated || undefined };
-      Object.assign(metaObj, r.metaExtra);
-      this._writeLine(r, JSON.stringify(metaObj), { flush: true });
+    if (stored && stored.ackFp === cleaned.ackFp && stored.rckWrap === cleaned.rckWrap) return true;
+    if (room.metaWritten && this.persist && !room._indexing) {
+      const metadataRecord = { k: "meta", seq: 0, rev: room.rev, headTruncated: room.headTruncated || undefined };
+      Object.assign(metadataRecord, room.metaExtra);
+      this._writeLine(room, JSON.stringify(metadataRecord), { flush: true });
     }
     return true;
   }
@@ -3081,11 +3081,11 @@ class RoomStore {
    *  arrive without a prior declaration): the version gates engage and snapshot
    *  keyInfo simply lacks rckWrap, so capable viewers fail loudly on decrypt
    *  instead of rendering ciphertext as text. */
-  _markEncUnknown(r) {
-    if (encMetaOf(r.metaExtra)) return;
-    r.metaExtra = { ...(r.metaExtra || {}), enc: 1 };
-    this._encProbeCache.delete(r.id);
-    console.warn(`[store] 房间 ${r.id} 收到信封记录但未声明 enc 元数据：已按 enc 房处理（keyInfo 缺 rckWrap）`);
+  _markEncUnknown(room) {
+    if (encMetaOf(room.metaExtra)) return;
+    room.metaExtra = { ...(room.metaExtra || {}), enc: 1 };
+    this._encProbeCache.delete(room.id);
+    console.warn(`[store] 房间 ${room.id} 收到信封记录但未声明 enc 元数据：已按 enc 房处理（keyInfo 缺 rckWrap）`);
   }
 
   /** Encrypted-generation migration (design section 5). The candidate history
@@ -3098,19 +3098,19 @@ class RoomStore {
    *  generations survive untouched and the device may retry. */
   migrateRoom(roomId, messages, trailer, meta, { hasLiveWriter = false } = {}) {
     const fail = (reason, extra) => ({ ok: false, reason, ...(extra || {}) });
-    const r = this._room(roomId, { create: true });
-    if (!r) return fail("bad_room");
-    if (r._indexing) return fail("indexing");
+    const room = this._room(roomId, { create: true });
+    if (!room) return fail("bad_room");
+    if (room._indexing) return fail("indexing");
     if (hasLiveWriter) return fail("live_writer");
-    const clean = cleanEncMeta(meta);
-    if (!clean) return fail("bad_enc_meta");
+    const cleaned = cleanEncMeta(meta);
+    if (!cleaned) return fail("bad_enc_meta");
     if (!trailer || !Number.isInteger(trailer.msgCount) || trailer.msgCount < 0 ||
         typeof trailer.lastHash !== "string" || !trailer.lastHash) {
       return fail("bad_trailer");
     }
     const raw = Array.isArray(messages) ? messages : [];
-    const candidates = raw.filter((m) => m && typeof m.role === "string" && m.role !== "system");
-    if (!candidates.length || candidates.some((m) => !isEnvelope(m))) return fail("not_envelopes");
+    const candidates = raw.filter((message) => message && typeof message.role === "string" && message.role !== "system");
+    if (!candidates.length || candidates.some((message) => !isEnvelope(message))) return fail("not_envelopes");
     const lastHash = candidates[candidates.length - 1].h;
     if (candidates.length !== trailer.msgCount || lastHash !== trailer.lastHash) {
       return fail("trailer_mismatch", { landed: { msgCount: candidates.length, lastHash } });
@@ -3119,9 +3119,9 @@ class RoomStore {
     // reset() deliberately keeps metaExtra (the enc inheritance rule); replace
     // it wholesale with the migration's declared meta before seeding, so the
     // new generation's meta line carries exactly this declaration.
-    r.metaExtra = { ...clean };
+    room.metaExtra = { ...cleaned };
     this._encProbeCache.delete(roomId);
-    this._seedAll(r, candidates, false);
+    this._seedAll(room, candidates, false);
     return { ok: true, msgCount: candidates.length, lastHash };
   }
 
@@ -3129,57 +3129,57 @@ class RoomStore {
    *  indexFailed=true 表示这个房间的索引没装全（扫描失败/病态文件）：调用方/诊断能看到"不完整"，
    *  而不是把半份历史当正常房。 */
   info(roomId) {
-    const r = this._room(roomId);
-    if (!r) {
+    const room = this._room(roomId);
+    if (!room) {
       return { exists: false, rev: null, seq: 0, msgCount: 0, firstHash: null, lastHash: null, dropped: 0, fileCapped: false, fileWarned: false, indexFailed: false, indexing: false, enc: 0 };
     }
     return {
       exists: true,
-      rev: r.rev,
-      seq: r.seq,
-      msgCount: r.msgCount,
-      firstHash: r.firstMsgHash,
-      lastHash: r.lastMsgHash,
-      enc: encMetaOf(r.metaExtra) ? 1 : 0,
-      dropped: r.dropped || 0,
+      rev: room.rev,
+      seq: room.seq,
+      msgCount: room.msgCount,
+      firstHash: room.firstMsgHash,
+      lastHash: room.lastMsgHash,
+      enc: encMetaOf(room.metaExtra) ? 1 : 0,
+      dropped: room.dropped || 0,
       // Cap state (persist + cap enabled only; both latches live on the room).
-      fileCapped: !!r.fileCapped,
-      fileWarned: !!r.capWarned,
-      indexFailed: !!(r._indexFailed || r.indexPartial),
+      fileCapped: !!room.fileCapped,
+      fileWarned: !!room.capWarned,
+      indexFailed: !!(room._indexFailed || room.indexPartial),
       // 异步索引在飞（R-4）：锚点（rev/seq/hash）此刻都是占位空值，调用方据此知道要等落地后重问。
-      indexing: !!r._indexing,
+      indexing: !!room._indexing,
     };
   }
 
   /** 最近 max 条消息的 hash（旧→新），给扩展对齐用。
    *  检查点只带有限热缓存：不够时从磁盘尾部倒扫补齐，保证重启后的尾哈希与全量扫描一致。 */
-  _tailHashes(r, max = 8) {
-    const n = Math.max(0, max);
+  _tailHashes(room, max = 8) {
+    const wanted = Math.max(0, max);
     const newestFirst = [];
-    for (let i = r.recent.length - 1; i >= 0 && newestFirst.length < n; i--) {
-      const e = r.recent[i];
-      if (!e || e.k !== "msg") continue;
-      if (typeof e.h === "string") {
-        newestFirst.push(e.h);
+    for (let entryIndex = room.recent.length - 1; entryIndex >= 0 && newestFirst.length < wanted; entryIndex--) {
+      const cacheEntry = room.recent[entryIndex];
+      if (!cacheEntry || cacheEntry.k !== "msg") continue;
+      if (typeof cacheEntry.h === "string") {
+        newestFirst.push(cacheEntry.h);
         continue;
       }
       try {
-        newestFirst.push(hashOf(JSON.parse(e.json)));
+        newestFirst.push(hashOf(JSON.parse(cacheEntry.json)));
       } catch {
         return [];
       }
     }
-    if (newestFirst.length < n && this.persist) {
-      let before = r.recent.length ? r.recent[0].seq : Number.MAX_SAFE_INTEGER;
+    if (newestFirst.length < wanted && this.persist) {
+      let before = room.recent.length ? room.recent[0].seq : Number.MAX_SAFE_INTEGER;
       let budget = 8 * 1024 * 1024; // 兜底补读最多 8MB：appendMessages 的 k 很大时不能把整个文件倒扫一遍
-      while (newestFirst.length < n && budget > 0) {
-        const want = Math.max((n - newestFirst.length) * 8, 64);
-        const disk = this._scanBackSegs(r, before, want, budget, 0);
+      while (newestFirst.length < wanted && budget > 0) {
+        const want = Math.max((wanted - newestFirst.length) * 8, 64);
+        const disk = this._scanBackSegs(room, before, want, budget, 0);
         if (!disk.records.length) break;
-        for (const rec of disk.records) {
-          if (rec.k !== "msg") continue;
-          newestFirst.push(rec.enc === 1 && typeof rec.h === "string" ? rec.h : hashOf(rec.m));
-          if (newestFirst.length >= n) break;
+        for (const record of disk.records) {
+          if (record.k !== "msg") continue;
+          newestFirst.push(record.enc === 1 && typeof record.h === "string" ? record.h : hashOf(record.m));
+          if (newestFirst.length >= wanted) break;
         }
         budget -= disk.scanned || 0;
         if (budget <= 0) break; // 8MB 用尽，不再无限倒扫
@@ -3193,16 +3193,16 @@ class RoomStore {
   }
 
   tailHashes(roomId, max = 8) {
-    const r = this._room(roomId);
-    if (!r) return [];
-    return this._tailHashes(r, max);
+    const room = this._room(roomId);
+    if (!room) return [];
+    return this._tailHashes(room, max);
   }
 
-  _seedAll(r, incoming, headTruncated) {
-    r.headTruncated = !!headTruncated;
-    if (!encMetaOf(r.metaExtra) && incoming.some((m) => isEnvelope(m))) this._markEncUnknown(r);
-    for (const m of incoming) this._pushItem(r, m);
-    this._flush(r, { sync: true });
+  _seedAll(room, incoming, headTruncated) {
+    room.headTruncated = !!headTruncated;
+    if (!encMetaOf(room.metaExtra) && incoming.some((message) => isEnvelope(message))) this._markEncUnknown(room);
+    for (const message of incoming) this._pushItem(room, message);
+    this._flush(room, { sync: true });
   }
 
   /** 用扩展快照同步镜像。
@@ -3216,45 +3216,45 @@ class RoomStore {
   seedOrMerge(roomId, messages, { truncated = false } = {}) {
     const none = { seeded: 0, merged: 0, reset: false, baseSeq: 0, items: [] };
     if (!Array.isArray(messages) || !messages.length) return none;
-    const r = this._room(roomId, { create: true });
-    if (!r) return none;
+    const room = this._room(roomId, { create: true });
+    if (!room) return none;
     // 索引在飞：锚点还不存在，任何对齐决定都不可信——整份排队，落地后按真实锚点重放。
-    if (this._journalIfIndexing(r, { op: "seed", messages, truncated })) return none;
-    const incoming = messages.filter((m) => m && typeof m.role === "string" && m.role !== "system");
+    if (this._journalIfIndexing(room, { op: "seed", messages, truncated })) return none;
+    const incoming = messages.filter((message) => message && typeof message.role === "string" && message.role !== "system");
     if (!incoming.length) return none;
 
-    if (r.msgCount === 0 && r.seq === 0) {
+    if (room.msgCount === 0 && room.seq === 0) {
       // 上一次 reset 截断旧文件失败：内存是空的，但磁盘上还有旧世代。直接 seed 会把新历史
       // 追加在旧文件后面（重启后新旧混写），必须先重试 reset，失败就中止本次 seed。
-      if (r.resetFailed && !this.reset(roomId)) {
+      if (room.resetFailed && !this.reset(roomId)) {
         console.error(`[store] 房间 ${roomId} 旧文件截断失败，拒绝 seed（避免新旧历史混写）`);
         return { seeded: 0, merged: 0, reset: false, resetFailed: true, baseSeq: 0, items: [] };
       }
-      this._seedAll(r, incoming, truncated);
+      this._seedAll(room, incoming, truncated);
       return { seeded: incoming.length, merged: 0, reset: false, baseSeq: 0, items: [] };
     }
 
-    const N = r.msgCount || 0;
+    const N = room.msgCount || 0;
     const M = incoming.length;
     let appendFrom = -1;
     if (truncated) {
       // 快照从头部截过，位置对不齐。用热缓存里的消息尾窗（remote 不在快照里，跳过）定位。
       // 不能只拿最后一条 hash：custom/摘要的 hash 不含时间戳，同内容的后一条会先被命中，中间消息被跳过。
       const tail = [];
-      for (const e of r.recent) {
-        if (e.k !== "msg") continue;
-        if (typeof e.h === "string") { tail.push(e.h); continue; }
-        try { tail.push(hashOf(JSON.parse(e.json))); } catch { tail.length = 0; break; }
+      for (const cacheEntry of room.recent) {
+        if (cacheEntry.k !== "msg") continue;
+        if (typeof cacheEntry.h === "string") { tail.push(cacheEntry.h); continue; }
+        try { tail.push(hashOf(JSON.parse(cacheEntry.json))); } catch { tail.length = 0; break; }
       }
       if (tail.length) {
-        const incomingHash = incoming.map((m) => anchorOf(m));
-        const n = tail.length;
-        if (M >= n) {
+        const incomingHash = incoming.map((message) => anchorOf(message));
+        const tailLength = tail.length;
+        if (M >= tailLength) {
           // 从右往左：整段尾窗在快照里重复时取最近一次（存储里的就是最新尾部），避免把已有消息再追加一遍
-          for (let i = M - n; i >= 0; i--) {
-            let ok = true;
-            for (let t = 0; t < n; t++) if (incomingHash[i + t] !== tail[t]) { ok = false; break; }
-            if (ok) { appendFrom = i + n; break; }
+          for (let snapshotIndex = M - tailLength; snapshotIndex >= 0; snapshotIndex--) {
+            let matched = true;
+            for (let tailIndex = 0; tailIndex < tailLength; tailIndex++) if (incomingHash[snapshotIndex + tailIndex] !== tail[tailIndex]) { matched = false; break; }
+            if (matched) { appendFrom = snapshotIndex + tailLength; break; }
           }
         }
         // 整段对不上（常见于不落盘时内存比截断快照长）：快照是内存历史去掉头部后的后缀。
@@ -3262,19 +3262,19 @@ class RoomStore {
         // **兜底门槛**：只重叠 1~2 条时，摘要/工具结果的 hash 不含时间戳，同内容必然同 hash，
         // 会把异分支历史误判成已对齐（主路径明令禁止的单条误判）。低于门槛一律 reset 重新种入。
         if (appendFrom < 0) {
-          const max = Math.min(n, M);
-          for (let L = max; L >= 1; L--) {
-            let ok = true;
-            for (let t = 0; t < L; t++) if (incomingHash[t] !== tail[n - L + t]) { ok = false; break; }
-            if (!ok) continue;
+          const maxOverlap = Math.min(tailLength, M);
+          for (let overlap = maxOverlap; overlap >= 1; overlap--) {
+            let matched = true;
+            for (let tailIndex = 0; tailIndex < overlap; tailIndex++) if (incomingHash[tailIndex] !== tail[tailLength - overlap + tailIndex]) { matched = false; break; }
+            if (!matched) continue;
             // 最大的一段重叠已经找到：满足门槛才对齐，不满足就换代，不能退到更短的重叠。
             let pinned = false;
-            for (let t = 0; t < L; t++) if (hashPinsTimestamp(incoming[t])) { pinned = true; break; }
-            if (L >= TRUNC_FALLBACK_MIN_OVERLAP && pinned) {
-              appendFrom = L;
+            for (let messageIndex = 0; messageIndex < overlap; messageIndex++) if (hashPinsTimestamp(incoming[messageIndex])) { pinned = true; break; }
+            if (overlap >= TRUNC_FALLBACK_MIN_OVERLAP && pinned) {
+              appendFrom = overlap;
             } else {
               console.warn(
-                `[store] 房间 ${roomId} 截断快照兜底对齐重叠不足（重叠 ${L} 条，` +
+                `[store] 房间 ${roomId} 截断快照兜底对齐重叠不足（重叠 ${overlap} 条，` +
                   `带时间戳锚点=${pinned ? "有" : "无"}）：reset 后重新 seed`,
               );
             }
@@ -3284,8 +3284,8 @@ class RoomStore {
       }
     } else {
       // 位置对齐：只看 数量 / 头 hash / 尾 hash 三个锚点（不用 hash 集合：连发同文本"继续"会被误判已存在）
-      const headOk = !!r.firstMsgHash && anchorOf(incoming[0]) === r.firstMsgHash;
-      const tailOk = !!r.lastMsgHash && N > 0 && M >= N && anchorOf(incoming[N - 1]) === r.lastMsgHash;
+      const headOk = !!room.firstMsgHash && anchorOf(incoming[0]) === room.firstMsgHash;
+      const tailOk = !!room.lastMsgHash && N > 0 && M >= N && anchorOf(incoming[N - 1]) === room.lastMsgHash;
       if (headOk && tailOk) appendFrom = N;
       else console.warn(`[store] 房间 ${roomId} 镜像换代：reset 后重新 seed（快照 ${M} 条，原存储 ${N} 条，headOk=${headOk} tailOk=${tailOk}）`);
     }
@@ -3297,19 +3297,19 @@ class RoomStore {
         console.error(`[store] 房间 ${roomId} reset 失败，已中止 seed`);
         return { seeded: 0, merged: 0, reset: false, resetFailed: true, baseSeq: 0, items: [] };
       }
-      this._seedAll(r, incoming, truncated);
+      this._seedAll(room, incoming, truncated);
       return { seeded: incoming.length, merged: 0, reset: true, baseSeq: 0, items: [] };
     }
-    return this._appendFrom(r, incoming, appendFrom);
+    return this._appendFrom(room, incoming, appendFrom);
   }
 
-  _appendFrom(r, incoming, from) {
-    if (!encMetaOf(r.metaExtra) && incoming.some((m) => isEnvelope(m))) this._markEncUnknown(r);
-    const baseSeq = r.seq;
+  _appendFrom(room, incoming, from) {
+    if (!encMetaOf(room.metaExtra) && incoming.some((message) => isEnvelope(message))) this._markEncUnknown(room);
+    const baseSeq = room.seq;
     const items = [];
     // 按位置追加，绝不做 hash 判重——同文本的连续消息是真实新增
-    for (let i = from; i < incoming.length; i++) items.push(this._pushItem(r, incoming[i]).json);
-    if (items.length) this._flush(r, { sync: true });
+    for (let messageIndex = from; messageIndex < incoming.length; messageIndex++) items.push(this._pushItem(room, incoming[messageIndex]).json);
+    if (items.length) this._flush(room, { sync: true });
     return { seeded: 0, merged: items.length, reset: false, baseSeq, items };
   }
 
@@ -3317,71 +3317,71 @@ class RoomStore {
    *  问询到上传之间可能又有实时 message_end 落进来（relay 多了 k 条）：这 k 条必然就是 messages 的前 k 条，
    *  用第 k 条对上 lastMsgHash 确认后跳过。锚点不符返回 ok:false（扩展改发全量） */
   appendMessages(roomId, base, messages) {
-    const r = this._room(roomId, { create: true });
-    if (!r) return { ok: false, reason: "bad_room" };
+    const room = this._room(roomId, { create: true });
+    if (!room) return { ok: false, reason: "bad_room" };
     // 换代时旧文件没截断成功：任何追加都会把新世代写进旧文件，必须让扩展改发全量
     // （全量走 seedOrMerge → 先重试 reset，失败则中止）。
-    if (r.resetFailed) return { ok: false, reason: "reset_failed" };
+    if (room.resetFailed) return { ok: false, reason: "reset_failed" };
     // 索引在飞：排队等落地后按真实锚点重放；此刻报 ok 且零合并，
     // 调用方不会因为假"锚点不符"误发全量快照请求（真锚点校验在重放时做）。
-    if (this._journalIfIndexing(r, { op: "append", base, messages })) {
+    if (this._journalIfIndexing(room, { op: "append", base, messages })) {
       return { ok: true, seeded: 0, merged: 0, reset: false, baseSeq: 0, items: [] };
     }
     const count = Number(base && base.count);
     const hash = base && base.hash ? String(base.hash) : null;
-    const incoming = (Array.isArray(messages) ? messages : []).filter((m) => m && typeof m.role === "string" && m.role !== "system");
-    const fail = () => ({ ok: false, reason: `锚点不符（relay ${r.msgCount}/${r.lastMsgHash}，扩展 ${count}/${hash}）` });
-    if (!Number.isInteger(count) || count < 0 || count > r.msgCount) return fail();
-    if (count === r.msgCount) {
-      if (count > 0 && hash !== r.lastMsgHash) return fail();
-      return { ok: true, ...this._appendFrom(r, incoming, 0) };
+    const incoming = (Array.isArray(messages) ? messages : []).filter((message) => message && typeof message.role === "string" && message.role !== "system");
+    const fail = () => ({ ok: false, reason: `锚点不符（relay ${room.msgCount}/${room.lastMsgHash}，扩展 ${count}/${hash}）` });
+    if (!Number.isInteger(count) || count < 0 || count > room.msgCount) return fail();
+    if (count === room.msgCount) {
+      if (count > 0 && hash !== room.lastMsgHash) return fail();
+      return { ok: true, ...this._appendFrom(room, incoming, 0) };
     }
-    const k = r.msgCount - count;
-    if (incoming.length < k) return fail();
+    const landedSinceAsk = room.msgCount - count;
+    if (incoming.length < landedSinceAsk) return fail();
     // 只核对最后一条会误伤同内容 custom：问询之后多落的 k 条必须整段都在上传的前 k 条里
-    const tail = this._tailHashes(r, k);
-    if (tail.length !== k) return fail();
-    for (let t = 0; t < k; t++) if (anchorOf(incoming[t]) !== tail[t]) return fail();
-    return { ok: true, ...this._appendFrom(r, incoming, k) };
+    const tail = this._tailHashes(room, landedSinceAsk);
+    if (tail.length !== landedSinceAsk) return fail();
+    for (let tailIndex = 0; tailIndex < landedSinceAsk; tailIndex++) if (anchorOf(incoming[tailIndex]) !== tail[tailIndex]) return fail();
+    return { ok: true, ...this._appendFrom(room, incoming, landedSinceAsk) };
   }
 
   /** Pending remote bookkeeping. Plaintext entries carry {seq, text, cid};
    *  enc entries carry {seq, enc:1, h, ct, cid} (ct is kept so checkpoint state
    *  can carry the envelope, per design section 4.1 pending rule). */
-  _rememberRemote(r, entry) {
-    const p = { seq: entry.seq, cid: entry.cid || null };
+  _rememberRemote(room, entry) {
+    const pendingRemote = { seq: entry.seq, cid: entry.cid || null };
     if (entry.h) {
-      p.enc = 1;
-      p.h = entry.h;
-      if (entry.ct) p.ct = entry.ct;
+      pendingRemote.enc = 1;
+      pendingRemote.h = entry.h;
+      if (entry.ct) pendingRemote.ct = entry.ct;
     } else {
-      p.text = entry.text || "";
+      pendingRemote.text = entry.text || "";
     }
-    r.pendingRemotes.push(p);
-    if (r.pendingRemotes.length > INDEX_REMOTE_WINDOW) r.pendingRemotes.shift();
+    room.pendingRemotes.push(pendingRemote);
+    if (room.pendingRemotes.length > INDEX_REMOTE_WINDOW) room.pendingRemotes.shift();
   }
 
   /** 第 i 条待取代回显从回放摘掉，并写 drop 行（重启后仍然生效） */
-  _dropRemote(r, i) {
-    const seq = r.pendingRemotes[i].seq;
-    r.pendingRemotes.splice(i, 1);
-    if (r.superseded.has(seq)) return true;
-    r.superseded.add(seq);
-    this._trimSuperseded(r);
-    this._writeLine(r, JSON.stringify({ k: "drop", seq: 0, ref: seq }));
+  _dropRemote(room, pendingIndex) {
+    const sequenceNumber = room.pendingRemotes[pendingIndex].seq;
+    room.pendingRemotes.splice(pendingIndex, 1);
+    if (room.superseded.has(sequenceNumber)) return true;
+    room.superseded.add(sequenceNumber);
+    this._trimSuperseded(room);
+    this._writeLine(room, JSON.stringify({ k: "drop", seq: 0, ref: sequenceNumber }));
     return true;
   }
 
   /** pi 的 user 消息取代 remote 回显：同文本有多条时先进先出取最早一条（后发的还在排队） */
-  _supersedeRemote(r, text) {
-    const i = r.pendingRemotes.findIndex((p) => typeof p.text === "string" && remoteEchoMatches(p.text, text));
-    return i >= 0 ? this._dropRemote(r, i) : false;
+  _supersedeRemote(room, text) {
+    const pendingIndex = room.pendingRemotes.findIndex((pendingRemote) => typeof pendingRemote.text === "string" && remoteEchoMatches(pendingRemote.text, text));
+    return pendingIndex >= 0 ? this._dropRemote(room, pendingIndex) : false;
   }
 
   /** Enc rooms (live path): same FIFO supersede as _supersedeRemote, keyed on h. */
-  _supersedeRemoteByH(r, h) {
-    const i = r.pendingRemotes.findIndex((p) => p.enc === 1 && p.h === h);
-    return i >= 0 ? this._dropRemote(r, i) : false;
+  _supersedeRemoteByH(room, contentHash) {
+    const pendingIndex = room.pendingRemotes.findIndex((pendingRemote) => pendingRemote.enc === 1 && pendingRemote.h === contentHash);
+    return pendingIndex >= 0 ? this._dropRemote(room, pendingIndex) : false;
   }
 
   /**
@@ -3389,24 +3389,24 @@ class RoomStore {
    * 带 cid 只认 cid（对不上就什么都不摘，不能误伤同文本的另一条）；没有 cid 的旧扩展退回按文本摘最近一条。
    */
   markRemoteFailed(roomId, text, cid) {
-    const r = this.rooms.get(roomId);
-    if (!r) return false;
-    if (this._journalIfIndexing(r, { op: "remoteFailed", text, cid })) return false;
+    const room = this.rooms.get(roomId);
+    if (!room) return false;
+    if (this._journalIfIndexing(room, { op: "remoteFailed", text, cid })) return false;
     const id = cleanCid(cid);
-    let i = -1;
-    if (id) i = r.pendingRemotes.findIndex((p) => p.cid === id);
+    let pendingIndex = -1;
+    if (id) pendingIndex = room.pendingRemotes.findIndex((pendingRemote) => pendingRemote.cid === id);
     else if (typeof text === "string") {
-      for (i = r.pendingRemotes.length - 1; i >= 0; i--) {
-        if (typeof r.pendingRemotes[i].text === "string" && remoteEchoMatches(r.pendingRemotes[i].text, text)) break;
+      for (pendingIndex = room.pendingRemotes.length - 1; pendingIndex >= 0; pendingIndex--) {
+        if (typeof room.pendingRemotes[pendingIndex].text === "string" && remoteEchoMatches(room.pendingRemotes[pendingIndex].text, text)) break;
       }
     }
-    return i >= 0 ? this._dropRemote(r, i) : false;
+    return pendingIndex >= 0 ? this._dropRemote(room, pendingIndex) : false;
   }
 
   drop(roomId) {
-    const r = this.rooms.get(roomId);
-    if (r) {
-      if (r.timer) { clearTimeout(r.timer); r.timer = null; }
+    const room = this.rooms.get(roomId);
+    if (room) {
+      if (room.timer) { clearTimeout(room.timer); room.timer = null; }
       this.rooms.delete(roomId);
     }
     this._dropPrewarmed(roomId);
@@ -3417,8 +3417,8 @@ class RoomStore {
     const layout = this._layoutIn(roomId, dir);
     let removed = false;
     try { fs.unlinkSync(layout.active.file); removed = true; } catch {}
-    for (const seg of layout.sealed) {
-      try { fs.unlinkSync(seg.file); removed = true; } catch {}
+    for (const segment of layout.sealed) {
+      try { fs.unlinkSync(segment.file); removed = true; } catch {}
     }
     try { fs.unlinkSync(this._manifestFile(roomId, dir)); removed = true; } catch {}
     // 删除房文件的目录项也同步：掉电后不能把已 drop 的历史文件"复活"。
@@ -3426,36 +3426,36 @@ class RoomStore {
   }
 
   /** 房文件（任一段/清单）是否还在盘上——purge 删完后用它验真（drop 吞异常，调用方要确认）。 */
-  roomFileExists(id) {
-    if (!safeRoomId(id)) return false;
-    const layout = this._layoutIn(id, this._roomDir(id));
+  roomFileExists(roomId) {
+    if (!safeRoomId(roomId)) return false;
+    const layout = this._layoutIn(roomId, this._roomDir(roomId));
     return layout.exists || layout.hasMeta;
   }
 
   flushAll({ sync = true } = {}) {
-    for (const r of this.rooms.values()) this._flush(r, { sync });
+    for (const room of this.rooms.values()) this._flush(room, { sync });
   }
 
   /** 内存淘汰：空闲超过 maxIdleMs 且 keep(id) 为假的房间刷盘后移出内存（文件保留，下次访问重建索引） */
   evictIdle(maxIdleMs, keep = () => false) {
     const cutoff = Date.now() - maxIdleMs;
-    let n = 0;
-    for (const [id, r] of this.rooms) {
-      if (r.lastActivity > cutoff || keep(id)) continue;
-      if (r._indexing) continue; // 索引在飞：占位房间的索引还没落地，淘汰会把在飞任务的家拆掉
-      this._flush(r, { sync: true });
-      if (r.buf.length) continue; // 落盘失败的房间不能淘汰（缓冲里是唯一副本）
-      if (r.timer) { clearTimeout(r.timer); r.timer = null; }
-      this.rooms.delete(id);
-      n++;
+    let evicted = 0;
+    for (const [roomId, room] of this.rooms) {
+      if (room.lastActivity > cutoff || keep(roomId)) continue;
+      if (room._indexing) continue; // 索引在飞：占位房间的索引还没落地，淘汰会把在飞任务的家拆掉
+      this._flush(room, { sync: true });
+      if (room.buf.length) continue; // 落盘失败的房间不能淘汰（缓冲里是唯一副本）
+      if (room.timer) { clearTimeout(room.timer); room.timer = null; }
+      this.rooms.delete(roomId);
+      evicted++;
     }
-    return n;
+    return evicted;
   }
 
   // ---------- 读 ----------
 
-  _deliverable(r, entry) {
-    return entry.k === "msg" || (entry.k === "remote" && !r.superseded.has(entry.seq));
+  _deliverable(room, entry) {
+    return entry.k === "msg" || (entry.k === "remote" && !room.superseded.has(entry.seq));
   }
 
   /**
@@ -3470,52 +3470,52 @@ class RoomStore {
   /** Snapshot enc header fields (design section 7): present only for enc rooms.
    *  snapshotBodyFrom renders them as the frame's enc/keyInfo header; the relay
    *  only ever forwards ackFp + the opaque rckWrap, never key material. */
-  _snapEncFields(r) {
-    const em = r ? encMetaOf(r.metaExtra) : null;
-    if (!em) return null;
-    return { enc: 1, keyInfo: { ackFp: em.ackFp || null, rckWrap: em.rckWrap || null } };
+  _snapEncFields(room) {
+    const encMeta = room ? encMetaOf(room.metaExtra) : null;
+    if (!encMeta) return null;
+    return { enc: 1, keyInfo: { ackFp: encMeta.ackFp || null, rckWrap: encMeta.rckWrap || null } };
   }
 
   snapshot(roomId, opts = {}) {
     try {
       return this._snapshot(roomId, opts);
-    } catch (e) {
-      console.error("[store] 快照装配失败（退回截断空快照，避免订阅者干等）:", roomId, e && e.message);
-      const r = this.rooms.get(roomId);
+    } catch (snapshotError) {
+      console.error("[store] 快照装配失败（退回截断空快照，避免订阅者干等）:", roomId, snapshotError && snapshotError.message);
+      const room = this.rooms.get(roomId);
       return {
-        rev: r ? r.rev : null,
-        seq: r ? r.seq : 0,
+        rev: room ? room.rev : null,
+        seq: room ? room.seq : 0,
         truncated: true,
         delta: false,
         baseSeq: 0,
         items: [],
-        ...(r ? this._snapEncFields(r) || {} : {}),
+        ...(room ? this._snapEncFields(room) || {} : {}),
       };
     }
   }
 
   _snapshot(roomId, { limit = 10000, maxBytes = 24 * 1024 * 1024, since = null } = {}) {
-    const r = this._room(roomId);
-    if (!r) return null;
-    this._flush(r);
+    const room = this._room(roomId);
+    if (!room) return null;
+    this._flush(room);
     // 索引不完整时连增量都不能信（baseSeq 可能落在没扫到的区间），只能按全量路径交付并标 truncated。
     // 异步索引在飞同理（R-4）：占位房间还没有任何可信锚点，一律走全量路径并标 truncated，
     // 订阅方靠既有补发/重订阅在索引落地后收敛，绝不能把空占位当"已同步到 seq=0"。
-    const indexPartial = !!(r._indexFailed || r.indexPartial);
-    const indexing = !!r._indexing;
-    const encFields = this._snapEncFields(r);
-    const capFields = this._snapCapFields(r);
-    if (!indexPartial && !indexing && since && since.rev === r.rev && Number.isInteger(since.seq) && since.seq >= 0 && since.seq <= r.seq) {
-      const d = this._collect(r, { after: since.seq, limit, maxBytes });
-      if (!d.truncated) return { rev: r.rev, seq: r.seq, truncated: false, delta: true, baseSeq: since.seq, items: d.items, ...(encFields || {}), ...(capFields || {}) };
+    const indexPartial = !!(room._indexFailed || room.indexPartial);
+    const indexing = !!room._indexing;
+    const encFields = this._snapEncFields(room);
+    const capFields = this._snapCapFields(room);
+    if (!indexPartial && !indexing && since && since.rev === room.rev && Number.isInteger(since.seq) && since.seq >= 0 && since.seq <= room.seq) {
+      const delta = this._collect(room, { after: since.seq, limit, maxBytes });
+      if (!delta.truncated) return { rev: room.rev, seq: room.seq, truncated: false, delta: true, baseSeq: since.seq, items: delta.items, ...(encFields || {}), ...(capFields || {}) };
       // 增量本身超安全阀（离线太久）：退回全量，由全量路径给出 truncated 语义
     }
-    const f = this._collect(r, { after: 0, limit, maxBytes });
-    const truncated = f.truncated || r.headTruncated || indexPartial || indexing;
-    if (f.truncated) {
-      console.warn(`[store] 房间 ${r.id} 快照截断：交付 ${f.items.length} 条（触及 ${limit} 条 / ${Math.round(maxBytes / 1048576)}MB 安全阀）`);
+    const full = this._collect(room, { after: 0, limit, maxBytes });
+    const truncated = full.truncated || room.headTruncated || indexPartial || indexing;
+    if (full.truncated) {
+      console.warn(`[store] 房间 ${room.id} 快照截断：交付 ${full.items.length} 条（触及 ${limit} 条 / ${Math.round(maxBytes / 1048576)}MB 安全阀）`);
     }
-    return { rev: r.rev, seq: r.seq, truncated, delta: false, baseSeq: 0, items: f.items, ...(encFields || {}), ...(capFields || {}) };
+    return { rev: room.rev, seq: room.seq, truncated, delta: false, baseSeq: 0, items: full.items, ...(encFields || {}), ...(capFields || {}) };
   }
 
   /** Cap fields for snapshot results: sparse, present only when there is
@@ -3523,44 +3523,44 @@ class RoomStore {
    *  dropped). snapshotBodyFrom serializes them next to truncated so the UI
    *  can tell "history stops being saved at the cap" apart from a generic
    *  truncated snapshot. */
-  _snapCapFields(r) {
+  _snapCapFields(room) {
     if (!this.persist || this.maxRoomFileBytes <= 0) return null;
     const out = {};
-    if (r.fileCapped) out.fileCapped = true;
-    if (r.capWarned) out.fileWarned = true;
-    if (r.dropped > 0) out.dropped = r.dropped;
+    if (room.fileCapped) out.fileCapped = true;
+    if (room.capWarned) out.fileWarned = true;
+    if (room.dropped > 0) out.dropped = room.dropped;
     return Object.keys(out).length ? out : null;
   }
 
   /** 收集 seq > after 的可交付记录（old→new）；先热缓存，不够再磁盘尾扫描 */
-  _collect(r, { after, limit, maxBytes }) {
+  _collect(room, { after, limit, maxBytes }) {
     const picked = []; // new→old
     let bytes = 0;
     let truncated = false;
     // 缺口判定必须数 distinct seq：重复记录（旧的落盘重试 bug 等）能把条数凑满，
     // 缺一条 + 重一条照样报“完整”，UI 就不会把这段增量当成不完整。
     const covered = new Set();
-    const cache = r.recent;
-    let i = cache.length - 1;
-    for (; i >= 0; i--) {
-      const e = cache[i];
-      if (e.seq <= after) break;
-      covered.add(e.seq);
-      if (!this._deliverable(r, e)) continue;
-      if (picked.length >= limit || bytes + e.json.length > maxBytes) { truncated = true; break; }
-      picked.push(e.json);
-      bytes += e.json.length + 1;
+    const cache = room.recent;
+    let cacheIndex = cache.length - 1;
+    for (; cacheIndex >= 0; cacheIndex--) {
+      const cacheEntry = cache[cacheIndex];
+      if (cacheEntry.seq <= after) break;
+      covered.add(cacheEntry.seq);
+      if (!this._deliverable(room, cacheEntry)) continue;
+      if (picked.length >= limit || bytes + cacheEntry.json.length > maxBytes) { truncated = true; break; }
+      picked.push(cacheEntry.json);
+      bytes += cacheEntry.json.length + 1;
     }
-    const needDisk = this.persist && !truncated && i < 0 && (cache.length ? cache[0].seq : r.seq + 1) > after + 1;
+    const needDisk = this.persist && !truncated && cacheIndex < 0 && (cache.length ? cache[0].seq : room.seq + 1) > after + 1;
     if (needDisk) {
       const before = cache.length ? cache[0].seq : Number.MAX_SAFE_INTEGER;
-      const disk = this._scanBackSegs(r, before, Math.max(limit - picked.length, 0), Math.max(maxBytes - bytes, 0), after);
-      for (const rec of disk.records) {
-        covered.add(rec.seq);
-        if (rec.k === "remote" && r.superseded.has(rec.seq)) continue;
-        if (rec.k !== "msg" && rec.k !== "remote") continue;
-        if (rec.k === "msg" && rec.m && rec.m.role === "system") continue;
-        const json = this._entryFromRecord(rec, rec._line).json;
+      const disk = this._scanBackSegs(room, before, Math.max(limit - picked.length, 0), Math.max(maxBytes - bytes, 0), after);
+      for (const record of disk.records) {
+        covered.add(record.seq);
+        if (record.k === "remote" && room.superseded.has(record.seq)) continue;
+        if (record.k !== "msg" && record.k !== "remote") continue;
+        if (record.k === "msg" && record.m && record.m.role === "system") continue;
+        const json = this._entryFromRecord(record, record._line).json;
         if (picked.length >= limit || bytes + json.length > maxBytes) { truncated = true; break; }
         picked.push(json);
         bytes += json.length + 1;
@@ -3568,16 +3568,16 @@ class RoomStore {
       if (disk.hasMore || disk.more) truncated = true;
     }
     // 兜底：distinct seq 覆盖数少于 seq 区间长度 = 有缺口（落盘失败丢批次等），必须让 UI 看见
-    if (!truncated && covered.size < r.seq - after) truncated = true;
+    if (!truncated && covered.size < room.seq - after) truncated = true;
     picked.reverse();
     return { items: picked, truncated };
   }
 
   /** 兼容旧接口：返回解析后的 messages（测试与调试用；relay 主路径用 snapshot()） */
   recent(roomId, limit = 10000) {
-    const s = this.snapshot(roomId, { limit });
-    if (!s) return { messages: [], truncated: false };
-    return { messages: JSON.parse("[" + s.items.join(",") + "]"), truncated: s.truncated };
+    const snapshot = this.snapshot(roomId, { limit });
+    if (!snapshot) return { messages: [], truncated: false };
+    return { messages: JSON.parse("[" + snapshot.items.join(",") + "]"), truncated: snapshot.truncated };
   }
 }
 

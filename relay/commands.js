@@ -10,18 +10,18 @@ const SLOW_READ_COMMANDS = new Set(["export_session", "list_sessions", "get_entr
 /** 没有活动房间也能对目标 .jsonl 执行的会话文件操作（改名/导出/冷 fork）。 */
 const INACTIVE_SESSION_COMMANDS = new Set(["rename_session_file", "export_session_file", "fork_session_file"]);
 
-function commandTimeoutMs(command, args, harnessMs) {
+function commandTimeoutMs(command, args, harnessStartTimeoutMs) {
   // harness_start 只有一个口径：cfg.harnessStartTimeoutMs（原来这里写死 10000，改配置只生效一半）
   if (command === "harness_start") {
-    const v = Number(harnessMs);
-    return Number.isFinite(v) && v > 0 ? v : 10000;
+    const configured = Number(harnessStartTimeoutMs);
+    return Number.isFinite(configured) && configured > 0 ? configured : 10000;
   }
   if (command === "compact" || command === "regenerate") return 120000;
   // 跳树并总结要等一次模型调用；沿用 30s 会在摘要还没回来时先判超时。
   if (command === "navigate_tree" && args && args.summarize === true) return 120000;
   if (command === "bash") {
-    const t = Math.max(1, Math.min(120, Number(args && args.timeout) || 30));
-    return (t + 15) * 1000;
+    const seconds = Math.max(1, Math.min(120, Number(args && args.timeout) || 30));
+    return (seconds + 15) * 1000;
   }
   // 目录浏览是本地 readdir，正常几毫秒；给 8s 而不是默认 15s，卡住时网页能更早报错重试（P9 C）
   if (command === "list_dirs") return 8000;
@@ -71,7 +71,7 @@ function stableJson(value) {
     return text === undefined ? "null" : text;
   }
   if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
-  return "{" + Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + stableJson(value[k])).join(",") + "}";
+  return "{" + Object.keys(value).sort().map((key) => JSON.stringify(key) + ":" + stableJson(value[key])).join(",") + "}";
 }
 
 /** 参数指纹：只取摘要，不把消息正文/大 base64 塞进去重键（键会进日志/Map）。 */
@@ -95,9 +95,9 @@ function dedupeKeyOf(scope, command, args, key) {
   return String(scope || "") + "|" + String(command || "") + "|" + argsDigest(args) + "|" + String(key || "");
 }
 
-function finishWaiter(w) {
-  if (w.timer) clearTimeout(w.timer);
-  w.timer = null;
+function finishWaiter(waiter) {
+  if (waiter.timer) clearTimeout(waiter.timer);
+  waiter.timer = null;
 }
 
 function settleEntry(entry) {
@@ -113,7 +113,7 @@ function settleEntry(entry) {
     entry._reconcileTimer = null;
   }
   if (typeof entry.onSettle === "function") {
-    try { entry.onSettle(); } catch (e) { log("命令收尾异常:", e.message); }
+    try { entry.onSettle(); } catch (settleError) { log("命令收尾异常:", settleError.message); }
   }
 }
 
@@ -139,19 +139,19 @@ function armReconcileCleanup(rooms, entry) {
   if (entry._reconcileTimer.unref) entry._reconcileTimer.unref();
 }
 
-function armWaiter(rooms, entry, w, cfg) {
-  w.timer = setTimeout(() => {
-    w.timer = null;
-    const i = entry.waiters.indexOf(w);
-    if (i >= 0) entry.waiters.splice(i, 1);
+function armWaiter(rooms, entry, waiter, config) {
+  waiter.timer = setTimeout(() => {
+    waiter.timer = null;
+    const waiterIndex = entry.waiters.indexOf(waiter);
+    if (waiterIndex >= 0) entry.waiters.splice(waiterIndex, 1);
     entry._timedOut = true;
     log("命令超时:", entry.room && entry.room.id, entry.wireId, entry.command);
-    send(w.ws, ackFrame(w.origId, false, {
+    send(waiter.ws, ackFrame(waiter.origId, false, {
       room: entry.room && entry.room.id,
       deviceId: entry.deviceId,
       error: "本机执行超时（" + entry.timeoutMs / 1000 + "s）",
       code: "timeout",
-    }), cfg);
+    }), config);
     // 低-20：超时只代表"relay 不等了"，设备可能还在执行。所有条目都保留对账窗口：
     // 迟到结果仍会跑 onResult，带 key 的还可被重发取回；窗口结束后由 armReconcileCleanup 清理。
     // 旧实现立刻删掉无 key 条目，删除会话的迟到结果会被当成"waiter 已不存在"丢掉，服务器副本复活。
@@ -160,26 +160,26 @@ function armWaiter(rooms, entry, w, cfg) {
       armReconcileCleanup(rooms, entry);
     }
   }, entry.timeoutMs);
-  w.timer.unref();
+  waiter.timer.unref();
 }
 
-function pruneDedupe(rooms, cfg) {
-  const cutoff = Date.now() - cfg.dedupeTtlMs;
-  for (const [k, e] of rooms.dedupe) {
-    if (e.at < cutoff && !e.waiters.length) {
-      rooms.dedupe.delete(k);
-      if (rooms.commandWaiters.get(e.wireId) === e) rooms.commandWaiters.delete(e.wireId);
+function pruneDedupe(rooms, config) {
+  const cutoff = Date.now() - config.dedupeTtlMs;
+  for (const [dedupeKey, entry] of rooms.dedupe) {
+    if (entry.at < cutoff && !entry.waiters.length) {
+      rooms.dedupe.delete(dedupeKey);
+      if (rooms.commandWaiters.get(entry.wireId) === entry) rooms.commandWaiters.delete(entry.wireId);
     }
   }
   // 只丢已经完成的条目：等待者数量为 0 不代表命令结束（viewer 断线后命令还在本机跑），
   // 把在飞条目挤掉会让重连后的同 key 重发被第二次真执行（报告 relay 中-8）。
   while (rooms.dedupe.size > 2000) {
     let evicted = false;
-    for (const [k, e] of rooms.dedupe) {
-      if (!e.done) continue;
-      if (e.waiters && e.waiters.length) continue;
-      rooms.dedupe.delete(k);
-      if (rooms.commandWaiters.get(e.wireId) === e) rooms.commandWaiters.delete(e.wireId);
+    for (const [dedupeKey, entry] of rooms.dedupe) {
+      if (!entry.done) continue;
+      if (entry.waiters && entry.waiters.length) continue;
+      rooms.dedupe.delete(dedupeKey);
+      if (rooms.commandWaiters.get(entry.wireId) === entry) rooms.commandWaiters.delete(entry.wireId);
       evicted = true;
       break;
     }

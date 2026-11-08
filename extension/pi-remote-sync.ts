@@ -1952,7 +1952,8 @@ export function askSelectComponentFactory(title: string, display: string[], opts
     }
     if (timeoutMs) {
       timer = setTimeout(() => settle(undefined), timeoutMs);
-      if (timer && typeof timer.unref === "function") timer.unref();
+      // 不 unref：超时一到就要 settle 掉宿主弹窗，unref 会让进程在定时器触发前退出。
+      // 倒计时 tick 只是重绘，仍然可以 unref。
       // Keep the countdown in the title roughly current.
       tick = setInterval(() => { try { if (tui && typeof tui.requestRender === "function") tui.requestRender(); } catch {} }, 1000);
       if (tick && typeof tick.unref === "function") tick.unref();
@@ -5235,7 +5236,8 @@ class Bridge {
     entry.timer = setTimeout(() => {
       try { this.settleHeldDialog(entry, this.dialogCancelValue(entry.kind), "timeout"); } catch {}
     }, ms);
-    if (entry.timer && typeof entry.timer.unref === "function") entry.timer.unref();
+    // 不 unref：这个定时器一响就要 resolve 掉宿主那个 promise，是正确性依赖而不是保洁定时器。
+    // unref 之后事件循环一空进程就退，持留 dialog 永远不落定（与 attach.cjs 前台窗口定时器同一条教训）。
   }
 
   private activateNextHeldDialog() {

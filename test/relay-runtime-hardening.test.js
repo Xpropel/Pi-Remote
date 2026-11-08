@@ -164,7 +164,7 @@ test("relay 中-4：正文删除失败时不广播 session_removed、不删索�
   try {
     const done = purgeSessions({
       accountId: "admin", deviceId: "dev-1", ids: [h.id],
-      rooms: h.rooms, store: h.store, devices: h.devices, index: h.index, cfg: {},
+      rooms: h.rooms, store: h.store, devices: h.devices, index: h.index, config: {},
     });
     assert.deepEqual(done, [], "没清掉正文的 id 不能放进 done");
     assert.equal(fs.existsSync(h.file), true, "正文文件仍在");
@@ -183,7 +183,7 @@ test("relay 中-4：正文确实清掉时才广播并清索引/会话库/房间"
   try {
     const done = purgeSessions({
       accountId: "admin", deviceId: "dev-1", ids: [h.id],
-      rooms: h.rooms, store: h.store, devices: h.devices, index: h.index, cfg: {},
+      rooms: h.rooms, store: h.store, devices: h.devices, index: h.index, config: {},
     });
     assert.deepEqual(done, [h.id]);
     assert.equal(fs.existsSync(h.file), false);

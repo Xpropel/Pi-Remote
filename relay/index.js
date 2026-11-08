@@ -26,9 +26,9 @@ const DEFAULT_ACCOUNT = "admin";
 /** accountId / deviceId 落盘名：只留 [A-Za-z0-9_-]，其余变 _，最长 64 */
 function safeKey(id) {
   const raw = String(id == null ? "" : id);
-  const s = raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 48) || "_";
+  const sanitized = raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 48) || "_";
   const hash = crypto.createHash("sha1").update(raw).digest("hex").slice(0, 8);
-  return s + "-" + hash;
+  return sanitized + "-" + hash;
 }
 
 function readMap(file) {
@@ -36,23 +36,23 @@ function readMap(file) {
   let text = "";
   try {
     text = fs.readFileSync(file, "utf8");
-  } catch (e) {
-    if (e && e.code === "ENOENT") return map;
-    throw e;
+  } catch (readError) {
+    if (readError && readError.code === "ENOENT") return map;
+    throw readError;
   }
   for (const line of text.split("\n")) {
-    const t = line.trim();
-    if (!t) continue;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
     try {
-      const rec = JSON.parse(t);
-      if (rec && typeof rec.id === "string" && rec.id) {
+      const record = JSON.parse(trimmed);
+      if (record && typeof record.id === "string" && record.id) {
         // 同一 id 以 updatedAt 新者为准：文件可能被旧版本/迁移/手改留下"新行在前、旧行在后"，
         // 不能盲目让后行覆盖前行。时间相同或缺省时仍按追加顺序（后者胜）。
-        const prev = map.get(rec.id);
-        const recAt = num(rec.updatedAt, null);
-        const prevAt = prev ? num(prev.updatedAt, null) : null;
-        if (prev && recAt != null && prevAt != null && recAt < prevAt) continue;
-        map.set(rec.id, rec);
+        const previous = map.get(record.id);
+        const recordAt = num(record.updatedAt, null);
+        const previousAt = previous ? num(previous.updatedAt, null) : null;
+        if (previous && recordAt != null && previousAt != null && recordAt < previousAt) continue;
+        map.set(record.id, record);
       }
     } catch {
       /* 单行损坏跳过，不让坏行挡住后面的更新 */
@@ -64,7 +64,7 @@ function readMap(file) {
 function appendRows(file, rows) {
   if (!rows.length) return;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+  fs.appendFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
 }
 
 /** 关键小文件 fsync（令牌签发/撤销必须扛断电：撤销行丢了等于令牌复活）。失败只告警。 */
@@ -74,8 +74,8 @@ function fsyncFile(file) {
     fd = fs.openSync(file, "r+");
     fs.fsyncSync(fd);
     return true;
-  } catch (e) {
-    console.warn("[index] fsync 失败（数据可能只在页缓存）:", file, e.message);
+  } catch (fsyncError) {
+    console.warn("[index] fsync 失败（数据可能只在页缓存）:", file, fsyncError.message);
     return false;
   } finally {
     if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
@@ -86,16 +86,16 @@ const dirFsyncWarned = new Set();
 
 /** fsync 目录：rename 的目录项不会跟着文件 fsync 一起落盘，掉电后旧文件/旧名字可能"复活"
  *  （索引重写后已删除的会话行回来）。不支持目录 fsync 的平台只告警一次并降级为尽力而为。 */
-function fsyncDir(dir) {
+function fsyncDir(directoryPath) {
   let fd;
   try {
-    fd = fs.openSync(dir, "r");
+    fd = fs.openSync(directoryPath, "r");
     fs.fsyncSync(fd);
     return true;
-  } catch (e) {
-    if (!dirFsyncWarned.has(dir)) {
-      dirFsyncWarned.add(dir);
-      console.warn("[index] 目录 fsync 失败（目录项耐久降级为尽力而为）:", dir, e.message);
+  } catch (dirFsyncError) {
+    if (!dirFsyncWarned.has(directoryPath)) {
+      dirFsyncWarned.add(directoryPath);
+      console.warn("[index] 目录 fsync 失败（目录项耐久降级为尽力而为）:", directoryPath, dirFsyncError.message);
     }
     return false;
   } finally {
@@ -128,8 +128,8 @@ function scheduleRewrite(file, run, failText = "[index] 索引压缩失败（已
       // 文件在排队期间被迁移/删除（目录改名、旧目录合并）：不能凭空重建一份空文件。
       if (!fs.existsSync(file)) return;
       run();
-    } catch (e) {
-      console.warn(failText, file, e.message);
+    } catch (rewriteError) {
+      console.warn(failText, file, rewriteError.message);
     }
   });
   return true;
@@ -151,13 +151,13 @@ function rewriteFromMap(file, map) {
   const rows = [...map.values()];
   const body = rows.length ? rows.map((row) => JSON.stringify(row)).join("\n") + "\n" : "";
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = file + ".tmp";
+  const temporaryFile = file + ".tmp";
   try {
-    fs.writeFileSync(tmp, body);
-    fs.renameSync(tmp, file);
-  } catch (e) {
-    try { fs.unlinkSync(tmp); } catch {}
-    throw e;
+    fs.writeFileSync(temporaryFile, body);
+    fs.renameSync(temporaryFile, file);
+  } catch (writeError) {
+    try { fs.unlinkSync(temporaryFile); } catch {}
+    throw writeError;
   }
   fsyncFile(file);
   // rename 只改了目录项：不同步父目录的话，掉电后旧文件可能还在（forgetSession 删掉的会话行"复活"）。
@@ -170,43 +170,43 @@ function isMinimalTombstone(row) {
   if (!row || row.deleted !== true || row.kind !== "session") return false;
   const keys = Object.keys(row);
   if (keys.length !== 4) return false;
-  return keys.every((k) => k === "kind" || k === "id" || k === "deleted" || k === "updatedAt");
+  return keys.every((key) => key === "kind" || key === "id" || key === "deleted" || key === "updatedAt");
 }
 
 /** 「路径在 root 下」判断（P9 B 的 deviceScope 对账用）：按设备平台归一后比较前缀，
  *  要求完全相等或前缀后面紧跟分隔符（设备是 macOS 时大小写不敏感、Windows 反斜杠当分隔符）。
  *  懒加载 devices.js：index 是底层模块，devices 反向依赖 index，顶层 require 会成环。 */
-function pathUnderRoot(root, p, platform) {
-  if (typeof root !== "string" || typeof p !== "string" || !root || !p) return false;
+function pathUnderRoot(root, candidatePath, platform) {
+  if (typeof root !== "string" || typeof candidatePath !== "string" || !root || !candidatePath) return false;
   let normPath;
   try {
     ({ normPath } = require("./devices"));
   } catch {
     return false;
   }
-  const r = normPath(root, platform);
-  const target = normPath(p, platform);
-  if (!r || !target) return false;
-  if (target === r) return true;
-  const prefix = r.endsWith("/") ? r : r + "/";
-  return target.startsWith(prefix);
+  const normalizedRoot = normPath(root, platform);
+  const normalizedCandidate = normPath(candidatePath, platform);
+  if (!normalizedRoot || !normalizedCandidate) return false;
+  if (normalizedCandidate === normalizedRoot) return true;
+  const prefix = normalizedRoot.endsWith("/") ? normalizedRoot : normalizedRoot + "/";
+  return normalizedCandidate.startsWith(prefix);
 }
 
 /** 旧版落盘名（safeKey 加 hash 后缀之前）：只清洗、截断到 64。升级迁移用。 */
 function legacyKey(id) {
   const raw = String(id == null ? "" : id);
-  const s = raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
-  return s || "_";
+  const sanitized = raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+  return sanitized || "_";
 }
 
-function num(v, dflt) {
-  if (v == null || v === "") return dflt;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : dflt;
+function num(value, fallback) {
+  if (value == null || value === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function sameJson(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 /**
@@ -286,8 +286,8 @@ class AccountIndex {
 
   /** 目录整体改名/迁移后，丢弃该目录下各文件的缓存（含曾经 ENOENT 缓存的空表），
    *  避免整目录改名后仍用旧缓存并在压缩时整份重写。 */
-  _forgetDir(dir) {
-    const prefix = dir + path.sep;
+  _forgetDir(directoryPath) {
+    const prefix = directoryPath + path.sep;
     for (const file of this.fileCache.keys()) {
       if (file.startsWith(prefix)) this.fileCache.delete(file);
     }
@@ -299,12 +299,12 @@ class AccountIndex {
    * 可能拿旧缓存整份重写，把刚合并进来的历史抹掉。合并完旧文件改名留档，不删除。
    */
   _mergeJsonlInto(from, to, stamp) {
-    const src = readMap(from);
-    const dst = this._map(to);
+    const sourceRows = readMap(from);
+    const targetRows = this._map(to);
     const rows = [];
-    for (const [id, row] of src) {
-      const cur = dst.get(id);
-      if (!cur || num(row && row.updatedAt, 0) > num(cur && cur.updatedAt, 0)) rows.push(row);
+    for (const [id, row] of sourceRows) {
+      const current = targetRows.get(id);
+      if (!current || num(row && row.updatedAt, 0) > num(current && current.updatedAt, 0)) rows.push(row);
     }
     this._append(to, rows);
     fs.renameSync(from, from + ".migrated-" + stamp);
@@ -316,13 +316,13 @@ class AccountIndex {
     let accounts = [];
     try {
       accounts = [...readMap(path.join(this.dir, "index.jsonl")).values()].filter(
-        (r) => r && r.kind === "account" && typeof r.id === "string" && r.id,
+        (row) => row && row.kind === "account" && typeof row.id === "string" && row.id,
       );
     } catch {
       return;
     }
     const stamp = Date.now();
-    for (const a of accounts) this._migrateAccountDir(a.id, stamp);
+    for (const account of accounts) this._migrateAccountDir(account.id, stamp);
   }
 
   /** 单个账号的旧目录迁移：先改名 sessions/ 里的会话文件，再改名/合并账号目录本身——
@@ -332,35 +332,35 @@ class AccountIndex {
     const from = path.join(this.dir, legacyKey(id));
     const to = path.join(this.dir, safeKey(id));
     if (from === to) return;
-    const hasFrom = fs.existsSync(from);
-    const hasTo = fs.existsSync(to);
-    if (!hasFrom) return;
+    const hasLegacyDir = fs.existsSync(from);
+    const hasCurrentDir = fs.existsSync(to);
+    if (!hasLegacyDir) return;
     // 目标目录不存在 = 下面会整目录改名。先清掉目标路径下可能缓存过的空表（以前读 ENOENT 留下的），
     // 否则改名后读路径会拿空缓存，压缩时把刚搬进来的历史整份抹掉。
-    if (!hasTo) this._forgetDir(to);
+    if (!hasCurrentDir) this._forgetDir(to);
     try {
-      if (hasTo) this._mergeLegacyDir(from, to, stamp);
+      if (hasCurrentDir) this._mergeLegacyDir(from, to, stamp);
       else fs.renameSync(from, to);
-    } catch (e) {
-      console.error("[index] 账号目录迁移失败:", id, e.message);
+    } catch (migrationError) {
+      console.error("[index] 账号目录迁移失败:", id, migrationError.message);
       return;
     }
-    const dir = to;
+    const accountDir = to;
     let devices = [];
     try {
-      devices = [...readMap(path.join(dir, "devices.jsonl")).values()];
+      devices = [...readMap(path.join(accountDir, "devices.jsonl")).values()];
     } catch {
       return;
     }
-    for (const d of devices) {
-      if (!d || typeof d.id !== "string" || !d.id) continue;
-      const sf = path.join(dir, "sessions", legacyKey(d.id) + ".jsonl");
-      const st = path.join(dir, "sessions", safeKey(d.id) + ".jsonl");
+    for (const deviceRow of devices) {
+      if (!deviceRow || typeof deviceRow.id !== "string" || !deviceRow.id) continue;
+      const legacySessionFile = path.join(accountDir, "sessions", legacyKey(deviceRow.id) + ".jsonl");
+      const currentSessionFile = path.join(accountDir, "sessions", safeKey(deviceRow.id) + ".jsonl");
       try {
-        if (sf !== st && fs.existsSync(sf) && !fs.existsSync(st)) fs.renameSync(sf, st);
-        else if (sf !== st && fs.existsSync(sf) && fs.existsSync(st)) this._mergeJsonlInto(sf, st, stamp);
-      } catch (e) {
-        console.error("[index] 会话文件迁移失败:", d.id, e.message);
+        if (legacySessionFile !== currentSessionFile && fs.existsSync(legacySessionFile) && !fs.existsSync(currentSessionFile)) fs.renameSync(legacySessionFile, currentSessionFile);
+        else if (legacySessionFile !== currentSessionFile && fs.existsSync(legacySessionFile) && fs.existsSync(currentSessionFile)) this._mergeJsonlInto(legacySessionFile, currentSessionFile, stamp);
+      } catch (sessionMigrationError) {
+        console.error("[index] 会话文件迁移失败:", deviceRow.id, sessionMigrationError.message);
       }
     }
   }
@@ -380,12 +380,12 @@ class AccountIndex {
     if (fs.existsSync(fromDevices)) this._mergeJsonlInto(fromDevices, path.join(to, "devices.jsonl"), stamp);
     const fromSessions = path.join(from, "sessions");
     const byLegacy = new Map();
-    for (const d of devices) {
-      if (d && typeof d.id === "string" && d.id) byLegacy.set(legacyKey(d.id) + ".jsonl", safeKey(d.id) + ".jsonl");
+    for (const deviceRow of devices) {
+      if (deviceRow && typeof deviceRow.id === "string" && deviceRow.id) byLegacy.set(legacyKey(deviceRow.id) + ".jsonl", safeKey(deviceRow.id) + ".jsonl");
     }
     let names = [];
     try {
-      names = fs.readdirSync(fromSessions).filter((n) => n.endsWith(".jsonl"));
+      names = fs.readdirSync(fromSessions).filter((name) => name.endsWith(".jsonl"));
     } catch {
       names = [];
     }
@@ -407,19 +407,19 @@ class AccountIndex {
     const id = deviceId.trim();
     let accounts = [];
     try {
-      accounts = [...this._map(path.join(this.dir, "index.jsonl")).values()].filter((r) => r && r.kind === "account" && r.id);
+      accounts = [...this._map(path.join(this.dir, "index.jsonl")).values()].filter((row) => row && row.kind === "account" && row.id);
     } catch {
       return null;
     }
-    for (const a of accounts) {
+    for (const account of accounts) {
       // 某个账号名册读不了（权限/被换成目录）时不能让整个反查失败：跳过它继续找
       let row = null;
       try {
-        row = this.getDeviceRow(a.id, id);
-      } catch (e) {
-        console.error("[index] findDevice 读账号名册失败:", a.id, e.message);
+        row = this.getDeviceRow(account.id, id);
+      } catch (rosterError) {
+        console.error("[index] findDevice 读账号名册失败:", account.id, rosterError.message);
       }
-      if (row) return { accountId: a.id, row };
+      if (row) return { accountId: account.id, row };
     }
     return null;
   }
@@ -442,8 +442,8 @@ class AccountIndex {
     try {
       const from = path.join(this.dir, legacyKey(id));
       if (from !== to && !fs.existsSync(to) && fs.existsSync(from)) this._migrateAccountDir(id, Date.now());
-    } catch (e) {
-      console.error("[index] 账号目录懒迁移失败:", id, e.message);
+    } catch (lazyMigrationError) {
+      console.error("[index] 账号目录懒迁移失败:", id, lazyMigrationError.message);
     }
     return to;
   }
@@ -504,7 +504,7 @@ class AccountIndex {
       id,
       name: device.name != null ? String(device.name) : (prev.name || ""),
       platform: device.platform != null ? String(device.platform) : (prev.platform || ""),
-      projects: Array.isArray(device.projects) ? device.projects.map((p) => String(p)) : (Array.isArray(prev.projects) ? prev.projects : []),
+      projects: Array.isArray(device.projects) ? device.projects.map((project) => String(project)) : (Array.isArray(prev.projects) ? prev.projects : []),
       // 客户端给的时间不可信：未来时间会把设备永久置顶（参考 applyManifest 对帧时间的夹取）
       lastAttachAt: Math.min(num(device.lastAttachAt, num(prev.lastAttachAt, now)), now),
       // 配对过的设备留一个不可逆标记：撤销令牌后 legacy 也不能再冒用它（令牌可以删，身份不能回退）
@@ -526,7 +526,7 @@ class AccountIndex {
 
   listDevices(accountId) {
     const rows = [...this._map(this._devicesFile(accountId)).values()];
-    rows.sort((a, b) => (Number(b.lastAttachAt) || 0) - (Number(a.lastAttachAt) || 0) || String(a.id).localeCompare(String(b.id)));
+    rows.sort((left, right) => (Number(right.lastAttachAt) || 0) - (Number(left.lastAttachAt) || 0) || String(left.id).localeCompare(String(right.id)));
     return rows;
   }
 
@@ -571,8 +571,8 @@ class AccountIndex {
   }
 
   listViewers(accountId) {
-    const rows = [...this._map(this._viewersFile(accountId)).values()].filter((r) => r && r.kind === "viewer");
-    rows.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0) || String(a.id).localeCompare(String(b.id)));
+    const rows = [...this._map(this._viewersFile(accountId)).values()].filter((row) => row && row.kind === "viewer");
+    rows.sort((left, right) => (Number(left.createdAt) || 0) - (Number(right.createdAt) || 0) || String(left.id).localeCompare(String(right.id)));
     return rows;
   }
 
@@ -594,15 +594,15 @@ class AccountIndex {
     let text = "";
     try {
       text = fs.readFileSync(this._tokensFile(id), "utf8");
-    } catch (e) {
-      if (!e || e.code !== "ENOENT") throw e;
+    } catch (readError) {
+      if (!readError || readError.code !== "ENOENT") throw readError;
     }
     for (const line of text.split("\n")) {
-      const t = line.trim();
-      if (!t) continue;
+      const trimmed = line.trim();
+      if (!trimmed) continue;
       try {
-        const rec = JSON.parse(t);
-        if (rec && rec.kind === "token" && typeof rec.hash === "string" && typeof rec.deviceId === "string") map.set(rec.hash, rec);
+        const record = JSON.parse(trimmed);
+        if (record && record.kind === "token" && typeof record.hash === "string" && typeof record.deviceId === "string") map.set(record.hash, record);
       } catch {
         /* 单行损坏跳过 */
       }
@@ -617,7 +617,7 @@ class AccountIndex {
     if (!rows.length) return;
     const file = this._tokensFile(accountId);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+    fs.appendFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
     fsyncFile(file);
     const map = this._tokens(accountId);
     for (const row of rows) map.set(row.hash, row);
@@ -649,16 +649,16 @@ class AccountIndex {
         rows.push(row);
       }
       const body = rows.length ? rows.map((row) => JSON.stringify(row)).join("\n") + "\n" : "";
-      const tmp = file + ".tmp";
+      const temporaryFile = file + ".tmp";
       try {
-        fs.writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600 });
-        if (!fsyncFile(tmp)) throw new Error("tmp fsync 失败");
-        fs.renameSync(tmp, file);
+        fs.writeFileSync(temporaryFile, body, { encoding: "utf8", mode: 0o600 });
+        if (!fsyncFile(temporaryFile)) throw new Error("临时文件 fsync 失败");
+        fs.renameSync(temporaryFile, file);
         // rename 的目录项也要同步，否则掉电后旧的（更大的）令牌文件可能回来。
         fsyncDir(path.dirname(file));
-      } catch (e) {
-        console.warn("[index] 令牌文件压缩失败（保留原文件）:", e.message);
-        try { fs.unlinkSync(tmp); } catch {}
+      } catch (compactError) {
+        console.warn("[index] 令牌文件压缩失败（保留原文件）:", compactError.message);
+        try { fs.unlinkSync(temporaryFile); } catch {}
         return false;
       }
       // 压缩成功后把已丢弃的旧撤销行也从缓存里删掉，保持内存与磁盘一致
@@ -699,9 +699,9 @@ class AccountIndex {
     return { revoked: rows.length - 1 };
   }
 
-  _sessionFrom(prev, src, { deleted, updatedAt }) {
-    const p = prev || {};
-    const active = deleted ? false : (src.active == null ? !!p.active : !!src.active);
+  _sessionFrom(previousRow, sourceRow, { deleted, updatedAt }) {
+    const previous = previousRow || {};
+    const active = deleted ? false : (sourceRow.active == null ? !!previous.active : !!sourceRow.active);
     // Crypto Phase 3: the preview has two mutually exclusive forms -- a
     // plaintext firstMessage string, or a sealed firstMessageEnc envelope
     // ({ enc:1, ct }, firstMessage nulled by the producer). They are kept
@@ -712,36 +712,36 @@ class AccountIndex {
     // firstMessageEnc:null retracts the envelope on its own.
     // The envelope is accepted in the dedicated field, or (defensively)
     // inside firstMessage itself, the form the web parsers read.
-    const srcEnc = cleanFirstMessageEnc(src.firstMessageEnc) || cleanFirstMessageEnc(src.firstMessage);
+    const srcEnc = cleanFirstMessageEnc(sourceRow.firstMessageEnc) || cleanFirstMessageEnc(sourceRow.firstMessage);
     let firstMessage;
     let firstMessageEnc = null;
     if (srcEnc) {
       firstMessageEnc = srcEnc;
       firstMessage = "";
-    } else if (typeof src.firstMessage === "string") {
-      firstMessage = src.firstMessage;
+    } else if (typeof sourceRow.firstMessage === "string") {
+      firstMessage = sourceRow.firstMessage;
     } else {
-      firstMessage = p.firstMessage || "";
-      firstMessageEnc = src.firstMessageEnc === null ? null : (p.firstMessageEnc || null);
+      firstMessage = previous.firstMessage || "";
+      firstMessageEnc = sourceRow.firstMessageEnc === null ? null : (previous.firstMessageEnc || null);
     }
     const row = {
       kind: "session",
-      id: String(src.id),
-      path: src.path != null ? String(src.path) : (p.path || ""),
+      id: String(sourceRow.id),
+      path: sourceRow.path != null ? String(sourceRow.path) : (previous.path || ""),
       // name 为 null 或 "" 表示未命名，写成空字符串盖掉旧名字；缺省（undefined）沿用旧名字。
-      name: src.name === null || src.name === "" ? "" : (src.name != null ? String(src.name) : (p.name || "")),
-      cwd: src.cwd != null ? String(src.cwd) : (p.cwd || ""),
+      name: sourceRow.name === null || sourceRow.name === "" ? "" : (sourceRow.name != null ? String(sourceRow.name) : (previous.name || "")),
+      cwd: sourceRow.cwd != null ? String(sourceRow.cwd) : (previous.cwd || ""),
       firstMessage,
       // fork 谱系（R3-3 第 3 项）：父会话路径随清单行透传。口径同 name（第 3 轮审查 C-4）：
       // 帧带字符串 = 新值（空串归一为 null）；帧显式 null = 父指针已不存在，盖掉旧值；
       // 只有字段缺省（undefined，增量帧不带该行字段时）才沿用旧行。旧写法用 != null
       // 把"显式 null"与"缺省"混同，父指针一旦存下就永不能被新帧清掉。
-      parentSession: src.parentSession === undefined
-        ? (p.parentSession != null ? p.parentSession : null)
-        : (src.parentSession ? String(src.parentSession) : null),
-      messageCount: src.messageCount == null ? num(p.messageCount, 0) : num(src.messageCount, 0),
-      sizeBytes: src.sizeBytes == null ? num(p.sizeBytes, 0) : num(src.sizeBytes, 0),
-      createdAt: src.createdAt == null ? num(p.createdAt, 0) : num(src.createdAt, 0),
+      parentSession: sourceRow.parentSession === undefined
+        ? (previous.parentSession != null ? previous.parentSession : null)
+        : (sourceRow.parentSession ? String(sourceRow.parentSession) : null),
+      messageCount: sourceRow.messageCount == null ? num(previous.messageCount, 0) : num(sourceRow.messageCount, 0),
+      sizeBytes: sourceRow.sizeBytes == null ? num(previous.sizeBytes, 0) : num(sourceRow.sizeBytes, 0),
+      createdAt: sourceRow.createdAt == null ? num(previous.createdAt, 0) : num(sourceRow.createdAt, 0),
       updatedAt,
       active,
       deleted: !!deleted,
@@ -800,16 +800,16 @@ class AccountIndex {
       map.set(id, row);
     };
 
-    for (const src of manifest.sessions) {
-      if (!src || typeof src.id !== "string" || !src.id) {
+    for (const reportedSession of manifest.sessions) {
+      if (!reportedSession || typeof reportedSession.id !== "string" || !reportedSession.id) {
         skipped += 1;
         continue;
       }
-      const id = src.id;
+      const id = reportedSession.id;
       seen.add(id);
       const prev = map.get(id);
-      const rowAt = Math.min(num(src.updatedAt, frameAt || nowAt), nowAt);
-      const row = this._sessionFrom(prev, src, { deleted: false, updatedAt: rowAt });
+      const rowAt = Math.min(num(reportedSession.updatedAt, frameAt || nowAt), nowAt);
+      const row = this._sessionFrom(prev, reportedSession, { deleted: false, updatedAt: rowAt });
       // 设备是权威：deviceScope 帧里重新出现的会话（用户从废纸篓拿了回来等），
       // 就算之前打了墓碑也要恢复；新行的 updatedAt 必须压过墓碑时间，否则会被 take 当成更旧的丢掉。
       if (scopeRoot && prev && prev.deleted) row.updatedAt = Math.max(row.updatedAt, num(prev.updatedAt, 0) + 1);
@@ -871,8 +871,8 @@ class AccountIndex {
 
     try {
       this._append(file, lines);
-    } catch (e) {
-      return { ok: false, reason: "write_failed", error: e.message };
+    } catch (appendError) {
+      return { ok: false, reason: "write_failed", error: appendError.message };
     }
     if (frameAt >= prevFrameAt) this.lastManifestAt.set(memKey, frameAt);
     return { ok: true, stale: false, written: lines.length, skipped, tombstoned };
@@ -900,8 +900,8 @@ class AccountIndex {
     map.set(id, { kind: "session", id, deleted: true, updatedAt });
     try {
       rewriteFromMap(file, map);
-    } catch (e) {
-      console.warn("[index] 会话墓碑写盘失败:", id, e.message);
+    } catch (tombstoneError) {
+      console.warn("[index] 会话墓碑写盘失败:", id, tombstoneError.message);
       return false;
     }
     this.fileCache.set(file, map);
@@ -919,8 +919,8 @@ class AccountIndex {
    */
   listSessions(accountId, deviceId, { limit = 200 } = {}) {
     const cap = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 200;
-    const all = [...this._map(this._sessionsFile(accountId, deviceId)).values()].filter((r) => r && r.kind === "session" && !r.deleted);
-    all.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0) || String(a.id).localeCompare(String(b.id)));
+    const all = [...this._map(this._sessionsFile(accountId, deviceId)).values()].filter((row) => row && row.kind === "session" && !row.deleted);
+    all.sort((left, right) => (Number(right.updatedAt) || 0) - (Number(left.updatedAt) || 0) || String(left.id).localeCompare(String(right.id)));
     return { sessions: all.slice(0, cap), truncated: all.length > cap, total: all.length };
   }
 }

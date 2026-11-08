@@ -58,8 +58,8 @@ function releaseDownloadUrl(asset) {
   return `${RELEASE_BASE}/${asset.file}`;
 }
 
-function validPort(n) {
-  return Number.isSafeInteger(n) && n >= 1 && n <= 65535;
+function validPort(port) {
+  return Number.isSafeInteger(port) && port >= 1 && port <= 65535;
 }
 
 /**
@@ -68,53 +68,53 @@ function validPort(n) {
  * --metrics 给独立回环端口：调用方轮询它的 /ready 核对隧道真就绪，不靠日志猜。
  */
 function buildTunnelArgs({ viewerPort, localPort, metricsPort } = {}) {
-  const vp = Number(viewerPort);
-  const lp = Number(localPort);
-  const mp = Number(metricsPort);
-  if (!validPort(vp)) throw new Error("buildTunnelArgs：viewerPort 不是合法端口：" + viewerPort);
-  if (!validPort(lp)) throw new Error("buildTunnelArgs：localPort 不是合法端口：" + localPort);
-  if (!validPort(mp)) throw new Error("buildTunnelArgs：metricsPort 不是合法端口：" + metricsPort);
-  if (vp === lp) {
-    throw new Error(`隧道目标端口（${vp}）与本地通道端口相同：本地通道永不进隧道，已拒绝拉起隧道`);
+  const viewerPortNumber = Number(viewerPort);
+  const localPortNumber = Number(localPort);
+  const metricsPortNumber = Number(metricsPort);
+  if (!validPort(viewerPortNumber)) throw new Error("buildTunnelArgs：viewerPort 不是合法端口：" + viewerPort);
+  if (!validPort(localPortNumber)) throw new Error("buildTunnelArgs：localPort 不是合法端口：" + localPort);
+  if (!validPort(metricsPortNumber)) throw new Error("buildTunnelArgs：metricsPort 不是合法端口：" + metricsPort);
+  if (viewerPortNumber === localPortNumber) {
+    throw new Error(`隧道目标端口（${viewerPortNumber}）与本地通道端口相同：本地通道永不进隧道，已拒绝拉起隧道`);
   }
-  return ["tunnel", "--url", `http://127.0.0.1:${vp}`, "--no-autoupdate", "--metrics", `127.0.0.1:${mp}`];
+  return ["tunnel", "--url", `http://127.0.0.1:${viewerPortNumber}`, "--no-autoupdate", "--metrics", `127.0.0.1:${metricsPortNumber}`];
 }
 
 /**
  * 核对一组参数是不是本模块会拼出来的那种安全参数（doctor §5.3 用：对 attach 记录的
  * 运行中隧道参数再验一遍）。安全返回 ""，有问题返回原因字符串。
  */
-function verifyTunnelArgsSafe(args, { viewerPort, localPort } = {}) {
-  const list = Array.isArray(args) ? args.map(String) : [];
-  const vp = Number(viewerPort);
-  const lp = Number(localPort);
-  if (!validPort(vp) || !validPort(lp)) return "端口配置不合法，无法核对隧道参数";
-  if (vp === lp) return `viewer 端口与本地通道端口相同（${vp}），本身就是事故配置`;
+function verifyTunnelArgsSafe(tunnelArgs, { viewerPort, localPort } = {}) {
+  const list = Array.isArray(tunnelArgs) ? tunnelArgs.map(String) : [];
+  const viewerPortNumber = Number(viewerPort);
+  const localPortNumber = Number(localPort);
+  if (!validPort(viewerPortNumber) || !validPort(localPortNumber)) return "端口配置不合法，无法核对隧道参数";
+  if (viewerPortNumber === localPortNumber) return `viewer 端口与本地通道端口相同（${viewerPortNumber}），本身就是事故配置`;
   if (list[0] !== "tunnel") return "参数不是 tunnel 子命令";
-  const urlIdx = [];
-  for (let i = 0; i < list.length; i++) {
-    if (list[i] === "--url") urlIdx.push(i);
-    if (/^https?:\/\//i.test(list[i]) && list[i - 1] !== "--url") return `参数里混入了 --url 以外的网址：${list[i]}`;
+  const urlIndexes = [];
+  for (let index = 0; index < list.length; index++) {
+    if (list[index] === "--url") urlIndexes.push(index);
+    if (/^https?:\/\//i.test(list[index]) && list[index - 1] !== "--url") return `参数里混入了 --url 以外的网址：${list[index]}`;
   }
-  if (urlIdx.length !== 1) return `--url 应当恰好一个，实际 ${urlIdx.length} 个`;
-  const target = list[urlIdx[0] + 1] || "";
-  let u;
+  if (urlIndexes.length !== 1) return `--url 应当恰好一个，实际 ${urlIndexes.length} 个`;
+  const target = list[urlIndexes[0] + 1] || "";
+  let parsed;
   try {
-    u = new URL(target);
+    parsed = new URL(target);
   } catch {
     return `--url 目标无法解析：${target}`;
   }
-  if (u.protocol !== "http:") return `--url 目标协议不是 http：${target}`;
-  if (u.hostname !== "127.0.0.1") return `--url 目标不是回环地址：${target}（隧道只许指向本机回环）`;
-  if (Number(u.port) !== vp) return `--url 目标端口是 ${u.port || "(缺省)"}，不是 viewer 端口 ${vp}`;
-  if (Number(u.port) === lp) return `--url 目标正是本地通道端口 ${lp}：本地通道进了隧道`;
+  if (parsed.protocol !== "http:") return `--url 目标协议不是 http：${target}`;
+  if (parsed.hostname !== "127.0.0.1") return `--url 目标不是回环地址：${target}（隧道只许指向本机回环）`;
+  if (Number(parsed.port) !== viewerPortNumber) return `--url 目标端口是 ${parsed.port || "(缺省)"}，不是 viewer 端口 ${viewerPortNumber}`;
+  if (Number(parsed.port) === localPortNumber) return `--url 目标正是本地通道端口 ${localPortNumber}：本地通道进了隧道`;
   return "";
 }
 
 /** 从 cloudflared 的输出文本里提取 quick tunnel 网址（纯函数）。抓不到返回 null。 */
 function extractTunnelUrl(text) {
-  const m = String(text == null ? "" : text).match(/https:\/\/[a-z0-9][a-z0-9-]*\.trycloudflare\.com/i);
-  return m ? m[0] : null;
+  const match = String(text == null ? "" : text).match(/https:\/\/[a-z0-9][a-z0-9-]*\.trycloudflare\.com/i);
+  return match ? match[0] : null;
 }
 
 /* ---------------- 二进制解析：env > PATH > 缓存 > 下载 ---------------- */
@@ -131,8 +131,8 @@ function cachedBinaryPath(cacheDir, platform = HOST_PLATFORM, version = CLOUDFLA
 
 function isExecutableFile(file, platform = HOST_PLATFORM) {
   try {
-    const st = fs.statSync(file);
-    if (!st.isFile()) return false;
+    const fileStat = fs.statSync(file);
+    if (!fileStat.isFile()) return false;
     if (platform !== "win32") fs.accessSync(file, fs.constants.X_OK);
     return true;
   } catch {
@@ -167,10 +167,10 @@ function sha256File(file) {
 
 function probeVersion(bin, spawnSyncImpl = spawnSync) {
   try {
-    const r = spawnSyncImpl(bin, ["--version"], { encoding: "utf8", timeout: 5000 });
-    if (!r || r.error || r.status !== 0) return "";
-    const m = String(r.stdout || r.stderr || "").match(/cloudflared version (\S+)/);
-    return m ? m[1] : "";
+    const probeResult = spawnSyncImpl(bin, ["--version"], { encoding: "utf8", timeout: 5000 });
+    if (!probeResult || probeResult.error || probeResult.status !== 0) return "";
+    const match = String(probeResult.stdout || probeResult.stderr || "").match(/cloudflared version (\S+)/);
+    return match ? match[1] : "";
   } catch {
     return "";
   }
@@ -180,29 +180,29 @@ function probeVersion(bin, spawnSyncImpl = spawnSync) {
 function downloadHttps(url, dest) {
   return new Promise((resolve, reject) => {
     const attempt = (current, redirectsLeft) => {
-      const req = https.get(current, (res) => {
-        const status = res.statusCode || 0;
-        if (status >= 300 && status < 400 && res.headers.location) {
-          res.resume();
+      const request = https.get(current, (response) => {
+        const status = response.statusCode || 0;
+        if (status >= 300 && status < 400 && response.headers.location) {
+          response.resume();
           if (redirectsLeft <= 0) {
             reject(new Error("下载重定向次数过多：" + url));
             return;
           }
-          attempt(new URL(res.headers.location, current).toString(), redirectsLeft - 1);
+          attempt(new URL(response.headers.location, current).toString(), redirectsLeft - 1);
           return;
         }
         if (status !== 200) {
-          res.resume();
+          response.resume();
           reject(new Error(`下载失败（HTTP ${status}）：${url}`));
           return;
         }
         const file = fs.createWriteStream(dest);
-        res.pipe(file);
+        response.pipe(file);
         file.on("finish", () => file.close(() => resolve(dest)));
         file.on("error", reject);
       });
-      req.on("error", reject);
-      req.setTimeout(120000, () => req.destroy(new Error("下载超时：" + url)));
+      request.on("error", reject);
+      request.setTimeout(120000, () => request.destroy(new Error("下载超时：" + url)));
     };
     attempt(url, 5);
   });
@@ -211,9 +211,9 @@ function downloadHttps(url, dest) {
 /** tar 解压 .tgz（darwin 资产）到目录，返回解出的 cloudflared 路径。系统 tar 在三平台都自带。 */
 function extractTgzBinary(tgzPath, destDir, spawnSyncImpl = spawnSync) {
   fs.mkdirSync(destDir, { recursive: true });
-  const r = spawnSyncImpl("tar", ["-xzf", tgzPath, "-C", destDir], { encoding: "utf8", timeout: 60000 });
-  if (!r || r.error || r.status !== 0) {
-    throw new Error("解压 cloudflared 压缩包失败：" + ((r && (r.stderr || r.error)) || "tar 不可用"));
+  const tarResult = spawnSyncImpl("tar", ["-xzf", tgzPath, "-C", destDir], { encoding: "utf8", timeout: 60000 });
+  if (!tarResult || tarResult.error || tarResult.status !== 0) {
+    throw new Error("解压 cloudflared 压缩包失败：" + ((tarResult && (tarResult.stderr || tarResult.error)) || "tar 不可用"));
   }
   const bin = path.join(destDir, "cloudflared");
   if (!fs.existsSync(bin)) throw new Error("压缩包里没有 cloudflared 二进制");
@@ -225,16 +225,16 @@ function extractTgzBinary(tgzPath, destDir, spawnSyncImpl = spawnSync) {
  *   source: "env"（PI_REMOTE_CLOUDFLARED_BIN 指定）| "path"（系统已装）| "cache"（此前下载且验过）| "download"（本次下载）
  * 找不到且不许下载 / 不支持的平台 / 校验失败 → 抛带人话的 Error。
  */
-async function resolveCloudflared(opts = {}) {
-  const platform = opts.platform || HOST_PLATFORM;
-  const arch = opts.arch || process.arch;
-  const environ = opts.environ || process.env;
-  const cacheDir = opts.cacheDir || defaultCacheDir(environ);
-  const allowDownload = opts.allowDownload !== false;
-  const spawnSyncImpl = opts.spawnSyncImpl || spawnSync;
-  const table = opts.releaseTable || RELEASE_ASSETS;
-  const version = opts.version || CLOUDFLARED_VERSION;
-  const log = typeof opts.log === "function" ? opts.log : () => {};
+async function resolveCloudflared(options = {}) {
+  const platform = options.platform || HOST_PLATFORM;
+  const arch = options.arch || process.arch;
+  const environ = options.environ || process.env;
+  const cacheDir = options.cacheDir || defaultCacheDir(environ);
+  const allowDownload = options.allowDownload !== false;
+  const spawnSyncImpl = options.spawnSyncImpl || spawnSync;
+  const table = options.releaseTable || RELEASE_ASSETS;
+  const version = options.version || CLOUDFLARED_VERSION;
+  const log = typeof options.log === "function" ? options.log : () => {};
 
   const fromEnv = String((environ && environ.PI_REMOTE_CLOUDFLARED_BIN) || "").trim();
   if (fromEnv) {
@@ -244,8 +244,8 @@ async function resolveCloudflared(opts = {}) {
 
   const onPath = findOnPath(platform === "win32" ? ["cloudflared.exe", "cloudflared"] : ["cloudflared"], platform, environ);
   if (onPath) {
-    const v = probeVersion(onPath, spawnSyncImpl);
-    if (v) return { bin: onPath, source: "path", version: v };
+    const pathVersion = probeVersion(onPath, spawnSyncImpl);
+    if (pathVersion) return { bin: onPath, source: "path", version: pathVersion };
     log(`PATH 上的 cloudflared 无法运行（${onPath}），改用缓存/下载`);
   }
 
@@ -274,26 +274,26 @@ async function resolveCloudflared(opts = {}) {
   if (!asset) {
     throw new Error(`暂不支持在 ${platform}-${arch} 上自动下载 cloudflared；请手动安装后重试（或用 PI_REMOTE_CLOUDFLARED_BIN 指定）`);
   }
-  const url = opts.downloadBase ? `${opts.downloadBase}/${asset.file}` : releaseDownloadUrl(asset);
-  const downloadImpl = opts.downloadImpl || downloadHttps;
-  const extractImpl = opts.extractImpl || extractTgzBinary;
+  const url = options.downloadBase ? `${options.downloadBase}/${asset.file}` : releaseDownloadUrl(asset);
+  const downloadImpl = options.downloadImpl || downloadHttps;
+  const extractImpl = options.extractImpl || extractTgzBinary;
   fs.mkdirSync(path.dirname(cached), { recursive: true });
-  const tmp = `${cached}.download-${process.pid}`;
+  const tempPath = `${cached}.download-${process.pid}`;
   log(`正在下载 cloudflared ${version}（${asset.file}，约 ${asset.archive ? "20" : "40"}MB，来自官方 GitHub Release）…`);
   try {
-    await downloadImpl(url, tmp);
-    const digest = await sha256File(tmp);
+    await downloadImpl(url, tempPath);
+    const digest = await sha256File(tempPath);
     if (digest !== asset.sha256) {
       throw new Error(`下载的 cloudflared 哈希校验失败（期望 ${asset.sha256.slice(0, 12)}…，实际 ${digest.slice(0, 12)}…），已丢弃；请检查网络后重试`);
     }
-    let finalTmp = tmp;
+    let finalTmp = tempPath;
     if (asset.archive === "tgz") {
       const extractDir = `${cached}.extract-${process.pid}`;
       try {
-        finalTmp = extractImpl(tmp, extractDir, spawnSyncImpl);
+        finalTmp = extractImpl(tempPath, extractDir, spawnSyncImpl);
       } finally {
         try {
-          fs.unlinkSync(tmp);
+          fs.unlinkSync(tempPath);
         } catch {}
       }
       fs.renameSync(finalTmp, cached);
@@ -301,13 +301,13 @@ async function resolveCloudflared(opts = {}) {
         fs.rmdirSync(extractDir);
       } catch {}
     } else {
-      fs.renameSync(tmp, cached);
+      fs.renameSync(tempPath, cached);
     }
-  } catch (e) {
+  } catch (downloadError) {
     try {
-      fs.unlinkSync(tmp);
+      fs.unlinkSync(tempPath);
     } catch {}
-    throw e;
+    throw downloadError;
   }
   if (platform !== "win32") {
     try {
@@ -334,25 +334,25 @@ function pickFreePort() {
 /** 默认就绪探针：GET /ready，200 才算隧道连接已建立（cloudflared metrics 端点语义） */
 function probeReady(metricsPort, timeoutMs = 1500) {
   return new Promise((resolve) => {
-    const req = http.get({ host: "127.0.0.1", port: metricsPort, path: "/ready", timeout: timeoutMs }, (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
+    const request = http.get({ host: "127.0.0.1", port: metricsPort, path: "/ready", timeout: timeoutMs }, (response) => {
+      response.resume();
+      resolve(response.statusCode === 200);
     });
-    req.on("timeout", () => {
-      req.destroy();
+    request.on("timeout", () => {
+      request.destroy();
       resolve(false);
     });
-    req.on("error", () => resolve(false));
+    request.on("error", () => resolve(false));
   });
 }
 
-function killChildTree(child, signal, opts = {}) {
-  const platform = opts.platform || HOST_PLATFORM;
-  const killImpl = opts.killImpl || ((pid, sig) => process.kill(pid, sig));
+function killChildTree(child, signal, options = {}) {
+  const platform = options.platform || HOST_PLATFORM;
+  const killImpl = options.killImpl || ((pid, sig) => process.kill(pid, sig));
   if (!child || child.pid == null) return;
   if (platform === "win32") {
     try {
-      (opts.spawnSyncImpl || spawnSync)("taskkill", ["/pid", String(child.pid), "/T", signal === "SIGKILL" ? "/F" : ""].filter(Boolean), { timeout: 5000 });
+      (options.spawnSyncImpl || spawnSync)("taskkill", ["/pid", String(child.pid), "/T", signal === "SIGKILL" ? "/F" : ""].filter(Boolean), { timeout: 5000 });
     } catch {}
     try {
       child.kill();
@@ -399,13 +399,13 @@ function waitChildExit(child, timeoutMs) {
  * 网址出现（日志里抓到）与就绪（/ready 200）是两步：onUrl 在抓到网址时先行回调（出示可以先走），
  * ready 在探针确认后 resolve。子进程异常退出时 onExit 回调，调用方据此回落出示源。
  */
-function startTunnel(opts = {}) {
-  const platform = opts.platform || HOST_PLATFORM;
-  const spawnImpl = opts.spawnImpl || spawn;
-  const probe = opts.probeReady || probeReady;
-  const readyTimeoutMs = opts.readyTimeoutMs != null ? Number(opts.readyTimeoutMs) : 90000;
-  const pollMs = opts.pollMs != null ? Number(opts.pollMs) : 400;
-  const environ = opts.environ || process.env;
+function startTunnel(options = {}) {
+  const platform = options.platform || HOST_PLATFORM;
+  const spawnImpl = options.spawnImpl || spawn;
+  const probe = options.probeReady || probeReady;
+  const readyTimeoutMs = options.readyTimeoutMs != null ? Number(options.readyTimeoutMs) : 90000;
+  const pollMs = options.pollMs != null ? Number(options.pollMs) : 400;
+  const environ = options.environ || process.env;
 
   let state = "starting";
   let url = "";
@@ -445,10 +445,10 @@ function startTunnel(opts = {}) {
       pollTimer = null;
       if (state === "starting" || state === "ready") state = "stopped";
       if (!child) return;
-      killChildTree(child, "SIGTERM", { platform, spawnSyncImpl: opts.spawnSyncImpl, killImpl: opts.killImpl });
+      killChildTree(child, "SIGTERM", { platform, spawnSyncImpl: options.spawnSyncImpl, killImpl: options.killImpl });
       const exited = await waitChildExit(child, 2500);
       if (!exited) {
-        killChildTree(child, "SIGKILL", { platform, spawnSyncImpl: opts.spawnSyncImpl, killImpl: opts.killImpl });
+        killChildTree(child, "SIGKILL", { platform, spawnSyncImpl: options.spawnSyncImpl, killImpl: options.killImpl });
         await waitChildExit(child, 1500);
       }
     },
@@ -456,15 +456,16 @@ function startTunnel(opts = {}) {
 
   (async () => {
     try {
-      const metricsPort = opts.metricsPort != null ? Number(opts.metricsPort) : await pickFreePort();
-      const args = buildTunnelArgs({ viewerPort: opts.viewerPort, localPort: opts.localPort, metricsPort });
-      handle.args = args;
+      const metricsPort = options.metricsPort != null ? Number(options.metricsPort) : await pickFreePort();
+      const tunnelArgs = buildTunnelArgs({ viewerPort: options.viewerPort, localPort: options.localPort, metricsPort });
+      // handle.args 是对外契约字段名（attach/doctor 与测试都读它），保持 args
+      handle.args = tunnelArgs;
       handle.metricsPort = metricsPort;
-      const home = opts.home || path.join(defaultCacheDir(environ), "tunnel-home");
+      const home = options.home || path.join(defaultCacheDir(environ), "tunnel-home");
       fs.mkdirSync(home, { recursive: true });
       const env = { ...environ, HOME: home };
       if (platform === "win32") env.USERPROFILE = home;
-      child = spawnImpl(opts.bin, args, {
+      child = spawnImpl(options.bin, tunnelArgs, {
         detached: platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
         env,
@@ -476,25 +477,25 @@ function startTunnel(opts = {}) {
           const found = extractTunnelUrl(tailLines.join("\n"));
           if (found) {
             url = found;
-            if (typeof opts.onUrl === "function") {
+            if (typeof options.onUrl === "function") {
               try {
-                opts.onUrl(url);
+                options.onUrl(url);
               } catch {}
             }
           }
         }
-        if (typeof opts.onOutput === "function") {
+        if (typeof options.onOutput === "function") {
           try {
-            opts.onOutput(String(chunk));
+            options.onOutput(String(chunk));
           } catch {}
         }
       };
       if (child.stdout && typeof child.stdout.on === "function") child.stdout.on("data", onData);
       if (child.stderr && typeof child.stderr.on === "function") child.stderr.on("data", onData);
-      child.on("error", (e) => {
+      child.on("error", (spawnError) => {
         if (state === "starting") {
           state = "failed";
-          readyReject(new Error("cloudflared 启动失败：" + (e && e.message ? e.message : e)));
+          readyReject(new Error("cloudflared 启动失败：" + (spawnError && spawnError.message ? spawnError.message : spawnError)));
         }
       });
       child.on("exit", (code, signal) => {
@@ -506,9 +507,9 @@ function startTunnel(opts = {}) {
         if (was === "starting") {
           readyReject(new Error(`cloudflared 在隧道就绪前退出（code ${code}${signal ? " signal " + signal : ""}）：\n${tailText()}`));
         }
-        if (typeof opts.onExit === "function") {
+        if (typeof options.onExit === "function") {
           try {
-            opts.onExit({ code, signal });
+            options.onExit({ code, signal });
           } catch {}
         }
       });
@@ -524,9 +525,9 @@ function startTunnel(opts = {}) {
           if (pollTimer) clearInterval(pollTimer);
           pollTimer = null;
           readyResolve({ url });
-          if (typeof opts.onReady === "function") {
+          if (typeof options.onReady === "function") {
             try {
-              opts.onReady(url);
+              options.onReady(url);
             } catch {}
           }
           return;
@@ -540,10 +541,11 @@ function startTunnel(opts = {}) {
           handle.stop();
         }
       }, pollMs);
-      if (pollTimer && typeof pollTimer.unref === "function") pollTimer.unref();
-    } catch (e) {
+      // 不 unref：轮询一响就要把 ready 定下来（或按超时失败），是正确性依赖。unref 之后
+      // 进程手里没有别的引用时会在第一次轮询前退出，隧道永远停在 starting。
+    } catch (spawnError) {
       state = "failed";
-      readyReject(e);
+      readyReject(spawnError);
     }
   })();
 

@@ -46,28 +46,28 @@ function roomDisplayName(room) {
   return id ? id.slice(0, 80) : "未知会话";
 }
 
-function buildEvent(kind, room, extra = {}, now = Date.now()) {
-  const pres = KIND_PRESENTATION[kind];
-  const name = roomDisplayName(room);
+function buildEvent(kind, room, dialogInfo = {}, now = Date.now()) {
+  const presentation = KIND_PRESENTATION[kind];
+  const roomName = roomDisplayName(room);
   let message;
-  if (kind === "turn_done") message = `会话「${name}」的这一回合已完成。`;
-  else if (kind === "turn_error") message = `会话「${name}」的这一回合出错中断。`;
+  if (kind === "turn_done") message = `会话「${roomName}」的这一回合已完成。`;
+  else if (kind === "turn_error") message = `会话「${roomName}」的这一回合出错中断。`;
   else {
-    const kindLabel = DIALOG_KIND_LABELS[extra.dialogKind] || "对话框";
+    const kindLabel = DIALOG_KIND_LABELS[dialogInfo.dialogKind] || "对话框";
     // 文案分段（R2-1 补验位）：第 1 轮的 dialog_open 都是观察态，只能"回去处理"；
     // R2-1 落地后帧上带 answerable=true，同一函数自动切到"点开可答"版——
     // R2-2 验收 5 的补验对象就是这一行分支，R2-1 合入后须实测复核。
-    message = extra.answerable
-      ? `会话「${name}」有${kindLabel}对话框在等应答，点开 Pi-Remote 即可作答。`
-      : `会话「${name}」弹出了${kindLabel}对话框，等你回去处理。`;
+    message = dialogInfo.answerable
+      ? `会话「${roomName}」有${kindLabel}对话框在等应答，点开 Pi-Remote 即可作答。`
+      : `会话「${roomName}」弹出了${kindLabel}对话框，等你回去处理。`;
   }
   return {
     kind,
     roomId: room && typeof room.id === "string" ? room.id : "",
-    title: pres.title,
+    title: presentation.title,
     message,
-    priority: pres.priority,
-    tags: [...pres.tags],
+    priority: presentation.priority,
+    tags: [...presentation.tags],
     at: now,
   };
 }
@@ -84,33 +84,33 @@ function buildEvent(kind, room, extra = {}, now = Date.now()) {
  * 地址里拆不出话题段（无路径段 / 解析失败）= 配置不完整：渠道按未配置处理并在
  * 装配时记一行不带地址的告警，绝不把坏形态发出去。
  * send 永不抛错：失败只记一行日志（绝不带 URL——它即凭据）。 */
-function parseNotifyTarget(raw) {
-  const target = typeof raw === "string" ? raw.trim() : "";
+function parseNotifyTarget(rawUrl) {
+  const target = typeof rawUrl === "string" ? rawUrl.trim() : "";
   if (!target) return null;
-  let u;
-  try { u = new URL(target); } catch { return null; }
-  const segments = u.pathname.split("/").filter(Boolean);
+  let parsedUrl;
+  try { parsedUrl = new URL(target); } catch { return null; }
+  const segments = parsedUrl.pathname.split("/").filter(Boolean);
   if (!segments.length) return null;
   const topic = segments[segments.length - 1];
-  u.pathname = "/" + segments.slice(0, -1).join("/");
-  u.search = "";
-  u.hash = "";
-  return { endpoint: u.toString(), topic };
+  parsedUrl.pathname = "/" + segments.slice(0, -1).join("/");
+  parsedUrl.search = "";
+  parsedUrl.hash = "";
+  return { endpoint: parsedUrl.toString(), topic };
 }
 
 function createWebhookChannel({ url, fetchImpl, timeoutMs = 5000, log } = {}) {
-  const parsed = parseNotifyTarget(url);
-  const doFetch = fetchImpl || (typeof fetch === "function" ? fetch : null);
-  if (typeof url === "string" && url.trim() && !parsed && log) {
+  const target = parseNotifyTarget(url);
+  const fetchImplementation = fetchImpl || (typeof fetch === "function" ? fetch : null);
+  if (typeof url === "string" && url.trim() && !target && log) {
     log("页面外通知：webhook 地址里拆不出话题段（应为 站点根/<话题> 形态），渠道未启用");
   }
   return {
     name: "webhook",
-    configured: !!parsed && !!doFetch,
+    configured: !!target && !!fetchImplementation,
     async send(event) {
-      if (!parsed || !doFetch) return false;
+      if (!target || !fetchImplementation) return false;
       const body = JSON.stringify({
-        topic: parsed.topic,
+        topic: target.topic,
         title: event.title,
         message: event.message,
         priority: event.priority,
@@ -120,19 +120,19 @@ function createWebhookChannel({ url, fetchImpl, timeoutMs = 5000, log } = {}) {
         at: event.at,
       });
       try {
-        const res = await doFetch(parsed.endpoint, {
+        const response = await fetchImplementation(target.endpoint, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body,
           signal: AbortSignal.timeout(timeoutMs),
         });
-        if (res && res.ok === false) {
-          if (log) log(`页面外通知发送失败：webhook ${event.kind} HTTP ${res.status}`);
+        if (response && response.ok === false) {
+          if (log) log(`页面外通知发送失败：webhook ${event.kind} HTTP ${response.status}`);
           return false;
         }
         return true;
-      } catch (e) {
-        const reason = (e && e.cause && e.cause.code) || (e && e.name) || "network error";
+      } catch (sendError) {
+        const reason = (sendError && sendError.cause && sendError.cause.code) || (sendError && sendError.name) || "network error";
         if (log) log(`页面外通知发送失败：webhook ${event.kind} ${reason}`);
         return false;
       }
@@ -152,21 +152,21 @@ const NON_TERMINAL_STOP_REASONS = new Set(["toolUse", "pending", "deferred"]);
 // 出现这些事件 = 新一轮活动开始，上一回合的"已通知"标记与旧成败结论一并作废。
 const TURN_ACTIVITY_TYPES = new Set(["agent_start", "turn_start", "message_start", "before_agent_start"]);
 
-function createNotifier(cfg, deps = {}) {
-  const log = typeof deps.log === "function" ? deps.log : () => {};
-  const now = typeof deps.now === "function" ? deps.now : Date.now;
-  const prefs = sanitizeNotifyEvents(cfg && cfg.notifyEvents);
+function createNotifier(config, dependencies = {}) {
+  const log = typeof dependencies.log === "function" ? dependencies.log : () => {};
+  const now = typeof dependencies.now === "function" ? dependencies.now : Date.now;
+  const eventPreferences = sanitizeNotifyEvents(config && config.notifyEvents);
   const channel = createWebhookChannel({
-    url: cfg && cfg.notifyWebhookUrl,
-    fetchImpl: deps.fetchImpl,
-    timeoutMs: deps.timeoutMs,
+    url: config && config.notifyWebhookUrl,
+    fetchImpl: dependencies.fetchImpl,
+    timeoutMs: dependencies.timeoutMs,
     log,
   });
   const enabled = channel.configured;
   if (enabled) {
-    const on = EVENT_KINDS.filter((k) => prefs[k]);
-    log(on.length
-      ? `页面外通知已启用：webhook 渠道，事件 ${on.join(" / ")}`
+    const enabledKinds = EVENT_KINDS.filter((kind) => eventPreferences[kind]);
+    log(enabledKinds.length
+      ? `页面外通知已启用：webhook 渠道，事件 ${enabledKinds.join(" / ")}`
       : "页面外通知：webhook 已配置，但三类事件开关全关，不会发送");
   }
 
@@ -175,21 +175,21 @@ function createNotifier(cfg, deps = {}) {
   const roomStates = new Map();
 
   function stateFor(roomId) {
-    let st = roomStates.get(roomId);
-    if (!st) {
-      st = { lastOutcome: null, settledNotified: false, sawMessage: false, dialogs: new Map() };
-      roomStates.set(roomId, st);
+    let roomState = roomStates.get(roomId);
+    if (!roomState) {
+      roomState = { lastOutcome: null, settledNotified: false, sawMessage: false, dialogs: new Map() };
+      roomStates.set(roomId, roomState);
       if (roomStates.size > MAX_ROOM_STATES) {
         // 房间状态只是去重/成败的短时记忆，超限丢最旧一条即可，不影响主流程。
         roomStates.delete(roomStates.keys().next().value);
       }
     }
-    return st;
+    return roomState;
   }
 
-  function dispatch(kind, room, extra) {
-    if (!enabled || !prefs[kind]) return false;
-    const event = buildEvent(kind, room, extra, now());
+  function dispatch(kind, room, dialogInfo) {
+    if (!enabled || !eventPreferences[kind]) return false;
+    const event = buildEvent(kind, room, dialogInfo, now());
     // fire-and-forget：send 内部已吞错并记日志，这里再兜一层防渠道实现变更。
     Promise.resolve(channel.send(event)).catch(() => {});
     return true;
@@ -213,49 +213,49 @@ function createNotifier(cfg, deps = {}) {
     const type = typeof event.type === "string" ? event.type : "";
     const roomId = typeof room.id === "string" ? room.id : "";
     if (!roomId) return;
-    const st = stateFor(roomId);
+    const roomState = stateFor(roomId);
 
     if (TURN_ACTIVITY_TYPES.has(type)) {
-      st.settledNotified = false;
-      st.lastOutcome = null;
-      st.sawMessage = false;
+      roomState.settledNotified = false;
+      roomState.lastOutcome = null;
+      roomState.sawMessage = false;
       return;
     }
     if (type === "message_end") {
-      st.sawMessage = true;
-      const msg = event.message;
-      if (msg && typeof msg === "object" && msg.role === "assistant") {
-        const sr = typeof msg.stopReason === "string" ? msg.stopReason : "";
-        if (sr && !NON_TERMINAL_STOP_REASONS.has(sr)) {
+      roomState.sawMessage = true;
+      const assistantMessage = event.message;
+      if (assistantMessage && typeof assistantMessage === "object" && assistantMessage.role === "assistant") {
+        const stopReason = typeof assistantMessage.stopReason === "string" ? assistantMessage.stopReason : "";
+        if (stopReason && !NON_TERMINAL_STOP_REASONS.has(stopReason)) {
           // aborted 单列（C-2）：用户主动打断既不是"完成"也不是"出错"，归入
           // 静默终态，落定时不推——免得用户刚按下打断就收到一条"回合完成"。
-          st.lastOutcome = sr === "aborted" ? "aborted" : (sr === "error" || !!msg.errorMessage ? "error" : "ok");
+          roomState.lastOutcome = stopReason === "aborted" ? "aborted" : (stopReason === "error" || !!assistantMessage.errorMessage ? "error" : "ok");
         }
       }
       return;
     }
     if (type === "agent_settled") {
-      if (st.settledNotified) return;
-      st.settledNotified = true;
-      const outcome = st.lastOutcome;
-      st.lastOutcome = null;
+      if (roomState.settledNotified) return;
+      roomState.settledNotified = true;
+      const outcome = roomState.lastOutcome;
+      roomState.lastOutcome = null;
       if (outcome === "aborted") return; // C-2：被用户打断的回合不推任何一条
       // 低-24：落定前一条 message_end 都没观察到（扩展在模型返回前就失败/事件流断了）时，
       // 不能默认按"回合完成"推送——那会把失败报成成功。保留"只有中间态/无 stopReason 时按完成"
       // 的既有兼容口径（与 rooms 摘要副本等价性测试同源），只堵"零观察"这一种假完成。
-      if (!outcome && !st.sawMessage) return;
+      if (!outcome && !roomState.sawMessage) return;
       dispatch(outcome === "error" ? "turn_error" : "turn_done", room);
       return;
     }
     if (type === "dialog_open") {
       const dialogId = typeof event.dialogId === "string" ? event.dialogId : "";
       if (!dialogId) return;
-      const t = now();
-      for (const [key, exp] of st.dialogs) if (exp <= t) st.dialogs.delete(key);
-      if (st.dialogs.has(dialogId)) return; // 同一 dialog 只推一次：重连/补发/重放不重复
-      st.dialogs.set(dialogId, t + DIALOG_DEDUPE_TTL_MS);
-      if (st.dialogs.size > MAX_DIALOG_KEYS_PER_ROOM) {
-        st.dialogs.delete(st.dialogs.keys().next().value);
+      const nowMs = now();
+      for (const [key, expiresAt] of roomState.dialogs) if (expiresAt <= nowMs) roomState.dialogs.delete(key);
+      if (roomState.dialogs.has(dialogId)) return; // 同一 dialog 只推一次：重连/补发/重放不重复
+      roomState.dialogs.set(dialogId, nowMs + DIALOG_DEDUPE_TTL_MS);
+      if (roomState.dialogs.size > MAX_DIALOG_KEYS_PER_ROOM) {
+        roomState.dialogs.delete(roomState.dialogs.keys().next().value);
       }
       dispatch("dialog_waiting", room, {
         dialogKind: typeof event.kind === "string" ? event.kind.slice(0, 32) : "",
@@ -265,11 +265,11 @@ function createNotifier(cfg, deps = {}) {
     }
     if (type === "dialog_close") {
       const dialogId = typeof event.dialogId === "string" ? event.dialogId : "";
-      if (dialogId) st.dialogs.delete(dialogId);
+      if (dialogId) roomState.dialogs.delete(dialogId);
     }
   }
 
-  return { enabled, prefs, channel, observe, buildEvent };
+  return { enabled, prefs: eventPreferences, channel, observe, buildEvent };
 }
 
 module.exports = {

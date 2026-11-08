@@ -76,7 +76,7 @@ function fakePi(file, seenDir) {
     [
       "#!/bin/bash",
       `out=${attach.shellQuote(seenDir)}/pi-$$.txt`,
-      'printf \'%s\\n\' "$PWD" "DEV=$PI_REMOTE_DEVICE_ID" "TOK=${PI_REMOTE_DEVICE_TOKEN:+set}" "RELAY=$PI_REMOTE_RELAY" "ARGS" "$@" > "$out"',
+      'printf \'%s\\n\' "$PWD" "DEV=$PI_REMOTE_DEVICE_ID" "TOK=${PI_REMOTE_DEVICE_TOKEN:+set}" "KEY=${PI_REMOTE_DEVICE_KEY_FILE:+set}" "RELAY=$PI_REMOTE_RELAY" "ARGS" "$@" > "$out"',
       "exec sleep 600",
       "",
     ].join("\n"),
@@ -232,7 +232,10 @@ test("device.sh 全流程（真 tmux + 进程内 relay）：init → pair → up
   assert.match(up.stdout, /连接窗口已打开（tmux 会话 pi-remote-attach）/);
   const listed = await take((f) => f.type === "room_list" && (f.devices || []).some((d) => d.id === env.PI_REMOTE_DEVICE_ID && d.online), "设备上线");
   const dev = listed.devices.find((d) => d.id === env.PI_REMOTE_DEVICE_ID);
-  assert.deepEqual([dev.name, dev.auth, dev.paired, dev.platform], ["阿里云", "token", true, attach.platformId(process.platform)]);
+  // 身份钥阶段 1 之后 pair 会同时登记公钥并作废该设备的令牌行（设计 §3.4），所以窗口按
+  // 挑战-签名上线（auth="key"），名册的 paired（有没有有效设备令牌）为 false。
+  // 同口径见 test/attach-pair.test.js / crypto-stage1.test.js 的 auth==="key"。
+  assert.deepEqual([dev.name, dev.auth, dev.paired, dev.platform], ["阿里云", "key", false, attach.platformId(process.platform)]);
   assert.deepEqual(dev.projects, [app, weird]);
   const state = JSON.parse(fs.readFileSync(path.join(box.home, ".pi", "agent", "remote-attach.json"), "utf8"));
   assert.equal(state.deviceId, env.PI_REMOTE_DEVICE_ID);
@@ -243,7 +246,7 @@ test("device.sh 全流程（真 tmux + 进程内 relay）：init → pair → up
   assert.equal(ack.data.status, "started");
   const [pi] = await until(() => (seen(box.seenDir).length ? seen(box.seenDir) : null), 5000, "pi 起来");
   assert.equal(pi[0], weird, "在网页选的目录里起");
-  assert.deepEqual(pi.slice(1, 4), [`DEV=${env.PI_REMOTE_DEVICE_ID}`, "TOK=set", `RELAY=${relayUrl}`], "start-pi.sh 把 .env 的身份和令牌交给 pi");
+  assert.deepEqual(pi.slice(1, 5), [`DEV=${env.PI_REMOTE_DEVICE_ID}`, "TOK=", "KEY=set", `RELAY=${relayUrl}`], "start-pi.sh 把 .env 的身份、钥文件路径和 relay 交给 pi（钥设备的设备令牌已按设计 §3.4 作废，.env 里是空的）");
 
   const sessions = await box.device(["sessions"]);
   assert.match(sessions.stdout, /pi-we_ird_x-[a-z0-9]+ .*we ird \$x .*运行中/);
@@ -289,7 +292,11 @@ test("pi 起不来时 tmux 留现场（≥3.2）：sessions 标退出码、clean
     return;
   }
   const pane = await until(() => tmuxPanes().find((p) => p.name === name && p.dead), 5000, "失败的窗格留着");
-  assert.equal(pane.status, 127, "start-pi.sh 找不到 pi 的退出码");
+  // tmux 3.4 约四成概率丢 #{pane_dead_status}（产品自己就这么写的）：读侧按"窗格优先、落盘回落"取退出码
+  // （attach.cjs tmuxEarlyExit / device.cjs piSessions 同一口径）。这里照同一口径取值，
+  // 而不是直接断言行号字段——那个字段在 tmux 3.4 上产品明确按不可靠处理。
+  const exitCode = pane.status != null ? pane.status : attach.readExitCode(name, box.home);
+  assert.equal(exitCode, 127, "start-pi.sh 找不到 pi 的退出码");
   const ls = await box.device(["sessions"]);
   assert.match(ls.stdout, new RegExp(`${name} .*已退出（退出码 127）`));
   const shot = spawnSync("tmux", ["capture-pane", "-p", "-t", `=${name}:`], { encoding: "utf8" });

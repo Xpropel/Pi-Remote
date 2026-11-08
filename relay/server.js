@@ -59,8 +59,8 @@ function readLockPid(file) {
     let pid = Number(first);
     if (!Number.isSafeInteger(pid) || pid <= 0) {
       // 兼容纯文本 pid 锁 / 早期无版本锁
-      const obj = JSON.parse(first);
-      pid = Number(obj && obj.pid);
+      const parsed = JSON.parse(first);
+      pid = Number(parsed && parsed.pid);
     }
     return Number.isSafeInteger(pid) && pid > 0 ? pid : 0;
   } catch {
@@ -73,53 +73,53 @@ function pidAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (e) {
+  } catch (killError) {
     // EPERM = 进程存在但不属于当前用户；仍然算占用。
-    return !!(e && e.code === "EPERM");
+    return !!(killError && killError.code === "EPERM");
   }
 }
 
 function acquireDataDirLock(dataDir) {
-  const dir = path.resolve(String(dataDir || ""));
-  if (!dir) throw new Error("dataDir 不能为空");
-  if (heldDataDirLocks.has(dir)) {
-    throw new Error(`数据目录 ${dir} 已被本进程里的另一个 relay 实例使用；同一数据目录不能开两个 relay`);
+  const resolvedDir = path.resolve(String(dataDir || ""));
+  if (!resolvedDir) throw new Error("dataDir 不能为空");
+  if (heldDataDirLocks.has(resolvedDir)) {
+    throw new Error(`数据目录 ${resolvedDir} 已被本进程里的另一个 relay 实例使用；同一数据目录不能开两个 relay`);
   }
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, DATA_DIR_LOCK_FILE);
+  fs.mkdirSync(resolvedDir, { recursive: true });
+  const lockFile = path.join(resolvedDir, DATA_DIR_LOCK_FILE);
   for (let attempt = 0; attempt < 3; attempt++) {
     let fd;
     try {
-      fd = fs.openSync(file, "wx", 0o600);
+      fd = fs.openSync(lockFile, "wx", 0o600);
       fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), v: 1 }) + "\n", "utf8");
       try { fs.fsyncSync(fd); } catch {}
       fs.closeSync(fd);
       fd = null;
-      const lock = { dir, file, pid: process.pid };
-      heldDataDirLocks.set(dir, lock);
+      const lock = { dir: resolvedDir, file: lockFile, pid: process.pid };
+      heldDataDirLocks.set(resolvedDir, lock);
       return lock;
-    } catch (e) {
+    } catch (createError) {
       if (fd !== null && fd !== undefined) {
         try { fs.closeSync(fd); } catch {}
         fd = null;
       }
-      if (!e || e.code !== "EEXIST") throw new Error(`数据目录锁创建失败（${file}）：${e && e.message ? e.message : e}`);
-      const pid = readLockPid(file);
+      if (!createError || createError.code !== "EEXIST") throw new Error(`数据目录锁创建失败（${lockFile}）：${createError && createError.message ? createError.message : createError}`);
+      const pid = readLockPid(lockFile);
       // 同进程且登记在 heldDataDirLocks 的情况上面已拦掉；这里同 pid 只可能是 PID 复用留下的旧锁。
       if (pid && pid !== process.pid && pidAlive(pid)) {
-        throw new Error(`数据目录 ${dir} 已被另一个 relay 进程占用（pid ${pid}）。请先停掉那个实例，或改用不同的 dataDir；同一数据目录开两个 relay 会互相覆盖房间文件。`);
+        throw new Error(`数据目录 ${resolvedDir} 已被另一个 relay 进程占用（pid ${pid}）。请先停掉那个实例，或改用不同的 dataDir；同一数据目录开两个 relay 会互相覆盖房间文件。`);
       }
       // 陈旧锁：先用 rename 独占改名再删，两个进程同时回收时只有一个能成功，避免双开竞态。
-      const stale = file + ".stale-" + process.pid + "-" + Date.now();
+      const stale = lockFile + ".stale-" + process.pid + "-" + Date.now();
       try {
-        fs.renameSync(file, stale);
+        fs.renameSync(lockFile, stale);
         try { fs.unlinkSync(stale); } catch {}
-      } catch (e2) {
-        if (!e2 || e2.code !== "ENOENT") throw new Error(`数据目录锁回收失败（${file}）：${e2 && e2.message ? e2.message : e2}`);
+      } catch (reclaimError) {
+        if (!reclaimError || reclaimError.code !== "ENOENT") throw new Error(`数据目录锁回收失败（${lockFile}）：${reclaimError && reclaimError.message ? reclaimError.message : reclaimError}`);
       }
     }
   }
-  throw new Error(`数据目录锁获取失败（${file}）：另一个 relay 正在同时启动，请稍后重试`);
+  throw new Error(`数据目录锁获取失败（${lockFile}）：另一个 relay 正在同时启动，请稍后重试`);
 }
 
 function releaseDataDirLock(lock) {
@@ -130,8 +130,8 @@ function releaseDataDirLock(lock) {
     if (pid && pid !== process.pid) return false; // 锁已被别人接管（异常路径），不能删别人的
     fs.unlinkSync(lock.file);
     return true;
-  } catch (e) {
-    if (!e || e.code !== "ENOENT") log("数据目录锁释放失败（锁文件可能残留，重启时会按 pid 回收）:", lock.file, e && e.message);
+  } catch (releaseError) {
+    if (!releaseError || releaseError.code !== "ENOENT") log("数据目录锁释放失败（锁文件可能残留，重启时会按 pid 回收）:", lock.file, releaseError && releaseError.message);
     return false;
   }
 }
@@ -182,71 +182,71 @@ function closeHttpServer(server) {
 function startRelay(overrides = {}) {
   let dataDirLock = null;
   try {
-    const cfg = { ...DEFAULT_CONFIG, ...overrides };
+    const config = { ...DEFAULT_CONFIG, ...overrides };
     // 低-13：两个通道配成同一个端口时先明确拒绝，不等到第二个 listen 才报 EADDRINUSE
     // （那条错误看不出是配置问题）。port 0 是测试/嵌入方的临时端口语义，不在此列。
-    if (cfg.localPort !== 0 && cfg.viewerPort !== 0 && Number(cfg.localPort) === Number(cfg.viewerPort)) {
-      throw new Error(`localPort 与 viewerPort 不能配成同一个端口（${cfg.localPort}）：local 与 viewer 是两个独立监听，请分别配置`);
+    if (config.localPort !== 0 && config.viewerPort !== 0 && Number(config.localPort) === Number(config.viewerPort)) {
+      throw new Error(`localPort 与 viewerPort 不能配成同一个端口（${config.localPort}）：local 与 viewer 是两个独立监听，请分别配置`);
     }
     if (!Object.prototype.hasOwnProperty.call(overrides, "accountsDir")) {
-      const resolved = path.resolve(cfg.dataDir);
+      const resolved = path.resolve(config.dataDir);
       // 生产目录 data/rooms → 同级 data/accounts；其它数据目录（测试临时目录）把索引放进去，避免互相覆盖
-      cfg.accountsDir = path.basename(resolved) === "rooms"
+      config.accountsDir = path.basename(resolved) === "rooms"
         ? path.join(path.dirname(resolved), "accounts")
         : path.join(resolved, "accounts");
     }
     // 低-5：同一数据目录只允许一个 relay 进程。放在建房间/存储之前，失败不留下半初始化状态。
-    dataDirLock = acquireDataDirLock(cfg.dataDir);
-    setQuiet(cfg.quiet);
+    dataDirLock = acquireDataDirLock(config.dataDir);
+    setQuiet(config.quiet);
     // 启动时的两条安全提醒：只警告，不改行为，老设备仍能连
-    if (cfg.localToken && cfg.viewerToken && cfg.localToken === cfg.viewerToken) {
+    if (config.localToken && config.viewerToken && config.localToken === config.viewerToken) {
       log("警告：localToken 与 viewerToken 相同。viewer token 会发给手机/浏览器，共享 localToken 也会跟着扩散；建议轮换成两个不同的值。");
     }
-    if (cfg.allowLegacyLocal && cfg.localHost && !["127.0.0.1", "::1", "localhost"].includes(String(cfg.localHost))) {
+    if (config.allowLegacyLocal && config.localHost && !["127.0.0.1", "::1", "localhost"].includes(String(config.localHost))) {
       log("警告：local 通道对公网开放，且仍接受共享 localToken（legacy）。所有设备完成配对后可设 PI_REMOTE_ALLOW_LEGACY_LOCAL=0。");
     }
-    const rooms = new Rooms(cfg);
+    const rooms = new Rooms(config);
     const devices = new Map();
-    const index = new AccountIndex(cfg.accountsDir);
+    const index = new AccountIndex(config.accountsDir);
     rooms.sessionLookup = (accountId, deviceId, sessionId) => {
       try { return index.getSession(accountId, deviceId, sessionId); } catch { return null; }
     };
-    rooms.deviceSnapshot = () => buildDeviceList(index, devices, rooms, normalizeAccount(cfg.accountId));
-    rooms.deviceConns = () => [...devices.values()].map((dev) => dev.conn).filter(Boolean);
-    const store = new RoomStore(cfg.dataDir, {
-      cacheSize: cfg.cacheSize,
-      cacheMaxBytes: cfg.cacheMaxBytes,
-      flushIntervalMs: cfg.flushIntervalMs,
-      persist: !!cfg.persistTranscripts,
-      maxRoomFileBytes: cfg.persistMaxRoomBytes,
+    rooms.deviceSnapshot = () => buildDeviceList(index, devices, rooms, normalizeAccount(config.accountId));
+    rooms.deviceConns = () => [...devices.values()].map((deviceRecord) => deviceRecord.conn).filter(Boolean);
+    const store = new RoomStore(config.dataDir, {
+      cacheSize: config.cacheSize,
+      cacheMaxBytes: config.cacheMaxBytes,
+      flushIntervalMs: config.flushIntervalMs,
+      persist: !!config.persistTranscripts,
+      maxRoomFileBytes: config.persistMaxRoomBytes,
     });
     rooms.bindStore(store);
     // 收件箱账本（设计 D §1）：与 prefs 同根落盘（accounts 目录下 per-account inbox.json），
     // 只存元数据；prime 主账号让重启后的第一份 room_list 就带上恢复的未读条目。
-    const inboxStore = new InboxStore(cfg.accountsDir);
-    inboxStore.prime(normalizeAccount(cfg.accountId));
+    const inboxStore = new InboxStore(config.accountsDir);
+    inboxStore.prime(normalizeAccount(config.accountId));
     rooms.bindInbox(inboxStore);
     // 定时排期（设计 D §3）：排期表与账本同根落盘（per-account schedules.json）；计时器
     // 是全局职责——primeAll 把所有账号的存量排期都读回来，重启后 armed 排期全部恢复
     // 算账，不等对应账号先有房间活动。引擎在两个通道监听就绪后再 start（见 ready）。
-    const scheduleStore = new ScheduleStore(cfg.accountsDir);
+    const scheduleStore = new ScheduleStore(config.accountsDir);
     scheduleStore.primeAll();
     const scheduleEngine = new ScheduleEngine({
       store: scheduleStore,
       inbox: inboxStore,
-      tickMs: cfg.scheduleTickMs,
-      graceMs: cfg.scheduleOnceGraceMs,
-      startGraceMs: cfg.scheduleStartGraceMs,
+      tickMs: config.scheduleTickMs,
+      graceMs: config.scheduleOnceGraceMs,
+      startGraceMs: config.scheduleStartGraceMs,
     });
     rooms.bindSchedule(scheduleEngine);
     // pairCodes：码 → {accountId, name, expiresAt}，只在内存；二维码链接（pair_request）申请的条目
     // 多带 pending:{ws, device, deviceToken?}，绑定申请连接、连接断开即删码；pairFailures：来源 → 它最近配对失败的时间戳
-    const ctx = { index, devices, pairCodes: new Map(), pairFailures: new Map(), startedAt: Date.now(), usage: null };
+    const relayContext = { index, devices, pairCodes: new Map(), pairFailures: new Map(), startedAt: Date.now(), usage: null };
     // Phase 4 T-1: room_list encReason derivation reads the account ackFp
     // consensus from the same tracker the local/viewer channels reconcile on.
-    rooms.ackFpLookup = (accountId) => ackTrackerOf(ctx).knownAckFp(accountId);
-    const usageBroker = new UsageBroker({ cfg, index, devices, rooms });
-    ctx.usage = usageBroker;
+    rooms.ackFpLookup = (accountId) => ackTrackerOf(relayContext).knownAckFp(accountId);
+    const usageBroker = new UsageBroker({ config, index, devices, rooms });
+    relayContext.usage = usageBroker;
 
     return new Promise((resolve, reject) => {
       let pending = 2;
@@ -262,20 +262,20 @@ function startRelay(overrides = {}) {
         if (evictTimer) clearInterval(evictTimer);
         try { scheduleEngine.stop(); } catch {}
         try { usageBroker.dispose(); } catch {}
-        try { for (const r of rooms.map.values()) cancelResend(r); } catch {}
-        try { for (const q of rooms.viewerQueries.values()) clearTimeout(q.timer); } catch {}
+        try { for (const room of rooms.map.values()) cancelResend(room); } catch {}
+        try { for (const query of rooms.viewerQueries.values()) clearTimeout(query.timer); } catch {}
         try { rooms.viewerQueries.clear(); } catch {}
         try {
           if (localWss) {
             if (localWss._keepalive) clearInterval(localWss._keepalive);
-            for (const c of localWss.clients) c.terminate();
+            for (const connection of localWss.clients) connection.terminate();
             localWss.close();
           }
         } catch {}
         try {
           if (viewer) {
             if (viewer.wss._keepalive) clearInterval(viewer.wss._keepalive);
-            for (const c of viewer.wss.clients) c.terminate();
+            for (const connection of viewer.wss.clients) connection.terminate();
             viewer.wss.close();
             // 启动失败路径也要强制断开 keep-alive，否则 server.close 挂着、锁迟迟不释放。
             try { if (typeof viewer.server.closeIdleConnections === "function") viewer.server.closeIdleConnections(); } catch {}
@@ -288,17 +288,17 @@ function startRelay(overrides = {}) {
         dataDirLock = null;
       };
 
-      const fail = (e) => {
-        const err = e instanceof Error ? e : new Error(String(e));
+      const fail = (channelError) => {
+        const startupError = channelError instanceof Error ? channelError : new Error(String(channelError));
         if (settled) {
           // 已经启动完成后的通道异常：保持旧行为（默认退出让 systemd 重启），测试可关掉。
-          log("通道错误:", err.message);
-          if (cfg.exitOnListenError !== false) process.exit(1);
+          log("通道错误:", startupError.message);
+          if (config.exitOnListenError !== false) process.exit(1);
           return;
         }
         settled = true;
         cleanup();
-        reject(err);
+        reject(startupError);
       };
 
       const ready = () => {
@@ -306,24 +306,24 @@ function startRelay(overrides = {}) {
         if (--pending) return;
         settled = true;
         evictTimer = setInterval(() => {
-          const a = rooms.evictIdle();
-          const b = store.evictIdle(cfg.storeIdleEvictMs, (id) => {
-            const r = rooms.peek(id);
-            if (!r) return false;
-            if (r.online || r.viewers.size) return true;
+          const evictedRooms = rooms.evictIdle();
+          const evictedStoreEntries = store.evictIdle(config.storeIdleEvictMs, (roomId) => {
+            const room = rooms.peek(roomId);
+            if (!room) return false;
+            if (room.online || room.viewers.size) return true;
             // 正文保留时长与"房间还在列表里"对齐：离线 6h 内仍列着的房间，不能 30 分钟后点进去是空的
-            return (r.lastActivity || 0) > Date.now() - cfg.roomIdleEvictMs;
+            return (room.lastActivity || 0) > Date.now() - config.roomIdleEvictMs;
           });
-          pruneDedupe(rooms, cfg);
-          for (const [k, e] of ctx.pairCodes) if (e.expiresAt <= Date.now()) ctx.pairCodes.delete(k);
-          for (const [k, times] of ctx.pairFailures) if (times[times.length - 1] <= Date.now() - PAIR_FAIL_WINDOW_MS) ctx.pairFailures.delete(k);
-          if (a || b) log("内存淘汰：房间", a, "个，存储热缓存", b, "个");
-        }, Math.min(cfg.storeIdleEvictMs, 10 * 60 * 1000));
+          pruneDedupe(rooms, config);
+          for (const [code, pairEntry] of relayContext.pairCodes) if (pairEntry.expiresAt <= Date.now()) relayContext.pairCodes.delete(code);
+          for (const [source, failureTimes] of relayContext.pairFailures) if (failureTimes[failureTimes.length - 1] <= Date.now() - PAIR_FAIL_WINDOW_MS) relayContext.pairFailures.delete(source);
+          if (evictedRooms || evictedStoreEntries) log("内存淘汰：房间", evictedRooms, "个，存储热缓存", evictedStoreEntries, "个");
+        }, Math.min(config.storeIdleEvictMs, 10 * 60 * 1000));
         evictTimer.unref();
         // 排期引擎在监听就绪后才起 tick：启动算账（含过期处理）与投递都以通道可用为前提。
         scheduleEngine.start();
         resolve({
-          cfg,
+          cfg: config,
           rooms,
           store,
           inbox: inboxStore,
@@ -337,12 +337,12 @@ function startRelay(overrides = {}) {
             scheduleEngine.stop();
             if (localWss._keepalive) clearInterval(localWss._keepalive);
             if (viewer.wss._keepalive) clearInterval(viewer.wss._keepalive);
-            for (const r of rooms.map.values()) cancelResend(r);
-            for (const q of rooms.viewerQueries.values()) clearTimeout(q.timer);
+            for (const room of rooms.map.values()) cancelResend(room);
+            for (const query of rooms.viewerQueries.values()) clearTimeout(query.timer);
             try { usageBroker.dispose(); } catch {}
             rooms.viewerQueries.clear();
-            for (const c of localWss.clients) c.terminate();
-            for (const c of viewer.wss.clients) c.terminate();
+            for (const connection of localWss.clients) connection.terminate();
+            for (const connection of viewer.wss.clients) connection.terminate();
             try { store.flushAll(); } catch {}
             const lock = dataDirLock;
             const releaseLock = () => {
@@ -351,8 +351,8 @@ function startRelay(overrides = {}) {
             };
             // 低-14：viewer 的 HTTP 长连接不能把 close() 挂住；closeHttpServer 会主动断空闲/半开连接。
             return Promise.all([
-              new Promise((r) => localWss.close(() => r())),
-              new Promise((r) => viewer.wss.close(() => r())),
+              new Promise((settle) => localWss.close(() => settle())),
+              new Promise((settle) => viewer.wss.close(() => settle())),
               closeHttpServer(viewer.server),
             ]).finally(releaseLock);
           },
@@ -360,16 +360,16 @@ function startRelay(overrides = {}) {
       };
 
       try {
-        localWss = startLocalServer(cfg, rooms, store, ctx, (p) => { localPort = p; ready(); }, fail);
-        viewer = startViewerServer(cfg, rooms, store, ctx, (p) => { viewerPort = p; ready(); }, fail);
-      } catch (e) {
-        fail(e);
+        localWss = startLocalServer(config, rooms, store, relayContext, (port) => { localPort = port; ready(); }, fail);
+        viewer = startViewerServer(config, rooms, store, relayContext, (port) => { viewerPort = port; ready(); }, fail);
+      } catch (startError) {
+        fail(startError);
       }
     });
-  } catch (e) {
+  } catch (startError) {
     releaseDataDirLock(dataDirLock);
     dataDirLock = null;
-    return Promise.reject(e);
+    return Promise.reject(startError);
   }
 }
 
@@ -378,8 +378,8 @@ function startRelay(overrides = {}) {
  * 发布包没带 web/（或 ui 还没构建）。启动时明确告警并给解决办法，避免误诊；
  * 只告警、不拦启动——API 与 WebSocket 不依赖静态页面，照常工作。返回 true 表示物料齐全。
  */
-function warnMissingWebRoot(cfg, logger = log) {
-  const root = cfg && cfg.webRoot ? String(cfg.webRoot) : "";
+function warnMissingWebRoot(config, logger = log) {
+  const root = config && config.webRoot ? String(config.webRoot) : "";
   const indexFile = root ? path.join(root, "index.html") : "";
   let ok = false;
   try { ok = !!indexFile && fs.statSync(indexFile).isFile(); } catch { ok = false; }
@@ -392,8 +392,8 @@ function warnMissingWebRoot(cfg, logger = log) {
 async function main() {
   // 进程级逃逸兜底最先装：启动阶段（loadConfig/建目录/监听）抛出的异常也要留下日志、
   // 走同一条退出路径，不能裸奔打死进程（报告 relay 中-11）。
-  process.on("uncaughtException", (e) => log("uncaughtException（已忽略，进程继续）:", e && e.message, e && e.stack ? String(e.stack).split("\n")[1] : ""));
-  process.on("unhandledRejection", (e) => log("unhandledRejection（已忽略，进程继续）:", e && e.message ? e.message : e));
+  process.on("uncaughtException", (uncaughtError) => log("uncaughtException（已忽略，进程继续）:", uncaughtError && uncaughtError.message, uncaughtError && uncaughtError.stack ? String(uncaughtError.stack).split("\n")[1] : ""));
+  process.on("unhandledRejection", (rejectionReason) => log("unhandledRejection（已忽略，进程继续）:", rejectionReason && rejectionReason.message ? rejectionReason.message : rejectionReason));
 
   let cfg;
   let relay;
@@ -406,12 +406,12 @@ async function main() {
     fs.mkdirSync(LOG_DIR, { recursive: true });
     warnMissingWebRoot(cfg);
     relay = await startRelay(cfg);
-  } catch (e) {
-    console.error("[relay] 启动失败：", e && e.message ? e.message : e);
+  } catch (startError) {
+    console.error("[relay] 启动失败：", startError && startError.message ? startError.message : startError);
     process.exit(1);
   }
   const { rooms, store } = relay;
-  log(`relay 启动完成（存储目录 ${cfg.dataDir}，快照安全阀 ${cfg.maxSnapshotRecords} 条 / ${Math.round(cfg.maxSnapshotBytes / 1048576)}MB）`);
+  log(`relay 启动完成（存储目录 ${config.dataDir}，快照安全阀 ${config.maxSnapshotRecords} 条 / ${Math.round(config.maxSnapshotBytes / 1048576)}MB）`);
 
   // 退出前刷盘（追加式写，最多丢一个 flush 周期）
   const shutdown = (sig) => {
@@ -426,14 +426,14 @@ async function main() {
 
   // 保留期清理：超期房间文件删除（防磁盘无限增长）
   const sweep = () => {
-    const cutoff = Date.now() - cfg.retentionDays * 86400 * 1000;
+    const cutoff = Date.now() - config.retentionDays * 86400 * 1000;
     try {
-      for (const f of fs.readdirSync(cfg.dataDir)) {
-        if (!f.endsWith(".jsonl")) continue;
-        const fp = path.join(cfg.dataDir, f);
-        const st = fs.statSync(fp);
-        if (st.mtimeMs < cutoff) {
-          const id = f.replace(/\.jsonl$/, "");
+      for (const fileName of fs.readdirSync(config.dataDir)) {
+        if (!fileName.endsWith(".jsonl")) continue;
+        const filePath = path.join(config.dataDir, fileName);
+        const fileStat = fs.statSync(filePath);
+        if (fileStat.mtimeMs < cutoff) {
+          const id = fileName.replace(/\.jsonl$/, "");
           // 只读不刷新活跃度：在线或近期真实活跃的房间才保护
           const r = rooms.peek(id);
           if (r && (r.online || r.viewers.size || (r.lastActivity || 0) > cutoff)) continue;
@@ -441,11 +441,11 @@ async function main() {
           if (r) cancelResend(r);
           store.drop(id);
           rooms.map.delete(id);
-          log("保留期清理:", f);
+          log("保留期清理:", fileName);
         }
       }
-    } catch (e) {
-      log("保留期清理异常:", e.message);
+    } catch (sweepError) {
+      log("保留期清理异常:", sweepError.message);
     }
   };
   sweep();

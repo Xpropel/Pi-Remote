@@ -19,11 +19,11 @@ function sha256hex(text) {
 }
 
 function newPairCode(taken) {
-  const { pairCodeAlphabet: abc, pairCodeLength: len } = PROTOCOL.limits;
+  const { pairCodeAlphabet, pairCodeLength } = PROTOCOL.limits;
   for (;;) {
-    let s = "";
-    for (let i = 0; i < len; i++) s += abc[crypto.randomInt(abc.length)];
-    if (!taken.has(s)) return s;
+    let code = "";
+    for (let position = 0; position < pairCodeLength; position++) code += pairCodeAlphabet[crypto.randomInt(pairCodeAlphabet.length)];
+    if (!taken.has(code)) return code;
   }
 }
 
@@ -62,11 +62,11 @@ function pairCheckDigitsV2(code, signPub, boxPub) {
  *   公钥按帧里的 base64 字符串形态签（避免 DER 重编码歧义）。 */
 
 /** base64 串 → Buffer；非法/空返回 null。只接受标准 base64（含 +/ 与 = 填充），与两端编码器口径一致 */
-function b64buf(v) {
-  if (typeof v !== "string" || !v || v.length > 4096 || !/^[A-Za-z0-9+/]+={0,2}$/.test(v)) return null;
+function b64buf(value) {
+  if (typeof value !== "string" || !value || value.length > 4096 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
   try {
-    const buf = Buffer.from(v, "base64");
-    return buf.length ? buf : null;
+    const decoded = Buffer.from(value, "base64");
+    return decoded.length ? decoded : null;
   } catch {
     return null;
   }
@@ -74,10 +74,10 @@ function b64buf(v) {
 
 /** 签名公钥（spki der base64）→ KeyObject；不是 Ed25519 返回 null */
 function ed25519PubKey(signPub) {
-  const der = b64buf(signPub);
-  if (!der || der.length > PROTOCOL.limits.signPubKeyBytes) return null;
+  const derBytes = b64buf(signPub);
+  if (!derBytes || derBytes.length > PROTOCOL.limits.signPubKeyBytes) return null;
   try {
-    const key = crypto.createPublicKey({ key: der, format: "der", type: "spki" });
+    const key = crypto.createPublicKey({ key: derBytes, format: "der", type: "spki" });
     return key.asymmetricKeyType === "ed25519" ? key : null;
   } catch {
     return null;
@@ -86,10 +86,10 @@ function ed25519PubKey(signPub) {
 
 /** box 公钥（spki der base64）→ KeyObject；不是 P-256 返回 null */
 function p256PubKey(boxPub) {
-  const der = b64buf(boxPub);
-  if (!der || der.length > PROTOCOL.limits.boxPubKeyBytes) return null;
+  const derBytes = b64buf(boxPub);
+  if (!derBytes || derBytes.length > PROTOCOL.limits.boxPubKeyBytes) return null;
   try {
-    const key = crypto.createPublicKey({ key: der, format: "der", type: "spki" });
+    const key = crypto.createPublicKey({ key: derBytes, format: "der", type: "spki" });
     return key.asymmetricKeyType === "ec" && key.asymmetricKeyDetails && key.asymmetricKeyDetails.namedCurve === "prime256v1" ? key : null;
   } catch {
     return null;
@@ -99,10 +99,10 @@ function p256PubKey(boxPub) {
 /** Ed25519 验签：公钥/签名/载荷任一不合规一律 false，不抛 */
 function verifyEd25519(signPub, payload, sigB64) {
   const key = ed25519PubKey(signPub);
-  const sig = b64buf(sigB64);
-  if (!key || !sig || sig.length > PROTOCOL.limits.signatureMaxBytes) return false;
+  const signature = b64buf(sigB64);
+  if (!key || !signature || signature.length > PROTOCOL.limits.signatureMaxBytes) return false;
   try {
-    return crypto.verify(null, payload, key, sig);
+    return crypto.verify(null, payload, key, signature);
   } catch {
     return false;
   }
@@ -125,8 +125,8 @@ function cleanPairKeys(raw) {
   const pubs = cleanPubKeys(raw);
   if (!pubs) return null;
   const pop = raw && typeof raw.pop === "string" ? raw.pop : "";
-  const sig = b64buf(pop);
-  if (!sig || sig.length > PROTOCOL.limits.signatureMaxBytes) return null;
+  const signature = b64buf(pop);
+  if (!signature || signature.length > PROTOCOL.limits.signatureMaxBytes) return null;
   return { ...pubs, pop };
 }
 
@@ -155,10 +155,10 @@ function keyUpdatePayload(deviceId, newSignPub, newBoxPub) {
 /** P-256 signature verification (viewer VIK): any malformed input returns false, never throws. */
 function verifyP256(signPub, payload, sigB64) {
   const key = p256PubKey(signPub);
-  const sig = b64buf(sigB64);
-  if (!key || !sig || sig.length > PROTOCOL.limits.signatureMaxBytes) return false;
+  const signature = b64buf(sigB64);
+  if (!key || !signature || signature.length > PROTOCOL.limits.signatureMaxBytes) return false;
   try {
-    return crypto.verify("sha256", payload, { key, dsaEncoding: "ieee-p1363" }, sig);
+    return crypto.verify("sha256", payload, { key, dsaEncoding: "ieee-p1363" }, signature);
   } catch {
     return false;
   }
@@ -184,7 +184,7 @@ function canonicalJson(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
   const parts = [];
-  for (const k of Object.keys(value).sort()) parts.push(JSON.stringify(k) + ":" + canonicalJson(value[k]));
+  for (const key of Object.keys(value).sort()) parts.push(JSON.stringify(key) + ":" + canonicalJson(value[key]));
   return "{" + parts.join(",") + "}";
 }
 
@@ -199,43 +199,43 @@ function canonicalJson(value) {
  * The signature itself is ECDSA P-256 / SHA-256, IEEE P1363, base64 — see verifyP256.
  */
 function adminPayload(frame) {
-  const src = frame && typeof frame === "object" ? frame : {};
+  const source = frame && typeof frame === "object" ? frame : {};
   const rest = {};
-  for (const k of Object.keys(src)) {
-    if (k === "adminSig" || k === "adminToken" || k === "type" || k === "id") continue;
-    rest[k] = src[k];
+  for (const key of Object.keys(source)) {
+    if (key === "adminSig" || key === "adminToken" || key === "type" || key === "id") continue;
+    rest[key] = source[key];
   }
   return Buffer.concat([
     Buffer.from("pi-remote-admin-v1", "utf8"),
-    Buffer.from(String(src.type || ""), "utf8"),
+    Buffer.from(String(source.type || ""), "utf8"),
     Buffer.from(canonicalJson(rest), "utf8"),
   ]);
 }
 
 /** 用户输入的配对码：不分大小写，忽略空格和短横线；长度或字符不对返回空串 */
-function normalizePairCode(v) {
-  if (typeof v !== "string") return "";
-  const s = v.toUpperCase().replace(/[\s-]/g, "");
-  const { pairCodeAlphabet: abc, pairCodeLength: len } = PROTOCOL.limits;
-  return s.length === len && [...s].every((ch) => abc.includes(ch)) ? s : "";
+function normalizePairCode(value) {
+  if (typeof value !== "string") return "";
+  const bare = value.toUpperCase().replace(/[\s-]/g, "");
+  const { pairCodeAlphabet, pairCodeLength } = PROTOCOL.limits;
+  return bare.length === pairCodeLength && [...bare].every((character) => pairCodeAlphabet.includes(character)) ? bare : "";
 }
 
 /** 规整成裸 IP：去掉 IPv6 区域号和 IPv4 映射前缀（::ffff:1.2.3.4）；不是合法 IP 返回空串 */
-function plainIp(v) {
-  let s = typeof v === "string" ? v.trim().toLowerCase() : "";
-  if (s.includes("%")) s = s.slice(0, s.indexOf("%"));
-  if (s.startsWith("::ffff:") && net.isIPv4(s.slice(7))) s = s.slice(7);
-  return net.isIP(s) ? s : "";
+function plainIp(value) {
+  let address = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (address.includes("%")) address = address.slice(0, address.indexOf("%"));
+  if (address.startsWith("::ffff:") && net.isIPv4(address.slice(7))) address = address.slice(7);
+  return net.isIP(address) ? address : "";
 }
 
 /** IPv6 的前 64 位，形如 2001:db8:1:2::/64（结尾的点分 IPv4 占两组） */
 function ipv6Prefix64(ip) {
-  const width = (groups) => groups.reduce((n, g) => n + (g.includes(".") ? 2 : 1), 0);
+  const groupWidth = (groups) => groups.reduce((total, group) => total + (group.includes(".") ? 2 : 1), 0);
   const [head, tail] = ip.split("::");
-  const a = head ? head.split(":") : [];
-  const b = tail ? tail.split(":") : [];
-  const groups = tail === undefined ? a : [...a, ...Array(8 - width(a) - width(b)).fill("0"), ...b];
-  return groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(":") + "::/64";
+  const headGroups = head ? head.split(":") : [];
+  const tailGroups = tail ? tail.split(":") : [];
+  const groups = tail === undefined ? headGroups : [...headGroups, ...Array(8 - groupWidth(headGroups) - groupWidth(tailGroups)).fill("0"), ...tailGroups];
+  return groups.slice(0, 4).map((group) => parseInt(group, 16).toString(16)).join(":") + "::/64";
 }
 
 /**
@@ -261,12 +261,12 @@ function requestSource(req) {
  * 再把来源挪到 Map 末尾（按最近出错排序），来源太多时挤掉最久没出错的。
  */
 function pairSourceBlocked(failures, source, now) {
-  const recent = (failures.get(source) || []).filter((t) => t > now - PAIR_FAIL_WINDOW_MS);
+  const recent = (failures.get(source) || []).filter((failedAt) => failedAt > now - PAIR_FAIL_WINDOW_MS);
   return recent.length >= PAIR_FAIL_MAX;
 }
 
 function notePairFailure(failures, source, now) {
-  const recent = (failures.get(source) || []).filter((t) => t > now - PAIR_FAIL_WINDOW_MS);
+  const recent = (failures.get(source) || []).filter((failedAt) => failedAt > now - PAIR_FAIL_WINDOW_MS);
   failures.delete(source);
   failures.set(source, [...recent, now]);
   if (failures.size > PAIR_FAIL_SOURCES_MAX) failures.delete(failures.keys().next().value);
@@ -276,8 +276,8 @@ function notePairFailure(failures, source, now) {
  * v4 设备鉴权：令牌的 sha256 和账号下每一行做定时安全比较。
  * 令牌属于别的设备 → device_mismatch；属于这台但已作废 → device_revoked；对不上任何一行 → auth_failed。
  */
-function checkDeviceToken(index, devices, cfg, deviceId, token) {
-  const accountId = boundAccount(index, devices, deviceId, cfg.accountId);
+function checkDeviceToken(index, devices, config, deviceId, token) {
+  const accountId = boundAccount(index, devices, deviceId, config.accountId);
   const hash = sha256hex(token);
   let hit = null;
   for (const row of index.deviceTokens(accountId)) {

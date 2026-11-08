@@ -28,8 +28,8 @@ if (fs.existsSync(relayCfgPath)) {
   try {
     const relayCfg = JSON.parse(fs.readFileSync(relayCfgPath, "utf8"));
     if (relayCfg.localToken) localToken = relayCfg.localToken;
-  } catch (e) {
-    console.error("relay/config.json 解析失败（忽略，用默认 token）:", e.message);
+  } catch (configReadError) {
+    console.error("relay/config.json 解析失败（忽略，用默认 token）:", configReadError.message);
   }
 }
 
@@ -57,8 +57,8 @@ text = text.replace(/^PI_REMOTE_PROJECTS=[ \t]*$/m, () => `PI_REMOTE_PROJECTS=${
 fs.writeFileSync(envPath, text, { encoding: "utf8", mode: 0o600 });
 try {
   fs.chmodSync(envPath, 0o600);
-} catch (e) {
-  console.error("警告：无法把 " + envPath + " 的权限收紧到 0600（里面有令牌）：" + (e && e.message ? e.message : e));
+} catch (chmodError) {
+  console.error("警告：无法把 " + envPath + " 的权限收紧到 0600（里面有令牌）：" + (chmodError && chmodError.message ? chmodError.message : chmodError));
   console.error("  请手动执行 chmod 600 " + envPath + "。");
 }
 console.log(".env 已生成：");
@@ -78,9 +78,9 @@ if (process.platform === "win32") {
   console.log("下一步：deploy/attach.sh --init 生成设备编号；启动 pi：deploy/start-pi.sh");
 }
 
-function extractUrl(t) {
-  const m = t.match(/^PI_REMOTE_RELAY=(.*)$/m);
-  return m ? m[1].trim() : "";
+function extractUrl(text) {
+  const match = text.match(/^PI_REMOTE_RELAY=(.*)$/m);
+  return match ? match[1].trim() : "";
 }
 } /* legacyMain 结束 */
 
@@ -122,11 +122,11 @@ function buildLocalRelayConfig({ root = ROOT, hostname = os.hostname(), randomBy
   };
 }
 
-function setupLocal(opts = {}) {
-  const root = opts.root || ROOT;
-  const force = opts.force === true;
-  const out = opts.writeOut || ((line) => console.log(line));
-  const err = opts.writeErr || ((line) => console.error(line));
+function setupLocal(options = {}) {
+  const root = options.root || ROOT;
+  const force = options.force === true;
+  const out = options.writeOut || ((line) => console.log(line));
+  const writeError = options.writeErr || ((line) => console.error(line));
   const configPath = path.join(root, "relay", "config.json");
   const localEnvPath = path.join(root, ".env");
   const localExamplePath = path.join(root, ".env.example");
@@ -135,22 +135,22 @@ function setupLocal(opts = {}) {
   if (fs.existsSync(configPath)) existing.push(configPath);
   if (fs.existsSync(localEnvPath)) existing.push(localEnvPath);
   if (existing.length && !force) {
-    err("免服务器模式初始化已拒绝：下列文件已存在，setup 不会覆盖：");
-    for (const f of existing) err("  " + f);
-    err("  只想改某一项：直接编辑对应文件；确实要整套重建（令牌全部轮换、已配对设备需要重新配对）：加 --force");
+    writeError("免服务器模式初始化已拒绝：下列文件已存在，setup 不会覆盖：");
+    for (const existingPath of existing) writeError("  " + existingPath);
+    writeError("  只想改某一项：直接编辑对应文件；确实要整套重建（令牌全部轮换、已配对设备需要重新配对）：加 --force");
     return { code: 1, configPath, envPath: localEnvPath };
   }
   if (existing.length && force) {
-    err("⚠️  --force 重建：relay 的三个令牌将全部轮换，之前配对/登录用的令牌立即失效，设备需要重新走 attach --link 配对。");
+    writeError("⚠️  --force 重建：relay 的三个令牌将全部轮换，之前配对/登录用的令牌立即失效，设备需要重新走 attach --link 配对。");
   }
 
-  const config = buildLocalRelayConfig({ root, hostname: opts.hostname, randomBytes: opts.randomBytes });
+  const config = buildLocalRelayConfig({ root, hostname: options.hostname, randomBytes: options.randomBytes });
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   try {
     fs.chmodSync(configPath, 0o600);
-  } catch (e) {
-    err("警告：无法把 " + configPath + " 的权限收紧到 0600（里面有三个令牌）：" + (e && e.message ? e.message : e));
+  } catch (chmodError) {
+    writeError("警告：无法把 " + configPath + " 的权限收紧到 0600（里面有三个令牌）：" + (chmodError && chmodError.message ? chmodError.message : chmodError));
   }
 
   // 设备 .env：复用模板整份生成（替换口径与旧流程一致），relay 固定回环、token 填刚生成的 localToken
@@ -162,8 +162,8 @@ function setupLocal(opts = {}) {
   fs.writeFileSync(localEnvPath, text, { encoding: "utf8", mode: 0o600 });
   try {
     fs.chmodSync(localEnvPath, 0o600);
-  } catch (e) {
-    err("警告：无法把 " + localEnvPath + " 的权限收紧到 0600（里面有令牌）：" + (e && e.message ? e.message : e));
+  } catch (chmodError) {
+    writeError("警告：无法把 " + localEnvPath + " 的权限收紧到 0600（里面有令牌）：" + (chmodError && chmodError.message ? chmodError.message : chmodError));
   }
 
   out("免服务器（本地）模式已初始化：");
@@ -177,9 +177,9 @@ function setupLocal(opts = {}) {
 }
 
 function main(argv) {
-  const args = Array.isArray(argv) ? argv : [];
-  if (args.includes("--local")) {
-    return setupLocal({ force: args.includes("--force") }).code;
+  const cliArgs = Array.isArray(argv) ? argv : [];
+  if (cliArgs.includes("--local")) {
+    return setupLocal({ force: cliArgs.includes("--force") }).code;
   }
   legacyMain();
   return 0;

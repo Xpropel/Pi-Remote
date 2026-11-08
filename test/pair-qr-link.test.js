@@ -349,7 +349,7 @@ test("R-2：forgetSession 返回 false（不抛错）时 purge 不广播 session
     let forgetCalls = 0;
     const index = { forgetSession() { forgetCalls++; return forgetResult; } };
     const devices = new Map([["dev-1", { archives: new Map([[id, { id }]]) }]]);
-    const args = { accountId: "admin", deviceId: "dev-1", ids: [id], rooms, store, devices, index, cfg: {} };
+    const args = { accountId: "admin", deviceId: "dev-1", ids: [id], rooms, store, devices, index, config: {} };
 
     const done1 = purgeSessions(args);
     assert.deepEqual(done1, [], "墓碑没立住的 id 不能计入 done");

@@ -28,19 +28,19 @@ const MIN_NODE = [22, 18];
 
 class UsageError extends Error {}
 
-function makeContext(opts = {}) {
-  const env = opts.env || process.env;
-  const home = opts.home || env.HOME || os.homedir();
-  const kit = opts.kit || KIT;
+function makeContext(options = {}) {
+  const env = options.env || process.env;
+  const home = options.home || env.HOME || os.homedir();
+  const kit = options.kit || KIT;
   const agentHome = path.join(home, ".pi", "agent");
   return {
     env,
     home,
     kit,
-    cwd: opts.cwd || process.cwd(),
-    platform: opts.platform || process.platform,
-    uid: opts.uid !== undefined ? opts.uid : typeof process.getuid === "function" ? process.getuid() : -1,
-    user: opts.user || env.USER || env.LOGNAME || "",
+    cwd: options.cwd || process.cwd(),
+    platform: options.platform || process.platform,
+    uid: options.uid !== undefined ? options.uid : typeof process.getuid === "function" ? process.getuid() : -1,
+    user: options.user || env.USER || env.LOGNAME || "",
     envPath: path.join(kit, ".env"),
     attachCjs: path.join(kit, "deploy", "attach.cjs"),
     startPi: path.join(kit, "deploy", "start-pi.sh"),
@@ -52,39 +52,39 @@ function makeContext(opts = {}) {
     // reading only the env here made status/up look at the wrong device file.
     stateFile: attach.resolveAttachFile(path.join(kit, ".env"), env, path.join(agentHome, "remote-attach.json")),
     logFile: env.PI_REMOTE_LOG || path.join(agentHome, "pi-remote-sync.log"),
-    nodeBin: opts.nodeBin || process.execPath,
-    piFallbacks: opts.piFallbacks || piFallbacks(home, env),
+    nodeBin: options.nodeBin || process.execPath,
+    piFallbacks: options.piFallbacks || piFallbacks(home, env),
     // tmux 客户端环境由 runTmux 注入 UTF-8 locale；tmux 本身用这个壳（第二参数给 runTmux 传 env）
-    tmux: opts.tmux || ((args, runOpts) => spawnSync("tmux", args, { encoding: "utf8", env: (runOpts && runOpts.env) || env, timeout: 10000 })),
+    tmux: options.tmux || ((argv, runOpts) => spawnSync("tmux", argv, { encoding: "utf8", env: (runOpts && runOpts.env) || env, timeout: 10000 })),
     // 探测本机 UTF-8 locale 用；测试可注入。undefined = 还没探，空串 = 探过但没有（走兼容解析）
-    localeSpawn: opts.localeSpawn || spawnSync,
-    utf8Locale: opts.utf8Locale,
-    out: opts.out || ((line) => process.stdout.write(line + "\n")),
-    err: opts.err || ((line) => process.stderr.write(line + "\n")),
-    now: opts.now || (() => Date.now()),
-    sleep: opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))),
-    upWaitMs: opts.upWaitMs || UP_WAIT_MS,
-    downWaitMs: opts.downWaitMs || DOWN_WAIT_MS,
-    WebSocketImpl: opts.WebSocketImpl,
-    pairTimeoutMs: opts.pairTimeoutMs,
+    localeSpawn: options.localeSpawn || spawnSync,
+    utf8Locale: options.utf8Locale,
+    out: options.out || ((line) => process.stdout.write(line + "\n")),
+    err: options.err || ((line) => process.stderr.write(line + "\n")),
+    now: options.now || (() => Date.now()),
+    sleep: options.sleep || ((ms) => new Promise((result) => setTimeout(result, ms))),
+    upWaitMs: options.upWaitMs || UP_WAIT_MS,
+    downWaitMs: options.downWaitMs || DOWN_WAIT_MS,
+    WebSocketImpl: options.WebSocketImpl,
+    pairTimeoutMs: options.pairTimeoutMs,
   };
 }
 
 /* ---------- 小工具 ---------- */
 
-function isExecutable(p) {
+function isExecutable(targetPath) {
   try {
-    if (!fs.statSync(p).isFile()) return false;
-    fs.accessSync(p, fs.constants.X_OK);
+    if (!fs.statSync(targetPath).isFile()) return false;
+    fs.accessSync(targetPath, fs.constants.X_OK);
     return true;
   } catch {
     return false;
   }
 }
 
-function isDir(p) {
+function isDir(targetPath) {
   try {
-    return fs.statSync(p).isDirectory();
+    return fs.statSync(targetPath).isDirectory();
   } catch {
     return false;
   }
@@ -105,24 +105,24 @@ function readEnvFile(file) {
 }
 
 /** .env 优先、其次环境变量；.env 里留空的键不盖环境变量（与 start-pi.sh、attach.cjs 同一口径） */
-function settings(ctx) {
-  const file = readEnvFile(ctx.envPath);
+function settings(context) {
+  const file = readEnvFile(context.envPath);
   const pick = (key) => {
     const fromFile = file[key];
     if (fromFile != null && String(fromFile).trim() !== "") return String(fromFile).trim();
-    const fromEnv = ctx.env[key];
+    const fromEnv = context.env[key];
     return fromEnv != null && String(fromEnv).trim() !== "" ? String(fromEnv).trim() : "";
   };
-  return { file, pick, cfg: attach.loadConfig(ctx.envPath, ctx.env, ctx.platform) };
+  return { file, pick, config: attach.loadConfig(context.envPath, context.env, context.platform) };
 }
 
-function tilde(ctx, p) {
-  const s = displayPathOf(p);
-  return ctx.home && (s === ctx.home || s.startsWith(ctx.home + "/")) ? "~" + s.slice(ctx.home.length) : s;
+function tilde(context, targetPath) {
+  const sessionRow = displayPathOf(targetPath);
+  return context.home && (sessionRow === context.home || sessionRow.startsWith(context.home + "/")) ? "~" + sessionRow.slice(context.home.length) : sessionRow;
 }
 
-function hint(ctx, sub) {
-  return `${tilde(ctx, ctx.deviceSh)} ${sub}`;
+function hint(context, sub) {
+  return `${tilde(context, context.deviceSh)} ${sub}`;
 }
 
 function pidAlive(pid) {
@@ -130,15 +130,15 @@ function pidAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (e) {
-    return !!(e && e.code === "EPERM");
+  } catch (error) {
+    return !!(error && error.code === "EPERM");
   }
 }
 
 function fmtTime(ms) {
-  const d = new Date(ms);
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const dateValue = new Date(ms);
+  const targetPath = (countValue) => String(countValue).padStart(2, "0");
+  return `${dateValue.getFullYear()}-${targetPath(dateValue.getMonth() + 1)}-${targetPath(dateValue.getDate())} ${targetPath(dateValue.getHours())}:${targetPath(dateValue.getMinutes())}`;
 }
 
 function fmtLeft(ms) {
@@ -146,9 +146,9 @@ function fmtLeft(ms) {
   return min >= 60 ? `${Math.floor(min / 60)} 小时 ${min % 60} 分` : `${min} 分`;
 }
 
-function md5File(p) {
+function md5File(targetPath) {
   try {
-    return crypto.createHash("md5").update(fs.readFileSync(p)).digest("hex");
+    return crypto.createHash("md5").update(fs.readFileSync(targetPath)).digest("hex");
   } catch {
     return null;
   }
@@ -171,14 +171,14 @@ function piFallbacks(home, environ = process.env) {
 }
 
 /** 找 pi：PI_REMOTE_PI_BIN → PATH → 常见安装位置（npm --prefix ~/.local、~/.npm-global、/usr/local、服务器上 node 的前缀） */
-function findPi(ctx, pinned) {
+function findPi(context, pinned) {
   if (pinned) return { path: pinned, ok: isExecutable(pinned), from: "PI_REMOTE_PI_BIN" };
-  for (const dir of String(ctx.env.PATH || "").split(path.delimiter)) {
+  for (const dir of String(context.env.PATH || "").split(path.delimiter)) {
     if (!dir) continue;
-    const p = path.join(dir, "pi");
-    if (isExecutable(p)) return { path: p, ok: true, from: "PATH" };
+    const targetPath = path.join(dir, "pi");
+    if (isExecutable(targetPath)) return { path: targetPath, ok: true, from: "PATH" };
   }
-  for (const p of ctx.piFallbacks) if (isExecutable(p)) return { path: p, ok: true, from: "常见位置" };
+  for (const targetPath of context.piFallbacks) if (isExecutable(targetPath)) return { path: targetPath, ok: true, from: "常见位置" };
   return null;
 }
 
@@ -189,42 +189,42 @@ function findPi(ctx, pinned) {
  * 整行字段塌成一条（会话名、死活、退出码、目录、创建时间全取不到）。本机存在 UTF-8 locale 时
  * 给每次 tmux 调用注入 LANG/LC_ALL；探不到就交给下面的兼容解析（以真实会话名锚定、丢幻影行）。
  */
-function tmuxLocale(ctx) {
-  if (ctx.utf8Locale === undefined) {
-    const current = attach.currentLocale(ctx.env);
-    ctx.utf8Locale = attach.localeIsUtf8(current) ? "" : attach.availableUtf8Locale(ctx.localeSpawn, ctx.env, ctx.platform);
+function tmuxLocale(context) {
+  if (context.utf8Locale === undefined) {
+    const current = attach.currentLocale(context.env);
+    context.utf8Locale = attach.localeIsUtf8(current) ? "" : attach.availableUtf8Locale(context.localeSpawn, context.env, context.platform);
   }
-  return ctx.utf8Locale;
+  return context.utf8Locale;
 }
 
-function tmuxEnv(ctx) {
-  if (!ctx._tmuxEnv) ctx._tmuxEnv = attach.tmuxEnvWithLocale(ctx.env, tmuxLocale(ctx));
-  return ctx._tmuxEnv;
+function tmuxEnv(context) {
+  if (!context._tmuxEnv) context._tmuxEnv = attach.tmuxEnvWithLocale(context.env, tmuxLocale(context));
+  return context._tmuxEnv;
 }
 
-function runTmux(ctx, args) {
+function runTmux(context, argv) {
   // 注意：tmux 服务端环境是启动时定死的，但输出净化发生在客户端；给客户端换 locale 就能修好已存在的服务
-  const r = ctx.tmux(args, { env: tmuxEnv(ctx) }) || {};
+  const result = context.tmux(argv, { env: tmuxEnv(context) }) || {};
   return {
-    status: r.status == null ? -1 : r.status,
-    stdout: String(r.stdout || ""),
-    stderr: String(r.stderr || "").trim(),
-    missing: !!(r.error && r.error.code === "ENOENT"),
-    error: r.error || null,
+    status: result.status == null ? -1 : result.status,
+    stdout: String(result.stdout || ""),
+    stderr: String(result.stderr || "").trim(),
+    missing: !!(result.error && result.error.code === "ENOENT"),
+    error: result.error || null,
   };
 }
 
 /** 没装 tmux 返回 null；keepFailed = 支持 remain-on-exit failed（3.2 起）。与 attach.cjs 同一个判断 */
-function tmuxVersion(ctx) {
-  const info = attach.probeTmux((_file, args) => ctx.tmux(args, { env: tmuxEnv(ctx) }));
+function tmuxVersion(context) {
+  const info = attach.probeTmux((_file, argv) => context.tmux(argv, { env: tmuxEnv(context) }));
   return info ? { text: info.version, keepFailed: info.keepFailed } : null;
 }
 
 const { tmuxArg } = attach;
 
 /** -t 一律用 =名字 精确匹配：否则 tmux 会按前缀把 pi-remote-attach-xxx 这类 pi 会话当成窗口 */
-function hasSession(ctx, name) {
-  return runTmux(ctx, ["has-session", "-t", "=" + name]).status === 0;
+function hasSession(context, name) {
+  return runTmux(context, ["has-session", "-t", "=" + name]).status === 0;
 }
 
 /** 一条 list-panes 输出：正常是制表符分隔；tmux 3.4 非 UTF-8 时是 0_ / 1_1 这种下划线形态 */
@@ -233,35 +233,35 @@ function parsePaneRow(line) {
     const [dead, status] = line.split("\t");
     return { dead: dead === "1", status: status === "" || status == null ? null : Number(status) };
   }
-  const m = /^([01])(?:_(.*))?$/.exec(line);
-  if (!m) return null;
-  const n = m[2] == null || m[2] === "" ? null : Number(m[2]);
-  return { dead: m[1] === "1", status: Number.isFinite(n) ? n : null };
+  const match = /^([01])(?:_(.*))?$/.exec(line);
+  if (!match) return null;
+  const countValue = match[2] == null || match[2] === "" ? null : Number(match[2]);
+  return { dead: match[1] === "1", status: Number.isFinite(countValue) ? countValue : null };
 }
 
-function sessionPanes(ctx, name) {
-  const r = runTmux(ctx, ["list-panes", "-s", "-t", "=" + name, "-F", "#{pane_dead}\t#{pane_dead_status}"]);
-  if (r.status !== 0) return null;
-  return r.stdout
+function sessionPanes(context, name) {
+  const result = runTmux(context, ["list-panes", "-s", "-t", "=" + name, "-F", "#{pane_dead}\t#{pane_dead_status}"]);
+  if (result.status !== 0) return null;
+  return result.stdout
     .split("\n")
     .filter(Boolean)
     .map(parsePaneRow)
     .filter(Boolean);
 }
 
-function capturePane(ctx, name, max = 15) {
-  const r = runTmux(ctx, ["capture-pane", "-p", "-J", "-t", `=${name}:`, "-S", "-60"]);
-  if (r.status !== 0) return [];
-  const lines = r.stdout.split("\n").map((l) => l.replace(/\s+$/, ""));
+function capturePane(context, name, max = 15) {
+  const result = runTmux(context, ["capture-pane", "-p", "-J", "-t", `=${name}:`, "-S", "-60"]);
+  if (result.status !== 0) return [];
+  const lines = result.stdout.split("\n").map((line) => line.replace(/\s+$/, ""));
   while (lines.length && !lines[lines.length - 1]) lines.pop();
-  return lines.filter((l, i, all) => l || (i > 0 && all[i - 1])).slice(-max);
+  return lines.filter((line, index, all) => line || (index > 0 && all[index - 1])).slice(-max);
 }
 
 /** 非 UTF-8 输出里的真实会话名：单独查一次（这个格式没有制表符，不受净化影响） */
-function sessionNames(ctx) {
-  const r = runTmux(ctx, ["list-sessions", "-F", "#{session_name}"]);
-  if (r.status !== 0) return null;
-  return r.stdout
+function sessionNames(context) {
+  const result = runTmux(context, ["list-sessions", "-F", "#{session_name}"]);
+  if (result.status !== 0) return null;
+  return result.stdout
     .split(/\r?\n/)
     .map((name) => name.trim())
     .filter(Boolean);
@@ -278,18 +278,18 @@ function parseCollapsedSessionRow(line, names) {
     if (candidate.length > name.length && line.startsWith(candidate + "_")) name = candidate;
   }
   if (!name) return null;
-  const m = /^([01])_(\d*)_(.*)_(\d+)$/.exec(line.slice(name.length + 1));
-  if (!m) return null;
-  return { name, dead: m[1] === "1", status: m[2] === "" ? null : Number(m[2]), cwd: m[3], created: Number(m[4]) * 1000 || 0 };
+  const match = /^([01])_(\d*)_(.*)_(\d+)$/.exec(line.slice(name.length + 1));
+  if (!match) return null;
+  return { name, dead: match[1] === "1", status: match[2] === "" ? null : Number(match[2]), cwd: match[3], created: Number(match[4]) * 1000 || 0 };
 }
 
 /** 所有 pi 的 tmux 会话（不含连接窗口）。没有 tmux 服务（一个会话都没有）时是空列表 */
-function piSessions(ctx) {
-  const r = runTmux(ctx, ["list-panes", "-a", "-F", "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{session_path}\t#{session_created}"]);
-  if (r.status !== 0) return [];
-  const lines = r.stdout.split("\n").filter(Boolean);
+function piSessions(context) {
+  const result = runTmux(context, ["list-panes", "-a", "-F", "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{session_path}\t#{session_created}"]);
+  if (result.status !== 0) return [];
+  const lines = result.stdout.split("\n").filter(Boolean);
   const collapsed = lines.length > 0 && !lines.some((line) => line.includes("\t"));
-  const names = collapsed ? sessionNames(ctx) : null;
+  const names = collapsed ? sessionNames(context) : null;
   // 探不到真实会话名就不猜：宁可列表为空，也不能把幻影行当成"运行中"的 pi
   if (collapsed && !names) return [];
   const byName = new Map();
@@ -311,80 +311,80 @@ function piSessions(ctx) {
   }
   const list = [...byName.values()];
   // 窗格字段丢了（tmux 3.4 约四成 / 按信号退出时必空）再读落盘退出码；窗格有值时以窗格为准
-  for (const item of list) if (item.dead && item.status == null) item.status = attach.readExitCode(item.name, ctx.home);
-  return list.sort((a, b) => a.created - b.created);
+  for (const item of list) if (item.dead && item.status == null) item.status = attach.readExitCode(item.name, context.home);
+  return list.sort((tokenText, rightRow) => tokenText.created - rightRow.created);
 }
 
 /* ---------- 窗口状态、扩展、relay ---------- */
 
-function readWindow(ctx) {
+function readWindow(context) {
   let raw;
   try {
-    raw = fs.readFileSync(ctx.stateFile, "utf8");
+    raw = fs.readFileSync(context.stateFile, "utf8");
   } catch {
     return null;
   }
-  let st;
+  let stateDoc;
   try {
-    st = JSON.parse(raw);
+    stateDoc = JSON.parse(raw);
   } catch {
     return { broken: true, alive: false };
   }
-  if (!st || typeof st !== "object") return { broken: true, alive: false };
-  const pid = Number(st.pid);
-  const expiresAt = Number(st.expiresAt) || 0;
+  if (!stateDoc || typeof stateDoc !== "object") return { broken: true, alive: false };
+  const pid = Number(stateDoc.pid);
+  const expiresAt = Number(stateDoc.expiresAt) || 0;
   return {
     broken: false,
     pid,
     // 过期的按残留处理：pid 可能早被系统复用给了别的进程（attach 的 clearStaleState 同样这么判）
-    alive: expiresAt > ctx.now() && pidAlive(pid),
-    deviceId: String(st.deviceId || ""),
-    startedAt: Number(st.startedAt) || 0,
+    alive: expiresAt > context.now() && pidAlive(pid),
+    deviceId: String(stateDoc.deviceId || ""),
+    startedAt: Number(stateDoc.startedAt) || 0,
     expiresAt,
   };
 }
 
-function extensionState(ctx) {
-  const want = md5File(ctx.extSrc);
-  const have = md5File(ctx.extDst);
+function extensionState(context) {
+  const want = md5File(context.extSrc);
+  const have = md5File(context.extDst);
   if (!want) return { synced: false, text: "套件里没有 extension/pi-remote-sync.ts（重新推一次套件）" };
-  if (!have) return { synced: false, text: `扩展还没装到 ${tilde(ctx, ctx.extDst)}：${tilde(ctx, path.join(ctx.kit, "deploy", "sync-extension.sh"))}` };
-  if (have !== want) return { synced: false, text: `装着的扩展不是这套件的版本：${tilde(ctx, path.join(ctx.kit, "deploy", "sync-extension.sh"))}，再重启 pi` };
+  if (!have) return { synced: false, text: `扩展还没装到 ${tilde(context, context.extDst)}：${tilde(context, path.join(context.kit, "deploy", "sync-extension.sh"))}` };
+  if (have !== want) return { synced: false, text: `装着的扩展不是这套件的版本：${tilde(context, path.join(context.kit, "deploy", "sync-extension.sh"))}，再重启 pi` };
   return { synced: true, text: `扩展已同步（md5 ${want.slice(0, 8)}…）` };
 }
 
 /** relay 的 /healthz 在 viewer 端口上：地址里写了端口就换成 viewer 端口（缺省 7002），没写（wss 反代）就同源 */
 function healthUrl(relay, env) {
-  const u = new URL(relay);
-  u.protocol = u.protocol === "wss:" ? "https:" : "http:";
-  if (u.port) u.port = String(Number(env.PI_REMOTE_VIEWER_PORT) > 0 ? Number(env.PI_REMOTE_VIEWER_PORT) : 7002);
-  u.pathname = "/healthz";
-  u.search = "";
-  u.hash = "";
-  return u.toString();
+  const parsedUrl = new URL(relay);
+  parsedUrl.protocol = parsedUrl.protocol === "wss:" ? "https:" : "http:";
+  if (parsedUrl.port) parsedUrl.port = String(Number(env.PI_REMOTE_VIEWER_PORT) > 0 ? Number(env.PI_REMOTE_VIEWER_PORT) : 7002);
+  parsedUrl.pathname = "/healthz";
+  parsedUrl.search = "";
+  parsedUrl.hash = "";
+  return parsedUrl.toString();
 }
 
-async function relayHealth(ctx, relay) {
+async function relayHealth(context, relay) {
   let url;
   try {
-    url = healthUrl(relay, ctx.env);
+    url = healthUrl(relay, context.env);
   } catch {
     return { ok: false, error: "relay 地址不对：" + relay };
   }
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) return { ok: false, url, error: "HTTP " + res.status };
-    return { ok: true, url, data: await res.json() };
-  } catch (e) {
-    const why = e && e.name === "TimeoutError" ? "3 秒没有回应" : (e && e.cause && (e.cause.code || e.cause.message)) || (e && e.message) || String(e);
+    const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) return { ok: false, url, error: "HTTP " + response.status };
+    return { ok: true, url, data: await response.json() };
+  } catch (error) {
+    const why = error && error.name === "TimeoutError" ? "3 秒没有回应" : (error && error.cause && (error.cause.code || error.cause.message)) || (error && error.message) || String(error);
     return { ok: false, url, error: why };
   }
 }
 
 /** 本机身份钥（阶段 1）：钥文件在且完好才返回钥对象；没有/损坏都返回 null（doctor 另有 attach 侧的损坏提示口径，这里只认「能不能用钥登录」） */
-function deviceKeysOf(ctx) {
+function deviceKeysOf(context) {
   try {
-    return attach.loadDeviceKeys(attach.deviceKeyFilePath(ctx.envPath, { env: ctx.env }));
+    return attach.loadDeviceKeys(attach.deviceKeyFilePath(context.envPath, { env: context.env }));
   } catch {
     return null;
   }
@@ -392,9 +392,9 @@ function deviceKeysOf(ctx) {
 
 /** 拿 .env 里的身份向 relay 认一次证就断开：不登记窗口，不影响已经连着的窗口和扩展。
  * 有身份钥且已配对时走挑战-签名（钥设备按设计停用令牌，拿令牌去探只会换回拒绝）。 */
-function probeAuth(ctx, cfg, timeoutMs = 4000) {
+function probeAuth(context, config, timeoutMs = 4000) {
   return new Promise((resolve) => {
-    let WS = ctx.WebSocketImpl;
+    let WS = context.WebSocketImpl;
     if (!WS) {
       try {
         WS = require("ws");
@@ -408,56 +408,56 @@ function probeAuth(ctx, cfg, timeoutMs = 4000) {
     }
     let ws = null;
     let done = false;
-    const finish = (r) => {
+    const finish = (result) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       try {
         ws && ws.close();
       } catch {}
-      resolve(r);
+      resolve(result);
     };
     const timer = setTimeout(() => finish({ ok: false, code: "timeout", error: "relay 没有回应鉴权" }), timeoutMs);
     try {
-      ws = new WS(cfg.relay);
-    } catch (e) {
-      finish({ ok: false, code: "offline", error: (e && e.message) || String(e) });
+      ws = new WS(config.relay);
+    } catch (error) {
+      finish({ ok: false, code: "offline", error: (error && error.message) || String(error) });
       return;
     }
-    const keys = deviceKeysOf(ctx);
-    const keyFrame = keys && cfg.deviceId ? attach.attachKeyAuthFrame({ deviceId: cfg.deviceId, keys, platform: ctx.platform }) : null;
+    const keys = deviceKeysOf(context);
+    const keyFrame = keys && config.deviceId ? attach.attachKeyAuthFrame({ deviceId: config.deviceId, keys, platform: context.platform }) : null;
     const onOpen = () => {
       try {
-        ws.send(JSON.stringify(keyFrame || attach.attachAuthFrame({ token: cfg.token, deviceId: cfg.deviceId, deviceToken: cfg.deviceToken, platform: ctx.platform })));
-      } catch (e) {
-        finish({ ok: false, code: "offline", error: (e && e.message) || String(e) });
+        ws.send(JSON.stringify(keyFrame || attach.attachAuthFrame({ token: config.token, deviceId: config.deviceId, deviceToken: config.deviceToken, platform: context.platform })));
+      } catch (error) {
+        finish({ ok: false, code: "offline", error: (error && error.message) || String(error) });
       }
     };
     const onMessage = (data) => {
-      let msg;
+      let frame;
       try {
-        msg = JSON.parse(String(data && data.data !== undefined ? data.data : data));
+        frame = JSON.parse(String(data && data.data !== undefined ? data.data : data));
       } catch {
         return;
       }
-      if (!msg) return;
-      if (msg.type === "auth_challenge" && keyFrame) {
+      if (!frame) return;
+      if (frame.type === "auth_challenge" && keyFrame) {
         try {
-          ws.send(JSON.stringify({ type: "auth_response", sig: attach.signAuthResponse(keys, cfg.deviceId, msg.nonce, keyFrame.clientNonce) }));
-        } catch (e) {
-          finish({ ok: false, code: "auth_failed", error: "本机钥签名失败：" + ((e && e.message) || String(e)) });
+          ws.send(JSON.stringify({ type: "auth_response", sig: attach.signAuthResponse(keys, config.deviceId, frame.nonce, keyFrame.clientNonce) }));
+        } catch (error) {
+          finish({ ok: false, code: "auth_failed", error: "本机钥签名失败：" + ((error && error.message) || String(error)) });
         }
         return;
       }
-      if (msg.type !== "auth_result") return;
-      finish(msg.ok ? { ok: true, auth: msg.auth || null } : { ok: false, code: msg.code || "auth_failed", error: msg.error || "" });
+      if (frame.type !== "auth_result") return;
+      finish(frame.ok ? { ok: true, auth: frame.auth || null } : { ok: false, code: frame.code || "auth_failed", error: frame.error || "" });
     };
     const onClose = () => finish({ ok: false, code: "offline", error: "连接被关闭" });
     if (typeof ws.on === "function") {
       ws.on("open", onOpen);
       ws.on("message", onMessage);
       ws.on("close", onClose);
-      ws.on("error", (e) => finish({ ok: false, code: "offline", error: (e && (e.code || e.message)) || "连不上" }));
+      ws.on("error", (error) => finish({ ok: false, code: "offline", error: (error && (error.code || error.message)) || "连不上" }));
     } else {
       ws.onopen = onOpen;
       ws.onmessage = onMessage;
@@ -470,10 +470,10 @@ function probeAuth(ctx, cfg, timeoutMs = 4000) {
 /* ---------- 命令 ---------- */
 
 /** 网页能让这台机器上的 pi 执行命令：root 等于把整台服务器（含 relay 的令牌文件）交出去 */
-function blockRoot(ctx) {
-  if (ctx.uid !== 0) return false;
-  if (String(readEnvFile(ctx.envPath).PI_REMOTE_ALLOW_ROOT || ctx.env.PI_REMOTE_ALLOW_ROOT || "") === "1") return false;
-  ctx.err(
+function blockRoot(context) {
+  if (context.uid !== 0) return false;
+  if (String(readEnvFile(context.envPath).PI_REMOTE_ALLOW_ROOT || context.env.PI_REMOTE_ALLOW_ROOT || "") === "1") return false;
+  context.err(
     [
       "不要用 root 跑服务器上的 pi：网页能给它发提示词、让它执行命令，root 等于把整台服务器（连同 relay 的令牌）交出去。",
       "建一个普通用户再用它运行本命令，例如：",
@@ -487,299 +487,299 @@ function blockRoot(ctx) {
 function parseProjects(raw) {
   const list = String(raw)
     .split(";")
-    .map((s) => s.trim())
+    .map((sessionRow) => sessionRow.trim())
     .filter(Boolean);
   if (!list.length) return { error: "--projects 至少给一个目录（多个用 ; 分隔）" };
   const out = [];
-  for (const p of list) {
-    if (/[\0\r\n]/.test(p)) return { error: "白名单路径不能含换行" };
-    if (!path.isAbsolute(p)) return { error: `白名单要写绝对路径：${p}` };
-    if (!isDir(p)) return { error: `目录不存在：${p}` };
-    out.push(p.length > 1 ? p.replace(/\/+$/, "") : p);
+  for (const targetPath of list) {
+    if (/[\0\r\n]/.test(targetPath)) return { error: "白名单路径不能含换行" };
+    if (!path.isAbsolute(targetPath)) return { error: `白名单要写绝对路径：${targetPath}` };
+    if (!isDir(targetPath)) return { error: `目录不存在：${targetPath}` };
+    out.push(targetPath.length > 1 ? targetPath.replace(/\/+$/, "") : targetPath);
   }
   return { list: out };
 }
 
-function validRelay(v) {
-  return /^wss?:\/\/\S+$/.test(String(v));
+function validRelay(valueText) {
+  return /^wss?:\/\/\S+$/.test(String(valueText));
 }
 
-function cmdInit(ctx, o = {}) {
-  if (blockRoot(ctx)) return 2;
+function cmdInit(context, options = {}) {
+  if (blockRoot(context)) return 2;
   let projects = null;
-  if (o.projects != null) {
-    const parsed = parseProjects(o.projects);
+  if (options.projects != null) {
+    const parsed = parseProjects(options.projects);
     if (parsed.error) {
-      ctx.err(parsed.error);
+      context.err(parsed.error);
       return 2;
     }
     projects = parsed.list;
   }
-  if (o.relay != null && !validRelay(o.relay)) {
-    ctx.err("--relay 需要 ws:// 或 wss:// 地址");
+  if (options.relay != null && !validRelay(options.relay)) {
+    context.err("--relay 需要 ws:// 或 wss:// 地址");
     return 2;
   }
-  if (o.name != null && (!String(o.name).trim() || /[\0\r\n]/.test(o.name))) {
-    ctx.err("--name 不能为空，也不能换行");
+  if (options.name != null && (!String(options.name).trim() || /[\0\r\n]/.test(options.name))) {
+    context.err("--name 不能为空，也不能换行");
     return 2;
   }
-  const fresh = !fs.existsSync(ctx.envPath);
+  const fresh = !fs.existsSync(context.envPath);
   if (fresh) {
-    const example = path.join(ctx.kit, ".env.example");
+    const example = path.join(context.kit, ".env.example");
     const text = fs.existsSync(example) ? fs.readFileSync(example, "utf8") : "";
-    fs.writeFileSync(ctx.envPath, text, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    fs.writeFileSync(context.envPath, text, { encoding: "utf8", mode: 0o600, flag: "wx" });
   }
-  const file = readEnvFile(ctx.envPath);
+  const file = readEnvFile(context.envPath);
   const empty = (key) => !String(file[key] || "").trim();
   const vars = {};
-  if (o.relay) vars.PI_REMOTE_RELAY = o.relay;
+  if (options.relay) vars.PI_REMOTE_RELAY = options.relay;
   else if (empty("PI_REMOTE_RELAY")) vars.PI_REMOTE_RELAY = LOOPBACK_RELAY;
   // 模板里的占位 token 会让扩展拿 change-me 去登录：服务器上只用配对换来的设备令牌
   if (String(file.PI_REMOTE_TOKEN || "").trim() === "change-me") vars.PI_REMOTE_TOKEN = "";
   if (fresh) vars.PI_REMOTE_LABEL = "";
-  if (o.name) vars.PI_REMOTE_DEVICE_NAME = String(o.name).trim();
+  if (options.name) vars.PI_REMOTE_DEVICE_NAME = String(options.name).trim();
   if (projects) vars.PI_REMOTE_PROJECTS = projects.join(";");
   if (empty("PI_REMOTE_LAUNCHER")) vars.PI_REMOTE_LAUNCHER = "tmux";
   // tmux 拉起的 pi 拿到的 PATH 不一定有 ~/.local/bin：找到了就写死绝对路径
   if (empty("PI_REMOTE_PI_BIN")) {
-    const pi = findPi(ctx, "");
+    const pi = findPi(context, "");
     if (pi) vars.PI_REMOTE_PI_BIN = pi.path;
   }
-  if (Object.keys(vars).length) attach.writeEnvVars(ctx.envPath, vars);
-  fs.chmodSync(ctx.envPath, 0o600);
+  if (Object.keys(vars).length) attach.writeEnvVars(context.envPath, vars);
+  fs.chmodSync(context.envPath, 0o600);
 
-  const { cfg, pick } = settings(ctx);
-  ctx.out(`${fresh ? "已生成" : "已补全"} ${tilde(ctx, ctx.envPath)}（权限 600）`);
-  ctx.out(`  PI_REMOTE_RELAY       = ${cfg.relay}`);
-  ctx.out(`  PI_REMOTE_DEVICE_NAME = ${cfg.deviceName}`);
-  ctx.out(`  PI_REMOTE_PROJECTS    = ${cfg.projects.map(displayPathOf).join(";") || "（空：网页上不能新建会话，用 --projects 设）"}`);
-  ctx.out(`  PI_REMOTE_PI_BIN      = ${displayPathOf(pick("PI_REMOTE_PI_BIN")) || "（没找到 pi：先装 pi，再跑一次 init）"}`);
-  ctx.out(`  设备凭据              = ${cfg.deviceToken ? "已配对（设备令牌）" : deviceKeysOf(ctx) ? "已配对（身份钥）" : "未配对"}`);
-  if (!cfg.deviceToken && !deviceKeysOf(ctx)) ctx.out(`下一步：网页「设备」→「添加设备」拿配对码，然后 ${hint(ctx, "pair XXXX-XXXX")}`);
+  const { config, pick } = settings(context);
+  context.out(`${fresh ? "已生成" : "已补全"} ${tilde(context, context.envPath)}（权限 600）`);
+  context.out(`  PI_REMOTE_RELAY       = ${config.relay}`);
+  context.out(`  PI_REMOTE_DEVICE_NAME = ${config.deviceName}`);
+  context.out(`  PI_REMOTE_PROJECTS    = ${config.projects.map(displayPathOf).join(";") || "（空：网页上不能新建会话，用 --projects 设）"}`);
+  context.out(`  PI_REMOTE_PI_BIN      = ${displayPathOf(pick("PI_REMOTE_PI_BIN")) || "（没找到 pi：先装 pi，再跑一次 init）"}`);
+  context.out(`  设备凭据              = ${config.deviceToken ? "已配对（设备令牌）" : deviceKeysOf(context) ? "已配对（身份钥）" : "未配对"}`);
+  if (!config.deviceToken && !deviceKeysOf(context)) context.out(`下一步：网页「设备」→「添加设备」拿配对码，然后 ${hint(context, "pair XXXX-XXXX")}`);
   return 0;
 }
 
-async function cmdPair(ctx, o = {}) {
-  if (blockRoot(ctx)) return 2;
+async function cmdPair(context, options = {}) {
+  if (blockRoot(context)) return 2;
   let code;
   try {
-    code = attach.normalizePairCode(o.code);
-  } catch (e) {
-    ctx.err(e.message);
+    code = attach.normalizePairCode(options.code);
+  } catch (error) {
+    context.err(error.message);
     return 2;
   }
-  if (o.relay != null && !validRelay(o.relay)) {
-    ctx.err("--relay 需要 ws:// 或 wss:// 地址");
+  if (options.relay != null && !validRelay(options.relay)) {
+    context.err("--relay 需要 ws:// 或 wss:// 地址");
     return 2;
   }
-  if (!fs.existsSync(ctx.envPath)) {
-    const rc = cmdInit(ctx, {});
-    if (rc) return rc;
+  if (!fs.existsSync(context.envPath)) {
+    const exitCode = cmdInit(context, {});
+    if (exitCode) return exitCode;
   }
-  const { cfg } = settings(ctx);
-  const relay = o.relay || cfg.relay || LOOPBACK_RELAY;
-  const rc = await attach.pairMain({ pair: code, relay }, ctx.envPath, {
-    env: ctx.env,
-    platform: ctx.platform,
-    writeOut: ctx.out,
-    writeErr: ctx.err,
-    WebSocketImpl: ctx.WebSocketImpl,
-    timeoutMs: ctx.pairTimeoutMs,
+  const { config } = settings(context);
+  const relay = options.relay || config.relay || LOOPBACK_RELAY;
+  const exitCode = await attach.pairMain({ pair: code, relay }, context.envPath, {
+    env: context.env,
+    platform: context.platform,
+    writeOut: context.out,
+    writeErr: context.err,
+    WebSocketImpl: context.WebSocketImpl,
+    timeoutMs: context.pairTimeoutMs,
   });
   try {
-    fs.chmodSync(ctx.envPath, 0o600);
+    fs.chmodSync(context.envPath, 0o600);
   } catch {}
-  if (rc) return rc;
-  if (hasSession(ctx, ATTACH_SESSION)) ctx.out(`连接窗口还拿着旧身份，重开一次：${hint(ctx, "down")} && ${hint(ctx, "up")}`);
-  else ctx.out(`打开连接窗口：${hint(ctx, "up")}`);
+  if (exitCode) return exitCode;
+  if (hasSession(context, ATTACH_SESSION)) context.out(`连接窗口还拿着旧身份，重开一次：${hint(context, "down")} && ${hint(context, "up")}`);
+  else context.out(`打开连接窗口：${hint(context, "up")}`);
   return 0;
 }
 
-function windowOpen(w) {
-  return !!(w && !w.broken && w.alive);
+function windowOpen(windowState) {
+  return !!(windowState && !windowState.broken && windowState.alive);
 }
 
-function describeWindow(ctx, w, inTmux) {
-  if (!windowOpen(w)) {
+function describeWindow(context, windowState, inTmux) {
+  if (!windowOpen(windowState)) {
     if (inTmux) return `连接窗口的 tmux 会话 ${ATTACH_SESSION} 在，但还没连上 relay（tmux attach -t ${ATTACH_SESSION} 看状态）`;
-    return w ? "连接窗口没开（状态文件是上次残留的，下次 up 会清掉）" : "连接窗口没开";
+    return windowState ? "连接窗口没开（状态文件是上次残留的，下次 up 会清掉）" : "连接窗口没开";
   }
-  const where = inTmux ? `tmux 会话 ${ATTACH_SESSION}` : `不在 tmux 里，pid ${w.pid}：到它的终端里 Ctrl+C 关闭`;
-  return `连接窗口开着（${where}），到 ${fmtTime(w.expiresAt)} 自动关闭（还剩 ${fmtLeft(w.expiresAt - ctx.now())}）`;
+  const where = inTmux ? `tmux 会话 ${ATTACH_SESSION}` : `不在 tmux 里，pid ${windowState.pid}：到它的终端里 Ctrl+C 关闭`;
+  return `连接窗口开着（${where}），到 ${fmtTime(windowState.expiresAt)} 自动关闭（还剩 ${fmtLeft(windowState.expiresAt - context.now())}）`;
 }
 
 /** 连接窗口自己的退出码落盘位置；device.sh up 拉起时注入给 attach.cjs */
-function attachExitFile(ctx) {
-  return attach.exitCodePath(ATTACH_SESSION, ctx.home);
+function attachExitFile(context) {
+  return attach.exitCodePath(ATTACH_SESSION, context.home);
 }
 
-async function waitWindowUp(ctx, cfg, before, hours, dirs) {
-  const deadline = ctx.now() + ctx.upWaitMs;
+async function waitWindowUp(context, config, before, hours, dirs) {
+  const deadline = context.now() + context.upWaitMs;
   for (;;) {
-    const w = readWindow(ctx);
+    const windowState = readWindow(context);
     // attach 认证通过才写状态文件：文件是这次开的（不是开之前就在的那份）、进程活着、设备对得上，才算窗口真的开了
-    const fresh = w && (!before || w.pid !== before.pid || w.startedAt !== before.startedAt);
-    if (windowOpen(w) && fresh && w.deviceId === cfg.deviceId) {
-      ctx.out(`连接窗口已打开（tmux 会话 ${ATTACH_SESSION}），到 ${fmtTime(w.expiresAt)} 自动关闭（--max-hours ${hours}）`);
-      if (dirs.length) ctx.out(`  窗口拿到会话列表后在 tmux 里拉起：${dirs.map((d) => tilde(ctx, d)).join("  ")}（${hint(ctx, "sessions")} 查看）`);
-      ctx.out(`  看状态：tmux attach -t ${ATTACH_SESSION}（Ctrl+B 再按 D 离开，窗口不关）`);
-      ctx.out(`  关闭：${hint(ctx, "down")}`);
+    const fresh = windowState && (!before || windowState.pid !== before.pid || windowState.startedAt !== before.startedAt);
+    if (windowOpen(windowState) && fresh && windowState.deviceId === config.deviceId) {
+      context.out(`连接窗口已打开（tmux 会话 ${ATTACH_SESSION}），到 ${fmtTime(windowState.expiresAt)} 自动关闭（--max-hours ${hours}）`);
+      if (dirs.length) context.out(`  窗口拿到会话列表后在 tmux 里拉起：${dirs.map((dateValue) => tilde(context, dateValue)).join("  ")}（${hint(context, "sessions")} 查看）`);
+      context.out(`  看状态：tmux attach -t ${ATTACH_SESSION}（Ctrl+B 再按 D 离开，窗口不关）`);
+      context.out(`  关闭：${hint(context, "down")}`);
       return 0;
     }
-    const panes = sessionPanes(ctx, ATTACH_SESSION);
+    const panes = sessionPanes(context, ATTACH_SESSION);
     if (!panes) {
       // 会话已经整个收掉时窗格字段也没了：读 attach 自己的落盘码再报
-      const code = attach.readExitCode(ATTACH_SESSION, ctx.home);
-      ctx.err(`连接窗口刚开就退出了${code == null ? "" : `（退出码 ${code}）`}。在前台跑一次看原因：${tilde(ctx, path.join(ctx.kit, "deploy", "attach.sh"))}`);
-      removeQuiet(attachExitFile(ctx));
+      const code = attach.readExitCode(ATTACH_SESSION, context.home);
+      context.err(`连接窗口刚开就退出了${code == null ? "" : `（退出码 ${code}）`}。在前台跑一次看原因：${tilde(context, path.join(context.kit, "deploy", "attach.sh"))}`);
+      removeQuiet(attachExitFile(context));
       return 1;
     }
-    const dead = panes.find((p) => p.dead);
+    const dead = panes.find((targetPath) => targetPath.dead);
     if (dead) {
-      const lines = capturePane(ctx, ATTACH_SESSION);
-      runTmux(ctx, ["kill-session", "-t", "=" + ATTACH_SESSION]);
+      const lines = capturePane(context, ATTACH_SESSION);
+      runTmux(context, ["kill-session", "-t", "=" + ATTACH_SESSION]);
       // 窗格字段优先；tmux 3.4 丢字段时读 attach 自己落盘的退出码
-      const code = dead.status == null ? attach.readExitCode(ATTACH_SESSION, ctx.home) : dead.status;
-      ctx.err(`连接窗口退出了（退出码 ${code == null ? "?" : code}）：`);
-      for (const line of lines) ctx.err("  " + line);
-      removeQuiet(attachExitFile(ctx));
+      const code = dead.status == null ? attach.readExitCode(ATTACH_SESSION, context.home) : dead.status;
+      context.err(`连接窗口退出了（退出码 ${code == null ? "?" : code}）：`);
+      for (const line of lines) context.err("  " + line);
+      removeQuiet(attachExitFile(context));
       return 1;
     }
-    if (ctx.now() >= deadline) {
-      ctx.err(`连接窗口在 tmux 里跑着，但 ${Math.round(ctx.upWaitMs / 1000)} 秒内没连上 relay（${cfg.relay}），它会一直重连。`);
-      ctx.err(`  看状态：tmux attach -t ${ATTACH_SESSION}；relay 体检：${hint(ctx, "doctor")}`);
+    if (context.now() >= deadline) {
+      context.err(`连接窗口在 tmux 里跑着，但 ${Math.round(context.upWaitMs / 1000)} 秒内没连上 relay（${config.relay}），它会一直重连。`);
+      context.err(`  看状态：tmux attach -t ${ATTACH_SESSION}；relay 体检：${hint(context, "doctor")}`);
       return 1;
     }
-    await ctx.sleep(100);
+    await context.sleep(100);
   }
 }
 
-async function cmdUp(ctx, o = {}) {
-  if (blockRoot(ctx)) return 2;
-  const { cfg } = settings(ctx);
-  if (!cfg.deviceId || !cfg.relay || (!cfg.deviceToken && !cfg.token && !deviceKeysOf(ctx))) {
-    ctx.err(`还没配对：网页「设备」→「添加设备」拿配对码，然后 ${hint(ctx, "pair XXXX-XXXX")}`);
+async function cmdUp(context, options = {}) {
+  if (blockRoot(context)) return 2;
+  const { config } = settings(context);
+  if (!config.deviceId || !config.relay || (!config.deviceToken && !config.token && !deviceKeysOf(context))) {
+    context.err(`还没配对：网页「设备」→「添加设备」拿配对码，然后 ${hint(context, "pair XXXX-XXXX")}`);
     return 1;
   }
-  const hours = o.maxHours == null ? DEFAULT_HOURS : Number(o.maxHours);
+  const hours = options.maxHours == null ? DEFAULT_HOURS : Number(options.maxHours);
   if (!Number.isFinite(hours) || hours <= 0) {
-    ctx.err("--max-hours 需要正数（小时）");
+    context.err("--max-hours 需要正数（小时）");
     return 2;
   }
   const dirs = [];
-  for (const d of o.dirs || []) {
+  for (const dateValue of options.dirs || []) {
     // attach 在套件目录里跑：相对路径要按调用方的目录解开
-    const abs = path.resolve(ctx.cwd, d);
+    const abs = path.resolve(context.cwd, dateValue);
     if (/[\0\r\n]/.test(abs) || !isDir(abs)) {
-      ctx.err("目录不存在：" + abs);
+      context.err("目录不存在：" + abs);
       return 2;
     }
     dirs.push(abs);
   }
-  const tv = tmuxVersion(ctx);
-  if (!tv) {
-    ctx.err("找不到 tmux：" + attach.tmuxInstallHint("linux", { exists: fs.existsSync }));
+  const tmuxInfo = tmuxVersion(context);
+  if (!tmuxInfo) {
+    context.err("找不到 tmux：" + attach.tmuxInstallHint("linux", { exists: fs.existsSync }));
     return 1;
   }
-  if (hasSession(ctx, ATTACH_SESSION)) {
-    const panes = sessionPanes(ctx, ATTACH_SESSION) || [];
-    if (panes.length && panes.every((p) => p.dead)) {
+  if (hasSession(context, ATTACH_SESSION)) {
+    const panes = sessionPanes(context, ATTACH_SESSION) || [];
+    if (panes.length && panes.every((targetPath) => targetPath.dead)) {
       // 上次 up 失败留下的现场（等待期间被 Ctrl+C 打断，没来得及收）：收掉重开
-      runTmux(ctx, ["kill-session", "-t", "=" + ATTACH_SESSION]);
-      removeQuiet(attachExitFile(ctx));
+      runTmux(context, ["kill-session", "-t", "=" + ATTACH_SESSION]);
+      removeQuiet(attachExitFile(context));
     } else {
-      ctx.out(describeWindow(ctx, readWindow(ctx), true));
-      if (dirs.length) ctx.out(`窗口已经开着，目录参数没用上：用 ${hint(ctx, "start <目录>")} 起 pi，或在网页上新建`);
+      context.out(describeWindow(context, readWindow(context), true));
+      if (dirs.length) context.out(`窗口已经开着，目录参数没用上：用 ${hint(context, "start <目录>")} 起 pi，或在网页上新建`);
       return 0;
     }
   }
-  const before = readWindow(ctx);
+  const before = readWindow(context);
   if (windowOpen(before)) {
     // 别处（前台终端）开着的窗口：再开一个会把它顶下线，让用户自己决定
-    ctx.err(`${describeWindow(ctx, before, false)}。先关掉它再 up`);
+    context.err(`${describeWindow(context, before, false)}。先关掉它再 up`);
     return 1;
   }
-  const ext = extensionState(ctx);
-  if (!ext.synced) ctx.out("[warn] " + ext.text);
+  const ext = extensionState(context);
+  if (!ext.synced) context.out("[warn] " + ext.text);
   // 窗口自己的退出码也落盘：tmux 3.4 丢 #{pane_dead_status} 时还能报出真实原因
-  const exitFile = attachExitFile(ctx);
+  const exitFile = attachExitFile(context);
   removeQuiet(exitFile);
-  const args = [
-    "new-session", "-d", "-s", ATTACH_SESSION, "-c", ctx.kit,
+  const tmuxArgs = [
+    "new-session", "-d", "-s", ATTACH_SESSION, "-c", context.kit,
     "/usr/bin/env", `PI_REMOTE_EXIT_FILE=${exitFile}`,
-    ctx.nodeBin, ctx.attachCjs, "--max-hours", String(hours), ...dirs,
+    context.nodeBin, context.attachCjs, "--max-hours", String(hours), ...dirs,
   ].map(tmuxArg);
   // 窗口当场失败（令牌被撤销、缺配置）时窗格留着，下面把原因抓出来再收掉
-  if (tv.keepFailed) args.push(";", "set-option", "-w", "-t", `=${ATTACH_SESSION}:`, "remain-on-exit", "failed");
-  const r = runTmux(ctx, args);
-  if (r.status !== 0) {
-    ctx.err("tmux 没能开会话：" + (r.stderr || "退出码 " + r.status));
+  if (tmuxInfo.keepFailed) tmuxArgs.push(";", "set-option", "-w", "-t", `=${ATTACH_SESSION}:`, "remain-on-exit", "failed");
+  const result = runTmux(context, tmuxArgs);
+  if (result.status !== 0) {
+    context.err("tmux 没能开会话：" + (result.stderr || "退出码 " + result.status));
     return 1;
   }
-  return waitWindowUp(ctx, cfg, before, hours, dirs);
+  return waitWindowUp(context, config, before, hours, dirs);
 }
 
-async function cmdDown(ctx) {
-  if (!hasSession(ctx, ATTACH_SESSION)) {
-    const w = readWindow(ctx);
-    if (w && w.alive) {
-      ctx.err(`连接窗口不是 device.sh 开的（pid ${w.pid}）：到它的终端里 Ctrl+C，或 kill ${w.pid}`);
+async function cmdDown(context) {
+  if (!hasSession(context, ATTACH_SESSION)) {
+    const windowState = readWindow(context);
+    if (windowState && windowState.alive) {
+      context.err(`连接窗口不是 device.sh 开的（pid ${windowState.pid}）：到它的终端里 Ctrl+C，或 kill ${windowState.pid}`);
       return 1;
     }
-    if (w) {
-      removeQuiet(ctx.stateFile);
-      removeQuiet(attachExitFile(ctx));
-      ctx.out("清掉了上次残留的窗口状态文件");
+    if (windowState) {
+      removeQuiet(context.stateFile);
+      removeQuiet(attachExitFile(context));
+      context.out("清掉了上次残留的窗口状态文件");
     } else {
-      removeQuiet(attachExitFile(ctx));
+      removeQuiet(attachExitFile(context));
     }
-    ctx.out("连接窗口没有在运行");
+    context.out("连接窗口没有在运行");
     return 0;
   }
   // kill-session 给窗格进程发 SIGHUP：attach 照 Ctrl+C 的路子收尾（删状态文件、断开）
-  const r = runTmux(ctx, ["kill-session", "-t", "=" + ATTACH_SESSION]);
-  if (r.status !== 0 && hasSession(ctx, ATTACH_SESSION)) {
-    ctx.err("tmux 关不掉会话：" + (r.stderr || "退出码 " + r.status));
+  const result = runTmux(context, ["kill-session", "-t", "=" + ATTACH_SESSION]);
+  if (result.status !== 0 && hasSession(context, ATTACH_SESSION)) {
+    context.err("tmux 关不掉会话：" + (result.stderr || "退出码 " + result.status));
     return 1;
   }
-  const deadline = ctx.now() + ctx.downWaitMs;
-  let w = readWindow(ctx);
-  while (w && w.alive && ctx.now() < deadline) {
-    await ctx.sleep(100);
-    w = readWindow(ctx);
+  const deadline = context.now() + context.downWaitMs;
+  let windowState = readWindow(context);
+  while (windowState && windowState.alive && context.now() < deadline) {
+    await context.sleep(100);
+    windowState = readWindow(context);
   }
-  if (w && w.alive) {
-    ctx.err(`窗口进程 ${w.pid} 还没退出：kill ${w.pid}`);
+  if (windowState && windowState.alive) {
+    context.err(`窗口进程 ${windowState.pid} 还没退出：kill ${windowState.pid}`);
     return 1;
   }
-  if (w) removeQuiet(ctx.stateFile);
-  removeQuiet(attachExitFile(ctx));
-  ctx.out("连接窗口已关闭：扩展随即断开 relay，已经拉起的 pi 照常运行（" + hint(ctx, "sessions") + " 查看）");
+  if (windowState) removeQuiet(context.stateFile);
+  removeQuiet(attachExitFile(context));
+  context.out("连接窗口已关闭：扩展随即断开 relay，已经拉起的 pi 照常运行（" + hint(context, "sessions") + " 查看）");
   return 0;
 }
 
-function cmdStart(ctx, o = {}) {
-  if (blockRoot(ctx)) return 2;
-  if (!o.dir) {
-    ctx.err("用法：" + hint(ctx, "start <目录> [--session <会话 id 或文件>]"));
+function cmdStart(context, options = {}) {
+  if (blockRoot(context)) return 2;
+  if (!options.dir) {
+    context.err("用法：" + hint(context, "start <目录> [--session <会话 id 或文件>]"));
     return 2;
   }
-  const abs = path.resolve(ctx.cwd, o.dir);
+  const abs = path.resolve(context.cwd, options.dir);
   if (/[\0\r\n]/.test(abs) || !isDir(abs)) {
-    ctx.err("目录不存在：" + abs);
+    context.err("目录不存在：" + abs);
     return 2;
   }
-  if (o.session != null && (!String(o.session).trim() || /[\0\r\n]/.test(o.session))) {
-    ctx.err("--session 需要会话 id 或会话文件路径");
+  if (options.session != null && (!String(options.session).trim() || /[\0\r\n]/.test(options.session))) {
+    context.err("--session 需要会话 id 或会话文件路径");
     return 2;
   }
-  const tv = tmuxVersion(ctx);
-  if (!tv) {
-    ctx.err("找不到 tmux：" + attach.tmuxInstallHint("linux", { exists: fs.existsSync }));
+  const tmuxInfo = tmuxVersion(context);
+  if (!tmuxInfo) {
+    context.err("找不到 tmux：" + attach.tmuxInstallHint("linux", { exists: fs.existsSync }));
     return 1;
   }
-  if (!fs.existsSync(ctx.startPi)) {
-    ctx.err("套件里没有 " + ctx.startPi);
+  if (!fs.existsSync(context.startPi)) {
+    context.err("套件里没有 " + context.startPi);
     return 1;
   }
   let cwd = abs;
@@ -789,214 +789,214 @@ function cmdStart(ctx, o = {}) {
   // 和网页拉起同一个形状（attach.cjs 的 tmux 规则）：会话名、参数转义、失败留现场都一样
   const spec = attach.buildSpawnSpec({
     cwd,
-    sessionPath: o.session ? String(o.session).trim() : null,
-    startPi: ctx.startPi,
-    platform: ctx.platform,
+    sessionPath: options.session ? String(options.session).trim() : null,
+    startPi: context.startPi,
+    platform: context.platform,
     launcher: "tmux",
-    keepFailed: tv.keepFailed,
+    keepFailed: tmuxInfo.keepFailed,
     // 和网页拉起同一契约：start-pi.sh 把退出码落盘，sessions / clean 读不到窗格字段时回落
-    exitHome: ctx.home,
+    exitHome: context.home,
     // Same propagation contract as attach-launched pi: the pane gets the kit
     // .env's resolved config, not whatever env the tmux server happened to have.
-    childEnv: attach.piChildEnv(ctx.envPath, ctx.env),
+    childEnv: attach.piChildEnv(context.envPath, context.env),
   });
   const name = spec.tmuxSession;
-  const r = runTmux(ctx, spec.args);
-  if (r.status !== 0) {
-    ctx.err("tmux 没能开会话：" + (r.stderr || "退出码 " + r.status));
+  const result = runTmux(context, spec.args);
+  if (result.status !== 0) {
+    context.err("tmux 没能开会话：" + (result.stderr || "退出码 " + result.status));
     return 1;
   }
-  ctx.out(`已在 tmux 会话 ${name} 里起 pi：tmux attach -t ${name}`);
-  const { cfg } = settings(ctx);
-  if (!attach.cwdAllowed(cwd, cfg.projects, ctx.platform)) ctx.out("[warn] 这个目录不在 PI_REMOTE_PROJECTS 里：网页上看得到这份 pi，但不能从网页重新拉起它");
-  if (!windowOpen(readWindow(ctx))) ctx.out(`[warn] 连接窗口没开：这份 pi 不会出现在网页上，${hint(ctx, "up")} 之后才连 relay`);
+  context.out(`已在 tmux 会话 ${name} 里起 pi：tmux attach -t ${name}`);
+  const { config } = settings(context);
+  if (!attach.cwdAllowed(cwd, config.projects, context.platform)) context.out("[warn] 这个目录不在 PI_REMOTE_PROJECTS 里：网页上看得到这份 pi，但不能从网页重新拉起它");
+  if (!windowOpen(readWindow(context))) context.out(`[warn] 连接窗口没开：这份 pi 不会出现在网页上，${hint(context, "up")} 之后才连 relay`);
   return 0;
 }
 
-function sessionLine(ctx, s) {
-  const state = s.dead ? `已退出（退出码 ${s.status == null ? "?" : s.status}）` : "运行中";
-  return `  ${s.name}  ${tilde(ctx, s.cwd)}  ${state}`;
+function sessionLine(context, sessionRow) {
+  const state = sessionRow.dead ? `已退出（退出码 ${sessionRow.status == null ? "?" : sessionRow.status}）` : "运行中";
+  return `  ${sessionRow.name}  ${tilde(context, sessionRow.cwd)}  ${state}`;
 }
 
-function cmdSessions(ctx) {
-  const list = piSessions(ctx);
+function cmdSessions(context) {
+  const list = piSessions(context);
   if (!list.length) {
-    ctx.out("没有 pi 的 tmux 会话");
+    context.out("没有 pi 的 tmux 会话");
     return 0;
   }
-  ctx.out("pi 会话（tmux attach -t <名字> 进去，Ctrl+B 再按 D 离开）：");
-  for (const s of list) ctx.out(sessionLine(ctx, s));
-  if (list.some((s) => s.dead)) ctx.out(`已退出的会话留着现场，看完用 ${hint(ctx, "clean")} 收掉`);
+  context.out("pi 会话（tmux attach -t <名字> 进去，Ctrl+B 再按 D 离开）：");
+  for (const sessionRow of list) context.out(sessionLine(context, sessionRow));
+  if (list.some((sessionRow) => sessionRow.dead)) context.out(`已退出的会话留着现场，看完用 ${hint(context, "clean")} 收掉`);
   return 0;
 }
 
-function cmdClean(ctx) {
-  const dead = piSessions(ctx).filter((s) => s.dead);
-  for (const s of dead) {
-    runTmux(ctx, ["kill-session", "-t", "=" + s.name]);
-    attach.removeExitCode(s.name, ctx.home);
+function cmdClean(context) {
+  const dead = piSessions(context).filter((sessionRow) => sessionRow.dead);
+  for (const sessionRow of dead) {
+    runTmux(context, ["kill-session", "-t", "=" + sessionRow.name]);
+    attach.removeExitCode(sessionRow.name, context.home);
   }
-  ctx.out(dead.length ? `收掉了 ${dead.length} 个已退出的 pi 会话：${dead.map((s) => s.name).join(" ")}` : "没有已退出的 pi 会话");
+  context.out(dead.length ? `收掉了 ${dead.length} 个已退出的 pi 会话：${dead.map((sessionRow) => sessionRow.name).join(" ")}` : "没有已退出的 pi 会话");
   return 0;
 }
 
-async function cmdStatus(ctx) {
-  const { cfg } = settings(ctx);
-  ctx.out(describeWindow(ctx, readWindow(ctx), hasSession(ctx, ATTACH_SESSION)));
-  const who = cfg.deviceId ? `${cfg.deviceName}（${cfg.deviceId}）` : `${cfg.deviceName}（没有设备编号）`;
-  ctx.out(`设备：${who} · ${cfg.deviceToken || deviceKeysOf(ctx) ? "已配对" : "未配对"}`);
-  const relay = cfg.relay || LOOPBACK_RELAY;
-  const h = await relayHealth(ctx, relay);
-  if (h.ok && h.data) {
-    const d = h.data;
-    ctx.out(`relay：${relay} · proto ${d.proto} · ${d.version || "?"} · 在线设备 ${d.devices ? d.devices.online : "?"} · 在线会话 ${d.rooms ? d.rooms.online : "?"}`);
+async function cmdStatus(context) {
+  const { config } = settings(context);
+  context.out(describeWindow(context, readWindow(context), hasSession(context, ATTACH_SESSION)));
+  const who = config.deviceId ? `${config.deviceName}（${config.deviceId}）` : `${config.deviceName}（没有设备编号）`;
+  context.out(`设备：${who} · ${config.deviceToken || deviceKeysOf(context) ? "已配对" : "未配对"}`);
+  const relay = config.relay || LOOPBACK_RELAY;
+  const health = await relayHealth(context, relay);
+  if (health.ok && health.data) {
+    const dateValue = health.data;
+    context.out(`relay：${relay} · proto ${dateValue.proto} · ${dateValue.version || "?"} · 在线设备 ${dateValue.devices ? dateValue.devices.online : "?"} · 在线会话 ${dateValue.rooms ? dateValue.rooms.online : "?"}`);
   } else {
-    ctx.out(`relay：${relay} · 健康检查失败（${h.error}）`);
+    context.out(`relay：${relay} · 健康检查失败（${health.error}）`);
   }
-  const list = piSessions(ctx);
-  if (!list.length) ctx.out("pi 会话：无");
+  const list = piSessions(context);
+  if (!list.length) context.out("pi 会话：无");
   else {
-    ctx.out("pi 会话：");
-    for (const s of list) ctx.out(sessionLine(ctx, s));
+    context.out("pi 会话：");
+    for (const sessionRow of list) context.out(sessionLine(context, sessionRow));
   }
   return 0;
 }
 
-async function cmdDoctor(ctx) {
+async function cmdDoctor(context) {
   let fails = 0;
-  const ok = (t) => ctx.out("[ok]   " + t);
-  const warn = (t) => ctx.out("[warn] " + t);
-  const fail = (t) => {
+  const ok = (text) => context.out("[ok]   " + text);
+  const warn = (text) => context.out("[warn] " + text);
+  const fail = (text) => {
     fails++;
-    ctx.out("[fail] " + t);
+    context.out("[fail] " + text);
   };
-  const { cfg, pick } = settings(ctx);
+  const { config, pick } = settings(context);
 
-  if (ctx.uid === 0) {
+  if (context.uid === 0) {
     if (String(pick("PI_REMOTE_ALLOW_ROOT")) === "1") warn("以 root 运行（PI_REMOTE_ALLOW_ROOT=1）：网页能让 pi 以 root 执行命令");
     else fail("以 root 运行：服务器上的 pi 要用普通用户跑（见 deploy/README.md §3）");
-  } else ok(`运行用户 ${ctx.user || "uid " + ctx.uid}`);
+  } else ok(`运行用户 ${context.user || "uid " + context.uid}`);
 
   if (nodeVersionOk()) ok(`node ${process.versions.node}`);
   else fail(`node ${process.versions.node} 太旧：要 ≥ ${MIN_NODE.join(".")}（扩展用内置 WebSocket）`);
 
-  const tv = tmuxVersion(ctx);
-  if (!tv) fail("找不到 tmux：" + attach.tmuxInstallHint("linux", { exists: fs.existsSync }));
-  else if (!tv.keepFailed) warn(`${tv.text}：低于 3.2，pi 启动失败时 tmux 不保留现场`);
-  else ok(tv.text);
+  const tmuxInfo = tmuxVersion(context);
+  if (!tmuxInfo) fail("找不到 tmux：" + attach.tmuxInstallHint("linux", { exists: fs.existsSync }));
+  else if (!tmuxInfo.keepFailed) warn(`${tmuxInfo.text}：低于 3.2，pi 启动失败时 tmux 不保留现场`);
+  else ok(tmuxInfo.text);
 
   const pinned = pick("PI_REMOTE_PI_BIN");
-  const pi = findPi(ctx, pinned);
-  if (!pi) fail("找不到 pi：npm i -g --prefix ~/.local @earendil-works/pi-coding-agent，再 " + hint(ctx, "init"));
+  const pi = findPi(context, pinned);
+  if (!pi) fail("找不到 pi：npm i -g --prefix ~/.local @earendil-works/pi-coding-agent，再 " + hint(context, "init"));
   else if (!pi.ok) {
     // 写错路径和没有执行位是两种排障：一律说「不可执行」会让人以为是权限问题
     const reason = fs.existsSync(pi.path) ? "没有可执行权限（或不是可执行文件）" : "路径不存在";
     fail(`PI_REMOTE_PI_BIN=${pi.path} ${reason}`);
   }
   else {
-    const v = spawnSync(pi.path, ["--version"], { encoding: "utf8", timeout: 20000, env: { ...ctx.env, PI_OFFLINE: "1" } });
-    const ver = String(v.stdout || "").trim().split("\n")[0];
-    if (v.status === 0 && ver) ok(`pi ${ver}（${tilde(ctx, pi.path)}）`);
-    else warn(`pi 在 ${tilde(ctx, pi.path)}，但 pi --version 没有正常返回`);
-    if (!pinned && pi.from !== "PATH") warn(`pi 不在 PATH 里：${hint(ctx, "init")} 会把它写进 PI_REMOTE_PI_BIN`);
+    const valueText = spawnSync(pi.path, ["--version"], { encoding: "utf8", timeout: 20000, env: { ...context.env, PI_OFFLINE: "1" } });
+    const ver = String(valueText.stdout || "").trim().split("\n")[0];
+    if (valueText.status === 0 && ver) ok(`pi ${ver}（${tilde(context, pi.path)}）`);
+    else warn(`pi 在 ${tilde(context, pi.path)}，但 pi --version 没有正常返回`);
+    if (!pinned && pi.from !== "PATH") warn(`pi 不在 PATH 里：${hint(context, "init")} 会把它写进 PI_REMOTE_PI_BIN`);
   }
 
   try {
-    require.resolve("ws", { paths: [path.join(ctx.kit, "deploy")] });
+    require.resolve("ws", { paths: [path.join(context.kit, "deploy")] });
     ok("依赖 ws 已装");
   } catch {
-    fail(`缺依赖 ws：cd ${tilde(ctx, ctx.kit)} && npm ci --omit=dev`);
+    fail(`缺依赖 ws：cd ${tilde(context, context.kit)} && npm ci --omit=dev`);
   }
 
-  if (!fs.existsSync(ctx.envPath)) fail(`没有 ${tilde(ctx, ctx.envPath)}：${hint(ctx, "init --projects <目录>")}`);
+  if (!fs.existsSync(context.envPath)) fail(`没有 ${tilde(context, context.envPath)}：${hint(context, "init --projects <目录>")}`);
   else {
-    const mode = fs.statSync(ctx.envPath).mode & 0o777;
-    if (mode & 0o077) warn(`.env 权限 ${mode.toString(8)}：里面有设备令牌，chmod 600 ${tilde(ctx, ctx.envPath)}`);
+    const mode = fs.statSync(context.envPath).mode & 0o777;
+    if (mode & 0o077) warn(`.env 权限 ${mode.toString(8)}：里面有设备令牌，chmod 600 ${tilde(context, context.envPath)}`);
     else ok(".env 权限 600");
     let host = "";
     try {
-      host = new URL(cfg.relay).hostname;
+      host = new URL(config.relay).hostname;
     } catch {}
-    if (!cfg.relay) fail("PI_REMOTE_RELAY 没配");
-    else if (!validRelay(cfg.relay) || !host) fail(`PI_REMOTE_RELAY 不对：${cfg.relay}`);
-    else if (host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]") ok(`relay ${cfg.relay}（回环，令牌不出本机）`);
-    else warn(`relay ${cfg.relay}：relay 就在这台服务器上时改成 ${LOOPBACK_RELAY}，令牌不走公网`);
-    if (!cfg.projects.length) warn(`PI_REMOTE_PROJECTS 是空的：网页上不能新建会话（${hint(ctx, "init --projects <目录>")}）`);
+    if (!config.relay) fail("PI_REMOTE_RELAY 没配");
+    else if (!validRelay(config.relay) || !host) fail(`PI_REMOTE_RELAY 不对：${config.relay}`);
+    else if (host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]") ok(`relay ${config.relay}（回环，令牌不出本机）`);
+    else warn(`relay ${config.relay}：relay 就在这台服务器上时改成 ${LOOPBACK_RELAY}，令牌不走公网`);
+    if (!config.projects.length) warn(`PI_REMOTE_PROJECTS 是空的：网页上不能新建会话（${hint(context, "init --projects <目录>")}）`);
     else {
-      const missing = cfg.projects.filter((p) => !isDir(p));
+      const missing = config.projects.filter((targetPath) => !isDir(targetPath));
       if (missing.length) warn("白名单里这些目录不存在：" + missing.map(displayPathOf).join(" "));
-      else ok(`白名单 ${cfg.projects.length} 个目录`);
+      else ok(`白名单 ${config.projects.length} 个目录`);
     }
   }
 
   let paired = false;
   let pairKind = "";
-  const devKeys = deviceKeysOf(ctx);
-  if (cfg.deviceId && cfg.deviceToken) {
+  const devKeys = deviceKeysOf(context);
+  if (config.deviceId && config.deviceToken) {
     paired = true;
     pairKind = "token";
-    ok(`已配对：设备 ${cfg.deviceId}`);
-  } else if (cfg.deviceId && devKeys) {
+    ok(`已配对：设备 ${config.deviceId}`);
+  } else if (config.deviceId && devKeys) {
     paired = true;
     pairKind = "key";
-    ok(`已配对（身份钥）：设备 ${cfg.deviceId} · 指纹 ${attach.formatFingerprint(attach.keyFingerprint(devKeys.sign.pub))}`);
-  } else if (cfg.deviceId && cfg.token) warn("只有共享令牌（PI_REMOTE_TOKEN），没配对：网页「添加设备」后 " + hint(ctx, "pair XXXX-XXXX"));
-  else fail("还没配对：网页「设备」→「添加设备」拿配对码，然后 " + hint(ctx, "pair XXXX-XXXX"));
+    ok(`已配对（身份钥）：设备 ${config.deviceId} · 指纹 ${attach.formatFingerprint(attach.keyFingerprint(devKeys.sign.pub))}`);
+  } else if (config.deviceId && config.token) warn("只有共享令牌（PI_REMOTE_TOKEN），没配对：网页「添加设备」后 " + hint(context, "pair XXXX-XXXX"));
+  else fail("还没配对：网页「设备」→「添加设备」拿配对码，然后 " + hint(context, "pair XXXX-XXXX"));
 
-  const ext = extensionState(ctx);
+  const ext = extensionState(context);
   if (ext.synced) ok(ext.text);
   else fail(ext.text);
 
-  const relay = cfg.relay || LOOPBACK_RELAY;
-  const h = await relayHealth(ctx, relay);
-  if (h.ok && h.data) {
-    if (Number(h.data.proto) >= 4) ok(`relay 健康（proto ${h.data.proto}，${h.data.version || "?"}）`);
-    else fail(`relay 协议版本 ${h.data.proto}：设备令牌要 v4 relay`);
-  } else fail(`relay 健康检查失败：${h.url || relay}（${h.error}）`);
+  const relay = config.relay || LOOPBACK_RELAY;
+  const health = await relayHealth(context, relay);
+  if (health.ok && health.data) {
+    if (Number(health.data.proto) >= 4) ok(`relay 健康（proto ${health.data.proto}，${health.data.version || "?"}）`);
+    else fail(`relay 协议版本 ${health.data.proto}：设备令牌要 v4 relay`);
+  } else fail(`relay 健康检查失败：${health.url || relay}（${health.error}）`);
 
-  if (paired && h.ok) {
-    const a = await probeAuth(ctx, cfg);
-    if (a.ok && a.auth === pairKind) ok(pairKind === "key" ? "设备身份钥有效" : "设备令牌有效");
-    else if (a.ok) warn(`relay 按 ${a.auth || "旧"} 方式认了这台设备，不是${pairKind === "key" ? "身份钥" : "设备令牌"}`);
-    else if (a.code === "device_revoked") fail("这台设备在网页上被撤销了：重新配对（" + hint(ctx, "pair XXXX-XXXX") + "）");
-    else fail(`${pairKind === "key" ? "设备身份钥" : "设备令牌"}没通过（${a.code}${a.error ? "：" + a.error : ""}）：重新配对`);
+  if (paired && health.ok) {
+    const tokenText = await probeAuth(context, config);
+    if (tokenText.ok && tokenText.auth === pairKind) ok(pairKind === "key" ? "设备身份钥有效" : "设备令牌有效");
+    else if (tokenText.ok) warn(`relay 按 ${tokenText.auth || "旧"} 方式认了这台设备，不是${pairKind === "key" ? "身份钥" : "设备令牌"}`);
+    else if (tokenText.code === "device_revoked") fail("这台设备在网页上被撤销了：重新配对（" + hint(context, "pair XXXX-XXXX") + "）");
+    else fail(`${pairKind === "key" ? "设备身份钥" : "设备令牌"}没通过（${tokenText.code}${tokenText.error ? "：" + tokenText.error : ""}）：重新配对`);
   }
 
-  const w = readWindow(ctx);
-  const text = describeWindow(ctx, w, tv ? hasSession(ctx, ATTACH_SESSION) : false);
-  if (windowOpen(w)) ok(text);
-  else warn(`${text}：${hint(ctx, "up")}`);
+  const windowState = readWindow(context);
+  const text = describeWindow(context, windowState, tmuxInfo ? hasSession(context, ATTACH_SESSION) : false);
+  if (windowOpen(windowState)) ok(text);
+  else warn(`${text}：${hint(context, "up")}`);
 
-  const locale = attach.currentLocale(ctx.env);
+  const locale = attach.currentLocale(context.env);
   if (attach.localeIsUtf8(locale)) ok(`语言环境 ${locale}`);
   else {
-    const injected = tmuxLocale(ctx);
+    const injected = tmuxLocale(context);
     if (injected) warn(`语言环境 ${locale || "未设置"}：tmux 调用已注入 ${injected}（tmux 3.4 在非 UTF-8 下会净化制表符）`);
     else warn(`语言环境 ${locale || "未设置"}：本机没有可用的 UTF-8 locale，tmux 输出按兼容格式解析（会话列表仍可用，中文可能乱码）；建议生成/导出 C.UTF-8`);
   }
 
-  ctx.out(fails ? `${fails} 项要处理` : "全部通过");
+  context.out(fails ? `${fails} 项要处理` : "全部通过");
   return fails ? 1 : 0;
 }
 
-function cmdLogs(ctx, o = {}) {
-  const n = o.lines == null ? 40 : Number(o.lines);
-  if (!Number.isInteger(n) || n <= 0) {
-    ctx.err("-n 需要正整数");
+function cmdLogs(context, options = {}) {
+  const countValue = options.lines == null ? 40 : Number(options.lines);
+  if (!Number.isInteger(countValue) || countValue <= 0) {
+    context.err("-n 需要正整数");
     return 2;
   }
   // start-pi.sh 把 .env 导出给 pi：扩展日志的位置以 .env 为准
-  const file = settings(ctx).pick("PI_REMOTE_LOG") || ctx.logFile;
+  const file = settings(context).pick("PI_REMOTE_LOG") || context.logFile;
   let text;
   try {
     text = fs.readFileSync(file, "utf8");
   } catch {
-    ctx.out(`还没有扩展日志（${tilde(ctx, file)}）：pi 在连接窗口里跑起来后才有`);
+    context.out(`还没有扩展日志（${tilde(context, file)}）：pi 在连接窗口里跑起来后才有`);
     return 0;
   }
   const lines = text.split("\n");
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
-  for (const line of lines.slice(-n)) ctx.out(line);
+  for (const line of lines.slice(-countValue)) context.out(line);
   return 0;
 }
 
@@ -1021,91 +1021,91 @@ const HELP = `pi-remote Linux 设备（服务器式，tmux 拉起）
 看窗口：tmux attach -t ${ATTACH_SESSION}（Ctrl+B 再按 D 离开，窗口不关）
 进某个 pi：tmux attach -t <会话名>（名字见 device.sh sessions）`;
 
-function parseOpts(args, spec) {
+function parseOpts(argv, spec) {
   const out = { _: [] };
-  for (let i = 0; i < args.length; i++) {
-    const a = String(args[i]);
-    if (a === "--") {
-      out._.push(...args.slice(i + 1).map(String));
+  for (let index = 0; index < argv.length; index++) {
+    const tokenText = String(argv[index]);
+    if (tokenText === "--") {
+      out._.push(...args.slice(index + 1).map(String));
       break;
     }
-    if (a.length > 1 && a.startsWith("-")) {
-      const eq = a.indexOf("=");
-      const flag = eq > 0 ? a.slice(0, eq) : a;
+    if (tokenText.length > 1 && tokenText.startsWith("-")) {
+      const eq = tokenText.indexOf("=");
+      const flag = eq > 0 ? tokenText.slice(0, eq) : tokenText;
       const key = spec[flag];
       if (!key) throw new UsageError("未知参数：" + flag);
-      const val = eq > 0 ? a.slice(eq + 1) : args[++i];
-      if (val === undefined) throw new UsageError(flag + " 需要一个值");
-      out[key] = String(val);
-    } else out._.push(a);
+      const flagValue = eq > 0 ? tokenText.slice(eq + 1) : argv[++index];
+      if (flagValue === undefined) throw new UsageError(flag + " 需要一个值");
+      out[key] = String(flagValue);
+    } else out._.push(tokenText);
   }
   return out;
 }
 
-function onlyPositional(o, max, usage) {
-  if (o._.length > max) throw new UsageError("多余的参数：" + o._.slice(max).join(" ") + "\n用法：" + usage);
+function onlyPositional(options, max, usage) {
+  if (options._.length > max) throw new UsageError("多余的参数：" + options._.slice(max).join(" ") + "\n用法：" + usage);
 }
 
-async function main(argv, ctx = makeContext()) {
+async function main(argv, context = makeContext()) {
   const [cmd, ...rest] = argv;
   try {
     switch (cmd) {
       case "init": {
-        const o = parseOpts(rest, { "--projects": "projects", "--name": "name", "--relay": "relay" });
-        onlyPositional(o, 0, "device.sh init [--projects …] [--name …] [--relay …]");
-        return cmdInit(ctx, o);
+        const options = parseOpts(rest, { "--projects": "projects", "--name": "name", "--relay": "relay" });
+        onlyPositional(options, 0, "device.sh init [--projects …] [--name …] [--relay …]");
+        return cmdInit(context, options);
       }
       case "pair": {
-        const o = parseOpts(rest, { "--relay": "relay" });
-        onlyPositional(o, 1, "device.sh pair XXXX-XXXX [--relay ws://…]");
-        return await cmdPair(ctx, { code: o._[0], relay: o.relay });
+        const options = parseOpts(rest, { "--relay": "relay" });
+        onlyPositional(options, 1, "device.sh pair XXXX-XXXX [--relay ws://…]");
+        return await cmdPair(context, { code: options._[0], relay: options.relay });
       }
       case "up": {
-        const o = parseOpts(rest, { "--max-hours": "maxHours" });
-        return await cmdUp(ctx, { maxHours: o.maxHours, dirs: o._ });
+        const options = parseOpts(rest, { "--max-hours": "maxHours" });
+        return await cmdUp(context, { maxHours: options.maxHours, dirs: options._ });
       }
       case "down":
         onlyPositional(parseOpts(rest, {}), 0, "device.sh down");
-        return await cmdDown(ctx);
+        return await cmdDown(context);
       case "start": {
-        const o = parseOpts(rest, { "--session": "session" });
-        onlyPositional(o, 1, "device.sh start <目录> [--session …]");
-        return cmdStart(ctx, { dir: o._[0], session: o.session });
+        const options = parseOpts(rest, { "--session": "session" });
+        onlyPositional(options, 1, "device.sh start <目录> [--session …]");
+        return cmdStart(context, { dir: options._[0], session: options.session });
       }
       case "status":
         onlyPositional(parseOpts(rest, {}), 0, "device.sh status");
-        return await cmdStatus(ctx);
+        return await cmdStatus(context);
       case "sessions":
       case "ls":
         onlyPositional(parseOpts(rest, {}), 0, "device.sh sessions");
-        return cmdSessions(ctx);
+        return cmdSessions(context);
       case "clean":
         onlyPositional(parseOpts(rest, {}), 0, "device.sh clean");
-        return cmdClean(ctx);
+        return cmdClean(context);
       case "doctor":
         onlyPositional(parseOpts(rest, {}), 0, "device.sh doctor");
-        return await cmdDoctor(ctx);
+        return await cmdDoctor(context);
       case "logs": {
-        const o = parseOpts(rest, { "-n": "lines", "--lines": "lines" });
-        onlyPositional(o, 0, "device.sh logs [-n 40]");
-        return cmdLogs(ctx, o);
+        const options = parseOpts(rest, { "-n": "lines", "--lines": "lines" });
+        onlyPositional(options, 0, "device.sh logs [-n 40]");
+        return cmdLogs(context, options);
       }
       case undefined:
       case "help":
       case "-h":
       case "--help":
-        ctx.out(HELP);
+        context.out(HELP);
         return 0;
       default:
-        ctx.err(`未知命令：${cmd}\n\n${HELP}`);
+        context.err(`未知命令：${cmd}\n\n${HELP}`);
         return 2;
     }
-  } catch (e) {
-    if (e instanceof UsageError) {
-      ctx.err(e.message);
+  } catch (error) {
+    if (error instanceof UsageError) {
+      context.err(error.message);
       return 2;
     }
-    throw e;
+    throw error;
   }
 }
 
@@ -1138,8 +1138,8 @@ if (require.main === module) {
     (code) => {
       process.exitCode = code || 0;
     },
-    (e) => {
-      console.error(e && e.stack ? e.stack : e);
+    (error) => {
+      console.error(error && error.stack ? error.stack : error);
       process.exitCode = 1;
     },
   );

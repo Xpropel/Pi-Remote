@@ -17,8 +17,8 @@ function fsyncFile(file) {
     fd = fs.openSync(file, "r");
     fs.fsyncSync(fd);
     return true;
-  } catch (e) {
-    log("收件箱 fsync 失败（数据可能只在页缓存）:", file, e.message);
+  } catch (fsyncError) {
+    log("收件箱 fsync 失败（数据可能只在页缓存）:", file, fsyncError.message);
     return false;
   } finally {
     if (fd !== undefined) try { fs.closeSync(fd); } catch {}
@@ -39,10 +39,10 @@ const KINDS = new Set(["waiting", "error", "done"]);
 const SUBKINDS = new Set(["dialog", "prompt", "ask", "turn", "schedule"]);
 const GONE_REASONS = new Set(["answered", "resolved", "timeout", "dismissed", "stale"]);
 
-function capStr(v, n) {
-  if (typeof v !== "string" || !v) return null;
-  const chars = Array.from(v);
-  return chars.length > n ? chars.slice(0, n).join("") : v;
+function capStr(value, maxChars) {
+  if (typeof value !== "string" || !value) return null;
+  const chars = Array.from(value);
+  return chars.length > maxChars ? chars.slice(0, maxChars).join("") : value;
 }
 
 /** 落盘/上行前的字段清洗：形状不对整条丢弃（账本坏数据宁缺毋滥）。 */
@@ -94,11 +94,11 @@ function wireOf(entry) {
   return wire;
 }
 
-function sameWire(a, b) {
-  return a.roomId === b.roomId && a.deviceId === b.deviceId && a.kind === b.kind &&
-    a.subkind === b.subkind && a.dialogKind === b.dialogKind && a.title === b.title &&
-    a.titleEnc === b.titleEnc &&
-    a.answerable === b.answerable && a.at === b.at;
+function sameWire(left, right) {
+  return left.roomId === right.roomId && left.deviceId === right.deviceId && left.kind === right.kind &&
+    left.subkind === right.subkind && left.dialogKind === right.dialogKind && left.title === right.title &&
+    left.titleEnc === right.titleEnc &&
+    left.answerable === right.answerable && left.at === right.at;
 }
 
 class InboxStore {
@@ -167,25 +167,25 @@ class InboxStore {
     };
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
-      if (!fsyncFile(tmp)) throw new Error("tmp fsync 失败");
-      fs.renameSync(tmp, file);
-    } catch (e) {
-      log("收件箱账本落盘失败（继续内存服务）:", e && e.message ? e.message : e);
+      const temporaryFile = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(temporaryFile, JSON.stringify(payload), { mode: 0o600 });
+      if (!fsyncFile(temporaryFile)) throw new Error("临时文件 fsync 失败");
+      fs.renameSync(temporaryFile, file);
+    } catch (writeError) {
+      log("收件箱账本落盘失败（继续内存服务）:", writeError && writeError.message ? writeError.message : writeError);
     }
   }
 
-  _emit(evt) {
-    for (const fn of this._listeners) {
-      try { fn(evt); } catch {}
+  _emit(transition) {
+    for (const listener of this._listeners) {
+      try { listener(transition); } catch {}
     }
   }
 
   /** §1.6：推送（设计 C）订阅口——迁移事件 {type, entry|key, reason?}，去重键 = entry.key。 */
-  onTransition(fn) {
-    if (typeof fn === "function") this._listeners.add(fn);
-    return () => this._listeners.delete(fn);
+  onTransition(listener) {
+    if (typeof listener === "function") this._listeners.add(listener);
+    return () => this._listeners.delete(listener);
   }
 
   _noteUpsert(entry) {
@@ -235,8 +235,8 @@ class InboxStore {
     for (const kind of ["done", "error"]) {
       if (pending <= INBOX_PENDING_MAX) break;
       const victims = [...bucket.entries.values()]
-        .filter((e) => e.kind === kind)
-        .sort((a, b) => a.at - b.at);
+        .filter((entry) => entry.kind === kind)
+        .sort((left, right) => left.at - right.at);
       for (const victim of victims) {
         if (pending <= INBOX_PENDING_MAX) break;
         bucket.entries.delete(victim.key);
@@ -314,29 +314,29 @@ class InboxStore {
 
   /** 恢复期清扫：某房仍未被补发确认的 waiting 条目批量转 gone(stale)（§1.4）。返回清扫数。 */
   sweepRestored(roomId, now = this._now()) {
-    let n = 0;
+    let swept = 0;
     for (const accountId of this._knownAccounts()) {
       for (const entry of this.roomEntries(accountId, roomId)) {
         if (entry.kind === "waiting" && entry._restored) {
           this.remove(accountId, entry.key, "stale", now);
-          n += 1;
+          swept += 1;
         }
       }
     }
-    return n;
+    return swept;
   }
 
   /** 某房当前 pending 条目（内部形状，含 _restored 标记——rooms 对账用）。 */
   roomEntries(accountId, roomId) {
     const bucket = this._load(accountId);
-    return [...bucket.entries.values()].filter((e) => e.roomId === roomId);
+    return [...bucket.entries.values()].filter((entry) => entry.roomId === roomId);
   }
 
   /** 仍未被补发确认的恢复期 waiting key 集合（rooms 的 stale 清扫面）。 */
   restoredWaitingKeys(accountId, roomId) {
     return new Set(this.roomEntries(accountId, roomId)
-      .filter((e) => e.kind === "waiting" && e._restored)
-      .map((e) => e.key));
+      .filter((entry) => entry.kind === "waiting" && entry._restored)
+      .map((entry) => entry.key));
   }
 
   /**
@@ -357,12 +357,12 @@ class InboxStore {
 
   /** 进房即已读（既有行为扩到账本）：删同房全部 turn 条目。返回删除数。 */
   clearRoomTurns(accountId, roomId, now = this._now()) {
-    let n = 0;
-    for (const prev of this.roomEntries(accountId, roomId)) {
-      if (prev.subkind !== "turn") continue;
-      if (this.remove(accountId, prev.key, "resolved", now)) n += 1;
+    let removed = 0;
+    for (const entry of this.roomEntries(accountId, roomId)) {
+      if (entry.subkind !== "turn") continue;
+      if (this.remove(accountId, entry.key, "resolved", now)) removed += 1;
     }
-    return n;
+    return removed;
   }
 
   /**
@@ -392,7 +392,7 @@ class InboxStore {
     for (const accountId of this._accounts.keys()) {
       for (const entry of this._load(accountId).entries.values()) out.push(wireOf(entry));
     }
-    out.sort((a, b) => a.at - b.at);
+    out.sort((left, right) => left.at - right.at);
     return out;
   }
 }

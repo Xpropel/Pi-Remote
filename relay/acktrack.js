@@ -10,8 +10,8 @@
 const { errorFrame } = require("./wire");
 
 /** A valid ackFp is exactly contentKeyFpChars lowercase hex characters. */
-function isAckFp(v) {
-  return typeof v === "string" && /^[0-9a-f]{16}$/.test(v);
+function isAckFp(value) {
+  return typeof value === "string" && /^[0-9a-f]{16}$/.test(value);
 }
 
 function createAckTracker() {
@@ -25,13 +25,13 @@ function createAckTracker() {
   const distinctFps = (accountId) => {
     const ends = accounts.get(accountId);
     if (!ends) return [];
-    return [...new Set([...ends.values()].map((e) => e.ackFp))].sort();
+    return [...new Set([...ends.values()].map((end) => end.ackFp))].sort();
   };
 
   /** The one agreed fingerprint for an account, or null while unknown or diverged. */
   const knownAckFp = (accountId) => {
-    const d = distinctFps(accountId);
-    return d.length === 1 ? d[0] : null;
+    const fingerprints = distinctFps(accountId);
+    return fingerprints.length === 1 ? fingerprints[0] : null;
   };
 
   /**
@@ -40,23 +40,23 @@ function createAckTracker() {
    */
   function report(accountId, endId, ackFp, notify) {
     if (!accountId || !endId || !isAckFp(ackFp) || typeof notify !== "function") return knownAckFp(accountId);
-    let ends = accounts.get(accountId);
-    if (!ends) {
-      ends = new Map();
-      accounts.set(accountId, ends);
+    let reportedEnds = accounts.get(accountId);
+    if (!reportedEnds) {
+      reportedEnds = new Map();
+      accounts.set(accountId, reportedEnds);
     }
-    ends.set(endId, { ackFp, notify });
-    const distinct = distinctFps(accountId);
-    if (distinct.length > 1) {
-      const sig = distinct.join(",");
-      if (warned.get(accountId) !== sig) {
-        warned.set(accountId, sig);
+    reportedEnds.set(endId, { ackFp, notify });
+    const fingerprints = distinctFps(accountId);
+    if (fingerprints.length > 1) {
+      const signature = fingerprints.join(",");
+      if (warned.get(accountId) !== signature) {
+        warned.set(accountId, signature);
         // The warning frame lists the conflicting fingerprints so each end can show
         // exactly which copies disagree; the ACK itself is never part of any frame.
         const frame = errorFrame("key_mismatch");
-        frame.ackFps = distinct;
-        for (const e of ends.values()) {
-          try { e.notify(frame); } catch {}
+        frame.ackFps = fingerprints;
+        for (const end of reportedEnds.values()) {
+          try { end.notify(frame); } catch {}
         }
       }
     } else {
@@ -68,10 +68,10 @@ function createAckTracker() {
   /** Drop one end (disconnect / revoke). If the rest agree again afterwards, a future
    *  divergence must warn again, so the warned marker is cleared on convergence. */
   function forget(accountId, endId) {
-    const ends = accounts.get(accountId);
-    if (!ends) return;
-    ends.delete(endId);
-    if (!ends.size) {
+    const reportedEnds = accounts.get(accountId);
+    if (!reportedEnds) return;
+    reportedEnds.delete(endId);
+    if (!reportedEnds.size) {
       accounts.delete(accountId);
       warned.delete(accountId);
       return;
@@ -82,11 +82,11 @@ function createAckTracker() {
   return { report, forget, knownAckFp };
 }
 
-/** One tracker per relay process, lazily attached to the shared ctx so the local and
- *  viewer channels reconcile against the same per-account state. */
-function ackTrackerOf(ctx) {
-  if (!ctx.ackTracker) ctx.ackTracker = createAckTracker();
-  return ctx.ackTracker;
+/** One tracker per relay process, lazily attached to the shared relay context so the
+ *  local and viewer channels reconcile against the same per-account state. */
+function ackTrackerOf(relayContext) {
+  if (!relayContext.ackTracker) relayContext.ackTracker = createAckTracker();
+  return relayContext.ackTracker;
 }
 
 module.exports = { createAckTracker, ackTrackerOf, isAckFp };

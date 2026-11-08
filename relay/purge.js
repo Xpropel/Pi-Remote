@@ -23,21 +23,21 @@ const { log } = require("./util");
  * store.drop() 的旧实现会吞掉 unlink 失败且不返回成败，所以这里在调用后用「房文件是否还在」
  * 兜底核对（新实现若显式返回 false，也按失败处理）。核对本身出错一律保守判失败，等下次重试。
  */
-function dropStoredRoom(store, id) {
+function dropStoredRoom(roomStore, roomId) {
   let result;
   try {
-    result = store.drop(id);
-  } catch (e) {
-    log("purge store.drop 失败:", id, e.message);
+    result = roomStore.drop(roomId);
+  } catch (dropError) {
+    log("purge store.drop 失败:", roomId, dropError.message);
     return false;
   }
   if (result === false) return false;
   try {
-    if (typeof store.roomFileExists === "function") return !store.roomFileExists(id);
-    const file = typeof store._file === "function" ? store._file(id) : "";
+    if (typeof roomStore.roomFileExists === "function") return !roomStore.roomFileExists(roomId);
+    const file = typeof roomStore._file === "function" ? roomStore._file(roomId) : "";
     if (file) return !fs.existsSync(file);
-  } catch (e) {
-    log("purge 核对正文删除结果失败:", id, e.message);
+  } catch (verifyError) {
+    log("purge 核对正文删除结果失败:", roomId, verifyError.message);
     return false;
   }
   return true;
@@ -45,14 +45,14 @@ function dropStoredRoom(store, id) {
 
 /**
  * @param {{accountId:string, deviceId:string, ids:string[], rooms:object, store:object,
- *          devices:Map<string,object>, index:object, cfg:object}} args
+ *          devices:Map<string,object>, index:object, config:object}} args
  * @returns {string[]} 真正清掉的 id（在线房间被跳过、正文删除失败的不算）
  */
-function purgeSessions({ accountId, deviceId, ids, rooms, store, devices, index, cfg }) {
-  const done = [];
-  const dev = devices.get(deviceId);
-  for (const raw of ids || []) {
-    const id = typeof raw === "string" ? raw.trim() : "";
+function purgeSessions({ accountId, deviceId, ids, rooms, store, devices, index, config }) {
+  const purgedIds = [];
+  const deviceRecord = devices.get(deviceId);
+  for (const rawId of ids || []) {
+    const id = typeof rawId === "string" ? rawId.trim() : "";
     if (!id) continue;
     const room = rooms.peek(id);
     // 在线房间 = 会话正在运行：不删副本（routeDeleteSession 已先拦一道，这里兜底）
@@ -64,36 +64,36 @@ function purgeSessions({ accountId, deviceId, ids, rooms, store, devices, index,
     }
     if (room) {
       // 还有网页在看这个离线房间：先让它收成离线，再从房间表移除（不然界面停在幽灵会话上）
-      if (room.viewers.size) broadcast([...room.viewers], { type: "room_offline", room: id }, cfg);
+      if (room.viewers.size) broadcast([...room.viewers], { type: "room_offline", room: id }, config);
       rooms.map.delete(id);
     }
-    if (dev && dev.archives) dev.archives.delete(id);
+    if (deviceRecord && deviceRecord.archives) deviceRecord.archives.delete(id);
     // forgetSession 失败有两种形态：抛错，或返回 false 不抛错（参数不合/墓碑写盘失败）。
     // 只套 try/catch 会把 return false 当成功：索引旧行（带会话名/路径）还在，却广播了
     // session_removed，会话随即在清单里「复活」成空壳（R-2）。返回值也要查：
-    // 墓碑没立住就不计入 done、不广播，索引行还留在盘上，下一轮 purge 能按它重试 forget。
-    let forgot = false;
+    // 墓碑没立住就不计入 purgedIds、不广播，索引行还留在盘上，下一轮 purge 能按它重试 forget。
+    let tombstoneWritten = false;
     try {
-      forgot = index.forgetSession(accountId, deviceId, id, Date.now()) !== false;
-    } catch (e) {
-      log("purge 索引失败:", id, e.message);
+      tombstoneWritten = index.forgetSession(accountId, deviceId, id, Date.now()) !== false;
+    } catch (indexError) {
+      log("purge 索引失败:", id, indexError.message);
     }
-    if (!forgot) {
+    if (!tombstoneWritten) {
       log("purge 索引墓碑未立住，本轮不广播 session_removed，等待下轮重试:", id);
       continue;
     }
-    done.push(id);
+    purgedIds.push(id);
   }
-  if (done.length) {
+  if (purgedIds.length) {
     // 新面只发给声明 session.purge 的端；旧网页靠自己的兼容逻辑（本地隐藏表）照常工作
-    broadcast([...rooms.viewers].filter((v) => hasCap(v, "session.purge")), {
+    broadcast([...rooms.viewers].filter((viewer) => hasCap(viewer, "session.purge")), {
       type: "session_removed",
       deviceId,
-      ids: done,
-    }, cfg);
+      ids: purgedIds,
+    }, config);
     rooms.broadcastRoomList();
   }
-  return done;
+  return purgedIds;
 }
 
 module.exports = { purgeSessions };

@@ -34,14 +34,14 @@ function cleanPrefsSubset(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const out = {};
   for (const key of PREFS_FIELDS) {
-    const v = raw[key];
+    const value = raw[key];
     if (key === "size") {
-      if (typeof v === "number" && Number.isInteger(v) && v >= 10 && v <= 32) out.size = v;
+      if (typeof value === "number" && Number.isInteger(value) && value >= 10 && value <= 32) out.size = value;
     } else if (key === "mobileNav") {
       // P11 additive：移动导航双模式；只接受 list/drawer（旧 relay 无此字段 → 客户端保默认 list）
-      if (v === "list" || v === "drawer") out.mobileNav = v;
-    } else if (typeof v === "string" && v.length >= 1 && v.length <= 32 && FIELD_VALUE_RE.test(v)) {
-      out[key] = v;
+      if (value === "list" || value === "drawer") out.mobileNav = value;
+    } else if (typeof value === "string" && value.length >= 1 && value.length <= 32 && FIELD_VALUE_RE.test(value)) {
+      out[key] = value;
     }
   }
   return Object.keys(out).length ? out : null;
@@ -53,8 +53,8 @@ function fsyncFile(file) {
     fd = fs.openSync(file, "r");
     fs.fsyncSync(fd);
     return true;
-  } catch (e) {
-    log("prefs fsync 失败（数据可能只在页缓存）:", file, e.message);
+  } catch (fsyncError) {
+    log("prefs fsync 失败（数据可能只在页缓存）:", file, fsyncError.message);
     return false;
   } finally {
     if (fd !== undefined) try { fs.closeSync(fd); } catch {}
@@ -86,14 +86,14 @@ class PrefsStore {
   /** 当前记录（没有返回 null）。首次访问懒读盘，之后全走内存。 */
   get(accountId) {
     if (this.cache.has(accountId)) return this.cache.get(accountId);
-    let rec = null;
+    let record = null;
     try {
-      rec = cleanRecord(JSON.parse(fs.readFileSync(this._file(accountId), "utf8")));
-    } catch (e) {
-      if (!e || e.code !== "ENOENT") log("prefs 落盘记录读失败（按无记录处理）:", accountId, e && e.message);
+      record = cleanRecord(JSON.parse(fs.readFileSync(this._file(accountId), "utf8")));
+    } catch (readError) {
+      if (!readError || readError.code !== "ENOENT") log("prefs 落盘记录读失败（按无记录处理）:", accountId, readError && readError.message);
     }
-    this.cache.set(accountId, rec);
-    return rec;
+    this.cache.set(accountId, record);
+    return record;
   }
 
   /**
@@ -108,28 +108,28 @@ class PrefsStore {
    * 返回裁决后的记录。
    */
   set(accountId, subset, now = Date.now(), baseRev = null) {
-    const cur = this.get(accountId);
-    const merged = cur && cur.subset ? { ...cur.subset, ...subset } : { ...subset };
-    if (cur && Number.isInteger(baseRev) && baseRev >= 0 && baseRev < cur.rev) {
-      log("prefs 同步：baseRev 落后（baseRev=" + baseRev + "，当前 rev=" + cur.rev + "），按字段合并后仍以到达顺序裁决");
+    const current = this.get(accountId);
+    const merged = current && current.subset ? { ...current.subset, ...subset } : { ...subset };
+    if (current && Number.isInteger(baseRev) && baseRev >= 0 && baseRev < current.rev) {
+      log("prefs 同步：baseRev 落后（baseRev=" + baseRev + "，当前 rev=" + current.rev + "），按字段合并后仍以到达顺序裁决");
     }
-    const rec = { subset: merged, rev: (cur ? cur.rev : 0) + 1, updatedAt: now };
-    this.cache.set(accountId, rec);
-    this._persist(accountId, rec);
-    return rec;
+    const record = { subset: merged, rev: (current ? current.rev : 0) + 1, updatedAt: now };
+    this.cache.set(accountId, record);
+    this._persist(accountId, record);
+    return record;
   }
 
-  _persist(accountId, rec) {
+  _persist(accountId, record) {
     const file = this._file(accountId);
-    const tmp = file + ".tmp";
+    const temporaryFile = file + ".tmp";
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(tmp, JSON.stringify(rec) + "\n", { encoding: "utf8", mode: 0o600 });
-      if (!fsyncFile(tmp)) throw new Error("tmp fsync 失败");
-      fs.renameSync(tmp, file);
-    } catch (e) {
-      log("prefs 落盘失败（降级纯内存态，同步不受影响）:", accountId, e.message);
-      try { fs.unlinkSync(tmp); } catch {}
+      fs.writeFileSync(temporaryFile, JSON.stringify(record) + "\n", { encoding: "utf8", mode: 0o600 });
+      if (!fsyncFile(temporaryFile)) throw new Error("临时文件 fsync 失败");
+      fs.renameSync(temporaryFile, file);
+    } catch (writeError) {
+      log("prefs 落盘失败（降级纯内存态，同步不受影响）:", accountId, writeError.message);
+      try { fs.unlinkSync(temporaryFile); } catch {}
     }
   }
 }

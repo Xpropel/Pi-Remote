@@ -315,7 +315,7 @@ function fakeWs(caps = []) {
 function usageHarness() {
   const dir = tmpDir("pi-low-usage-");
   const broker = new UsageBroker({
-    cfg: {},
+    config: {},
     index: { dir },
     devices: new Map(),
     rooms: { map: new Map() },

@@ -25,19 +25,19 @@ function hasCap(ws, cap) {
 /** auth 帧里的协议信息：proto 不带按 v3（兼容期旧客户端），高于本 relay 的按本 relay 说；
  *  显式带 proto 但低于 minProto 的由 helloVersionError 在握手处拒绝，不再静默抬到最低版；
  *  caps 只留协议里有的名字。 */
-function parseHello(msg) {
-  const n = Number(msg.proto);
-  const proto = Number.isInteger(n) && n >= PROTOCOL.minProto ? Math.min(n, PROTOCOL.proto) : PROTOCOL.minProto;
+function parseHello(hello) {
+  const declaredProto = Number(hello.proto);
+  const proto = Number.isInteger(declaredProto) && declaredProto >= PROTOCOL.minProto ? Math.min(declaredProto, PROTOCOL.proto) : PROTOCOL.minProto;
   const caps = new Set();
-  if (Array.isArray(msg.caps)) {
-    for (const c of msg.caps) {
-      if (typeof c === "string" && Object.prototype.hasOwnProperty.call(PROTOCOL.caps, c)) caps.add(c);
+  if (Array.isArray(hello.caps)) {
+    for (const capability of hello.caps) {
+      if (typeof capability === "string" && Object.prototype.hasOwnProperty.call(PROTOCOL.caps, capability)) caps.add(capability);
     }
   }
   const client = {};
-  const raw = msg.client && typeof msg.client === "object" ? msg.client : {};
-  for (const k of ["kind", "version", "platform"]) {
-    if (typeof raw[k] === "string" && raw[k].trim()) client[k] = raw[k].trim().slice(0, 32);
+  const rawClient = hello.client && typeof hello.client === "object" ? hello.client : {};
+  for (const field of ["kind", "version", "platform"]) {
+    if (typeof rawClient[field] === "string" && rawClient[field].trim()) client[field] = rawClient[field].trim().slice(0, 32);
   }
   return { proto, caps, client };
 }
@@ -48,20 +48,20 @@ function parseHello(msg) {
  * 没有 proto 字段（更老的客户端）仍按兼容期 v3 接受——这是既有行为，不在此处改变。
  * 返回 null = 可以握手；否则返回 {code, message}（code 用协议码表里的 unsupported）。
  */
-function helloVersionError(msg) {
-  if (!msg || !Object.prototype.hasOwnProperty.call(msg, "proto") || msg.proto == null) return null;
-  const n = Number(msg.proto);
-  if (Number.isInteger(n) && n >= PROTOCOL.minProto) return null;
-  const shown = String(msg.proto).slice(0, 16);
+function helloVersionError(hello) {
+  if (!hello || !Object.prototype.hasOwnProperty.call(hello, "proto") || hello.proto == null) return null;
+  const declaredProto = Number(hello.proto);
+  if (Number.isInteger(declaredProto) && declaredProto >= PROTOCOL.minProto) return null;
+  const shown = String(hello.proto).slice(0, 16);
   return {
     code: "unsupported",
     message: `协议版本过低（proto=${shown}），本 relay 最低支持 ${PROTOCOL.minProto}；请升级客户端`,
   };
 }
 
-function helloText(s) {
-  const c = s.client || {};
-  return `proto=${s.proto} client=${[c.kind, c.version, c.platform].filter(Boolean).join("/") || "-"}`;
+function helloText(state) {
+  const client = state.client || {};
+  return `proto=${state.proto} client=${[client.kind, client.version, client.platform].filter(Boolean).join("/") || "-"}`;
 }
 
 function errorDef(code) {
@@ -78,15 +78,15 @@ function failureCode(code) {
 
 /** 查询/协议级失败：{type:"error", id?, room?, deviceId?, code, message, retryable?}；message 缺省用码表文案 */
 function errorFrame(code, message, extra) {
-  const c = failureCode(code);
-  const def = errorDef(c);
+  const normalizedCode = failureCode(code);
+  const definition = errorDef(normalizedCode);
   const out = { type: "error" };
   if (extra) {
-    for (const k of ["id", "room", "deviceId"]) if (extra[k]) out[k] = extra[k];
+    for (const field of ["id", "room", "deviceId"]) if (extra[field]) out[field] = extra[field];
   }
-  out.code = c;
-  out.message = message || (def || PROTOCOL.errors.internal).message;
-  if (def && def.retryable) out.retryable = true;
+  out.code = normalizedCode;
+  out.message = message || (definition || PROTOCOL.errors.internal).message;
+  if (definition && definition.retryable) out.retryable = true;
   return out;
 }
 
@@ -97,10 +97,10 @@ function errorFrame(code, message, extra) {
  * 单连接可冲高数十 MB）；超过 viewerMaxBufferBytes 的帧拒绝并记日志，已积压超过硬顶才断开。
  * 关键帧（快照/收尾/ack）不因"慢"而丢——旧实现 8MB 一刀切，大快照刚发出去下一帧就把连接踢掉，形成重连死循环。
  */
-function send(ws, frame, cfg, opts) {
+function send(ws, frame, config, sendOptions) {
   if (!ws || ws.readyState !== 1) return false;
-  const lag = (cfg && cfg.viewerLagBytes) || DEFAULT_CONFIG.viewerLagBytes;
-  const max = (cfg && cfg.viewerMaxBufferBytes) || DEFAULT_CONFIG.viewerMaxBufferBytes;
+  const lag = (config && config.viewerLagBytes) || DEFAULT_CONFIG.viewerLagBytes;
+  const max = (config && config.viewerMaxBufferBytes) || DEFAULT_CONFIG.viewerMaxBufferBytes;
   let data;
   try {
     data = typeof frame === "string" ? frame : JSON.stringify(frame);
@@ -124,7 +124,7 @@ function send(ws, frame, cfg, opts) {
     }
     return false;
   }
-  if (opts && opts.droppable && buffered > lag) {
+  if (sendOptions && sendOptions.droppable && buffered > lag) {
     ws._dropped = (ws._dropped || 0) + 1;
     if (!ws._dropLogged || Date.now() - ws._dropLogged > 5000) {
       ws._dropLogged = Date.now();
@@ -141,19 +141,19 @@ function send(ws, frame, cfg, opts) {
 }
 
 /** 同一 payload 广播给多个连接时只序列化一次 */
-function broadcast(conns, frame, cfg, opts) {
-  const list = conns instanceof Set ? [...conns] : (conns || []);
-  if (!list.length) return;
+function broadcast(conns, frame, config, sendOptions) {
+  const recipients = conns instanceof Set ? [...conns] : (conns || []);
+  if (!recipients.length) return;
   let data;
   try {
     data = typeof frame === "string" ? frame : JSON.stringify(frame);
-  } catch (e) {
+  } catch (serializeError) {
     // 与 send 的兜底口径一致（R-6）：序列化不了的帧记一行日志、跳过本次广播，
     // 不能让异常从定时器/setImmediate 路径上抛到进程级、把广播打成半截。
-    log("广播序列化失败，跳过本次广播:", e && e.message);
+    log("广播序列化失败，跳过本次广播:", serializeError && serializeError.message);
     return;
   }
-  for (const c of list) send(c, data, cfg, opts);
+  for (const connection of recipients) send(connection, data, config, sendOptions);
 }
 
 function ackFrame(origId, ok, extra) {
@@ -176,21 +176,21 @@ function ackFrame(origId, ok, extra) {
 
 /** 快照帧：正文（rev/seq/truncated/messages）由存储供给，busy 发送时现取。
  *  离线房间上次 state 仍可能记着 busy，快照不报正在输出（subscribed 帧仍可带真）。 */
-function snapshotBodyFrom(snap) {
-  if (!snap) return `"rev":null,"seq":0,"truncated":false,"messages":[]`;
-  let s = `"rev":${JSON.stringify(snap.rev)},"seq":${snap.seq},"truncated":${!!snap.truncated}`;
+function snapshotBodyFrom(snapshot) {
+  if (!snapshot) return `"rev":null,"seq":0,"truncated":false,"messages":[]`;
+  let body = `"rev":${JSON.stringify(snapshot.rev)},"seq":${snapshot.seq},"truncated":${!!snapshot.truncated}`;
   // Cap state (sparse; only store-produced snapshots carry these): the UI
   // shows a dedicated "stopped saving at the storage cap" notice instead of
   // folding the cap into the generic truncated meaning.
-  if (snap.fileCapped) s += `,"fileCapped":true`;
-  if (snap.fileWarned) s += `,"fileWarned":true`;
-  if (typeof snap.dropped === "number" && snap.dropped > 0) s += `,"dropped":${snap.dropped}`;
-  if (snap.delta) s += `,"delta":true,"baseSeq":${snap.baseSeq}`;
+  if (snapshot.fileCapped) body += `,"fileCapped":true`;
+  if (snapshot.fileWarned) body += `,"fileWarned":true`;
+  if (typeof snapshot.dropped === "number" && snapshot.dropped > 0) body += `,"dropped":${snapshot.dropped}`;
+  if (snapshot.delta) body += `,"delta":true,"baseSeq":${snapshot.baseSeq}`;
   // Enc rooms (design section 7): the frame carries an enc header with the room
   // key info. Callers are responsible for never handing an enc snapshot to a
   // connection that did not declare crypto.content (viewer gate in viewer.js).
-  if (snap.enc === 1 && snap.keyInfo) s += `,"enc":1,"keyInfo":${JSON.stringify(snap.keyInfo)}`;
-  return s + `,"messages":[${snap.items.join(",")}]`;
+  if (snapshot.enc === 1 && snapshot.keyInfo) body += `,"enc":1,"keyInfo":${JSON.stringify(snapshot.keyInfo)}`;
+  return body + `,"messages":[${snapshot.items.join(",")}]`;
 }
 function snapshotFrame(room, body) {
   const busy = !!(room.online && room.busy);

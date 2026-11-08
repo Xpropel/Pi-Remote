@@ -71,52 +71,52 @@ function archiveKey(session) {
   return id && id.length <= 200 ? id : "";
 }
 
-function storeSessionArchive(dev, session) {
-  const body = sanitizeArchive(session);
-  if (!dev) return null;
-  if (!body) {
+function storeSessionArchive(deviceRecord, session) {
+  const sanitized = sanitizeArchive(session);
+  if (!deviceRecord) return null;
+  if (!sanitized) {
     // 新正文被拒（超 200KB 上限/非法 id）时，同 id 的旧副本必须一起丢掉：
     // 留着它 → 后打开的网页重放的是上一版正文，界面显示的内容与设备当前会话不一致
     // （报告：超限归档被拒后旧版本滞留）。删掉只是少一条缓存，网页会按需重新拉全文。
     const id = archiveKey(session);
-    if (id && dev.archives) dev.archives.delete(id);
+    if (id && deviceRecord.archives) deviceRecord.archives.delete(id);
     return null;
   }
-  if (!dev.archives) dev.archives = new Map();
+  if (!deviceRecord.archives) deviceRecord.archives = new Map();
   // 重新推同一份正文 = 最近使用：先删再写，Map 的插入顺序即 LRU 顺序。
-  dev.archives.delete(body.id);
-  dev.archives.set(body.id, body);
-  while (dev.archives.size > ARCHIVE_MAX_SESSIONS) {
-    const oldest = dev.archives.keys().next().value;
+  deviceRecord.archives.delete(sanitized.id);
+  deviceRecord.archives.set(sanitized.id, sanitized);
+  while (deviceRecord.archives.size > ARCHIVE_MAX_SESSIONS) {
+    const oldest = deviceRecord.archives.keys().next().value;
     if (oldest === undefined) break;
-    dev.archives.delete(oldest);
+    deviceRecord.archives.delete(oldest);
   }
-  return body;
+  return sanitized;
 }
 
-function broadcastSessionArchive(rooms, deviceId, session, cfg) {
+function broadcastSessionArchive(rooms, deviceId, session, config) {
   // 实时路径也必须走 sanitize：调用方直接传原始对象时，200KB 上限与回放口径才一致
   // （报告 relay 中-6：广播原始对象会让上限形同虚设）。
-  const body = sanitizeArchive(session);
-  if (!body) return false;
-  broadcast([...rooms.viewers], { type: "session_archive", deviceId, session: body }, cfg);
+  const sanitized = sanitizeArchive(session);
+  if (!sanitized) return false;
+  broadcast([...rooms.viewers], { type: "session_archive", deviceId, session: sanitized }, config);
   return true;
 }
 
 /** 后打开的网页也要拿到已经读过的正文。一帧一帧让出事件循环，不挡住 auth_result。 */
-function replaySessionArchives(ws, devices, cfg) {
+function replaySessionArchives(socket, devices, config) {
   const frames = [];
-  for (const dev of devices.values()) {
-    if (!dev || !dev.archives || !dev.id) continue;
-    for (const session of dev.archives.values()) frames.push({ type: "session_archive", deviceId: dev.id, session });
+  for (const deviceRecord of devices.values()) {
+    if (!deviceRecord || !deviceRecord.archives || !deviceRecord.id) continue;
+    for (const session of deviceRecord.archives.values()) frames.push({ type: "session_archive", deviceId: deviceRecord.id, session });
   }
-  let index = 0;
+  let frameIndex = 0;
   const step = () => {
-    if (!ws || ws.readyState !== 1) return;
-    const frame = frames[index++];
+    if (!socket || socket.readyState !== 1) return;
+    const frame = frames[frameIndex++];
     if (!frame) return;
-    send(ws, frame, cfg);
-    if (index < frames.length) setImmediate(step);
+    send(socket, frame, config);
+    if (frameIndex < frames.length) setImmediate(step);
   };
   if (frames.length) setImmediate(step);
 }

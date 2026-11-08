@@ -9,9 +9,9 @@ const { sanitizeNotifyEvents } = require("./notify");
 const ROOT = path.resolve(__dirname, "..");
 
 /** P11 身份行：中转服务器显示名（运维自定，不含用户身份）；空 = 客户端回退 hostname。 */
-function cleanServerName(raw) {
-  if (typeof raw !== "string") return "";
-  const value = raw.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+function cleanServerName(rawValue) {
+  if (typeof rawValue !== "string") return "";
+  const value = rawValue.replace(/[\u0000-\u001f\u007f]/g, "").trim();
   return value.slice(0, 64);
 }
 const LOG_DIR = path.join(ROOT, "logs");
@@ -160,7 +160,7 @@ const STRING_CONFIG_FIELDS = [
   "localToken", "viewerToken", "adminToken", "notifyWebhookUrl", "webRoot",
 ];
 /**
- * config.json 里只接受布尔值的字段。关键点是 `"false"` 字符串：直接落进 cfg 后是 truthy，
+ * config.json 里只接受布尔值的字段。关键点是 `"false"` 字符串：直接落进 config 后是 truthy，
  * 会把 quiet 变成吞日志、把 persistTranscripts 变成偷偷落盘（报告 relay 中-12）。
  */
 const BOOLEAN_CONFIG_FIELDS = ["quiet", "persistTranscripts", "allowLegacyLocal", "perMessageDeflate", "exitOnListenError"];
@@ -172,26 +172,26 @@ function describeValue(value) {
   return typeof value === "string" ? "字符串" : typeof value;
 }
 
-/** 校验/纠正 config.json 的类型字段（原地修改 fileCfg 并返回）。仅处理文件里真实出现的键，缺省不动。 */
-function sanitizeTypedConfig(fileCfg, defaults = DEFAULT_CONFIG, warn = console.error) {
-  if (!fileCfg || typeof fileCfg !== "object" || Array.isArray(fileCfg)) return fileCfg;
+/** 校验/纠正 config.json 的类型字段（原地修改 fileConfig 并返回）。仅处理文件里真实出现的键，缺省不动。 */
+function sanitizeTypedConfig(fileConfig, defaults = DEFAULT_CONFIG, warn = console.error) {
+  if (!fileConfig || typeof fileConfig !== "object" || Array.isArray(fileConfig)) return fileConfig;
   for (const key of STRING_CONFIG_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(fileCfg, key)) continue;
-    if (typeof fileCfg[key] === "string") continue;
-    warn(`[relay] config.json 字段 ${key} 非法（期望字符串，实际 ${describeValue(fileCfg[key])}），已回退默认值。`);
-    fileCfg[key] = defaults[key];
+    if (!Object.prototype.hasOwnProperty.call(fileConfig, key)) continue;
+    if (typeof fileConfig[key] === "string") continue;
+    warn(`[relay] config.json 字段 ${key} 非法（期望字符串，实际 ${describeValue(fileConfig[key])}），已回退默认值。`);
+    fileConfig[key] = defaults[key];
   }
   for (const key of BOOLEAN_CONFIG_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(fileCfg, key)) continue;
-    if (typeof fileCfg[key] === "boolean") continue;
-    warn(`[relay] config.json 字段 ${key} 非法（期望 true/false 布尔值，实际 ${describeValue(fileCfg[key])}），已回退默认值 ${defaults[key]}。`);
-    fileCfg[key] = defaults[key];
+    if (!Object.prototype.hasOwnProperty.call(fileConfig, key)) continue;
+    if (typeof fileConfig[key] === "boolean") continue;
+    warn(`[relay] config.json 字段 ${key} 非法（期望 true/false 布尔值，实际 ${describeValue(fileConfig[key])}），已回退默认值 ${defaults[key]}。`);
+    fileConfig[key] = defaults[key];
   }
-  if (Object.prototype.hasOwnProperty.call(fileCfg, "notifyEvents")) {
-    const raw = fileCfg.notifyEvents;
+  if (Object.prototype.hasOwnProperty.call(fileConfig, "notifyEvents")) {
+    const raw = fileConfig.notifyEvents;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
       warn(`[relay] config.json 字段 notifyEvents 非法（期望对象，实际 ${describeValue(raw)}），已回退默认值（全关）。`);
-      fileCfg.notifyEvents = { ...defaults.notifyEvents };
+      fileConfig.notifyEvents = { ...defaults.notifyEvents };
     } else {
       for (const kind of Object.keys(defaults.notifyEvents)) {
         if (!Object.prototype.hasOwnProperty.call(raw, kind)) continue;
@@ -201,113 +201,113 @@ function sanitizeTypedConfig(fileCfg, defaults = DEFAULT_CONFIG, warn = console.
       }
     }
   }
-  return fileCfg;
+  return fileConfig;
 }
 
-/** 校验/纠正 config.json 的数值字段（原地修改 fileCfg 并返回）。仅处理文件里真实出现的键，缺省不动。 */
-function sanitizeNumericConfig(fileCfg, defaults = DEFAULT_CONFIG, warn = console.error) {
-  if (!fileCfg || typeof fileCfg !== "object" || Array.isArray(fileCfg)) return fileCfg;
+/** 校验/纠正 config.json 的数值字段（原地修改 fileConfig 并返回）。仅处理文件里真实出现的键，缺省不动。 */
+function sanitizeNumericConfig(fileConfig, defaults = DEFAULT_CONFIG, warn = console.error) {
+  if (!fileConfig || typeof fileConfig !== "object" || Array.isArray(fileConfig)) return fileConfig;
   for (const [key, rule] of Object.entries(NUMERIC_CONFIG_FIELDS)) {
-    if (!Object.prototype.hasOwnProperty.call(fileCfg, key)) continue;
-    const value = fileCfg[key];
+    if (!Object.prototype.hasOwnProperty.call(fileConfig, key)) continue;
+    const value = fileConfig[key];
     if (validConfigInt(value, rule)) continue;
     const fallback = defaults[key];
-    fileCfg[key] = fallback;
+    fileConfig[key] = fallback;
     const range = rule.max == null ? `${rule.min} 以上的整数` : `${rule.min}..${rule.max} 的整数`;
     warn(`[relay] config.json 字段 ${key} 非法（期望 ${range}，实际 ${describeValue(value)}），已回退默认值 ${fallback}。`);
   }
-  return fileCfg;
+  return fileConfig;
 }
 
 /**
  * 管理员分权告警：adminToken 同时承担配对/撤销，若与 local/viewer 相同，拿到 viewer 页面令牌的人
  * 也能做管理员操作。只告警不改行为（relay 照常启动），也不打印令牌值。
  * 用 Symbol 标记已检查：main() 里 loadConfig 先告警一次，startRelay 里 startViewerServer 再次装配
- * 同一份 cfg 时不会重复刷屏；直接调用 startRelay 的测试/嵌入方仍能收到告警。
+ * 同一份 config 时不会重复刷屏；直接调用 startRelay 的测试/嵌入方仍能收到告警。
  */
 const TOKEN_SEPARATION_CHECKED = Symbol("adminTokenSeparationChecked");
-function warnAdminTokenSeparation(cfg) {
-  if (!cfg || !cfg.adminToken || cfg[TOKEN_SEPARATION_CHECKED]) return false;
+function warnAdminTokenSeparation(config) {
+  if (!config || !config.adminToken || config[TOKEN_SEPARATION_CHECKED]) return false;
   const sameAs = [];
-  if (cfg.adminToken === cfg.localToken) sameAs.push("localToken");
-  if (cfg.adminToken === cfg.viewerToken) sameAs.push("viewerToken");
+  if (config.adminToken === config.localToken) sameAs.push("localToken");
+  if (config.adminToken === config.viewerToken) sameAs.push("viewerToken");
   if (!sameAs.length) return false;
-  cfg[TOKEN_SEPARATION_CHECKED] = true;
+  config[TOKEN_SEPARATION_CHECKED] = true;
   console.error(`[relay] 警告：管理员令牌与 local/viewer 相同，分权失效（adminToken 与 ${sameAs.join(" / ")} 相同）。请给管理员操作单独设置一个随机令牌；日志不会打印令牌内容。`);
   return true;
 }
 
-function loadConfig(cfgPath = path.join(__dirname, "config.json")) {
-  const cfg = { ...DEFAULT_CONFIG };
-  if (fs.existsSync(cfgPath)) {
+function loadConfig(configPath = path.join(__dirname, "config.json")) {
+  const config = { ...DEFAULT_CONFIG };
+  if (fs.existsSync(configPath)) {
     let text;
     try {
-      text = fs.readFileSync(cfgPath, "utf8");
-    } catch (e) {
-      throw new Error(`config.json 读取失败（${cfgPath}）：${e.message}`);
+      text = fs.readFileSync(configPath, "utf8");
+    } catch (readError) {
+      throw new Error(`config.json 读取失败（${configPath}）：${readError.message}`);
     }
-    let fileCfg;
+    let fileConfig;
     try {
-      fileCfg = JSON.parse(text);
-    } catch (e) {
+      fileConfig = JSON.parse(text);
+    } catch (parseError) {
       // 损坏时不能带默认值+tokens 静默启动：表现会像"历史/设置突然全没了"，
       // 还继续往旧数据目录写（报告 relay 中-13）。直接报错，由 main 打印并退出。
-      throw new Error(`config.json 解析失败（${cfgPath}）：${e.message}`);
+      throw new Error(`config.json 解析失败（${configPath}）：${parseError.message}`);
     }
-    if (!fileCfg || typeof fileCfg !== "object" || Array.isArray(fileCfg)) {
-      throw new Error(`config.json 内容必须是对象（${cfgPath}）`);
+    if (!fileConfig || typeof fileConfig !== "object" || Array.isArray(fileConfig)) {
+      throw new Error(`config.json 内容必须是对象（${configPath}）`);
     }
-    sanitizeNumericConfig(fileCfg);
-    sanitizeTypedConfig(fileCfg);
-    Object.assign(cfg, fileCfg);
+    sanitizeNumericConfig(fileConfig);
+    sanitizeTypedConfig(fileConfig);
+    Object.assign(config, fileConfig);
   }
-  cfg.localPort = clampPort(process.env.PI_REMOTE_LOCAL_PORT, cfg.localPort);
-  cfg.viewerPort = clampPort(process.env.PI_REMOTE_VIEWER_PORT, cfg.viewerPort);
-  const rawLocalToken = process.env.PI_REMOTE_LOCAL_TOKEN || cfg.localToken;
-  const rawViewerToken = process.env.PI_REMOTE_VIEWER_TOKEN || cfg.viewerToken;
-  const rawAdminToken = process.env.PI_REMOTE_ADMIN_TOKEN || cfg.adminToken;
-  cfg.localToken = usableToken(rawLocalToken);
-  cfg.viewerToken = usableToken(rawViewerToken);
-  cfg.adminToken = usableToken(rawAdminToken);
+  config.localPort = clampPort(process.env.PI_REMOTE_LOCAL_PORT, config.localPort);
+  config.viewerPort = clampPort(process.env.PI_REMOTE_VIEWER_PORT, config.viewerPort);
+  const rawLocalToken = process.env.PI_REMOTE_LOCAL_TOKEN || config.localToken;
+  const rawViewerToken = process.env.PI_REMOTE_VIEWER_TOKEN || config.viewerToken;
+  const rawAdminToken = process.env.PI_REMOTE_ADMIN_TOKEN || config.adminToken;
+  config.localToken = usableToken(rawLocalToken);
+  config.viewerToken = usableToken(rawViewerToken);
+  config.adminToken = usableToken(rawAdminToken);
   // 在启动装配阶段就明确拒绝弱令牌，而不是等到有人在线爆破成功。日志只说长度/占位符，不打印令牌内容。
-  if (rawLocalToken && !cfg.localToken) warnRejectedToken("localToken", rawLocalToken);
-  if (rawViewerToken && !cfg.viewerToken) warnRejectedToken("viewerToken", rawViewerToken);
-  if (rawAdminToken && !cfg.adminToken) warnRejectedToken("adminToken", rawAdminToken);
+  if (rawLocalToken && !config.localToken) warnRejectedToken("localToken", rawLocalToken);
+  if (rawViewerToken && !config.viewerToken) warnRejectedToken("viewerToken", rawViewerToken);
+  if (rawAdminToken && !config.adminToken) warnRejectedToken("adminToken", rawAdminToken);
   // 分权失效只告警，不阻止启动：单用户部署仍可能故意复用令牌。
-  warnAdminTokenSeparation(cfg);
+  warnAdminTokenSeparation(config);
   // 管理功能是独立开关：未配置就明确说禁用，但 relay 仍然启动（看/发消息不依赖 adminToken）。
-  if (!cfg.adminToken) {
+  if (!config.adminToken) {
     console.error(`[relay] 未配置 adminToken（PI_REMOTE_ADMIN_TOKEN 或 config.json 的 adminToken），管理员功能已禁用：生成配对码、撤销设备不可用。`);
   }
-  if (process.env.PI_REMOTE_LOCAL_HOST) cfg.localHost = String(process.env.PI_REMOTE_LOCAL_HOST).trim();
-  if (process.env.PI_REMOTE_VIEWER_HOST) cfg.viewerHost = String(process.env.PI_REMOTE_VIEWER_HOST).trim();
-  if (process.env.PI_REMOTE_DATA_DIR) cfg.dataDir = process.env.PI_REMOTE_DATA_DIR;
-  cfg.dataDir = path.isAbsolute(cfg.dataDir || "") ? cfg.dataDir : path.join(ROOT, cfg.dataDir || "data/rooms");
-  if (process.env.PI_REMOTE_ACCOUNTS_DIR) cfg.accountsDir = process.env.PI_REMOTE_ACCOUNTS_DIR;
-  cfg.accountsDir = path.isAbsolute(cfg.accountsDir || "") ? cfg.accountsDir : path.join(ROOT, cfg.accountsDir || "data/accounts");
-  if (process.env.PI_REMOTE_SERVER_NAME != null) cfg.serverName = process.env.PI_REMOTE_SERVER_NAME;
-  cfg.serverName = cleanServerName(cfg.serverName);
-  if (process.env.PI_REMOTE_RELAY_ACCOUNT) cfg.accountId = process.env.PI_REMOTE_RELAY_ACCOUNT;
-  cfg.accountId = normalizeAccount(cfg.accountId);
+  if (process.env.PI_REMOTE_LOCAL_HOST) config.localHost = String(process.env.PI_REMOTE_LOCAL_HOST).trim();
+  if (process.env.PI_REMOTE_VIEWER_HOST) config.viewerHost = String(process.env.PI_REMOTE_VIEWER_HOST).trim();
+  if (process.env.PI_REMOTE_DATA_DIR) config.dataDir = process.env.PI_REMOTE_DATA_DIR;
+  config.dataDir = path.isAbsolute(config.dataDir || "") ? config.dataDir : path.join(ROOT, config.dataDir || "data/rooms");
+  if (process.env.PI_REMOTE_ACCOUNTS_DIR) config.accountsDir = process.env.PI_REMOTE_ACCOUNTS_DIR;
+  config.accountsDir = path.isAbsolute(config.accountsDir || "") ? config.accountsDir : path.join(ROOT, config.accountsDir || "data/accounts");
+  if (process.env.PI_REMOTE_SERVER_NAME != null) config.serverName = process.env.PI_REMOTE_SERVER_NAME;
+  config.serverName = cleanServerName(config.serverName);
+  if (process.env.PI_REMOTE_RELAY_ACCOUNT) config.accountId = process.env.PI_REMOTE_RELAY_ACCOUNT;
+  config.accountId = normalizeAccount(config.accountId);
   const persistEnv = process.env.PI_REMOTE_PERSIST_TRANSCRIPTS;
-  if (persistEnv != null && persistEnv !== "") cfg.persistTranscripts = persistEnv === "1" || /^true$/i.test(persistEnv);
-  else cfg.persistTranscripts = !!cfg.persistTranscripts;
+  if (persistEnv != null && persistEnv !== "") config.persistTranscripts = persistEnv === "1" || /^true$/i.test(persistEnv);
+  else config.persistTranscripts = !!config.persistTranscripts;
   const legacyEnv = process.env.PI_REMOTE_ALLOW_LEGACY_LOCAL;
-  if (legacyEnv != null && legacyEnv !== "") cfg.allowLegacyLocal = !(legacyEnv === "0" || /^false$/i.test(legacyEnv));
-  else cfg.allowLegacyLocal = cfg.allowLegacyLocal !== false;
+  if (legacyEnv != null && legacyEnv !== "") config.allowLegacyLocal = !(legacyEnv === "0" || /^false$/i.test(legacyEnv));
+  else config.allowLegacyLocal = config.allowLegacyLocal !== false;
   // 页面外通知：URL 走 env 覆盖范式；偏好矩阵只认三类事件键的布尔 true，其余一律关。
   // env 只要存在就以 env 为准（C-5）：显式设成空字符串 = 临时停发，直接覆盖掉文件里
   // 已配的 URL，不必改 config.json；env 完全不设才回落文件值。
-  if (process.env.PI_REMOTE_NOTIFY_WEBHOOK_URL != null) cfg.notifyWebhookUrl = String(process.env.PI_REMOTE_NOTIFY_WEBHOOK_URL).trim();
-  else cfg.notifyWebhookUrl = typeof cfg.notifyWebhookUrl === "string" ? cfg.notifyWebhookUrl.trim() : "";
-  cfg.notifyEvents = sanitizeNotifyEvents(cfg.notifyEvents);
+  if (process.env.PI_REMOTE_NOTIFY_WEBHOOK_URL != null) config.notifyWebhookUrl = String(process.env.PI_REMOTE_NOTIFY_WEBHOOK_URL).trim();
+  else config.notifyWebhookUrl = typeof config.notifyWebhookUrl === "string" ? config.notifyWebhookUrl.trim() : "";
+  config.notifyEvents = sanitizeNotifyEvents(config.notifyEvents);
   // Only the three documented values survive; anything else warns and falls
   // back to "allow" (same sanitize pattern as the rest of this loader).
-  if (cfg.cryptoPlaintextRooms !== "allow" && cfg.cryptoPlaintextRooms !== "readonly" && cfg.cryptoPlaintextRooms !== "deny") {
-    console.warn(`[config] cryptoPlaintextRooms 值无效（${JSON.stringify(cfg.cryptoPlaintextRooms)}）：按默认 "allow" 处理`);
-    cfg.cryptoPlaintextRooms = "allow";
+  if (config.cryptoPlaintextRooms !== "allow" && config.cryptoPlaintextRooms !== "readonly" && config.cryptoPlaintextRooms !== "deny") {
+    console.warn(`[config] cryptoPlaintextRooms 值无效（${JSON.stringify(config.cryptoPlaintextRooms)}）：按默认 "allow" 处理`);
+    config.cryptoPlaintextRooms = "allow";
   }
-  return cfg;
+  return config;
 }
 
 /** 占位符 change-me 和短于 MIN_TOKEN_LENGTH 的令牌视为未配置：避免公开常量登录，也避免可在线爆破的弱口令。 */
@@ -319,35 +319,35 @@ function usableToken(value) {
 }
 
 /** 启动日志：说明哪个令牌被拒以及原因；绝不带出令牌本身，也不打印长度以外的片段。 */
-function warnRejectedToken(name, raw) {
-  const text = typeof raw === "string" ? raw.trim() : "";
+function warnRejectedToken(fieldName, rawValue) {
+  const text = typeof rawValue === "string" ? rawValue.trim() : "";
   if (!text) return;
   const env = {
     localToken: "PI_REMOTE_LOCAL_TOKEN",
     viewerToken: "PI_REMOTE_VIEWER_TOKEN",
     adminToken: "PI_REMOTE_ADMIN_TOKEN",
-  }[name] || "PI_REMOTE_ADMIN_TOKEN";
+  }[fieldName] || "PI_REMOTE_ADMIN_TOKEN";
   if (text === "change-me") {
-    console.error(`[relay] ${name} 还是示例占位符 change-me，已拒绝。请用 ${env} 或 config.json 设置至少 ${MIN_TOKEN_LENGTH} 字符的随机令牌（日志不会打印令牌内容）。`);
+    console.error(`[relay] ${fieldName} 还是示例占位符 change-me，已拒绝。请用 ${env} 或 config.json 设置至少 ${MIN_TOKEN_LENGTH} 字符的随机令牌（日志不会打印令牌内容）。`);
     return;
   }
-  console.error(`[relay] ${name} 长度不足 ${MIN_TOKEN_LENGTH} 字符，已拒绝。请用 ${env} 或 config.json 设置更长的随机令牌（日志不会打印令牌内容）。`);
+  console.error(`[relay] ${fieldName} 长度不足 ${MIN_TOKEN_LENGTH} 字符，已拒绝。请用 ${env} 或 config.json 设置更长的随机令牌（日志不会打印令牌内容）。`);
 }
 
 /** 运行时配置里的正整数：数字或纯数字字符串；非法/非正数/小数回落到默认值（viewer 认证防护复用）。 */
 function positiveInt(value, fallback) {
-  let n;
-  if (typeof value === "number") n = value;
-  else if (typeof value === "string" && /^\s*\d+\s*$/.test(value)) n = Number(value);
+  let parsed;
+  if (typeof value === "number") parsed = value;
+  else if (typeof value === "string" && /^\s*\d+\s*$/.test(value)) parsed = Number(value);
   else return fallback;
-  return Number.isSafeInteger(n) && n >= 1 ? n : fallback;
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : fallback;
 }
 
-function clampPort(v, dflt) {
-  let n = NaN;
-  if (typeof v === "number") n = v;
-  else if (typeof v === "string" && /^\d+$/.test(v.trim())) n = Number(v.trim());
-  return Number.isSafeInteger(n) && n > 0 && n < 65536 ? n : dflt;
+function clampPort(value, fallback) {
+  let port = NaN;
+  if (typeof value === "number") port = value;
+  else if (typeof value === "string" && /^\d+$/.test(value.trim())) port = Number(value.trim());
+  return Number.isSafeInteger(port) && port > 0 && port < 65536 ? port : fallback;
 }
 
 /** 服务端账号名：空/非字符串回落 admin */
