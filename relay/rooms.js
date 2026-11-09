@@ -406,8 +406,11 @@ function sendCachedUiPrompt(socket, room, config) {
     title: cached.title,
   };
   // (b+) sealed title (crypto.dialog): the cache holds the envelope instead
-  // of a plaintext title (title stays null); resend it verbatim.
-  if (cached.titleEnc) event.titleEnc = cached.titleEnc;
+  // of a plaintext title (title stays null); resend it only to connections
+  // that declared crypto.dialog -- the same downgrade rule sendCachedDialogs
+  // applies. A sealed field reaching a non-cap viewer makes the client
+  // classify the room as body-encrypted and park its plaintext snapshots.
+  if (cached.titleEnc && hasCap(socket, "crypto.dialog")) event.titleEnc = cached.titleEnc;
   let frame;
   try {
     frame = JSON.stringify({ type: "room_event", room: room.id, event });
@@ -798,7 +801,7 @@ function observeRoomTurnEvent(room, event, now = Date.now()) {
   if (type === "dialog_close" && typeof event.dialogId === "string" && room._inboxRef) {
     const closeReason = typeof event.reason === "string" ? event.reason : "";
     const reason = closeReason === "answered" || closeReason === "denied" ? "answered" : (closeReason === "timeout" || event.outcome === "timeout" ? "timeout" : null);
-    if (reason) room._inboxRef.store.amendTombReason(room._inboxRef.accountId, `dialog:${event.dialogId}`, reason);
+    if (reason) room._inboxRef.store.amendTombReason(room._inboxRef.accountId, `dialog:${room.id}:${event.dialogId}`, reason);
   }
   // 定时排期（设计 D §3.4）：扩展队列注入失败的 remote_message_failed 带 cid——排期
   // 引擎据 cid 对号把对应排期判失败停机（送达确认的第三种失败来源）。普通远程消息的
@@ -1231,7 +1234,11 @@ class Rooms {
         }
       }
       for (const slot of slots) {
-        const key = `dialog:${slot.dialogId}`;
+        // Room-scoped key: bridge dialogIds are per-process counters
+        // (dlg-1, dlg-2, ...), so two rooms can mint the same id; an
+        // unscoped account-global key would let them overwrite and
+        // tombstone each other.
+        const key = `dialog:${room.id}:${slot.dialogId}`;
         liveKeys.add(key);
         inboxStore.upsert({
           key, accountId, roomId: room.id, deviceId: room.deviceId || null,

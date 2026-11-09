@@ -2575,8 +2575,9 @@ export function useRelay() {
       handleEventRef.current(event)
     }
 
-    /** Does this streaming event carry any sealed field? (detection only; decryption happens in the chain) */
-    const eventHasSealedFields = (event: Record<string, unknown>): boolean => {
+    /** Does this streaming event carry a sealed CONTENT envelope (message
+     *  body material)? Only these prove the room body itself is encrypted. */
+    const eventHasContentEnvelope = (event: Record<string, unknown>): boolean => {
       if (isContentEnvelope(event.message) || isContentEnvelope(event.text)) return true
       if (isContentEnvelope(event.args) || isContentEnvelope(event.result) || isContentEnvelope(event.partialResult)) return true
       const inner = event.assistantMessageEvent
@@ -2584,6 +2585,12 @@ export function useRelay() {
         if (typeof inner.ct === "string") return true
         if (envelopeFromTextField(inner.delta) || envelopeFromTextField(inner.content)) return true
       }
+      return false
+    }
+
+    /** Does this streaming event carry any sealed field? (detection only; decryption happens in the chain) */
+    const eventHasSealedFields = (event: Record<string, unknown>): boolean => {
+      if (eventHasContentEnvelope(event)) return true
       // (b+) dialog-family sealed fields (textEnc / titleEnc / messageEnc
       // envelopes, dialog_close noteEnc) ride the same chain.
       if (dialogEventHasSealedFields(event)) return true
@@ -2616,7 +2623,14 @@ export function useRelay() {
         return needs
       }
       if (msg.type === "room_event" && isRecord(msg.event) && eventHasSealedFields(msg.event)) {
-        roomCryptoEntryOf(roomId).enc = true
+        // Only a content envelope may flag the room body as encrypted.
+        // A dialog-family sealed field alone ((b+) interaction text, e.g. a
+        // sealed dialog title resent to a viewer without crypto.dialog)
+        // still routes this frame through the chain, but must not poison
+        // the sticky flag: in a plaintext room it would park every later
+        // plaintext snapshot in the waiting-ACK queue of a viewer that can
+        // never hold a key, leaving the room stuck on the empty hero.
+        if (eventHasContentEnvelope(msg.event)) roomCryptoEntryOf(roomId).enc = true
         return true
       }
       return false

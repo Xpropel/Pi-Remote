@@ -108,8 +108,8 @@ export function inboxTurnSeedsOf(entries: readonly InboxEntry[]): RoomTurnSeed[]
   return seeds
 }
 
-/** dialog 条目的 dialogId（key 形如 dialog:<dialogId>）；非 dialog 条目返回 null。 */
+/** dialog 条目的 dialogId（key 形如 dialog:<roomId>:<dialogId>，取最后一段）；非 dialog 条目返回 null。 */
 export function inboxDialogIdOf(entry: InboxEntry): string | null {
   if (entry.subkind !== "dialog") return null
-  return entry.key.startsWith("dialog:") ? entry.key.slice("dialog:".length) : null
+  return entry.key.startsWith("dialog:") ? entry.key.slice(entry.key.lastIndexOf(":") + 1) : null
 }

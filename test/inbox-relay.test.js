@@ -154,8 +154,8 @@ test("dialog 生命周期：open 进账（快照+增量）、close{reason:answer
   t.after(() => v.close());
 
   ext.send(ev(R1, dialogOpen("dlg-1", { answerable: true })));
-  const upd = await v.type("inbox_update", inboxUpdateWith((f) => f.upserts.some((e) => e.key === "dialog:dlg-1")));
-  const entry = upd.upserts.find((e) => e.key === "dialog:dlg-1");
+  const upd = await v.type("inbox_update", inboxUpdateWith((f) => f.upserts.some((e) => e.key === "dialog:room-inbox-1:dlg-1")));
+  const entry = upd.upserts.find((e) => e.key === "dialog:room-inbox-1:dlg-1");
   assert.equal(entry.kind, "waiting");
   assert.equal(entry.subkind, "dialog");
   assert.equal(entry.dialogKind, "confirm");
@@ -163,17 +163,43 @@ test("dialog 生命周期：open 进账（快照+增量）、close{reason:answer
   assert.equal("options" in entry, false, "账本不带正文面");
 
   v.send({ type: "list_rooms" });
-  const list = await v.type("room_list", (f) => Array.isArray(f.inbox) && f.inbox.some((e) => e.key === "dialog:dlg-1"));
+  const list = await v.type("room_list", (f) => Array.isArray(f.inbox) && f.inbox.some((e) => e.key === "dialog:room-inbox-1:dlg-1"));
   assert.ok(list);
 
   ext.send(ev(R1, { type: "dialog_close", dialogId: "dlg-1", outcome: "resolved", reason: "answered" }));
-  await v.type("inbox_update", inboxUpdateWith((f) => f.removed.includes("dialog:dlg-1")));
+  await v.type("inbox_update", inboxUpdateWith((f) => f.removed.includes("dialog:room-inbox-1:dlg-1")));
   // 墓碑原因：close 的 reason 经 observeRoomTurnEvent 回填为 answered（不是对账时的 resolved）
   const accountsDir = path.join(dataDir, "accounts");
   const sub = fs.readdirSync(accountsDir).find((n) => fs.existsSync(path.join(accountsDir, n, "inbox.json")));
   const raw = JSON.parse(fs.readFileSync(path.join(accountsDir, sub, "inbox.json"), "utf8"));
-  assert.equal(raw.tombs["dialog:dlg-1"].goneReason, "answered");
+  assert.equal(raw.tombs["dialog:room-inbox-1:dlg-1"].goneReason, "answered");
   assert.deepEqual(raw.entries, []);
+});
+
+test("dialog 同号不撞车：两间房同用 dlg-1，一间关闭不带走另一间", async (t) => {
+  const R2 = "room-inbox-2";
+  const relay = await boot();
+  t.after(() => relay.close());
+  const ext1 = await extensionRoom(relay, R1);
+  t.after(() => ext1.close());
+  const ext2 = await extensionRoom(relay, R2);
+  t.after(() => ext2.close());
+  const { v } = await viewer(relay, CAPS);
+  t.after(() => v.close());
+
+  ext1.send(ev(R1, dialogOpen("dlg-1")));
+  await v.type("inbox_update", inboxUpdateWith((f) => f.upserts.some((e) => e.key === "dialog:room-inbox-1:dlg-1")));
+  ext2.send(ev(R2, dialogOpen("dlg-1")));
+  await v.type("inbox_update", inboxUpdateWith((f) => f.upserts.some((e) => e.key === "dialog:room-inbox-2:dlg-1")));
+
+  ext1.send(ev(R1, { type: "dialog_close", dialogId: "dlg-1", outcome: "resolved", reason: "answered" }));
+  await v.type("inbox_update", inboxUpdateWith((f) => f.removed.includes("dialog:room-inbox-1:dlg-1")));
+
+  v.send({ type: "list_rooms" });
+  const list = await v.type("room_list", (f) => Array.isArray(f.inbox)
+    && !f.inbox.some((e) => e.key === "dialog:room-inbox-1:dlg-1")
+    && f.inbox.some((e) => e.key === "dialog:room-inbox-2:dlg-1"));
+  assert.ok(list, "R1 的同号条目已消账，R2 的仍挂账");
 });
 
 test("ui_prompt 兜底：无 dialog 时进账、dialog 出现即让位、end 后消账", async (t) => {
@@ -191,12 +217,12 @@ test("ui_prompt 兜底：无 dialog 时进账、dialog 出现即让位、end 后
 
   // dialog 出现：prompt 条目被对账消项（与 attention 的去重纪律一致，下沉到账本层）
   ext.send(ev(R1, dialogOpen("dlg-9", { answerable: true })));
-  await v.type("inbox_update", inboxUpdateWith((f) => f.removed.includes(promptKey) && f.upserts.some((e) => e.key === "dialog:dlg-9")));
+  await v.type("inbox_update", inboxUpdateWith((f) => f.removed.includes(promptKey) && f.upserts.some((e) => e.key === "dialog:room-inbox-1:dlg-9")));
   // prompt 信号还在但 dialog 在场时不许 prompt 条目复活：再触发一次对账（开第二个 dialog）后清单里仍只有 dialog
   ext.send(ev(R1, dialogOpen("dlg-10", { answerable: true })));
-  await v.type("inbox_update", inboxUpdateWith((f) => f.upserts.some((e) => e.key === "dialog:dlg-10")));
+  await v.type("inbox_update", inboxUpdateWith((f) => f.upserts.some((e) => e.key === "dialog:room-inbox-1:dlg-10")));
   v.send({ type: "list_rooms" });
-  const list = await v.type("room_list", (f) => Array.isArray(f.inbox) && f.inbox.some((e) => e.key === "dialog:dlg-10"));
+  const list = await v.type("room_list", (f) => Array.isArray(f.inbox) && f.inbox.some((e) => e.key === "dialog:room-inbox-1:dlg-10"));
   assert.deepEqual(list.inbox.filter((e) => e.subkind === "prompt"), []);
 });
 
@@ -209,14 +235,14 @@ test("回合落定进账；waiting 不许 dismiss、done 可 dismiss；进房订
   t.after(() => v.close());
 
   ext.send(ev(R1, dialogOpen("dlg-2", { answerable: true })));
-  await v.type("inbox_update", inboxUpdateWith((f) => f.upserts.some((e) => e.key === "dialog:dlg-2")));
+  await v.type("inbox_update", inboxUpdateWith((f) => f.upserts.some((e) => e.key === "dialog:room-inbox-1:dlg-2")));
   // waiting 拒清：发 dismiss 后不得出现 removed，且快照里仍在
-  v.send({ type: "inbox_dismiss", key: "dialog:dlg-2" });
+  v.send({ type: "inbox_dismiss", key: "dialog:room-inbox-1:dlg-2" });
   await sleep(250);
-  assert.equal(v.frames.some((f) => f.type === "inbox_update" && Array.isArray(f.removed) && f.removed.includes("dialog:dlg-2")), false);
+  assert.equal(v.frames.some((f) => f.type === "inbox_update" && Array.isArray(f.removed) && f.removed.includes("dialog:room-inbox-1:dlg-2")), false);
   v.send({ type: "list_rooms" });
   const still = await v.type("room_list", (f) => Array.isArray(f.inbox));
-  assert.ok(still.inbox.some((e) => e.key === "dialog:dlg-2"), "waiting 条目仍在账本");
+  assert.ok(still.inbox.some((e) => e.key === "dialog:room-inbox-1:dlg-2"), "waiting 条目仍在账本");
 
   await settleTurn(ext, R1);
   const upd = await v.type("inbox_update", inboxUpdateWith((f) => f.upserts.some((e) => e.subkind === "turn" && e.kind === "done")));
@@ -251,8 +277,8 @@ test("重启对账：未读 turn 不丢、waiting 恢复挂账；补发确认的
   const { v, auth } = await viewer(relay2, CAPS);
   t.after(() => v.close());
   const keys = auth.inbox.map((e) => e.key);
-  assert.ok(keys.includes("dialog:dlg-keep"), "重启后 waiting 恢复挂账");
-  assert.ok(keys.includes("dialog:dlg-lost"));
+  assert.ok(keys.includes("dialog:room-inbox-1:dlg-keep"), "重启后 waiting 恢复挂账");
+  assert.ok(keys.includes("dialog:room-inbox-1:dlg-lost"));
   assert.ok(keys.some((k) => k.startsWith(`turn:${R1}:`)), "未读 turn 跨重启不丢");
 
   // 房间回来，只补发 dlg-keep（dlg-lost 已在本机被处理、不会再报）
@@ -260,12 +286,12 @@ test("重启对账：未读 turn 不丢、waiting 恢复挂账；补发确认的
   t.after(() => ext2.close());
   ext2.send(ev(R1, dialogOpen("dlg-keep", { answerable: true })));
   // 宽限（400ms）到期：dlg-lost 转 stale 出账，dlg-keep 与 turn 保留
-  await v.type("inbox_update", inboxUpdateWith((f) => f.removed.includes("dialog:dlg-lost")), 5000);
+  await v.type("inbox_update", inboxUpdateWith((f) => f.removed.includes("dialog:room-inbox-1:dlg-lost")), 5000);
   v.send({ type: "list_rooms" });
   // 谓词带否定条件：清扫前到达的广播 room_list 都还带着 dlg-lost，不会被误匹配成回复
-  const list = await v.type("room_list", (f) => Array.isArray(f.inbox) && !f.inbox.some((e) => e.key === "dialog:dlg-lost") && f.inbox.some((e) => e.key === "dialog:dlg-keep"));
+  const list = await v.type("room_list", (f) => Array.isArray(f.inbox) && !f.inbox.some((e) => e.key === "dialog:room-inbox-1:dlg-lost") && f.inbox.some((e) => e.key === "dialog:room-inbox-1:dlg-keep"));
   const after = list.inbox.map((e) => e.key);
-  assert.ok(after.includes("dialog:dlg-keep"), "补发确认的 waiting 留下");
-  assert.equal(after.includes("dialog:dlg-lost"), false);
+  assert.ok(after.includes("dialog:room-inbox-1:dlg-keep"), "补发确认的 waiting 留下");
+  assert.equal(after.includes("dialog:room-inbox-1:dlg-lost"), false);
   assert.ok(after.some((k) => k.startsWith(`turn:${R1}:`)), "turn 不被清扫误伤");
 });

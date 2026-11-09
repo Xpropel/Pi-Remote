@@ -2937,10 +2937,81 @@
   gap: 10px;
 }
 
-[data-pi-ui="claude"] .claude-queue-hint {
-  margin: 6px 8px;
+[data-pi-ui="claude"] .claude-queue-section-label {
+  margin: 8px 8px 0;
   color: var(--claude-text-3);
-  font-size: 11px;
+  font-size: var(--claude-text-small);
+}
+
+[data-pi-ui="claude"] .claude-schedule-add {
+  padding: 2px 8px 6px;
+}
+
+/* Busy-delivery segmented control at the queue popover footer */
+[data-pi-ui="claude"] .claude-delivery-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px;
+}
+
+[data-pi-ui="claude"] .claude-delivery-label {
+  color: var(--claude-text-2);
+  font-size: var(--claude-text-small);
+}
+
+[data-pi-ui="claude"] .claude-delivery-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* Schedule creation form inside the queue popover */
+[data-pi-ui="claude"] .claude-schedule-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 8px 8px;
+}
+
+[data-pi-ui="claude"] .claude-schedule-textarea {
+  min-height: 52px;
+  resize: none;
+}
+
+[data-pi-ui="claude"] .claude-schedule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-pi-ui="claude"] .claude-schedule-seg {
+  padding: 0;
+}
+
+[data-pi-ui="claude"] .claude-schedule-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-pi-ui="claude"] .claude-schedule-input-sm {
+  width: 84px;
+  flex: none;
+}
+
+[data-pi-ui="claude"] .claude-schedule-error {
+  color: var(--claude-danger);
+  font-size: var(--claude-text-small);
+}
+
+[data-pi-ui="claude"] .claude-schedule-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 [data-pi-ui="claude"] .claude-composer-status {

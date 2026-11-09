@@ -136,7 +136,7 @@ test("无切片回落旧面：room.waiting 摘要照常成条（旧 relay 行为
     ],
   }))
   assert.equal(items.length, 1)
-  assert.equal(items[0].key, "dialog:d-1")
+  assert.equal(items[0].key, "dialog:room-b:d-1")
 })
 
 test("计数恒等：清单 waiting+error+done 之和 == 账本 pending 数（turn 经种子进追踪器后）", () => {

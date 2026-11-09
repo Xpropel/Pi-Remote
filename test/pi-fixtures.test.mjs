@@ -373,7 +373,7 @@ test("b/approval-waiting：S3 + blockedBy approval → 输入已禁用 / 先回�
   assert.equal(reason.note, "先回答上面的问题")
   assert.equal(reason.tone, "warn")
   const attention = attentionOf(relay)
-  assert.equal(attention[0].key, "dialog:dlg-7f3")
+  assert.equal(attention[0].key, "dialog:r-s3:dlg-7f3")
   assert.equal(attention[0].title, "给 history-backfill 补测试")
   assert.equal(attention[0].detail, "等你处理：允许 pi 运行这条命令吗？")
   // replica 画成「等你确认」（waiting_approval）；现在的协议里停在 input-available（G6）

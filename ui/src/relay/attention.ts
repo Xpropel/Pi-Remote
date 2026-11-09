@@ -141,7 +141,9 @@ export function attentionItemsOf(snapshot: AttentionSnapshot): AttentionItem[] {
   for (const dialog of snapshot.dialogs) {
     if (!dialog.dialogId) continue
     items.push({
-      key: `dialog:${dialog.dialogId}`,
+      // Room-scoped, matching the relay inbox ledger key shape: bridge
+      // dialogIds are per-process counters and repeat across rooms.
+      key: snapshot.currentRoomId ? `dialog:${snapshot.currentRoomId}:${dialog.dialogId}` : `dialog:${dialog.dialogId}`,
       kind: "waiting",
       roomId: snapshot.currentRoomId,
       deviceId: currentDeviceId,
@@ -187,7 +189,7 @@ export function attentionItemsOf(snapshot: AttentionSnapshot): AttentionItem[] {
           kind: "waiting",
           roomId: entry.roomId,
           deviceId,
-          dialogId: entry.subkind === "dialog" ? entry.key.slice("dialog:".length) : null,
+          dialogId: entry.subkind === "dialog" ? entry.key.slice(entry.key.lastIndexOf(":") + 1) : null,
           title: attentionRoomTitle(room),
           detail: entry.title || dialogWaitingText(entry.dialogKind ?? ""),
           at: entry.at,
@@ -214,7 +216,7 @@ export function attentionItemsOf(snapshot: AttentionSnapshot): AttentionItem[] {
     if (!room.online || room.id === snapshot.currentRoomId) continue
     const deviceId = roomDeviceId(room)
     for (const waiting of room.waiting ?? []) {
-      const key = `dialog:${waiting.dialogId}`
+      const key = `dialog:${room.id}:${waiting.dialogId}`
       if (seen.has(key)) continue
       seen.add(key)
       items.push({

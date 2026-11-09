@@ -439,8 +439,8 @@ test("P9 A：别的房间的 waiting 成条（标题用会话名、answerable �
   assert.deepEqual(
     waiting.map((i) => [i.key, i.roomId, i.deviceId, i.title]),
     [
-      ["dialog:dlg-1", "room-b", "dev-1", "会话乙"],
-      ["dialog:dlg-2", "room-b", "dev-1", "会话乙"],
+      ["dialog:room-b:dlg-1", "room-b", "dev-1", "会话乙"],
+      ["dialog:room-b:dlg-2", "room-b", "dev-1", "会话乙"],
     ],
   )
   assert.equal(waiting[0].detail, "允许执行 npm test？", "waiting 自带标题当说明")

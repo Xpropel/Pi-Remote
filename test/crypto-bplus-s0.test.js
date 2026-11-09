@@ -247,6 +247,30 @@ test("sealed dialog_open: verbatim to crypto.dialog viewers, downgrade card to o
   assert.ok(!("textEnc" in fLateNo.event) && !("titleEnc" in fLateNo.event) && !("answerable" in fLateNo.event));
 });
 
+test("ui_prompt resend: sealed title goes only to crypto.dialog holders (downgrade parity with dialogs)", async (t) => {
+  const relay = await boot();
+  t.after(() => relay.close());
+  const c = await extensionRoom(relay, ROOM);
+  t.after(() => c.close());
+  c.send({
+    type: "event", room: ROOM,
+    event: { type: "ui_prompt_start", kind: "select", reason: "input", titleEnc: TITLE_ENC },
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const isPromptStart = (f) => f.type === "room_event" && f.event && f.event.type === "ui_prompt_start";
+  const lateFull = await viewer(relay, FULL_CAPS);
+  t.after(() => lateFull.v.close());
+  lateFull.v.send({ type: "subscribe", room: ROOM });
+  const fFull = await lateFull.v.wait(isPromptStart, 3000, "ui_prompt resend (full)");
+  assert.deepEqual(fFull.event.titleEnc, TITLE_ENC);
+  const lateNo = await viewer(relay, NOCAP_CAPS);
+  t.after(() => lateNo.v.close());
+  lateNo.v.send({ type: "subscribe", room: ROOM });
+  const fNo = await lateNo.v.wait(isPromptStart, 3000, "ui_prompt resend (nocap)");
+  assert.ok(!("titleEnc" in fNo.event), "no-cap resend must not carry the sealed title");
+  assert.ok(!JSON.stringify(fNo).includes(TITLE_ENC.ct), "no sealed bytes leak to a no-cap connection");
+});
+
 test("sealed frame with plaintext fields riding along: plaintext dropped everywhere, dialog kept", async (t) => {
   const relay = await boot();
   t.after(() => relay.close());
@@ -313,8 +337,8 @@ test("envelope presence rule: invalid textEnc with plaintext riding along yields
   const wBad = await full.v.wait(waitingFor(ROOM, "dlg-bad"), 3000, "waiting for dlg-bad");
   const wEntry = wBad.waiting.find((x) => x.dialogId === "dlg-bad");
   assert.ok(wEntry && !("title" in wEntry) && !("titleEnc" in wEntry));
-  const upBad = await full.v.wait(inboxUpsertFor("dialog:dlg-bad"), 3000, "inbox upsert for dlg-bad");
-  const iEntry = upBad.upserts.find((e) => e.key === "dialog:dlg-bad");
+  const upBad = await full.v.wait(inboxUpsertFor("dialog:room-bplus-1:dlg-bad"), 3000, "inbox upsert for dlg-bad");
+  const iEntry = upBad.upserts.find((e) => e.key === "dialog:room-bplus-1:dlg-bad");
   assert.ok(iEntry && !("title" in iEntry) && !("titleEnc" in iEntry));
   assert.ok(!JSON.stringify(upBad).includes("LEAK"), "plaintext must not reach the ledger surface");
 
@@ -367,19 +391,19 @@ test("waiting summary and inbox ledger carry titleEnc; no-cap connections get ne
 
   // Inbox ledger: full viewer sees titleEnc on the upsert and on disk;
   // the no-cap viewer sees the entry with neither titleEnc nor answerable.
-  const upFull = await full.v.wait(inboxUpsertFor("dialog:dlg-w1"), 3000, "inbox upsert (full)");
-  const ieFull = upFull.upserts.find((e) => e.key === "dialog:dlg-w1");
+  const upFull = await full.v.wait(inboxUpsertFor("dialog:room-bplus-1:dlg-w1"), 3000, "inbox upsert (full)");
+  const ieFull = upFull.upserts.find((e) => e.key === "dialog:room-bplus-1:dlg-w1");
   assert.equal(ieFull.titleEnc, TITLE_ENC.ct);
   assert.ok(!("title" in ieFull));
-  const upNo = await nocap.v.wait(inboxUpsertFor("dialog:dlg-w1"), 3000, "inbox upsert (nocap)");
-  const ieNo = upNo.upserts.find((e) => e.key === "dialog:dlg-w1");
+  const upNo = await nocap.v.wait(inboxUpsertFor("dialog:room-bplus-1:dlg-w1"), 3000, "inbox upsert (nocap)");
+  const ieNo = upNo.upserts.find((e) => e.key === "dialog:room-bplus-1:dlg-w1");
   assert.ok(ieNo && !("titleEnc" in ieNo) && !("answerable" in ieNo));
 
   const accountsDir = path.join(dataDir, "accounts");
   const sub = fs.readdirSync(accountsDir).find((n) => fs.existsSync(path.join(accountsDir, n, "inbox.json")));
   const raw = fs.readFileSync(path.join(accountsDir, sub, "inbox.json"), "utf8");
   assert.ok(raw.includes(TITLE_ENC.ct), "ledger persists the sealed title ct");
-  const diskEntry = JSON.parse(raw).entries.find((e) => e.key === "dialog:dlg-w1");
+  const diskEntry = JSON.parse(raw).entries.find((e) => e.key === "dialog:room-bplus-1:dlg-w1");
   assert.ok(diskEntry && !("title" in diskEntry), "ledger persists no plaintext title for a sealed dialog");
 });
 
@@ -542,8 +566,8 @@ test("plaintext dialog_open: every surface behaves exactly as before (no titleEn
   const entry = w.waiting.find((x) => x.dialogId === "dlg-p1");
   assert.equal(entry.title, "选一个");
   assert.ok(!("titleEnc" in entry));
-  const up = await full.v.wait(inboxUpsertFor("dialog:dlg-p1"), 3000, "plaintext inbox upsert");
-  const ie = up.upserts.find((e) => e.key === "dialog:dlg-p1");
+  const up = await full.v.wait(inboxUpsertFor("dialog:room-bplus-1:dlg-p1"), 3000, "plaintext inbox upsert");
+  const ie = up.upserts.find((e) => e.key === "dialog:room-bplus-1:dlg-p1");
   assert.equal(ie.title, "选一个");
   assert.ok(!("titleEnc" in ie));
   // The cap-less legacy viewer still gets its auth and room list untouched.

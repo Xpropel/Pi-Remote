@@ -269,7 +269,7 @@ test("P9 A：网页握手声明 room.dialogs；room_waiting 帧按 useRelay 同�
   assert.equal(found.length, 1)
   assert.deepEqual(
     [found[0].key, found[0].kind, found[0].roomId, found[0].title, found[0].detail, found[0].at, found[0].answerable],
-    ["dialog:dlg-9", "waiting", ROOM, "退 款 对账", "允许执行 npm test？", 1234, true],
+    ["dialog:room-attn-1:dlg-9", "waiting", ROOM, "退 款 对账", "允许执行 npm test？", 1234, true],
   )
 
   // 帧 2：同房 waiting 变空 = 不在等，条目消失（全量替换）

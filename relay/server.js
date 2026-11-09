@@ -420,7 +420,7 @@ async function main() {
     process.exit(1);
   }
   const { rooms, store } = relay;
-  log(`relay 启动完成（存储目录 ${config.dataDir}，快照安全阀 ${config.maxSnapshotRecords} 条 / ${Math.round(config.maxSnapshotBytes / 1048576)}MB）`);
+  log(`relay 启动完成（存储目录 ${cfg.dataDir}，快照安全阀 ${cfg.maxSnapshotRecords} 条 / ${Math.round(cfg.maxSnapshotBytes / 1048576)}MB）`);
 
   // 退出前刷盘（追加式写，最多丢一个 flush 周期）
   const shutdown = (sig) => {
@@ -435,11 +435,11 @@ async function main() {
 
   // 保留期清理：超期房间文件删除（防磁盘无限增长）
   const sweep = () => {
-    const cutoff = Date.now() - config.retentionDays * 86400 * 1000;
+    const cutoff = Date.now() - cfg.retentionDays * 86400 * 1000;
     try {
-      for (const fileName of fs.readdirSync(config.dataDir)) {
+      for (const fileName of fs.readdirSync(cfg.dataDir)) {
         if (!fileName.endsWith(".jsonl")) continue;
-        const filePath = path.join(config.dataDir, fileName);
+        const filePath = path.join(cfg.dataDir, fileName);
         const fileStat = fs.statSync(filePath);
         if (fileStat.mtimeMs < cutoff) {
           const id = fileName.replace(/\.jsonl$/, "");

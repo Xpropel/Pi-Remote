@@ -12,6 +12,9 @@ import { useComposerEnter } from "@/pi/headless/useComposerEnter"
 import { claudeCapabilityAttrs } from "../model/capabilityAttrs"
 import { ClaudeCapabilitySheet } from "../overlays/ClaudeCapabilitySheet"
 import { bytesText } from "../model/format"
+import { scheduleDisplayText, scheduleStatusLine } from "@/relay/schedule"
+import { ClaudeScheduleForm } from "./ClaudeScheduleForm"
+import { useNow } from "@/pi/hooks/useNow"
 
 /**
  * Claude v2 自有 composer（§1.8 [C-图9⑤] / C-01-5：S3 白盒、20 圆角、44–384 高、阴影公式、
@@ -21,6 +24,18 @@ import { bytesText } from "../model/format"
  */
 
 const QUEUE_STATUS_TEXT: Record<string, string> = { pending: "等发送", steering: "插入中", follow_up: "排队中" }
+
+// Busy-delivery modes, mirroring the shared send-mode contract
+// (chat/composerTools SEND_MODES / sendModeLabel). Variants may not import
+// @/chat, so the three values and their labels are restated here; the wire
+// values themselves are relay state and stay the single source of truth.
+const SEND_MODES = ["auto", "steer", "follow_up"] as const
+type ClaudeSendMode = (typeof SEND_MODES)[number]
+function sendModeLabel(mode: ClaudeSendMode): string {
+  if (mode === "steer") return "插入当前回合"
+  if (mode === "follow_up") return "排队"
+  return "自动"
+}
 
 export function ClaudeComposer({ p }: { p: PiContainerProps }) {
   const { relay, ui, variant } = p
@@ -40,6 +55,7 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
   const connectorsDisabled = connectorsStatus === "unavailable" ? caps.disabledOf("connectors") : null
   const pluginsDisabled = pluginsStatus === "unavailable" ? caps.disabledOf("plugins") : null
   const [queueOpen, setQueueOpen] = useState(false)
+  const [scheduleFormOpen, setScheduleFormOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
   const blocked = ui.blockedBy === "approval"
@@ -50,7 +66,17 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
   const files = relay.pendingFiles ?? []
   const queueItems = (relay.remoteQueue?.items ?? []).filter((item) => item.status === "pending")
   const outboxItems = relay.outbox ?? []
-  const queueCount = queueItems.length + outboxItems.length
+  // Armed schedules count toward the queue pill like in the standard panel,
+  // so a room whose only pending work is a schedule still shows the entry.
+  const scheduleItems = relay.schedules ?? []
+  const armedScheduleCount = scheduleItems.filter((s) => s.state === "armed").length
+  const queueCount = queueItems.length + outboxItems.length + armedScheduleCount
+  // New schedules follow the current delivery mode, same segment rule as the
+  // standard composer (follow_up stays follow_up, everything else steers).
+  const scheduleSegment: "steer" | "follow_up" = relay.sendMode === "follow_up" ? "follow_up" : "steer"
+  // Ticking clock for the schedule status lines (same hook the standard
+  // composer uses for its queue panel).
+  const now = useNow(1000)
   const canSend = composer.canSend && !blocked && (draft.trim().length > 0 || images.length > 0 || files.length > 0)
   const stopVisible = composer.stopVisible && !blocked
   const placeholder = blocked ? "等待授权，先在审批卡上回答" : composer.placeholder || "继续追问…"
@@ -267,11 +293,17 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
         </div>
 
         <div className="claude-composer-tools-right">
-          {queueCount > 0 ? (
-            <button type="button" className="claude-composer-queuepill" title="排队中的消息，点开可编辑、取消或立即发送" onClick={() => setQueueOpen((v) => !v)} aria-expanded={queueOpen}>
-              队列 {queueCount}
-            </button>
-          ) : null}
+          {/* Always rendered: with an empty queue this pill is the only entry
+              point to schedule creation, so it must not vanish at count 0. */}
+          <button
+            type="button"
+            className="claude-composer-queuepill"
+            title={queueCount > 0 ? "排队与定时，点开可管理" : "定时发送"}
+            onClick={() => setQueueOpen((v) => !v)}
+            aria-expanded={queueOpen}
+          >
+            {queueCount > 0 ? `队列 ${queueCount}` : "定时"}
+          </button>
           {relay.sendMode === "follow_up" ? <span className="claude-composer-delivery">排队</span> : null}
           <span className="claude-composer-context" title={context.title || "上下文用量"}>
             <ClaudeContextRing percent={contextPercentOf(context)} size={18} />
@@ -341,7 +373,7 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
         </div>
       ) : null}
 
-      {queueOpen && queueCount > 0 ? (
+      {queueOpen ? (
         <div className="claude-composer-popover claude-queue-panel" role="dialog" aria-label="排队">
           <div className="claude-composer-popover-head">
             <span className="claude-composer-popover-title">排队</span>
@@ -380,7 +412,58 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
               </div>
             </div>
           ))}
-          <p className="claude-queue-hint">忙时投递方式：{relay.sendMode === "follow_up" ? "排队到下一个回合" : "插入当前回合"}。在设置里可改。</p>
+          {/* Schedules section: same list/cancel/create wiring as the standard
+              PiQueuePanel, in claude row styling. Armed rows can be cancelled;
+              schedules are never edited in place (cancel and recreate). */}
+          <p className="claude-queue-section-label">定时</p>
+          {scheduleItems.map((entry) => (
+            <div key={entry.id} className="claude-queue-row">
+              <span className="claude-queue-text">{scheduleDisplayText(entry)}</span>
+              <span className="claude-queue-status">{scheduleStatusLine(entry, now)}</span>
+              {entry.state === "armed" ? (
+                <div className="claude-queue-actions">
+                  <button
+                    type="button"
+                    className="claude-link-btn"
+                    aria-label={`取消定时：${scheduleDisplayText(entry)}`}
+                    onClick={() => void relay.cancelSchedule(entry.id).catch(() => relay.notify("取消定时失败", "warn"))}
+                  >
+                    取消
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ))}
+          {scheduleFormOpen ? (
+            <ClaudeScheduleForm segment={scheduleSegment} onCreate={(input) => relay.createSchedule(input)} onClose={() => setScheduleFormOpen(false)} />
+          ) : (
+            <div className="claude-queue-actions claude-schedule-add">
+              <button type="button" className="claude-link-btn" onClick={() => setScheduleFormOpen(true)}>
+                ＋ 定时发送…
+              </button>
+            </div>
+          )}
+          {/* Busy-delivery mode is a live segmented control bound to
+              relay.sendMode (auto / steer / follow_up), replacing the old
+              read-only hint that pointed at a nonexistent setting. */}
+          <div className="claude-delivery-row">
+            <span className="claude-delivery-label">忙时投递</span>
+            <div className="claude-delivery-seg" role="radiogroup" aria-label="忙时投递方式">
+              {SEND_MODES.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={relay.sendMode === mode}
+                  className="claude-thinking-seg-item"
+                  data-active={relay.sendMode === mode ? "" : undefined}
+                  onClick={() => relay.setSendMode(mode)}
+                >
+                  {sendModeLabel(mode)}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       ) : null}
 
