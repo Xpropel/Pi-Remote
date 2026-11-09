@@ -2844,8 +2844,19 @@
   background: var(--claude-accent-soft);
 }
 
-[data-pi-ui="claude"] .claude-model-row[data-current] {
+/* Redesign 2026-11-09: the current row is marked by weight + check only;
+   the hover / keyboard-active row carries the background. */
+[data-pi-ui="claude"] .claude-model-row[data-active] {
   background: var(--claude-accent-soft);
+}
+
+[data-pi-ui="claude"] .claude-model-row[data-editing] {
+  background: var(--claude-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--claude-border);
+}
+
+[data-pi-ui="claude"] .claude-model-row[data-current] .claude-model-row-name {
+  font-weight: 600;
 }
 
 [data-pi-ui="claude"] .claude-model-row:disabled {
@@ -2853,28 +2864,260 @@
   cursor: default;
 }
 
-[data-pi-ui="claude"] .claude-model-row-main {
-  display: flex;
-  flex: 1;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
 [data-pi-ui="claude"] .claude-model-row-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-[data-pi-ui="claude"] .claude-model-row-spec {
+[data-pi-ui="claude"] .claude-model-row-check {
+  flex: none;
+  color: var(--claude-brand-deep);
+}
+
+/* Model menu (redesign 2026-11-09): fixed-width popover, the list scrolls
+   inside, and the intro card / parameter panel float beside it. */
+[data-pi-ui="claude"] .claude-model-popover {
+  right: auto;
+  width: min(304px, calc(100vw - 16px));
+  max-height: none;
+  overflow: visible;
+}
+
+[data-pi-ui="claude"] .claude-model-popover-phone {
+  left: 0;
+  right: 0;
+  width: auto;
+}
+
+[data-pi-ui="claude"] .claude-model-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+}
+
+[data-pi-ui="claude"] .claude-model-search-icon {
+  flex: none;
+  color: var(--claude-text-3);
+}
+
+[data-pi-ui="claude"] .claude-model-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--claude-text);
+  font-size: var(--claude-text-ui);
+  outline: none;
+}
+
+[data-pi-ui="claude"] .claude-model-search-input::placeholder {
+  color: var(--claude-text-3);
+}
+
+[data-pi-ui="claude"] .claude-model-auto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+
+[data-pi-ui="claude"] .claude-model-auto-name {
+  color: var(--claude-text);
+  font-size: var(--claude-text-ui);
+}
+
+[data-pi-ui="claude"] .claude-model-auto-sub {
+  overflow: hidden;
+  color: var(--claude-text-3);
+  font-size: var(--claude-text-small);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-pi-ui="claude"] .claude-model-auto-switch {
+  display: flex;
+  margin-left: auto;
+  flex: none;
+  align-items: center;
+}
+
+[data-pi-ui="claude"] .claude-model-list {
+  max-height: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  outline: none;
+}
+
+[data-pi-ui="claude"] .claude-model-list-inert {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+[data-pi-ui="claude"] .claude-model-tail {
+  display: flex;
+  width: 36px;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+[data-pi-ui="claude"] .claude-model-edit {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--claude-r-key);
+  background: transparent;
+  color: var(--claude-text-2);
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+[data-pi-ui="claude"] .claude-model-edit:hover {
+  color: var(--claude-text);
+}
+
+[data-pi-ui="claude"] .claude-model-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px 12px;
+}
+
+[data-pi-ui="claude"] .claude-model-configure {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: var(--claude-r-pill);
+  background: var(--claude-text);
+  color: var(--claude-s0);
+  font-size: var(--claude-text-small);
+  cursor: pointer;
+}
+
+[data-pi-ui="claude"] .claude-model-card,
+[data-pi-ui="claude"] .claude-model-panel {
+  position: absolute;
+  left: calc(100% + 10px);
+  z-index: var(--claude-z-menu);
+  transform: translateY(-50%);
+  padding: 12px 14px;
+  border-radius: var(--claude-r-code);
+  background: var(--claude-popover);
+  box-shadow: var(--claude-popover-shadow);
+}
+
+[data-pi-ui="claude"] .claude-model-card[data-side="left"],
+[data-pi-ui="claude"] .claude-model-panel[data-side="left"] {
+  right: calc(100% + 10px);
+  left: auto;
+}
+
+[data-pi-ui="claude"] .claude-model-card {
+  width: 248px;
+}
+
+[data-pi-ui="claude"] .claude-model-card-title {
+  color: var(--claude-text);
+  font-size: var(--claude-text-ui);
+  font-weight: 600;
+}
+
+[data-pi-ui="claude"] .claude-model-card-facts {
+  margin-top: 5px;
+  color: var(--claude-text-2);
+  font-size: var(--claude-text-small);
+  line-height: 1.55;
+}
+
+[data-pi-ui="claude"] .claude-model-card-cost {
+  margin-top: 7px;
+  color: var(--claude-warning);
+  font-size: var(--claude-text-small);
+  line-height: 1.55;
+}
+
+[data-pi-ui="claude"] .claude-model-panel {
+  width: 212px;
+  padding: 6px;
+}
+
+[data-pi-ui="claude"] .claude-model-panel-label {
+  padding: 7px 8px 3px;
+  color: var(--claude-text-3);
+  font-size: 11.5px;
+}
+
+[data-pi-ui="claude"] .claude-model-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--claude-r-chip);
+  background: transparent;
+  color: var(--claude-text);
+  font-size: var(--claude-text-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-pi-ui="claude"] .claude-model-option:hover {
+  background: var(--claude-hover);
+}
+
+[data-pi-ui="claude"] .claude-model-option-name {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Phone sheet level 2 (parameter page) */
+[data-pi-ui="claude"] .claude-model-popover-phone .claude-model-row {
+  min-height: 52px;
+}
+
+[data-pi-ui="claude"] .claude-model-popover-phone .claude-model-option {
+  min-height: 44px;
+}
+
+[data-pi-ui="claude"] .claude-model-page-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 4px;
+}
+
+[data-pi-ui="claude"] .claude-model-page-back {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--claude-text-2);
+  font-size: var(--claude-text-ui);
+  cursor: pointer;
+}
+
+[data-pi-ui="claude"] .claude-model-page-title {
+  color: var(--claude-text);
+  font-size: var(--claude-text-body);
+  font-weight: 600;
+}
+
+[data-pi-ui="claude"] .claude-model-page-facts {
+  padding: 0 8px 4px;
   color: var(--claude-text-3);
   font-size: var(--claude-text-small);
 }
 
-[data-pi-ui="claude"] .claude-model-row-check {
-  flex: none;
-  color: var(--claude-brand-deep);
+[data-pi-ui="claude"] .claude-model-page-cost {
+  padding: 0 8px 4px;
+  color: var(--claude-warning);
+  font-size: var(--claude-text-small);
 }
 
 [data-pi-ui="claude"] .claude-thinking-seg {

@@ -3,25 +3,35 @@ import { ModelExplainerCard } from "@/components/kit/menu/ModelExplainerCard"
 import { TRAY_CHANGES } from "@/pi/dev/fixtures/gallery/b"
 import { PiComposerDock } from "@/components/pi/composer"
 import { CDesktop, CPhoneChat, CTranscript } from "@/pi/dev/frames/CFrames"
-import { C_MODEL_LABEL, C_MODELS, GEMINI_EXPLAINER, THINKING_CURRENT, THINKING_LEVELS } from "@/pi/dev/fixtures/gallery/c"
+import { C_MODEL_LABEL, C_MODELS, THINKING_CURRENT, THINKING_LEVELS } from "@/pi/dev/fixtures/gallery/c"
 import { PiModelMenu } from "@/components/pi/composer/PiModelMenu"
 import { PiRoot, PiSheet } from "@/components/pi/shared"
 
 export const piScreen: PiScreenMeta = {
   id: "model-menu",
   area: "c",
-  title: "模型与思考级别",
+  title: "模型选择",
   states: [
     "切换中（行尾 Spinner）",
     "切换失败（选择器回到原值 + warning 通知）",
-    "未配置的 provider（行灰字「未配置」，不可选）",
+    "未配置的 provider 不出现在列表里（去设置页配置）",
     "键盘开着时（输入框上方浮层，不用 sheet）",
   ],
   notes:
-    "E10 E11 G02。居中模态改成锚定菜单：搜索 → 思考级别分段（get_available_thinking_levels：关 / 最少 / 低 / 中 / 高，当前「中」；分段控件推断）→ 模型列表（当前 ✓，Qwen3 Coder 未配置）。桌面悬停 Gemini 2.5 Pro 出 ch4/ModelExplainerCard（直接 import），费用一行橙色 = 全产品唯一的橙色；手机为 PiSheet，Gemini 行下多一行橙字，无悬停卡。版式参照 ch4/ModelMenu（它写死 MAX Mode 等 Cursor 项，不直接用）。模型表与规格是 mock。",
+    "E10 E11 G02；2026-11-09 改版（Cursor 式结构）：搜索 → Auto 行（设备默认）→ 模型列表（只列已配置的，行只有名字 + 最右尾列，当前 ✓；Qwen3 Coder 未配置、不进行）。桌面悬停行尾列出 Edit、右侧出介绍卡（事实行 + 费用说明，ch4/ModelExplainerCard 直接 import，费用一行橙色 = 全产品唯一的橙色）；点 Edit 才出参数面板（上下文变体 + 思考级别）。手机为 PiSheet 两级：第一级 Edit 常驻行尾，点 Edit / 点当前行进第二级参数页，无介绍卡。模型表是 mock。",
 }
 
 const HOVER = "google/gemini-2.5-pro"
+/** 设备默认模型（菜单 Auto 行；回包 defaultModel 的形状） */
+const DEFAULT_MODEL = { provider: "anthropic", modelId: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }
+/** 悬停 Gemini 的介绍卡：只有事实（窗口 + 图片）与费用说明，不编简介（改版 §2.4） */
+const GEMINI_FACTS_EXPLAINER = {
+  title: "Gemini 2.5 Pro",
+  tagline: [] as string[],
+  context: "上下文窗口 1M · 支持图片输入",
+  cost: ["输入超过 200k tokens 时", "单价翻倍"],
+  version: ["google/gemini-2.5-pro"],
+}
 
 export default function Screen({ viewport, theme }: PiScreenProps) {
   const phone = viewport === "phone"
@@ -35,11 +45,12 @@ export default function Screen({ viewport, theme }: PiScreenProps) {
         thinking={THINKING_CURRENT}
         variant="desktop"
         hoverKey={HOVER}
+        defaultModel={DEFAULT_MODEL}
         explainer={
           // 费用一行用 Pi 的警告橙（C5：--cw-orange 在白底只有 3.1:1）；只在这张卡里重设，章节件不改
           <ModelExplainerCard
             data-cw-id="pi-model-explainer"
-            explainer={GEMINI_EXPLAINER}
+            explainer={GEMINI_FACTS_EXPLAINER}
             className="[--cw-orange:var(--cw-pi-warning,#8A6516)]"
           />
         }
@@ -64,8 +75,8 @@ export default function Screen({ viewport, theme }: PiScreenProps) {
           roomId="r-s1"
           dock={dock}
           sheet={
-            <PiSheet static title="模型与思考" bodyClassName="px-4">
-              <PiModelMenu static variant="phone" models={C_MODELS} thinkingLevels={THINKING_LEVELS} thinking={THINKING_CURRENT} />
+            <PiSheet static title="模型" bodyClassName="px-4">
+              <PiModelMenu static variant="phone" models={C_MODELS} thinkingLevels={THINKING_LEVELS} thinking={THINKING_CURRENT} defaultModel={DEFAULT_MODEL} />
             </PiSheet>
           }
         >

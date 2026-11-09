@@ -18,6 +18,14 @@ export type PiModelRow = {
   unconfigured?: boolean
   /** 输入分档的费用说明（G12）："输入超过 200k 时单价翻倍" */
   costNote?: string
+  /** Context window in tokens, when the reply carries it (redesign: variant grouping and the facts line) */
+  contextWindow?: number
+  /** Thinking levels this model supports, when the bridge reply carries them per model (redesign section 2.3) */
+  thinkingLevels?: string[]
+  /** Whether the model supports thinking at all, when the catalog says so; absent means unknown */
+  reasoning?: boolean
+  /** Whether the model accepts image input, when the reply carries the input list */
+  supportsImage?: boolean
 }
 
 /** 当前模型：useRelay 的 model（模型 id 或名字）+ modelMeta（provider / modelId / name） */
@@ -58,6 +66,13 @@ function isCurrent(provider: string, modelId: string, name: string, current: PiC
  * 已配置的排在前面、未配置的接在后面（各自保持回包顺序）：真实 pi 1.3 的 models 是整份内置目录（一千多个），
  * 用户配了的那几个按回包顺序排在最末，要滚过上千行灰字才看得到当前模型（lane-real F-R3；design model-menu 的 mock 也是未配置在后）。
  */
+/** Per-model thinking levels from a reply item; absent or malformed means the field is not carried */
+function thinkingLevelsOf(item: Record<string, unknown>): string[] | undefined {
+  if (!Array.isArray(item.thinkingLevels)) return undefined
+  const levels = item.thinkingLevels.filter((level): level is string => typeof level === "string" && level.length > 0)
+  return levels.length ? [...new Set(levels)] : undefined
+}
+
 export function modelRowsOf(data: unknown, current: PiCurrentModel = {}): PiModelRow[] {
   const rec = isRecord(data) ? data : {}
   const models = Array.isArray(rec.models) ? rec.models : []
@@ -66,6 +81,14 @@ export function modelRowsOf(data: unknown, current: PiCurrentModel = {}): PiMode
   const configured = new Set(
     available.flatMap((item) => (isRecord(item) && typeof item.provider === "string" && idOf(item) ? [`${item.provider}/${idOf(item)}`] : [])),
   )
+  // Per-model thinking levels live on the available entries; when the menu lists the full
+  // catalog (models), borrow the levels from the configured twin of the same model.
+  const availableByKey = new Map<string, Record<string, unknown>>()
+  for (const item of available) {
+    if (!isRecord(item) || typeof item.provider !== "string") continue
+    const modelId = idOf(item)
+    if (modelId) availableByKey.set(`${item.provider}/${modelId}`, item)
+  }
   const rows: PiModelRow[] = []
   const seen = new Set<string>()
   for (const item of list) {
@@ -81,9 +104,118 @@ export function modelRowsOf(data: unknown, current: PiCurrentModel = {}): PiMode
     if (models.length && available.length && !configured.has(key)) row.unconfigured = true
     const note = costNoteOf(item.cost)
     if (note) row.costNote = note
+    if (typeof item.contextWindow === "number" && Number.isFinite(item.contextWindow) && item.contextWindow > 0) row.contextWindow = item.contextWindow
+    const levels = thinkingLevelsOf(item) ?? (availableByKey.has(key) ? thinkingLevelsOf(availableByKey.get(key)!) : undefined)
+    if (levels) row.thinkingLevels = levels
+    if (typeof item.reasoning === "boolean") row.reasoning = item.reasoning
+    if (Array.isArray(item.input)) row.supportsImage = item.input.includes("image")
     rows.push(row)
   }
   return [...rows.filter((r) => !r.unconfigured), ...rows.filter((r) => r.unconfigured)]
+}
+
+/**
+ * The device default model from a get_available_models reply (redesign section 2.5):
+ * the bridge may carry `defaultModel: { provider, id }` (models.json defaultProvider /
+ * defaultModel). Returns null when the field is missing or malformed -- callers must
+ * hide the Auto row then, never guess a default. The display name is resolved from the
+ * reply's own model entries when one matches, and falls back to the model id.
+ */
+export function modelDefaultOf(data: unknown): { provider: string; modelId: string; key: string; name: string } | null {
+  const rec = isRecord(data) ? data : {}
+  const raw = isRecord(rec.defaultModel) ? rec.defaultModel : null
+  if (!raw || typeof raw.provider !== "string" || !raw.provider) return null
+  const modelId = idOf(raw)
+  if (!modelId) return null
+  const key = `${raw.provider}/${modelId}`
+  let name = modelId
+  for (const list of [rec.available, rec.models]) {
+    if (!Array.isArray(list)) continue
+    const hit = list.find((item) => isRecord(item) && item.provider === raw.provider && idOf(item) === modelId)
+    if (hit && typeof hit.name === "string" && hit.name) {
+      name = hit.name
+      break
+    }
+  }
+  return { provider: raw.provider, modelId, key, name }
+}
+
+/** One rendered entry of the redesigned model menu (redesign section 2.2) */
+export interface PiModelMenuEntry<T> {
+  /** Stable entry key: the representative row's key */
+  key: string
+  /** The row the list renders for this entry */
+  representative: T
+  /** One row per distinct context window, ascending by size; longer than 1 only for a real variant group */
+  variants: T[]
+  /** True when this entry folds two or more distinct context windows of one (provider, name) group */
+  hasContextVariants: boolean
+}
+
+type ModelEntryRow = { key: string; provider?: string; name: string; contextWindow?: number; current?: boolean }
+
+/**
+ * Fold model rows into menu entries (redesign section 2.2, viewer-side only):
+ * rows sharing (provider, name) with two or more distinct context windows collapse
+ * into one entry whose representative is the current row when one is in the group,
+ * else the first row; the entry's variants hold one row per distinct window size.
+ * Rows without a context window, duplicate rows of an already-kept window size, and
+ * groups with a single window size all stay individual entries -- nothing is merged
+ * on a guess. Entry order follows the first member row's position.
+ */
+export function modelMenuEntriesOf<T extends ModelEntryRow>(rows: readonly T[]): PiModelMenuEntry<T>[] {
+  const buckets = new Map<string, { firstIndex: number; rows: T[] }>()
+  rows.forEach((row, index) => {
+    const bucketKey = `${row.provider ?? ""}\n${row.name}`
+    const bucket = buckets.get(bucketKey)
+    if (bucket) bucket.rows.push(row)
+    else buckets.set(bucketKey, { firstIndex: index, rows: [row] })
+  })
+  const placed: { index: number; entry: PiModelMenuEntry<T> }[] = []
+  const indexOfRow = new Map<T, number>()
+  rows.forEach((row, index) => indexOfRow.set(row, index))
+  for (const bucket of buckets.values()) {
+    const windows = [...new Set(bucket.rows.map((row) => row.contextWindow).filter((w): w is number => typeof w === "number" && w > 0))].sort((a, b) => a - b)
+    if (windows.length >= 2) {
+      const variants = windows.map((windowSize) => {
+        const candidates = bucket.rows.filter((row) => row.contextWindow === windowSize)
+        return candidates.find((row) => row.current) ?? candidates[0]
+      })
+      const representative = variants.find((row) => row.current) ?? variants[0]
+      placed.push({ index: bucket.firstIndex, entry: { key: representative.key, representative, variants, hasContextVariants: true } })
+      const folded = new Set(variants)
+      for (const row of bucket.rows) {
+        if (!folded.has(row)) placed.push({ index: indexOfRow.get(row) ?? bucket.firstIndex, entry: { key: row.key, representative: row, variants: [row], hasContextVariants: false } })
+      }
+    } else {
+      for (const row of bucket.rows) placed.push({ index: indexOfRow.get(row) ?? bucket.firstIndex, entry: { key: row.key, representative: row, variants: [row], hasContextVariants: false } })
+    }
+  }
+  return placed.sort((a, b) => a.index - b.index).map((placedEntry) => placedEntry.entry)
+}
+
+/** Thinking options for one model's parameter panel: raw level values mapped to Chinese labels, deduplicated */
+export function modelThinkingOptionsOf(levels: readonly string[] | undefined): { value: string; label: string }[] {
+  if (!levels) return []
+  const out: { value: string; label: string }[] = []
+  for (const level of levels) {
+    if (level && !out.some((option) => option.value === level)) out.push({ value: level, label: thinkingLevelZh(level) })
+  }
+  return out
+}
+
+/**
+ * The facts line for the intro card and the phone parameter page (redesign section 2.4):
+ * only facts the data carries -- context size, image input, thinking support -- joined
+ * with " · ". Rows that predate the per-model fields fall back to their spec string.
+ */
+export function modelFactsLineOf(row: { contextWindow?: number; supportsImage?: boolean; reasoning?: boolean; spec?: string }): string {
+  const parts: string[] = []
+  if (typeof row.contextWindow === "number" && row.contextWindow > 0) parts.push(`上下文 ${contextWindowLabel(row.contextWindow)}`)
+  if (row.supportsImage) parts.push("支持图片输入")
+  if (row.reasoning) parts.push("支持思考")
+  if (parts.length) return parts.join(" · ")
+  return row.spec ?? ""
 }
 
 /** Unconfigured models beyond this count are folded out of the menu
@@ -155,7 +287,13 @@ export function modelPillName(current: PiCurrentModel): string | null {
  */
 export function modelExplainerOf(row: PiModelRow, contextWindow?: number | null): { title: string; tagline: string[]; context?: string; cost?: string[]; version: string[] } {
   const out: { title: string; tagline: string[]; context?: string; cost?: string[]; version: string[] } = { title: row.name, tagline: [], version: [row.key] }
-  if (typeof contextWindow === "number" && contextWindow > 0) out.context = `上下文窗口 ${contextWindowLabel(contextWindow)}`
+  // Facts only (redesign section 2.4): window size plus the capabilities the row
+  // actually carries; fields the data does not carry add nothing.
+  const facts: string[] = []
+  if (typeof contextWindow === "number" && contextWindow > 0) facts.push(`上下文窗口 ${contextWindowLabel(contextWindow)}`)
+  if (row.supportsImage) facts.push("支持图片输入")
+  if (row.reasoning) facts.push("支持思考")
+  if (facts.length) out.context = facts.join(" · ")
   if (row.costNote) {
     const i = row.costNote.indexOf("时")
     out.cost = i > 0 && i < row.costNote.length - 1 ? [row.costNote.slice(0, i + 1), row.costNote.slice(i + 1)] : [row.costNote]

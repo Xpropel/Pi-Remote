@@ -2100,3 +2100,84 @@ test("factory gate: key file for a different deviceId -> returns early", (t) => 
   ext.default(pi)
   assert.equal(handlers.has("session_start"), false, "a key file issued for another device must not open the gate")
 })
+
+test("get_available_models: available entries carry thinkingLevels computed from the raw registry model; the full models list does not", async () => {
+  const b = new ext.Bridge()
+  // rawFull pins its levels with an explicit array; rawMapped only exposes them
+  // through thinkingLevelMap (xhigh mapped to null -> dropped, max mapped to a
+  // string -> kept); rawPlain cannot reason at all. Both the array and the map
+  // are dropped by toModel(), so these expectations only hold when the levels
+  // are computed BEFORE projection.
+  const rawFull = { id: "m-full", name: "Full", provider: "p1", reasoning: true, thinkingLevels: ["off", "high"], contextWindow: 1000 }
+  const rawMapped = { id: "m-mapped", name: "Mapped", provider: "p1", reasoning: true, thinkingLevelMap: { xhigh: null, max: "max" }, contextWindow: 2000 }
+  const rawPlain = { id: "m-plain", name: "Plain", provider: "p2", reasoning: false, contextWindow: 3000 }
+  const all = [rawFull, rawMapped, rawPlain]
+  b.ctx = { modelRegistry: { getAll: () => all, getAvailable: () => all } }
+  b.pi = { getSettings: () => ({}) }
+  const res = await b.executeCommand("get_available_models")
+  assert.equal(res.available.length, 3)
+  assert.deepEqual(res.available[0].thinkingLevels, ["off", "high"])
+  assert.deepEqual(res.available[1].thinkingLevels, ["off", "minimal", "low", "medium", "high", "max"])
+  assert.deepEqual(res.available[2].thinkingLevels, ["off"])
+  // Existing projected fields are unchanged alongside the new one.
+  assert.equal(res.available[0].id, "m-full")
+  assert.equal(res.available[0].modelId, "m-full")
+  assert.equal(res.available[1].provider, "p1")
+  // The full catalogue stays lean: no thinkingLevels on models entries.
+  assert.equal(res.models.length, 3)
+  for (const entry of res.models) assert.equal("thinkingLevels" in entry, false)
+})
+
+test("get_available_models: paired defaultProvider/defaultModel in settings surface as top-level defaultModel", async () => {
+  const b = new ext.Bridge()
+  const only = { id: "m-full", name: "Full", provider: "p1", reasoning: true, contextWindow: 1000 }
+  b.ctx = { modelRegistry: { getAll: () => [only], getAvailable: () => [only] } }
+  b.pi = { getSettings: () => ({ defaultProvider: "p1", defaultModel: "m-full" }) }
+  const res = await b.executeCommand("get_available_models")
+  assert.deepEqual(res.defaultModel, { provider: "p1", id: "m-full" })
+})
+
+test("get_available_models: defaultModel is omitted when the pair is incomplete or unreadable, never filled from the session model", async () => {
+  const only = { id: "m-full", name: "Full", provider: "p1", reasoning: true, contextWindow: 1000 }
+  const setups = [
+    { getSettings: () => ({}) },
+    { getSettings: () => ({ defaultProvider: "p1" }) },
+    { getSettings: () => ({ defaultModel: "m-full" }) },
+    { getSettings: () => ({ defaultProvider: "  ", defaultModel: "m-full" }) },
+    {}, // pi without getSettings at all
+  ]
+  for (const pi of setups) {
+    const b = new ext.Bridge()
+    b.ctx = {
+      model: { provider: "session-provider", id: "session-model" },
+      modelRegistry: { getAll: () => [only], getAvailable: () => [only] },
+    }
+    b.pi = pi
+    const res = await b.executeCommand("get_available_models")
+    assert.equal("defaultModel" in res, false, JSON.stringify(Object.keys(pi)))
+  }
+})
+
+test("get_available_models: models.json fallback creates no available field but still attaches a readable defaultModel", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-remote-getmodels-"))
+  const previous = process.env.PI_CODING_AGENT_DIR
+  process.env.PI_CODING_AGENT_DIR = dir
+  try {
+    fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({
+      providers: { p9: { models: [{ id: "m9", name: "Nine", contextWindow: 9000 }] } },
+    }))
+    const b = new ext.Bridge()
+    b.ctx = {} // no modelRegistry -> models.json fallback path
+    b.pi = { getSettings: () => ({ defaultProvider: "p9", defaultModel: "m9" }) }
+    const res = await b.executeCommand("get_available_models")
+    assert.equal(res.models.length, 1)
+    assert.equal(res.models[0].id, "m9")
+    assert.equal(res.models[0].provider, "p9")
+    assert.equal("available" in res, false)
+    assert.deepEqual(res.defaultModel, { provider: "p9", id: "m9" })
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR
+    else process.env.PI_CODING_AGENT_DIR = previous
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

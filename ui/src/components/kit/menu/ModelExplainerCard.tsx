@@ -36,7 +36,9 @@ function Lines({ lines }: { lines: string[] }) {
 /**
  * 悬停模型行时浮在 ModelMenu 右侧的说明卡（#19）。白卡同 MenuSurface（圆角、细边、柔和投影），全是 13px 文字、左对齐：
  * 粗体名 → 定位语 →（空行）上下文窗口 →（空行）橙色费用警告 →（空行）斜体版本行。行高 17、段间空一行（实测）。
- * 宽 208.8、内距 8 / 10（#19 实测）；位置由 ModelMenu 给（菜单右侧 5.3、垂直中心对齐悬停行）。
+ * Width is 248 (same as the Claude shell's model card); text wraps normally so the
+ * facts line stays fully visible (at most two lines) instead of being cut off.
+ * 位置由 ModelMenu 给（菜单右侧 5.3、垂直中心对齐悬停行；靠右无 room 时由菜单翻到左侧）。
  */
 export function ModelExplainerCard({ explainer, className, ...rest }: ModelExplainerCardProps) {
   const para = "mt-[17px]"
@@ -47,7 +49,7 @@ export function ModelExplainerCard({ explainer, className, ...rest }: ModelExpla
       className={cn(
         menuSurfaceClass,
         menuShadowClass("popover"),
-        "w-[208.8px] px-[9.7px] pt-[8px] pb-[8px] text-(length:--cw-text-md) leading-[17px] whitespace-nowrap select-text",
+        "w-[248px] px-[9.7px] pt-[8px] pb-[8px] text-(length:--cw-text-md) leading-[17px] whitespace-normal select-text",
         className,
       )}
       {...rest}

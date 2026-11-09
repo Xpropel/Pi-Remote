@@ -115,6 +115,12 @@ export interface MobileSettingsPageProps {
  */
 let lastMobileSettingsPage: MobileSettingsPageId | null = null
 
+/** Preselect the page the mobile settings shell opens on next (the
+ *  deep-link counterpart of the desktop rememberSettingsPage). */
+export function rememberMobileSettingsPage(page: MobileSettingsPageId): void {
+  lastMobileSettingsPage = mobilePageIdOf(page)
+}
+
 export function MobileSettingsPage({ p, style, theme, page, initialPage, onPageChange, onExit }: MobileSettingsPageProps) {
   const [innerPage, setInnerPage] = useState<MobileSettingsPageId>(() => mobilePageIdOf(page ?? initialPage ?? lastMobileSettingsPage ?? "index"))
   const [previewStyle, setPreviewStyle] = useState<SettingsStyle | null>(null)

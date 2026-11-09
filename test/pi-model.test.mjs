@@ -15,6 +15,7 @@ import { turnReceipts } from "../ui/src/pi/model/receipts.ts"
 import { diffRowsFromEdit, rowsFromPatch } from "../ui/src/pi/model/diffRows.ts"
 import { changesOfSession } from "../ui/src/pi/model/changes.ts"
 import { migratePiPrefs, setPiPref, DEFAULT_PI_PREFS } from "../ui/src/pi/model/prefs.ts"
+import { modelRowsOf, modelDefaultOf, modelMenuEntriesOf, modelThinkingOptionsOf, modelFactsLineOf } from "../ui/src/pi/model/models.ts"
 
 const NOW = Date.UTC(2026, 9, 24, 8, 0, 0)
 const MIN = 60_000
@@ -593,6 +594,72 @@ test("setPiPref：改分组时要清展开状态", () => {
   assert.deepEqual([a.prefs.grouping, a.clearExpanded], ["flat", true])
   assert.equal(setPiPref(DEFAULT_PI_PREFS, "grouping", "device").clearExpanded, false)
   assert.equal(setPiPref(DEFAULT_PI_PREFS, "theme", "dark").clearExpanded, false)
+})
+
+/* ---------------- models：2026-11-09 模型选择器改版（新字段、默认模型、上下文变体折叠、事实行） ---------------- */
+
+test("modelRowsOf：新字段（窗口 / 按模型级别 / reasoning / 图片）从回包带出；只有目录时从 available 孪生条借级别", () => {
+  const item = { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", contextWindow: 200000, input: ["text", "image"], reasoning: true, thinkingLevels: ["off", "low", "medium", "high"] }
+  const [row] = modelRowsOf({ models: [item], available: [item] })
+  assert.deepEqual([row.contextWindow, row.thinkingLevels, row.reasoning, row.supportsImage], [200000, ["off", "low", "medium", "high"], true, true])
+  const bare = { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", contextWindow: 200000 }
+  const [borrowed] = modelRowsOf({ models: [bare], available: [item] })
+  assert.deepEqual(borrowed.thinkingLevels, ["off", "low", "medium", "high"], "目录条目本身没有级别时用已配置孪生条的")
+  assert.equal(borrowed.reasoning, undefined, "回包没写的字段不编")
+  const [plain] = modelRowsOf({ available: [{ provider: "a", id: "m", name: "M" }] })
+  assert.deepEqual([plain.contextWindow, plain.thinkingLevels, plain.reasoning, plain.supportsImage], [undefined, undefined, undefined, undefined])
+})
+
+test("modelDefaultOf：回包带 defaultModel 才认（id / modelId 两种键名）；缺失或坏形状返回 null", () => {
+  const data = { models: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }], defaultModel: { provider: "anthropic", id: "claude-sonnet-4-5" } }
+  assert.deepEqual(modelDefaultOf(data), { provider: "anthropic", modelId: "claude-sonnet-4-5", key: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5" })
+  assert.equal(modelDefaultOf({ defaultModel: { provider: "openai", modelId: "gpt-5" } }).name, "gpt-5", "目录里查不到名字时用 modelId")
+  assert.equal(modelDefaultOf({ models: [] }), null)
+  assert.equal(modelDefaultOf({ defaultModel: { provider: "anthropic" } }), null)
+  assert.equal(modelDefaultOf(null), null)
+})
+
+test("modelMenuEntriesOf：同 provider + 同名 + 多个上下文窗口折成一行（代表取当前条、变体按窗口升序）", () => {
+  const rows = [
+    { key: "openai/gpt-x-272k", provider: "openai", modelId: "gpt-x-272k", name: "GPT-X", contextWindow: 272000 },
+    { key: "openai/gpt-x-922k", provider: "openai", modelId: "gpt-x-922k", name: "GPT-X", contextWindow: 922000, current: true },
+    { key: "openai/gpt-y", provider: "openai", modelId: "gpt-y", name: "GPT-Y", contextWindow: 128000 },
+  ]
+  const entries = modelMenuEntriesOf(rows)
+  assert.equal(entries.length, 2)
+  assert.equal(entries[0].hasContextVariants, true)
+  assert.equal(entries[0].representative.key, "openai/gpt-x-922k", "代表 = 组里当前在用的那条")
+  assert.deepEqual(entries[0].variants.map((v) => v.contextWindow), [272000, 922000])
+  assert.deepEqual([entries[1].key, entries[1].hasContextVariants, entries[1].variants.length], ["openai/gpt-y", false, 1])
+})
+
+test("modelMenuEntriesOf：不乱折——同窗口不同 id、不同 provider 同名、缺窗口的行都各自一行", () => {
+  const rows = [
+    { key: "a/m1", provider: "a", modelId: "m1", name: "M", contextWindow: 200000 },
+    { key: "a/m2", provider: "a", modelId: "m2", name: "M", contextWindow: 200000 },
+    { key: "b/m1", provider: "b", modelId: "m1", name: "M", contextWindow: 1000000 },
+    { key: "a/m3", provider: "a", modelId: "m3", name: "M" },
+  ]
+  const entries = modelMenuEntriesOf(rows)
+  assert.equal(entries.length, 4)
+  assert.ok(entries.every((e) => !e.hasContextVariants))
+  assert.deepEqual(modelMenuEntriesOf([]), [])
+})
+
+test("modelThinkingOptionsOf：级别值 → 中文标签、去重；没有数据给空数组", () => {
+  assert.deepEqual(modelThinkingOptionsOf(["off", "medium", "high", "medium"]), [
+    { value: "off", label: "关" },
+    { value: "medium", label: "中" },
+    { value: "high", label: "高" },
+  ])
+  assert.deepEqual(modelThinkingOptionsOf(undefined), [])
+})
+
+test("modelFactsLineOf：只有数据真有的事实；什么都没有时回落规格串", () => {
+  assert.equal(modelFactsLineOf({ contextWindow: 1000000, supportsImage: true, reasoning: true }), "上下文 1M · 支持图片输入 · 支持思考")
+  assert.equal(modelFactsLineOf({ contextWindow: 128000, reasoning: false }), "上下文 128k")
+  assert.equal(modelFactsLineOf({ spec: "200k · 可发图片" }), "200k · 可发图片")
+  assert.equal(modelFactsLineOf({}), "")
 })
 
 /* ---------------- piDuration / piRelativeTime（components/pi/shared/format.ts，P2 搬入；文件在才跑） ---------------- */

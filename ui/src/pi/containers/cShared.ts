@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react"
 import { noteSlashCommandUsed } from "@/chat/slashUsage"
 import { saveLegacyStyle, useLegacyPrefs, useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
 import { modelPillName, modelRowsOf, thinkingSegmentsOf, type PiModelRow } from "@/pi/model/models"
@@ -112,6 +112,76 @@ export function useModelData(relay: Relay, open: boolean) {
 /** composer 里的模型选择器文字：模型名（去掉"Claude "）· 思考级别原值（design：Sonnet 4.5 · medium） */
 export function modelPillOf(relay: Pick<Relay, "model" | "modelMeta" | "thinkingLevel">): { name: string; thinking: string } {
   return { name: modelPillName(relay) ?? "选择模型", thinking: relay.thinkingLevel || "" }
+}
+
+/* ---------- Model menu Auto (redesign section 4): a viewer-local choice, remembered per device ---------- */
+
+export const MODEL_AUTO_STORAGE_KEY = "pi_remote_model_auto"
+const MODEL_AUTO_EVENT = "pi-model-auto"
+const EMPTY_MODEL_AUTO_RECORD: Record<string, boolean> = {}
+
+let modelAutoRaw: string | null | undefined
+let modelAutoRecord: Record<string, boolean> = EMPTY_MODEL_AUTO_RECORD
+
+function readModelAutoRaw(): string | null {
+  try {
+    return localStorage.getItem(MODEL_AUTO_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function parseModelAutoRecord(raw: string | null): Record<string, boolean> {
+  if (!raw) return EMPTY_MODEL_AUTO_RECORD
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return EMPTY_MODEL_AUTO_RECORD
+    const record: Record<string, boolean> = {}
+    for (const [scope, value] of Object.entries(parsed)) if (typeof value === "boolean") record[scope] = value
+    return record
+  } catch {
+    return EMPTY_MODEL_AUTO_RECORD
+  }
+}
+
+/** The stored record, cached by raw string (same pattern as the legacy style store) */
+function loadModelAutoRecord(): Record<string, boolean> {
+  const raw = readModelAutoRaw()
+  if (raw !== modelAutoRaw) {
+    modelAutoRaw = raw
+    modelAutoRecord = parseModelAutoRecord(raw)
+  }
+  return modelAutoRecord
+}
+
+function subscribeModelAuto(listener: () => void) {
+  window.addEventListener("storage", listener)
+  window.addEventListener(MODEL_AUTO_EVENT, listener)
+  return () => {
+    window.removeEventListener("storage", listener)
+    window.removeEventListener(MODEL_AUTO_EVENT, listener)
+  }
+}
+
+const modelAutoServer = () => EMPTY_MODEL_AUTO_RECORD
+
+/** Preference scope: the selected device id; single-device mode falls back to "local" (same fallback as the sidebar local state) */
+function modelAutoScopeOf(relay: Pick<Relay, "selectedDevice">): string {
+  return relay.selectedDevice?.id || "local"
+}
+
+export function useModelAuto(relay: Pick<Relay, "selectedDevice">): { auto: boolean | undefined; setAuto: (next: boolean) => void } {
+  const record = useSyncExternalStore(subscribeModelAuto, loadModelAutoRecord, modelAutoServer)
+  const scope = modelAutoScopeOf(relay)
+  const setAuto = (next: boolean) => {
+    try {
+      localStorage.setItem(MODEL_AUTO_STORAGE_KEY, JSON.stringify({ ...loadModelAutoRecord(), [scope]: next }))
+    } catch {
+      // Storage unavailable (private mode / quota): the choice simply does not persist
+    }
+    window.dispatchEvent(new Event(MODEL_AUTO_EVENT))
+  }
+  return { auto: record[scope], setAuto }
 }
 
 /** 切模型 / 思考级别：失败时选择器回到原值（选择器读 relay，本来就没改），出 warning 通知 */

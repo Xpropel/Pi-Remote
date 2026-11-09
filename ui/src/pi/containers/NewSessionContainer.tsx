@@ -12,7 +12,9 @@ import { deviceScopeLabel, folderForDevice, newSessionDefaultsOf, offlineReasonO
 import { useMissingFolders } from "@/pi/model/folderExistence"
 import { HARNESS_START_TIMEOUT_MS } from "@/relay/devices"
 import { newSessionDraftOf, setNewSessionDraft, subscribeNewSessionDraft } from "@/relay/drafts"
-import { C_IDS, modelPillOf, useModelData } from "./cShared"
+import { C_IDS, modelPillOf, useModelAuto, useModelData } from "./cShared"
+import { rememberSettingsPage } from "@/pi/settings/SettingsPage"
+import { rememberMobileSettingsPage } from "@/pi/settings/mobile/MobileSettingsPage"
 import { ModelMenuContent, SheetHost } from "./ComposerContainer"
 import { PairingContainer } from "./PairingContainer"
 import { openPiDialog, PI_UI_IDS, type PiContainerProps, type Relay } from "./types"
@@ -229,6 +231,12 @@ function NewComposer(p: PiContainerProps) {
     else act.closeMenu()
   }
   const modelData = useModelData(relay, open === "model" && !phone)
+  const modelAuto = useModelAuto(relay)
+  const openModelConfigure = () => {
+    rememberSettingsPage("model")
+    rememberMobileSettingsPage("model")
+    act.openSettings()
+  }
   const selectDevice = (id: string) => {
     const next = relay.devices.find((d) => d.id === id)
     if (!next) return
@@ -320,7 +328,7 @@ function NewComposer(p: PiContainerProps) {
         }
         folderMenu={phone ? undefined : folderPicker("desktop")}
         plusMenu={phone ? undefined : <PiAttachMenu variant="desktop" className="w-[280px]" commandsDisabled onPick={() => relay.notify("新会话的第一条先发文字；图片和文件在会话开始后再加", "warn")} />}
-        modelMenu={phone || !relay.roomId ? undefined : <ModelMenuContent relay={relay} variant="desktop" data={modelData} isStatic={false} />}
+        modelMenu={phone || !relay.roomId ? undefined : <ModelMenuContent relay={relay} variant="desktop" data={modelData} isStatic={false} auto={modelAuto.auto} onAutoChange={modelAuto.setAuto} onConfigureModels={openModelConfigure} />}
         below={below}
         className={cn(starting && "pointer-events-none opacity-90")}
       />
@@ -338,6 +346,12 @@ function NewSheets(p: PiContainerProps) {
   const { device, folder, recent, knownFolders, scopeLabel, browse } = useSelection(relay, state)
   const id = ui.sheet?.id
   const modelData = useModelData(relay, id === C_IDS.newModel)
+  const modelAuto = useModelAuto(relay)
+  const openModelConfigure = () => {
+    rememberSettingsPage("model")
+    rememberMobileSettingsPage("model")
+    act.openSettings()
+  }
   const close = act.closeSheet
   const onOpenChange = (open: boolean) => {
     if (!open) close()
@@ -422,9 +436,9 @@ function NewSheets(p: PiContainerProps) {
   }
   if (id === C_IDS.newModel && relay.roomId) {
     return (
-      <PiSheet title="模型与思考" bodyClassName="px-4" onOpenChange={onOpenChange} returnFocus={byCwId("pi-new-model")}>
+      <PiSheet title="模型" bodyClassName="px-4" onOpenChange={onOpenChange} returnFocus={byCwId("pi-new-model")}>
         <SheetHost close={close}>
-          <ModelMenuContent relay={relay} variant="phone" data={modelData} isStatic={isStatic} />
+          <ModelMenuContent relay={relay} variant="phone" data={modelData} isStatic={isStatic} auto={modelAuto.auto} onAutoChange={modelAuto.setAuto} onConfigureModels={openModelConfigure} />
         </SheetHost>
       </PiSheet>
     )

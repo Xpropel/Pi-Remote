@@ -12,6 +12,7 @@
 import "./mobile.css"
 
 export { MobileSettingsPage, MobileSettingsPage as default } from "./MobileSettingsPage.tsx"
+export { rememberMobileSettingsPage } from "./MobileSettingsPage.tsx"
 export type { MobileSettingsPageProps } from "./MobileSettingsPage.tsx"
 export * from "./types.ts"
 export * from "./model.ts"

@@ -5,13 +5,14 @@ import type { VariantAppProps } from "@/pi/variants/types"
 import { composerBlockOf } from "@/pi/model/composerButton"
 import { useComposerEnter } from "@/pi/headless/useComposerEnter"
 import { composerReasonOf } from "@/pi/model/composerReason"
-import { modelMenuListOf, modelPillName, modelRowsOf, type PiModelRow } from "@/pi/model/models"
+import { modelDefaultOf, modelPillName, modelRowsOf, thinkingSegmentsOf, type PiModelRow } from "@/pi/model/models"
+import { rememberSettingsPage } from "@/pi/settings"
+import { rememberMobileSettingsPage } from "@/pi/settings/mobile"
 import { contextReadout } from "@/relay/contextUsage"
 import { useCloseOnOutside, useCodexCommand, useSlowAck } from "../hooks/useCodex"
 import { useCodexFrame } from "../root/context"
 import { commandsReady, piBaseName, sessionLoaded } from "../logic/view"
 import { CodexApprovalDock } from "../approval/CodexApprovalCard"
-import { CodexSpinner } from "../primitives/primitives"
 import { CodexControlRow } from "./CodexControlRow"
 import { CodexAttachTray } from "./CodexAttachTray"
 import { CodexQueue } from "./CodexQueue"
@@ -127,14 +128,36 @@ export function CodexComposer({ p, phone }: { p: VariantAppProps; phone: boolean
     reader.readAsText(file)
   }
   const modelData = useCodexCommand(relay.runCommand, modelOpen && commandsReady(relay) ? "get_available_models" : null, undefined, relay.roomId)
+  const levelsData = useCodexCommand(relay.runCommand, modelOpen && commandsReady(relay) ? "get_available_thinking_levels" : null, undefined, relay.roomId)
   const rows = useMemo(() => (modelData.phase === "ready" ? modelRowsOf(modelData.data, { model: relay.model, modelMeta: relay.modelMeta }) : []), [modelData.phase, modelData.data, relay.model, relay.modelMeta])
-  const menuList = useMemo(() => modelMenuListOf(rows, "", () => true), [rows])
-  const pickModel = (row: PiModelRow) => {
+  const currentSegments = useMemo(() => (levelsData.phase === "ready" ? thinkingSegmentsOf(levelsData.data) : []), [levelsData.phase, levelsData.data])
+  const defaultModel = useMemo(() => (modelData.phase === "ready" ? modelDefaultOf(modelData.data) : null), [modelData.phase, modelData.data])
+  const runSetModel = (row: PiModelRow) => {
     if (row.unconfigured) return
-    setModelOpen(false)
     void relay.runCommand("set_model", { provider: row.provider, modelId: row.modelId }).catch((error: unknown) => {
       relay.notify(`切换模型失败：${error instanceof Error ? error.message : "命令失败"}`, "warn")
     })
+  }
+  const runSetThinking = (level: string) => {
+    if (!level || level === relay.thinkingLevel) return
+    void relay.runCommand("set_thinking_level", { level }).catch((error: unknown) => {
+      relay.notify(`切换思考级别失败：${error instanceof Error ? error.message : "命令失败"}`, "warn")
+    })
+  }
+  // Auto (redesign section 4) is viewer-local state. Variants may not touch storage
+  // APIs, so the explicit choice lives in this composer keyed by device; when no
+  // explicit choice exists for the device, Auto is inferred from the session already
+  // sitting on the device default model -- the same seeding the standard shell uses.
+  const modelDeviceKey = relay.selectedDeviceId ?? relay.selectedDevice?.id ?? relay.roomId ?? ""
+  const [autoMemory, setAutoMemory] = useState<{ deviceKey: string; on: boolean } | null>(null)
+  const currentIsDefaultModel = !!defaultModel && rows.some((row) => row.current && row.key === defaultModel.key)
+  const autoOn = autoMemory && autoMemory.deviceKey === modelDeviceKey ? autoMemory.on : currentIsDefaultModel
+  const toggleAuto = (next: boolean) => {
+    setAutoMemory({ deviceKey: modelDeviceKey, on: next })
+    if (next && defaultModel) {
+      const target = rows.find((row) => row.key === defaultModel.key)
+      if (target) runSetModel(target)
+    }
   }
   const hint = readOnly ? "先回答上面的问题" : reason.placeholder
   return (
@@ -212,8 +235,8 @@ export function CodexComposer({ p, phone }: { p: VariantAppProps; phone: boolean
           }}
           mode={mode}
           approvalOpen={approvalOpen}
-          modelName={model.name}
-          modelThinking={model.thinking}
+          modelName={autoOn ? "Auto" : model.name}
+          modelThinking={autoOn ? "" : model.thinking}
           modelOpen={modelOpen}
           ctx={ctx}
           block={block}
@@ -304,9 +327,26 @@ export function CodexComposer({ p, phone }: { p: VariantAppProps; phone: boolean
           </div>
         ) : null}
         {modelOpen ? (
-          <CodexModelMenu rows={menuList.list} phase={modelData.phase} onPick={pickModel} />
+          <CodexModelMenu
+            rows={rows}
+            phase={modelData.phase}
+            phone={phone}
+            thinking={relay.thinkingLevel || ""}
+            currentSegments={currentSegments}
+            defaultModel={defaultModel}
+            autoOn={autoOn}
+            onToggleAuto={toggleAuto}
+            onSelectModel={runSetModel}
+            onSelectThinking={runSetThinking}
+            onConfigureModels={() => {
+              setModelOpen(false)
+              rememberSettingsPage("model")
+              rememberMobileSettingsPage("model")
+              p.act.openSettings()
+            }}
+            onClose={() => setModelOpen(false)}
+          />
         ) : null}
-        {modelData.phase === "loading" && modelOpen ? <span className="cx-model-loading"><CodexSpinner size={11} /></span> : null}
       </div>
       {dictating ? (
         <div className="cx-dictation" data-p4-surface="CX-XCUT-02" data-p4-ready="" role="status">

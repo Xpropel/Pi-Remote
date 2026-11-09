@@ -5083,7 +5083,284 @@
 
 [data-pi-ui="codex"] .cx-composer-pop-model {
   width: 300px;
-  padding: 4px;
+  padding: 6px;
+  /* Visible overflow: the intro card / parameter panel anchors to this pop's
+     right edge; the model list scrolls in its own inner area instead. */
+  overflow: visible;
+}
+
+/* ---- Model menu redesign (2026-11-09): search, Auto row, tail column, card, panel ---- */
+
+[data-pi-ui="codex"] .cx-model-search {
+  padding: 2px 8px 6px;
+}
+
+[data-pi-ui="codex"] .cx-model-search input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--codex-text);
+  font-family: var(--codex-font-sans);
+  font-size: 13.5px;
+  outline: none;
+}
+
+[data-pi-ui="codex"] .cx-model-search input::placeholder {
+  color: var(--codex-text-3);
+}
+
+[data-pi-ui="codex"] .cx-model-auto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 13.5px;
+}
+
+[data-pi-ui="codex"] .cx-model-auto-sub {
+  overflow: hidden;
+  color: var(--codex-text-3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-pi-ui="codex"] .cx-model-auto-switch {
+  flex: none;
+  margin-left: auto;
+}
+
+[data-pi-ui="codex"] .cx-model-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--codex-hairline);
+}
+
+[data-pi-ui="codex"] .cx-model-scroll {
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+[data-pi-ui="codex"] .cx-model-scroll-dim {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+[data-pi-ui="codex"] .cx-model-row {
+  display: flex;
+  align-items: center;
+  min-height: 33px;
+  padding: 0 8px;
+  border-radius: var(--codex-radius-sm);
+  font-size: 13.5px;
+  cursor: default;
+}
+
+[data-pi-ui="codex"] .cx-model-row[data-active] {
+  background: var(--codex-hover);
+}
+
+[data-pi-ui="codex"] .cx-model-row[data-editing] {
+  background: var(--codex-hover);
+  box-shadow: inset 0 0 0 1px var(--codex-border);
+}
+
+[data-pi-ui="codex"] .cx-model-row[data-current] {
+  font-weight: 600;
+}
+
+[data-pi-ui="codex"] .cx-composer-pop-model[data-phone] .cx-model-row {
+  min-height: 52px;
+}
+
+[data-pi-ui="codex"] .cx-model-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-pi-ui="codex"] .cx-model-tail {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  width: 36px;
+  margin-left: auto;
+}
+
+[data-pi-ui="codex"] .cx-model-edit {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--codex-text-2);
+  font-family: var(--codex-font-sans);
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+[data-pi-ui="codex"] .cx-model-check {
+  color: var(--codex-accent-text);
+  font-size: 13px;
+}
+
+[data-pi-ui="codex"] .cx-model-card-anchor {
+  position: absolute;
+  left: calc(100% + 8px);
+  z-index: 40;
+  transform: translateY(-50%);
+}
+
+[data-pi-ui="codex"] .cx-model-card {
+  width: 248px;
+  padding: 12px 14px;
+  border-radius: var(--codex-radius-card);
+  background: var(--codex-overlay);
+  box-shadow: var(--codex-shadow-pop);
+  color: var(--codex-text);
+  text-align: left;
+  white-space: normal;
+}
+
+[data-pi-ui="codex"] .cx-model-card-title {
+  margin-bottom: 5px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+[data-pi-ui="codex"] .cx-model-card-facts {
+  color: var(--codex-text-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+[data-pi-ui="codex"] .cx-model-card-key {
+  margin-top: 4px;
+  color: var(--codex-text-3);
+  font-size: 11.5px;
+}
+
+[data-pi-ui="codex"] .cx-model-card-cost {
+  margin-top: 7px;
+  color: var(--codex-status-warn);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+[data-pi-ui="codex"] .cx-model-panel {
+  width: 212px;
+  padding: 6px;
+  border-radius: var(--codex-radius-card);
+  background: var(--codex-overlay);
+  box-shadow: var(--codex-shadow-pop);
+  color: var(--codex-text);
+  text-align: left;
+  white-space: normal;
+}
+
+[data-pi-ui="codex"] .cx-model-section-label {
+  padding: 6px 8px 2px;
+  color: var(--codex-text-3);
+  font-size: 11.5px;
+}
+
+[data-pi-ui="codex"] .cx-model-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--codex-radius-sm);
+  background: transparent;
+  color: var(--codex-text);
+  font-family: var(--codex-font-sans);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-pi-ui="codex"] .cx-model-option:hover {
+  background: var(--codex-hover);
+}
+
+[data-pi-ui="codex"] .cx-model-option .cx-model-tail {
+  color: var(--codex-accent-text);
+  font-size: 13px;
+}
+
+[data-pi-ui="codex"] .cx-model-option-phone {
+  min-height: 44px;
+}
+
+[data-pi-ui="codex"] .cx-model-note {
+  padding: 6px 8px;
+  color: var(--codex-text-3);
+  font-size: 12.5px;
+}
+
+[data-pi-ui="codex"] .cx-model-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px 8px;
+  color: var(--codex-text-3);
+  font-size: 13px;
+}
+
+[data-pi-ui="codex"] .cx-model-configure {
+  padding: 7px 16px;
+  border: 0;
+  border-radius: var(--codex-radius-pill);
+  background: var(--codex-primary-bg);
+  color: var(--codex-primary-fg);
+  font-family: var(--codex-font-sans);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+[data-pi-ui="codex"] .cx-model-page-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 4px;
+}
+
+[data-pi-ui="codex"] .cx-model-back {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--codex-text-2);
+  font-family: var(--codex-font-sans);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+[data-pi-ui="codex"] .cx-model-page-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+[data-pi-ui="codex"] .cx-model-page-facts {
+  padding: 0 8px 4px;
+  color: var(--codex-text-3);
+  font-size: 12.5px;
+}
+
+[data-pi-ui="codex"] .cx-model-page-cost {
+  padding: 0 8px 4px;
+  color: var(--codex-status-warn);
+  font-size: 12.5px;
+}
+
+[data-pi-ui="codex"] .cx-model-page-body {
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 /* ============================================================

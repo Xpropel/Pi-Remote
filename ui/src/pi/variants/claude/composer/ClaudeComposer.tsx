@@ -4,8 +4,8 @@ import type { PiContainerProps } from "@/pi/containers/types"
 import { contextReadout } from "@/relay/contextUsage"
 import { modelPillName, thinkingLevelZh } from "@/pi/model/models"
 import { ClaudeContextRing, ClaudeIconButton, ClaudeMenu, ClaudeMenuItem, ClaudeMenuLabel, ClaudeMenuSeparator, ClaudeSwitch } from "../primitives/ClaudePrimitives"
-import { modelShortName } from "../model/format"
-import { selectModel, selectThinking, useModelMenuData } from "../model/logic"
+import { selectThinking, useModelMenuData } from "../model/logic"
+import { ClaudeModelMenu } from "./ClaudeModelMenu"
 import { sessionHeadOf } from "../model/view"
 import { usePiUiCapabilities } from "@/pi/extensions"
 import { useComposerEnter } from "@/pi/headless/useComposerEnter"
@@ -15,6 +15,8 @@ import { bytesText } from "../model/format"
 import { scheduleDisplayText, scheduleStatusLine } from "@/relay/schedule"
 import { ClaudeScheduleForm } from "./ClaudeScheduleForm"
 import { useNow } from "@/pi/hooks/useNow"
+import { rememberSettingsPage } from "@/pi/settings"
+import { rememberMobileSettingsPage } from "@/pi/settings/mobile"
 
 /**
  * Claude v2 自有 composer（§1.8 [C-图9⑤] / C-01-5：S3 白盒、20 圆角、44–384 高、阴影公式、
@@ -38,8 +40,11 @@ function sendModeLabel(mode: ClaudeSendMode): string {
 }
 
 export function ClaudeComposer({ p }: { p: PiContainerProps }) {
-  const { relay, ui, variant } = p
+  const { relay, ui, variant, act } = p
   const [modelOpen, setModelOpen] = useState(false)
+  // Auto (device default model) is viewer-local state, remembered per device
+  // (redesign section 4); unset means "infer from the current model".
+  const [autoByDevice, setAutoByDevice] = useState<Record<string, boolean>>({})
   const caps = usePiUiCapabilities()
   const head = sessionHeadOf(relay)
   const [capSheet, setCapSheet] = useState<"plugins" | "connectors" | "skills" | null>(null)
@@ -82,6 +87,13 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
   const placeholder = blocked ? "等待授权，先在审批卡上回答" : composer.placeholder || "继续追问…"
   const modelName = modelPillName({ model: relay.model, modelMeta: relay.modelMeta }) ?? "选择模型"
   const thinking = relay.thinkingLevel ? thinkingLevelZh(relay.thinkingLevel) : ""
+  const autoDeviceKey = relay.selectedDeviceId ?? ""
+  const modelAuto =
+    autoByDevice[autoDeviceKey] ??
+    (!!modelData.defaultModel && modelData.rows.some((row) => row.current && row.key === modelData.defaultModel?.key))
+  const setModelAuto = (next: boolean) => setAutoByDevice((prev) => ({ ...prev, [autoDeviceKey]: next }))
+  const modelButtonName = modelAuto ? "Auto" : modelName
+  const modelButtonThinking = modelAuto ? "" : thinking
   const context = contextReadout((relay.usage?.contextUsage ?? null) as Parameters<typeof contextReadout>[0])
   const mayStop = relay.busy && relay.authed
   const action = stopVisible || mayStop ? "stop" : "send"
@@ -272,13 +284,13 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
             <button
               type="button"
               className="claude-composer-model"
-              aria-label={`模型 ${modelName}${thinking ? `，思考级别 ${thinking}` : ""}，切换模型`}
+              aria-label={modelAuto ? "模型 Auto（设备默认），切换模型" : `模型 ${modelName}${thinking ? `，思考级别 ${thinking}` : ""}，切换模型`}
               onClick={() => setModelOpen((v) => !v)}
               disabled={blocked}
               data-open={modelOpen ? "" : undefined}
             >
-              <span className="claude-composer-model-name">{modelName}</span>
-              {thinking ? <span className="claude-composer-thinking">{thinking}</span> : <ChevronDown size={12} strokeWidth={2} aria-hidden />}
+              <span className="claude-composer-model-name">{modelButtonName}</span>
+              {modelButtonThinking ? <span className="claude-composer-thinking">{modelButtonThinking}</span> : <ChevronDown size={12} strokeWidth={2} aria-hidden />}
             </button>
             <ClaudeSwitch
               checked={relay.thinkingLevel !== "" && relay.thinkingLevel !== "off" && relay.thinkingLevel !== "none"}
@@ -322,55 +334,23 @@ export function ClaudeComposer({ p }: { p: PiContainerProps }) {
       </div>
 
       {modelOpen ? (
-        <div className="claude-composer-popover" role="dialog" aria-label="模型与思考">
-          <div className="claude-composer-popover-head">
-            <span className="claude-composer-popover-title">模型与思考</span>
-            <ClaudeIconButton label="关闭" icon={<X size={13} strokeWidth={2} />} className="claude-icon-btn-sm" onClick={() => setModelOpen(false)} />
-          </div>
-          {modelData.loading ? <p className="claude-menu-note">正在读取模型清单…</p> : null}
-          {modelData.rows.map((row) => (
-            <button
-              key={row.key}
-              type="button"
-              className="claude-model-row"
-              data-current={row.current ? "" : undefined}
-              disabled={row.unconfigured}
-              onClick={() => {
-                selectModel(relay, row)
-                setModelOpen(false)
-              }}
-            >
-              <span className="claude-model-row-main">
-                <span className="claude-model-row-name">{modelShortName(row.name)}</span>
-                {row.spec ? <span className="claude-model-row-spec">{row.spec}</span> : null}
-                {row.unconfigured ? <span className="claude-model-row-spec">未配置</span> : null}
-              </span>
-              {row.current ? <Check size={14} strokeWidth={2} className="claude-model-row-check" aria-hidden /> : null}
-            </button>
-          ))}
-          {modelData.segments.length > 0 ? (
-            <>
-              <div className="claude-menu-sep" role="separator" />
-              <p className="claude-menu-label">思考级别</p>
-              <div className="claude-thinking-seg">
-                {modelData.segments.map((segment) => (
-                  <button
-                    key={segment.value}
-                    type="button"
-                    className="claude-thinking-seg-item"
-                    data-active={segment.value === relay.thinkingLevel ? "" : undefined}
-                    onClick={() => {
-                      selectThinking(relay, segment.value)
-                      setModelOpen(false)
-                    }}
-                  >
-                    {segment.label}
-                  </button>
-                ))}
-              </div>
-            </>
-          ) : null}
-        </div>
+        <ClaudeModelMenu
+          relay={relay}
+          rows={modelData.rows.filter((row) => !row.unconfigured)}
+          segments={modelData.segments}
+          loading={modelData.loading}
+          defaultModel={modelData.defaultModel}
+          auto={modelAuto}
+          onAutoChange={setModelAuto}
+          onClose={() => setModelOpen(false)}
+          onConfigureModels={() => {
+            setModelOpen(false)
+            rememberSettingsPage("model")
+            rememberMobileSettingsPage("model")
+            act.openSettings()
+          }}
+          phone={variant === "phone"}
+        />
       ) : null}
 
       {queueOpen ? (

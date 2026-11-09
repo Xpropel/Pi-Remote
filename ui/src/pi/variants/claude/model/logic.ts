@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import type { PiContainerProps, Relay } from "@/pi/containers/types"
 import { settingsPrefsWithDeviceSwitches, settingsWritesOf, type PiSettingsPrefs } from "@/pi/model/settingsView"
-import { modelRowsOf, thinkingSegmentsOf } from "@/pi/model/models"
+import { modelDefaultOf, modelRowsOf, thinkingSegmentsOf } from "@/pi/model/models"
 import { platformTabOfDeviceId } from "./platformUi"
 import { setClaudeWorkspaceMode } from "./uiMemory"
 
@@ -88,6 +88,8 @@ export function writePrefs(p: Pick<PiContainerProps, "act" | "relay">, patch: Pa
 export type ModelMenuData = {
   rows: ReturnType<typeof modelRowsOf>
   segments: { value: string; label: string }[]
+  /** Device default model from the models reply (redesign section 2.5); null hides the Auto row */
+  defaultModel: ReturnType<typeof modelDefaultOf>
   loading: boolean
 }
 
@@ -101,7 +103,8 @@ export function useModelMenuData(relay: Relay, open: boolean): ModelMenuData {
     [models.phase, models.data, relay.model, relay.modelMeta],
   )
   const segments = useMemo(() => (levels.phase === "ready" ? thinkingSegmentsOf(levels.data) : []), [levels.phase, levels.data])
-  return { rows, segments, loading: models.phase === "loading" || levels.phase === "loading" }
+  const defaultModel = useMemo(() => (models.phase === "ready" ? modelDefaultOf(models.data) : null), [models.phase, models.data])
+  return { rows, segments, defaultModel, loading: models.phase === "loading" || levels.phase === "loading" }
 }
 
 export function selectModel(relay: Relay, row: { provider?: string; modelId?: string; unconfigured?: boolean }) {

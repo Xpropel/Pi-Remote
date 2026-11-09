@@ -8731,10 +8731,28 @@ class Bridge {
     return { text: "" };
   }
 
+  /** Device default model for the model picker's Auto row, read from the same
+   *  settings source cmdGetSettings() uses (the running process's
+   *  pi.getSettings()). defaultProvider/defaultModel only count as a pair —
+   *  the settings write bridge enforces the same pairing on writes. Returns
+   *  null when either half is missing or not a non-empty string, so callers
+   *  omit the field instead of guessing; never substitutes the session's
+   *  current model. */
+  _defaultModelSetting(): any {
+    const provider = this._settingOr("defaultProvider", null);
+    const modelId = this._settingOr("defaultModel", null);
+    if (typeof provider !== "string" || typeof modelId !== "string") return null;
+    const trimmedProvider = provider.trim();
+    const trimmedModelId = modelId.trim();
+    if (!trimmedProvider || !trimmedModelId) return null;
+    return { provider: trimmedProvider, id: trimmedModelId };
+  }
+
   cmdGetModels() {
     // 官方入口：ctx.modelRegistry（extensions.md：model runtime 由 host 拥有）。
     // 方法名以实测为准（probe7）：modelRegistry 上没有 getAvailableModels，可用的是 getAll/getAvailable。
     // 顺序对齐 RPC get_available_models 的语义：先 getAll 全量，再 getAvailable；都不可用才回退读 models.json。
+    const defaultModel = this._defaultModelSetting();
     const mr = this.ctx && this.ctx.modelRegistry;
     for (const fn of ["getAll", "getAvailable", "getAvailableModels"]) {
       if (mr && typeof mr[fn] === "function") {
@@ -8742,12 +8760,25 @@ class Bridge {
           const list = mr[fn]();
           if (Array.isArray(list) && list.length) {
             return {
+              ...(defaultModel ? { defaultModel } : {}),
               models: list.map(toModel),
             // available = 认证可用（getAvailable）——告诉前端哪些真能切（[探针 probe12]：
             // setModel 对未认证模型返回 false，pi 自己的 /model 也不会列出来）
             available: (() => {
               try {
-                if (mr && typeof mr.getAvailable === "function") return (mr.getAvailable() || []).map(toModel);
+                if (mr && typeof mr.getAvailable === "function") {
+                  // Model picker addition: attach per-model thinkingLevels,
+                  // computed from the RAW registry model. toModel() does not
+                  // forward thinkingLevelMap/thinkingLevels, so computing
+                  // after projection would silently degrade every entry to
+                  // the map-less fallback. The full `models` list above stays
+                  // untouched (frame size).
+                  return (mr.getAvailable() || []).map((rawModel: any) => {
+                    const projected = toModel(rawModel);
+                    if (projected) projected.thinkingLevels = availableThinkingLevels(rawModel);
+                    return projected;
+                  });
+                }
               } catch {}
               return [];
             })(),
@@ -8761,7 +8792,7 @@ class Bridge {
       const nodePath = require("node:path");
       const agentDir = process.env.PI_CODING_AGENT_DIR || nodePath.join(os.homedir(), ".pi", "agent");
       const modelsPath = nodePath.join(agentDir, "models.json");
-      if (!fs.existsSync(modelsPath)) return { models: [] };
+      if (!fs.existsSync(modelsPath)) return { models: [], ...(defaultModel ? { defaultModel } : {}) };
       const raw = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
       const out = [];
       const providers = (raw && raw.providers) || {};
@@ -8769,9 +8800,9 @@ class Bridge {
         const models = (cfg && cfg.models) || [];
         for (const m of models) out.push(toModel({ provider, ...m }));
       }
-      return { models: out };
+      return { models: out, ...(defaultModel ? { defaultModel } : {}) };
     } catch (e) {
-      return { models: [], error: e.message };
+      return { models: [], error: e.message, ...(defaultModel ? { defaultModel } : {}) };
     }
   }
 
