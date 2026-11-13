@@ -23,7 +23,7 @@ PI_REMOTE_PROJECTS=D:\pi-myself;D:\work\app   # 白名单目录（新建/启用�
 ```
 
 - 首次生成辅助：`deploy/attach.cjs --init` 生成本机 `.env` 片段（uuid + name + 默认 relay），已存在则不动。
-- `PI_REMOTE_LABEL` 语义不变（会话标题兜底）。
+- `PI_REMOTE_LABEL` 已不再使用：会话标题按会话名 → 首条消息 → 工作区名显示，设备显示名用 `PI_REMOTE_DEVICE_NAME`。
 
 ## 3. `attach` 连接命令（`deploy/attach.cjs`）
 

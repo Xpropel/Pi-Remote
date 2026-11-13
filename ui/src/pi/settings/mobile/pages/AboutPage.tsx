@@ -10,6 +10,7 @@
  * 身份位只显示中转服务器名（serverDisplayName），不出现用户本名。
  */
 import { useEffect, useState } from "react"
+import { PiMark } from "@/components/pi/shared"
 import { normalizeHostDiag, type HostDiag } from "@/pi/model/hostDiag"
 import { serverDisplayName } from "@/pi/model/serverName"
 import { CLIENT_VERSION } from "@/relay/protocol"
@@ -199,7 +200,7 @@ export function AboutPage() {
     <MobilePageBody page="about">
       <MobileCard className="sm-identity">
         <span className="sm-identity-logo" aria-hidden="true">
-          {">_"}
+          <PiMark size={48} />
         </span>
         <span className="sm-identity-copy">
           <span className="sm-identity-name">Pi-Remote</span>

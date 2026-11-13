@@ -1,25 +1,28 @@
 import type { ComponentPropsWithoutRef } from "react"
 import { cn } from "@/lib/utils"
-import { STREAM_INSET, STREAM_TEXT } from "./styles"
+import { STREAM_FG, STREAM_INSET, STREAM_TEXT } from "./styles"
 
 /**
  * 正文排版规则，全部挂在 :where(根) 下，特异性为 0：屏幕给子元素的普通 utility class 总能覆盖。
  * 数值来源：specs/ch2 §0.4（正文 14/21、块间距 6、列表缩进 28、项间距 6、圆点中心 +17）、
  * specs/ch1 #1（h2 18/600、分隔线、有序列表序号右对齐到文字左缘 −8）、tokens.md（h3 15/600、Summary/Testing 14/600）。
+ * 标题的节奏：上面空 16（新的一节）、下面只空 4（标题贴着自己那一节，不和上一节的列表项等距）。
  */
 const PROSE = [
   // 子块不再叠加对话列的内缩
   "[&>*]:[--stream-inset:0px]",
-  // 行内
-  "[:where(&)_:is(strong,b)]:font-(--cw-weight-semibold)",
+  // 行内：加粗用满亮度的 --cw-text（正文字色 --cw-pi-stream-fg 在深色下压暗一档）
+  "[:where(&)_:is(strong,b)]:font-(--cw-weight-semibold) [:where(&)_:is(strong,b)]:text-(--cw-text)",
   "[:where(&)_em]:italic",
   // 段落与列表：块间距 6（相邻 margin 折叠）
   "[:where(&)_:is(p,ul,ol)]:my-(--cw-space-1-5)",
   // 标题
   "[:where(&)_:is(h2,h3,h4)]:font-(--cw-weight-semibold) [:where(&)_:is(h2,h3,h4)]:text-(--cw-text)",
-  "[:where(&)_h2]:mt-(--cw-space-3) [:where(&)_h2]:mb-(--cw-space-1-5) [:where(&)_h2]:text-(length:--cw-text-xl) [:where(&)_h2]:leading-[1.5]",
-  "[:where(&)_h3]:my-(--cw-space-1-5) [:where(&)_h3]:text-(length:--cw-text-lg)",
-  "[:where(&)_h4]:my-(--cw-space-1-5) [:where(&)_h4]:text-(length:--cw-text-base)",
+  "[:where(&)_h2]:mt-(--cw-space-5) [:where(&)_h2]:mb-(--cw-space-1-5) [:where(&)_h2]:text-(length:--cw-text-xl) [:where(&)_h2]:leading-[1.5]",
+  "[:where(&)_h3]:mt-(--cw-space-4) [:where(&)_h3]:mb-(--cw-space-1) [:where(&)_h3]:text-(length:--cw-text-lg)",
+  "[:where(&)_h4]:mt-(--cw-space-4) [:where(&)_h4]:mb-(--cw-space-1) [:where(&)_h4]:text-(length:--cw-text-base)",
+  // 标题后的第一块紧贴标题（特异性 0,0,2，压过上面段落 / 列表的 6）
+  "[:where(&)_:is(h3,h4)+:is(p,ul,ol)]:mt-(--cw-space-1)",
   // 分隔线（#1：段落 → 线约 24，线 → 标题约 12）
   "[:where(&)_hr]:mt-(--cw-space-6) [:where(&)_hr]:mb-(--cw-space-3) [:where(&)_hr]:border-t [:where(&)_hr]:border-(--cw-divider)",
   // 列表
@@ -53,5 +56,5 @@ export type AgentProseProps = ComponentPropsWithoutRef<"div">
  * 根节点是普通块级元素，子块的上下 margin 会和外面的 ReceiptLine、VideoCard 等折叠，节奏与帧一致。
  */
 export function AgentProse({ className, ...rest }: AgentProseProps) {
-  return <div className={cn(STREAM_TEXT, STREAM_INSET, "min-w-0 text-(--cw-text)", PROSE, className)} {...rest} />
+  return <div className={cn(STREAM_TEXT, STREAM_INSET, STREAM_FG, "min-w-0", PROSE, className)} {...rest} />
 }

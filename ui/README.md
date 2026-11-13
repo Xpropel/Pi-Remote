@@ -12,7 +12,7 @@ React 19 + TypeScript + Vite 8 + Tailwind CSS 4。构建产物写到仓库根的
 
 - `vite.config.ts` 的生产构建入口只有 `index.html`。relay 对没有扩展名的路径回退到 `index.html`，所以旧地址 `/m`、`/b` 打开的也是这套界面。
 - `src/pi/main.tsx` 按这个顺序引样式：`styles/tokens.local.css` → `styles/tokens.css` → `styles/index.css`，然后挂 `PiApp`。
-- `PiApp` 按宽度选布局：≥ 1024 是桌面（`containers/DesktopApp.tsx`），否则是手机（`containers/PhoneApp.tsx`）。平板（≥ 768）用手机布局，对话列限宽居中。
+- `PiApp` 按宽度选布局：≥ 768 是桌面外壳（`containers/DesktopApp.tsx`），否则是手机（`containers/PhoneApp.tsx`）。768–1023 是桌面外壳的平板档：侧栏默认收成 56 窄栏，展开时浮在正文上（点外面、Esc 或打开会话后收回）；右侧面板（改动 / 终端 / 文件）也浮在正文上，不挤压对话列，最多盖住正文的一半，点正文空处或按 Esc 收起。平板档的展开 / 收起不写偏好，≥ 1024 仍按用户在桌面上的选择。
 - relay 地址：构建时的 `VITE_RELAY_URL` 优先；没有就连页面同源的 ws / wss；不是 http(s) 页面时用 `ws://127.0.0.1:7002`（`src/relay/useRelay.ts` 的 `wsUrl`）。dev server 和 relay 不同源，所以开发时连本机 relay 要设 `VITE_RELAY_URL=ws://127.0.0.1:7002`。
 
 ## 目录
@@ -49,7 +49,7 @@ ui/
 
 - 画廊的区域代号 a / b / c 分别对应 `components/pi/shell`、`conversation`、`composer`。屏幕 id（例如 `a/login`）也是截图文件名，所以画廊这边保留了代号。
 - 部件不读 relay，也不读存储。数据从容器经 props 传进来；交互态的开关走 `PiStaticProvider`（画廊静态）和 `PiLayerProvider`（浮层登记、Esc 分层）。
-- 旧界面的组件、样式和页面在切换时删掉了。`chat/`、`shell/`、`mobile/`、`conversation/` 里留下的是新界面还在用的纯逻辑和 hook，例如 `chat/composerMachine.ts`（发送锁）、`chat/slashCommands.ts`、`chat/composer/faviconBadge.ts`（完成角标）、`chat/composer/sound.ts`、`shell/breakpoints.ts`（1024 断点）、`mobile/useMobileViewport.ts`（键盘与可视视口）、`conversation/remoteImage.ts`。另有 6 份模型文件（`chat/{entryCopy,optionsKey,thinkingLevels,usageLine}.ts`、`conversation/{attachmentModel,diffModel}.ts`）现在没有界面引用，按实施计划的保留表留着，待以后清理。
+- 旧界面的组件、样式和页面在切换时删掉了。`chat/`、`shell/`、`mobile/`、`conversation/` 里留下的是新界面还在用的纯逻辑和 hook，例如 `chat/composerMachine.ts`（发送锁）、`chat/slashCommands.ts`、`chat/composer/faviconBadge.ts`（完成角标）、`chat/composer/sound.ts`、`shell/breakpoints.ts`（768 断点与平板档）、`mobile/useMobileViewport.ts`（键盘与可视视口）、`conversation/remoteImage.ts`。另有 6 份模型文件（`chat/{entryCopy,optionsKey,thinkingLevels,usageLine}.ts`、`conversation/{attachmentModel,diffModel}.ts`）现在没有界面引用，按实施计划的保留表留着，待以后清理。
 
 ## 令牌
 

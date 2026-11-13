@@ -10,7 +10,7 @@ const { RELAY_CAPS, parseHello, helloVersionError, helloText, hasCap, failureCod
 const { attachCommon, keepalive } = require("./conn");
 const { PAIR_CODES_MAX, sha256hex, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, b64buf, verifyEd25519, cleanPubKeys, cleanPairKeys, popPayload, authPayload, keyUpdatePayload, p256PubKey, pairSourceBlocked, notePairFailure, requestSource, checkDeviceToken } = require("./pairing");
 const { REMOTE_MESSAGE_EVENTS, finishWaiter, settleEntry } = require("./commands");
-const { MAX_DEVICE_NAME, normalizePlatform, cleanProjects, blankDevice, boundAccount } = require("./devices");
+const { MAX_DEVICE_NAME, normalizePlatform, canonicalCwd, cleanProjects, blankDevice, boundAccount } = require("./devices");
 const { cancelResend, restartResend, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, broadcastToolEndMeta, sendCachedTaskList, sendCachedAgentState, DROPPABLE_LOCAL_EVENTS, shrinkImagesDeep, ownRoom, clearSessionState, pushDialogGate, observeRoomTurnEvent, broadcastRoomAttention, broadcastRoomWaiting, recordFinalFrame, snapshotBodyWithFinalFrames } = require("./rooms");
 const { ackTrackerOf, isAckFp } = require("./acktrack");
 const { createNotifier } = require("./notify");
@@ -205,6 +205,11 @@ function rememberCompaction(room, event) {
 /** 只留有限数字；缺字段、字符串、NaN、Infinity 都记 null。 */
 function finiteOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** 扩展声明的当前会话名：非空字符串才算，其余（null、空串、非字符串）都是「未命名」。 */
+function liveSessionName(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 /** 自动重试开始后、结束前，房间记下 attempt、maxAttempts、delayMs、errorMessage。
@@ -560,7 +565,8 @@ function rememberToolStart(room, event) {
   const entry = ensureRunningTool(room, id);
   entry.fromStart = true;
   if (typeof entry.startedAt !== "number" || !Number.isFinite(entry.startedAt)) entry.startedAt = Date.now();
-  if (event && Object.prototype.hasOwnProperty.call(event, "toolName")) {
+  // 工具名到了才记（有的模型开始调用时还没报名字）：空名不盖掉已知的名字
+  if (event && typeof event.toolName === "string" && event.toolName) {
     const toolName = cloneToolField(event.toolName);
     if (toolName !== undefined) entry.toolName = toolName;
   }
@@ -1485,10 +1491,14 @@ function startLocalServer(config, rooms, store, relayContext, onListening, onErr
               const deviceScope = fromWindow && frame.scope === "device" && typeof frame.root === "string" && frame.root
                 ? { root: frame.root, platform: dev ? dev.platform : "" }
                 : null;
+              // 旧扩展把会话 cwd 一律写成正斜杠（D:/x），attach 报原样（D:\x）：入库前按设备平台统一，索引里同一目录只有一种写法
+              const platform = dev ? dev.platform : "";
               const result = index.applyManifest(accountId, deviceId, {
                 full: frame.full === true,
                 updatedAt: frame.updatedAt,
-                sessions: frame.sessions,
+                sessions: Array.isArray(frame.sessions)
+                  ? frame.sessions.map((row) => (row && typeof row.cwd === "string" ? { ...row, cwd: canonicalCwd(row.cwd, platform) } : row))
+                  : frame.sessions,
                 removed: frame.removed,
                 truncated: frame.truncated === true,
               }, Date.now(), deviceScope);
@@ -1589,12 +1599,18 @@ function startLocalServer(config, rooms, store, relayContext, onListening, onErr
             room.lastLocal = socket;
             room.online = true;
             room.label = (frame.room && frame.room.label) || room.label;
-            room.cwd = (frame.room && frame.room.cwd) || room.cwd;
+            // 旧扩展不带 sessionName（它的 label 在未命名时是设备标签）：记 null，名册用索引里的会话名
+            room.sessionName = liveSessionName(frame.room && frame.room.sessionName);
+            // 旧扩展 / 小写盘符启动的 pi 报上来的写法不一：按平台统一（D:\x），名册与「同目录」判断只见一种写法
+            room.cwd = canonicalCwd((frame.room && frame.room.cwd) || room.cwd, (frame.room && frame.room.platform) || room.platform);
             room.deviceId = (frame.room && typeof frame.room.deviceId === "string" && frame.room.deviceId.trim()) ? frame.room.deviceId.trim() : null;
             // 房间账号同样由服务端绑定（按设备反查），不信 room.accountId
             room.accountId = boundAccount(index, devices, room.deviceId, config.accountId);
             if (frame.room && frame.room.deviceName) room.deviceName = String(frame.room.deviceName).slice(0, MAX_DEVICE_NAME);
             if (frame.room && frame.room.platform) room.platform = normalizePlatform(String(frame.room.platform)) || room.platform;
+            // 扩展报的 pi 版本（旧扩展不带 → null）：只收短的可打印串，原样给名册
+            const piVersion = frame.room && typeof frame.room.piVersion === "string" ? frame.room.piVersion.trim() : "";
+            room.piVersion = piVersion && piVersion.length <= 64 && /^[\x21-\x7e]+$/.test(piVersion) ? piVersion : null;
             room.lastRegisterAt = Date.now();
             noteActive(room);
             // 分支换代 epoch（扩展在 navigate_tree / 终端 /tree 之后递增）：同一扩展实例（instance）的
@@ -1977,8 +1993,13 @@ function startLocalServer(config, rooms, store, relayContext, onListening, onErr
           case "state": {
             const room = ownRoom(socket, frame);
             if (!room) return;
+            const wasBusy = room.busy;
             room.busy = !!frame.busy;
-            broadcast(room.viewers, { type: "room_state", room: room.id, busy: room.busy }, config);
+            const stateFrame = { type: "room_state", room: room.id, busy: room.busy };
+            if (room.turnStopped) stateFrame.turnStopped = true;
+            broadcast(room.viewers, stateFrame, config);
+            // 别房的运行点、回合落沿（UI 的 RoomTurnTracker）与时间列都靠名册：busy 真变了才广播
+            if (wasBusy !== room.busy) rooms.broadcastRoomList();
             break;
           }
           case "room_label": {
@@ -1986,10 +2007,17 @@ function startLocalServer(config, rooms, store, relayContext, onListening, onErr
             const room = ownRoom(socket, frame);
             if (!room) return;
             const label = typeof frame.label === "string" && frame.label.trim() ? frame.label.trim() : room.label;
+            let renamed = false;
             if (label && label !== room.label) {
               room.label = label;
-              rooms.broadcastRoomList();
+              renamed = true;
             }
+            const sessionName = liveSessionName(frame.sessionName);
+            if (sessionName !== room.sessionName) {
+              room.sessionName = sessionName;
+              renamed = true;
+            }
+            if (renamed) rooms.broadcastRoomList();
             break;
           }
           case "usage": {

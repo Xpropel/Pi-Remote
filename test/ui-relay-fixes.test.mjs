@@ -499,16 +499,12 @@ test("B-2/B-3 接线：三条发送路径都接住命令回包的 disposition（
   assert.match(flush, /noteSendAccepted\(send\.sessionId, send\.cid, accepted\)/, "lazy 气泡同样推进")
 })
 
-test("B-2/B-3 呈现：awaiting 是正式状态、三壳气泡都写「已到设备 · 等待 pi 处理」、不再只有发送中", () => {
+test("B-2/B-3 呈现：awaiting 是正式状态、气泡写「已到设备 · 等待 pi 处理」、不再只有发送中", () => {
   const transcript = readFileSync(new URL("../ui/src/relay/transcript.ts", import.meta.url), "utf8")
   assert.match(transcript, /export type SendStatus = "sending" \| "awaiting" \| "echoed" \| "delivered"/, "reducer 状态集含 awaiting")
   const shared = readFileSync(new URL("../ui/src/components/pi/shared/types.ts", import.meta.url), "utf8")
   assert.match(shared, /export type PiSendStatus = "sending" \| "awaiting" \| "echoed" \| "delivered"/, "呈现层状态集与 reducer 对齐")
 
   const parts = readFileSync(new URL("../ui/src/components/pi/conversation/PiTurnParts.tsx", import.meta.url), "utf8")
-  assert.match(parts, /item\.status === "awaiting"[\s\S]{0,700}已到设备 · 等待 pi 处理/, "共享气泡（Cursor/手机）awaiting 文案")
-  const claude = readFileSync(new URL("../ui/src/pi/variants/claude/thread/ClaudeThread.tsx", import.meta.url), "utf8")
-  assert.match(claude, /item\.status === "awaiting"[\s\S]{0,600}已到设备 · 等待 pi 处理/, "Claude 壳 awaiting 文案")
-  const codex = readFileSync(new URL("../ui/src/pi/variants/codex/thread/CodexUserBubble.tsx", import.meta.url), "utf8")
-  assert.match(codex, /item\.status === "awaiting"\) status = "已到设备 · 等待 pi 处理"/, "Codex 壳 awaiting 文案")
+  assert.match(parts, /item\.status === "awaiting"[\s\S]{0,700}已到设备 · 等待 pi 处理/, "共享气泡（桌面/手机）awaiting 文案")
 })

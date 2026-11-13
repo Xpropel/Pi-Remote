@@ -3,7 +3,7 @@
 // 设置页实现不改；本测试守住「宿主真的消费了本机偏好」：
 //   - PiApp / #/live 都挂 PiSettingsHost（产品与画廊同一棵树）；
 //   - 默认设备、通知四通道、快捷键、隐私 data 属性都有接线；
-//   - 隐私 CSS 覆盖三套桌面与移动壳的标题/摘要，并且 hover / 焦点可还原；
+//   - 隐私 CSS 覆盖桌面与移动壳的标题/摘要，并且 hover / 焦点可还原；
 //   - 16 个快捷键动作在宿主分发器里都有分支；
 //   - 不申请系统通知权限、不改真实数据。
 import test from "node:test"
@@ -43,7 +43,6 @@ const code = Object.fromEntries(Object.entries(FILES).map(([key, file]) => [key,
 const types = await import("../ui/src/pi/settings/types.ts")
 const model = await import("../ui/src/pi/settings/model.ts")
 const hostLogic = await import("../ui/src/pi/model/settingsHost.ts")
-const allowlist = await import("../ui/src/pi/headless/allowlist.ts")
 const shortcutsLogic = await import("../ui/src/pi/settings/pages/shortcutsLogic.ts")
 
 /* ------------------------------------------------------------------ 入口接线 */
@@ -51,7 +50,7 @@ const shortcutsLogic = await import("../ui/src/pi/settings/pages/shortcutsLogic.
 test("产品入口 PiApp 挂 PiSettingsHost；旧的三个通知 hook 不再在这里各自接线", () => {
   assert.match(code.piApp, /from "@\/pi\/hooks\/PiSettingsHost"/)
   assert.match(code.piApp, /<PiSettingsHost\b[^>]*relay=\{relay\}[^>]*ui=\{ui\}[^>]*act=\{act\}/, "PiSettingsHost 必须拿到 relay / ui / act")
-  assert.match(code.piApp, /<Variant \{\.\.\.app\} \/>/, "变体仍在 PiSettingsHost 内")
+  assert.match(code.piApp, /<CursorApp \{\.\.\.app\} \/>/, "界面树仍在 PiSettingsHost 内")
   assert.doesNotMatch(code.piApp, /useCompletionBadge\(|useCompletionSound\(|usePageTitle\(/, "PiApp 不应再各自调用通知 hook")
   assert.match(code.piApp, /import "@\/pi\/styles\/privacy\.css"/, "产品入口未加载隐私样式")
 })
@@ -156,18 +155,15 @@ test("隐私模式：偏好字段存在；根节点写 data-pi-privacy 并镜像
   assert.match(code.host, /<PiPrivacyProvider value=\{gate\.privacy\}>/)
 })
 
-test("隐私 CSS：覆盖三套桌面 / 移动壳标题与摘要，模糊且 hover / 焦点可看清", () => {
+test("隐私 CSS：覆盖桌面 / 移动壳标题与摘要，模糊且 hover / 焦点可看清", () => {
   const css = code.privacyCss
   for (const selector of [
     ".sb-row-title",
     ".sb-bubble-title",
-    ".claude-row-title",
-    ".claude-session-pill-title",
-    ".cx-row-title",
-    ".cx-thread-head-title",
     ".pm-row-title",
     ".pm-row-line2",
     ".pm-drawer-session-title",
+    ".pm-topbar-title-chat",
     '[data-slot="titlebar-title"]',
   ]) {
     assert.ok(css.includes(selector), `隐私 CSS 缺 ${selector}`)
@@ -244,26 +240,6 @@ test("不申请系统通知权限、不新增 Notification / ServiceWorker", () 
     assert.doesNotMatch(code[key], /Notification\.requestPermission|new Notification\(|serviceWorker\.register/, `${FILES[key]} 不应申请系统通知`)
   }
   assert.match(code.noticeHook, /relay\.pushNotice/, "应用内提醒走现有通知栈")
-})
-
-test("变体独立性：新宿主 hook 不在变体白名单里，变体源码没有直接 import", () => {
-  assert.equal(allowlist.PI_VARIANT_ALLOWED_HOOKS.includes("@/pi/hooks/PiSettingsHost"), false)
-  assert.equal(allowlist.PI_VARIANT_ALLOWED_HOOKS.includes("@/pi/hooks/usePiSettingsPrefs"), false)
-  for (const dir of ["claude", "codex"]) {
-    const root = path.join(ROOT, "ui/src/pi/variants", dir)
-    const walk = (current, out = []) => {
-      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-        const full = path.join(current, entry.name)
-        if (entry.isDirectory()) walk(full, out)
-        else if (/\.(ts|tsx)$/.test(entry.name)) out.push(full)
-      }
-      return out
-    }
-    for (const file of walk(root)) {
-      const source = stripComments(fs.readFileSync(file, "utf8"))
-      assert.doesNotMatch(source, /from "@\/pi\/hooks\/(?:PiSettingsHost|usePiSettingsPrefs)"/, `${file} 不应直接 import 宿主设置 hook`)
-    }
-  }
 })
 
 test("宿主读取键仍是 pi_remote_pi_settings_v2，且只读不写", () => {

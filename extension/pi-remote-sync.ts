@@ -12,7 +12,7 @@
  * 配置（环境变量）：
  *   PI_REMOTE_RELAY         relay 的 WS 地址，如 ws://127.0.0.1:7001
  *   PI_REMOTE_TOKEN         local 通道共享 token（与 relay 的 localToken 一致）
- *   PI_REMOTE_LABEL         可选，本机显示名（默认取 cwd）
+ *   PI_REMOTE_LABEL         已不读取：设备标签不能当会话标题（房间 label = 会话名，未命名用工作区目录名）
  *   PI_REMOTE_ACCOUNT       账户，缺省 admin
  *   PI_REMOTE_DEVICE_ID     本机设备编号（uuid，attach --init 写入）。缺省则房间归「未登记设备」，
  *                           且连接窗口匹配不上，扩展不会连接
@@ -45,7 +45,6 @@ const RELAY_URL = process.env.PI_REMOTE_RELAY || DEFAULT_RELAY;
 const TOKEN = process.env.PI_REMOTE_TOKEN || DEFAULT_TOKEN;
 /** 配对后拿到的设备令牌（v4）。只有它、没有共享 TOKEN 也能连 */
 const HAS_DEVICE_TOKEN = !!(String(process.env.PI_REMOTE_DEVICE_TOKEN || "").trim() && String(process.env.PI_REMOTE_DEVICE_ID || "").trim());
-const LABEL = process.env.PI_REMOTE_LABEL || "";
 /** 调试开关：转发 provider_stream_event 原始流（每个 provider chunk 一帧，UI 不消费，默认不转） */
 const FORWARD_RAW = process.env.PI_REMOTE_FORWARD_RAW === "1";
 const fs = require("node:fs");
@@ -1511,6 +1510,21 @@ function samePath(a: any, b: any, platform: string = process.platform): boolean 
   return caseInsensitivePaths(platform) ? x.toLowerCase() === y.toLowerCase() : x === y;
 }
 
+/**
+ * 上报给 relay 的 cwd 写法（房间注册与会话清单行；与 relay/devices.js 的 canonicalCwd 同一规则）：
+ * Windows 上盘符 / UNC 开头的路径统一反斜杠、盘符大写、去尾分隔符（盘根留 "D:\"）；macOS / Linux 只去尾部 "/"。
+ * 只改写法、不解析目录。
+ */
+function canonicalCwd(p: any, platform: string = process.platform): string {
+  const text = p == null ? "" : String(p);
+  if (!text) return "";
+  if (platform === "win32" && /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(text)) {
+    const windows = text.replace(/\//g, "\\").replace(/^[a-z]:/, (drive) => drive.toUpperCase()).replace(/\\+$/, "");
+    return /^[A-Z]:$/.test(windows) ? windows + "\\" : windows;
+  }
+  return text.replace(/\/+$/, "") || "/";
+}
+
 /** PATH 里第一个可执行的 trash 的完整路径（Windows 也找 trash.exe / trash.cmd / trash.bat）；没有返回 ""。 */
 function findTrashCommand(platform: string = process.platform, environ: any = process.env): string {
   const raw = String((environ && (environ.PATH || environ.Path || environ.path)) || "");
@@ -2558,6 +2572,13 @@ function tailContent(content: any, max: number): { content: any; cut: boolean } 
  * 事件载荷投影（见 FORWARD_EVENTS 注释）。返回 null = 不转发。
  * 只换掉 UI 不消费、且体积随会话线性增长的字段；事件本身一个不少。
  */
+/** 用户停止后要打 stopped 标的收尾事件：消息终态、回合/运行结束、流错误。 */
+function stoppedMarkable(ev: any): boolean {
+  const t = ev && ev.type;
+  if (t === "message_end" || t === "turn_end" || t === "agent_end" || t === "agent_settled") return true;
+  return t === "message_update" && !!ev.assistantMessageEvent && ev.assistantMessageEvent.type === "error";
+}
+
 function projectEvent(event: any): any {
   if (!event || typeof event !== "object") return event;
   const t = event.type;
@@ -3463,10 +3484,11 @@ const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 
 /**
  * 从 pi 包自己的 package.json 读版本（不执行外部命令、不依赖 PATH）。
- * 查找起点：显式参数 → process.argv[1]（pi 的 cli.js）→ require.main；逐级向上找
- * name === "@earendil-works/pi-coding-agent" 的 package.json。找不到回 null。
+ * 查找起点：显式参数 → process.argv[1]（pi 的 cli.js）→ 可执行文件所在目录 → require.main；
+ * 逐级向上找 name === "@earendil-works/pi-coding-agent" 的 package.json。找不到回 null。
+ * 编译成单文件的 pi（Windows 的 pi.exe）argv[1] 是内嵌虚拟路径，package.json 只在 exe 旁边。
  */
-function readPiVersion(start?: any): string | null {
+function readPiVersion(start?: any, execPath: any = process.execPath): string | null {
   const starts: string[] = [];
   const seen = new Set<string>();
   const push = (value: any) => {
@@ -3480,6 +3502,7 @@ function readPiVersion(start?: any): string | null {
   };
   push(start);
   push(process.argv[1]);
+  push(execPath);
   try { push(require.main && require.main.filename); } catch {}
   try { push(require.resolve(PI_PACKAGE_NAME)); } catch {}
   for (const startPath of starts) {
@@ -3503,6 +3526,13 @@ function readPiVersion(start?: any): string | null {
     }
   }
   return null;
+}
+
+let piVersionMemo: { value: string | null } | null = null;
+/** 本进程的 pi 版本（注册帧与 get_host_diag 共用）：只扫一次盘。 */
+function currentPiVersion(): string | null {
+  if (!piVersionMemo) piVersionMemo = { value: readPiVersion(process.argv[1]) };
+  return piVersionMemo.value;
 }
 
 /** 连接窗口关闭时给老式配置的醒目提示。老配置只有 PI_REMOTE_RELAY/PI_REMOTE_TOKEN，
@@ -3589,7 +3619,7 @@ function sessionParentPathOf(raw: any): string | null {
   return typeof value === "string" && value ? value.replace(/\\/g, "/") : null;
 }
 
-function normalizeSessionEntry(raw: any, cwd: any) {
+function normalizeSessionEntry(raw: any, cwd: any, platform: string = process.platform) {
   if (!raw || typeof raw !== "object") return null;
   const id = String(raw.id || "").trim();
   if (!id) return null;
@@ -3608,7 +3638,8 @@ function normalizeSessionEntry(raw: any, cwd: any) {
     id,
     path: filePath.replace(/\\/g, "/"),
     name: raw.name ? String(raw.name) : null,
-    cwd: String(raw.cwd || cwd || "").replace(/\\/g, "/"),
+    // 与房间注册、attach 上报同一写法（D:\x）；不能改成正斜杠，名册会多出 D:/x 一种写法
+    cwd: canonicalCwd(raw.cwd || cwd || "", platform),
     firstMessage: clipFirstMessage(raw.firstMessage),
     messageCount: Number.isFinite(messageCount) ? messageCount : 0,
     sizeBytes,
@@ -4065,6 +4096,9 @@ class Bridge {
   roomLabel: string | null = null;
   cwd: string | null = null;
   busy = false;
+  /** 这一轮运行被用户停止了：到下一次 before_agent_start / agent_start 前，收尾事件都带 stopped:true。
+   *  pi 停止后可能再起一个 turn、以「请求被中断」（stopReason=error）收尾，各端靠它不报出错也不报完成。 */
+  turnStopped = false;
   /** 命令串行队列：会改状态的远端命令逐个执行，避免 set_model/compact 等交错（只读命令不排队） */
   cmdQueue: Promise<any> = Promise.resolve();
   pi: any = null;
@@ -6112,8 +6146,10 @@ class Bridge {
     const idn = deviceIdentity(process.env, this.platform);
     const room: any = {
       id: this.roomId,
-      label: this.sessionName || LABEL || (this.cwd ? this.cwd.replace(/\\/g, "/").split("/").filter(Boolean).pop() : null) || this.roomId,
-      cwd: this.cwd,
+      label: this.sessionName || (this.cwd ? this.cwd.replace(/\\/g, "/").split("/").filter(Boolean).pop() : null) || this.roomId,
+      // label 在未命名时是目录名，接收方分不出它是不是会话名：会话名单列（null = 未命名），relay 据此下发 room.name
+      sessionName: this.sessionName || null,
+      cwd: this.cwd ? canonicalCwd(this.cwd, this.platform) : this.cwd,
       epoch: this.gen,
       instance: this.instance,
       generation: this.generation,
@@ -6122,6 +6158,8 @@ class Bridge {
       platform: idn.platform,
     };
     if (idn.deviceId) room.deviceId = idn.deviceId;
+    const piVersion = currentPiVersion();
+    if (piVersion) room.piVersion = piVersion;
     // Phase 3 (tier b): room content meta rides the registration frame --
     // room.enc / room.ackFp / room.rckWrap, mirroring the store meta
     // record's fields (design section 5). Key material is created lazily
@@ -6253,7 +6291,7 @@ class Bridge {
         ok = true;
         for (const raw of list) {
           if (!raw || raw.deleted) continue;
-          const row = normalizeSessionEntry(raw, cwd);
+          const row = normalizeSessionEntry(raw, cwd, this.platform);
           if (!row || !row.id) continue;
           const prev = merged.get(row.id);
           if (!prev || (row.updatedAt || 0) >= (prev.updatedAt || 0)) merged.set(row.id, row);
@@ -6294,7 +6332,7 @@ class Bridge {
       cwd: this.cwd,
       messageCount: this.liveMessageCount() || 0,
       updatedAt: Date.now(),
-    }, this.cwd || "");
+    }, this.cwd || "", this.platform);
   }
 
   /** 文件时间是基准。只有名字、条数、路径、活动位变了才把时间拨到现在，避免增量的“现在”把随后的全量文件时间盖掉。 */
@@ -6335,7 +6373,7 @@ class Bridge {
     try {
       const extra = new Map<string, any>();
       for (const raw of job.rows || []) {
-        const row = normalizeSessionEntry(raw, this.cwd);
+        const row = normalizeSessionEntry(raw, this.cwd, this.platform);
         if (!row) continue;
         extra.set(row.id, row);
         this.indexCache.set(row.id, row);
@@ -7226,6 +7264,7 @@ class Bridge {
     }
     if (translate && this.translateCompactionHook(event)) return;
     const t = event.type;
+    if (t === "before_agent_start" || t === "agent_start") this.turnStopped = false;
     // dialog tap 自检/自愈：只看原始事件的 kind（投影后字段不够），处理在投影之前
     if (t === "ui_prompt_start") { try { this.noteUiPromptSignal(event); } catch {} }
     // isCompacting 官方字段：压缩期间 get_state 要能反映（rpc-commands.md §get_state）
@@ -7243,10 +7282,15 @@ class Bridge {
       log("事件投影失败（已跳过）:", t, e?.message);
       return;
     }
+    if (ev && this.turnStopped && stoppedMarkable(ev)) ev = { ...ev, stopped: true };
     // 实时 message_end：投影里的 omit 图片此刻还没有 entryId（pi 尚未 appendMessage）。
     // 先挂起这一帧，等持久化后回读 branch/leaf 拿到真实条目；等待期间的后续事件进入队列。
     const waitingAddress = !!ev && t === "message_end" && this.beginImageAddressWait(event, ev);
     if (ev && !waitingAddress) this.emitEvent(ev);
+    // 本机中断（终端 Esc 等）不经扩展：助手消息落成 aborted 就是停止，之后的余波同样按停止处理
+    if (t === "message_end" && event.message && event.message.role === "assistant" && event.message.stopReason === "aborted") {
+      this.noteTurnStopped("local");
+    }
     // entry_appended 自带真实条目：如果正好是挂起的那条，立刻补地址并放行。
     if (t === "entry_appended") this.tryResolveImageAddress(event.entry);
     // 任务清单是扩展侧派生状态，不在 pi 的 wire 事件里：tool 结束与 plan entry 落盘时各补一帧
@@ -7270,7 +7314,7 @@ class Bridge {
       // payload anyway (onAuthSuccess re-registers with the current name).
       if (this.roomId && this.authed) {
         if (this.noRoomLabel) this.send({ type: "room_register", room: this.roomPayload() });
-        else this.send({ type: "room_label", room: this.roomId, label: this.roomPayload().label });
+        else this.send({ type: "room_label", room: this.roomId, label: this.roomPayload().label, sessionName: this.sessionName || null });
       }
       if (this.roomId) this.enqueueManifest({ ids: [this.roomId] });
     }
@@ -7301,6 +7345,15 @@ class Bridge {
       if (this.ctx && typeof this.ctx.isIdle === "function") return !!this.ctx.isIdle();
     } catch {}
     return !this.busy;
+  }
+
+  /** 用户停止了这一轮：立刻发 turn_stopped（赶在 pi 的收尾余波之前），之后的收尾事件由 forward 打 stopped 标。
+   *  远端停止在空闲时不算（没有可停的回合）；本机 aborted 已经是停止的证据，不再看空闲。 */
+  noteTurnStopped(source: "remote" | "local") {
+    if (this.turnStopped) return;
+    if (source === "remote" && this.isIdleNow()) return;
+    this.turnStopped = true;
+    if (this.roomId) this.emitEvent({ type: "turn_stopped", source, at: Date.now() });
   }
 
   /** 可重试的鉴权失败：关掉这条 socket，按当前退避另起一条。
@@ -7607,6 +7660,7 @@ class Bridge {
       }
       try {
         if (typeof this.ctx?.abort === "function") {
+          this.noteTurnStopped("remote");
           const snap = this.captureAbortQueue();
           const after = () => {
             this.handBackAbortedQueue(snap);
@@ -8182,6 +8236,7 @@ class Bridge {
       }
       this.remoteQueueInterrupting = true;
       try {
+        this.noteTurnStopped("remote");
         const r = this.ctx.abort();
         if (r && typeof r.then === "function") await r;
         const t0 = Date.now();
@@ -8487,6 +8542,7 @@ class Bridge {
    *  TUI 的 abort 会把待发拼进输入框；远程排队要在 abort 返回后交回。 */
   async cmdAbort() {
     if (!this.ctx || typeof this.ctx.abort !== "function") throw new RemoteError("unsupported", "当前上下文不支持 abort");
+    this.noteTurnStopped("remote");
     const snap = this.captureAbortQueue();
     const r = this.ctx.abort();
     if (r && typeof r.then === "function") await r;
@@ -9143,7 +9199,7 @@ class Bridge {
       name,
       messageCount: knownMessageCount != null ? knownMessageCount : one.messageCount,
       updatedAt: Date.now(),
-    }, cwd || this.cwd || "");
+    }, cwd || this.cwd || "", this.platform);
     if (row) {
       this.indexCache.set(row.id, row);
       this.enqueueManifest({ ids: [row.id], rows: [row] });
@@ -9246,7 +9302,7 @@ class Bridge {
       cwd,
       messageCount,
       updatedAt: Date.now(),
-    }, cwd);
+    }, cwd, this.platform);
     if (row) {
       this.indexCache.set(row.id, row);
       this.enqueueManifest({ ids: [row.id], rows: [row] });
@@ -10201,7 +10257,7 @@ class Bridge {
     // 以 Bridge 实际使用的窗口判定为准（测试可替换 gateOpen；生产与 attachDiagState 同源）
     try { attach.active = this.gateOpen(); } catch {}
     return {
-      piVersion: readPiVersion(process.argv[1]),
+      piVersion: currentPiVersion(),
       nodeVersion: process.version,
       platform: platformId(process.platform),
       arch: process.arch,
@@ -11160,5 +11216,5 @@ function usageEmptySnapshot(options: any = {}): any {
   });
 }
 
-export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, createAskSelectState, normalizeAskSelectKeys, askSelectApplyKey, askSelectComponentFactory, isAskLocalFreeText, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, approvalBlockReason, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, heldPrevContentKey, contentKeyCandidates, planContentKeyInstall, installContentKeyInKeyFile, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile, canonicalJsonOf, contentHashOf, remoteHashOf, sealBody, encryptMessageBody, openBody, decryptMessageBody, encryptTextCt, decryptTextCt, wrapRoomKey, unwrapRoomKey, encryptAckText, decryptAckText, remoteEchoMatchesText, shrinkImagesWithBudget, encryptTextBlocksDeep, storeRoomKeyInKeyFile, IMAGE_TOTAL_MAX_CHARS };
+export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, canonicalCwd, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, createAskSelectState, normalizeAskSelectKeys, askSelectApplyKey, askSelectComponentFactory, isAskLocalFreeText, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, approvalBlockReason, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, heldPrevContentKey, contentKeyCandidates, planContentKeyInstall, installContentKeyInKeyFile, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile, canonicalJsonOf, contentHashOf, remoteHashOf, sealBody, encryptMessageBody, openBody, decryptMessageBody, encryptTextCt, decryptTextCt, wrapRoomKey, unwrapRoomKey, encryptAckText, decryptAckText, remoteEchoMatchesText, shrinkImagesWithBudget, encryptTextBlocksDeep, storeRoomKeyInKeyFile, IMAGE_TOTAL_MAX_CHARS };
 

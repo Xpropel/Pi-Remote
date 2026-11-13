@@ -6,18 +6,19 @@ import type { PiTaskListItem, PiTaskStatus } from "@/components/pi/shared/types"
 
 const STATUS_TEXT: Record<PiTaskStatus, string> = { completed: "完成", in_progress: "进行中", pending: "待做" }
 
+/** 状态图标 14px（同流里卡头、工具行的图标档） */
 function TaskIcon({ status }: { status: PiTaskStatus }) {
   if (status === "completed")
-    return <CircleCheck aria-hidden size={15} strokeWidth={1.5} className="shrink-0 text-(--cw-text-3)" />
+    return <CircleCheck aria-hidden size={14} strokeWidth={1.5} className="shrink-0 text-(--cw-text-3)" />
   if (status === "in_progress")
     return (
-      <span className="inline-grid size-[15px] shrink-0 place-items-center">
-        <PiSpinner size={13} tone="muted" arc={0.5} label="进行中" />
+      <span className="inline-grid size-[14px] shrink-0 place-items-center">
+        <PiSpinner size={12} tone="muted" arc={0.5} label="进行中" />
       </span>
     )
   return (
-    <span aria-hidden className="inline-grid size-[15px] shrink-0 place-items-center">
-      <span className="size-[12.5px] rounded-full border-[1.5px] border-(--cw-status-idle-ring)" />
+    <span aria-hidden className="inline-grid size-[14px] shrink-0 place-items-center">
+      <span className="size-[11.5px] rounded-full border-[1.5px] border-(--cw-status-idle-ring)" />
     </span>
   )
 }
@@ -42,7 +43,7 @@ export function PiTaskRows({ tasks, variant }: PiTaskRowsProps) {
           key={t.id}
           data-status={t.status}
           className={cn(
-            "flex items-center gap-2.5 rounded-(--cw-radius-row)",
+            "flex items-center gap-2 rounded-(--cw-radius-row)",
             phone ? "min-h-12 px-3 text-(length:--cw-text-base)" : "min-h-8 px-2.5 text-(length:--cw-text-md)",
           )}
         >
@@ -50,8 +51,8 @@ export function PiTaskRows({ tasks, variant }: PiTaskRowsProps) {
           <span
             className={cn(
               "min-w-0 flex-1 truncate",
-              // 已完成仍是要读的字：secondary 灰（§4.6；B5），比待办的 --cw-text-2 浅一档
-              t.status === "completed" && T_SECONDARY,
+              // 已完成仍是要读的字：secondary 灰（§4.6；B5），比待办的 --cw-text-2 浅一档；再划一道浅线，进行中的那一项更显眼
+              t.status === "completed" && cn(T_SECONDARY, "line-through decoration-(--cw-text-4)"),
               t.status === "in_progress" && "font-(--cw-weight-semibold) text-(--cw-text)",
               t.status === "pending" && "text-(--cw-text-2)",
             )}

@@ -65,7 +65,7 @@ function StatusGroup({
 
 function EmptyRow({ children }: { children: ReactNode }) {
   return (
-    <div className="settings-row">
+    <div className="settings-row settings-row--note">
       <span className="settings-ext-note">{children}</span>
     </div>
   )
@@ -201,7 +201,7 @@ export function ExtensionsPage() {
           <SettingsSwitch label="pi-remote 远程（需扩展桥）" checked disabled />
         </SettingsRow>
         <EmptyRow>扩展拥有完整系统权限，只装可信来源</EmptyRow>
-        <div className="settings-row">
+        <div className="settings-row settings-row--subhead">
           <span className="settings-ext-subhead">内置</span>
         </div>
         <SettingsRow

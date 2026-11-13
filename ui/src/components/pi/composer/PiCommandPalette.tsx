@@ -112,7 +112,7 @@ function Row({ id, variant, icon, label, subtitle, trailing, active, disabled, o
         phone
           ? cn("mx-1 gap-3 rounded-[10px] px-3 text-[15px]", subtitle != null ? "min-h-[56px] py-1.5" : "h-12")
           : "mx-2.5 h-8 gap-2.5 rounded-[7px] pr-2 pl-[7px] text-(length:--cw-text-md)",
-        active ? "bg-(--cw-palette-row-selected)" : interactive ? undefined : "hover:bg-(--cw-row-hover)",
+        active ? "bg-(--cw-palette-row-selected)" : interactive ? undefined : "hover:bg-(--cw-palette-row-selected)",
         disabled ? "text-(--cw-text-4)" : "text-(--cw-text)",
       )}
       onMouseDown={interactive ? (event) => event.preventDefault() : undefined}
@@ -161,6 +161,9 @@ function keysOf(c: PaletteCommand, platform: PiPlatform): string[] | undefined {
   return paletteKeysOf(c.key, platform) ?? c.keys
 }
 
+/** 键帽按字宽撑开：kit 键帽是 17×17 的方块，只放得下 ⌘ ⇧ 这种单字；Windows / Linux 的 Ctrl、Shift 会溢出叠在一起 */
+const KEYCAPS_FIT = "[&>kbd]:w-auto [&>kbd]:min-w-[17px] [&>kbd]:px-[4px]"
+
 /** 列表本体（桌面卡与手机 sheet 共用；静态态） */
 /** 离线原因：命令组标题下一行灰字 */
 function OfflineReason({ variant, children }: { variant: CVariant; children: ReactNode }) {
@@ -202,7 +205,7 @@ function PaletteList({ variant, commands, sessions: allSessions, activeKey, offl
             label={c.label}
             active={c.key === active}
             disabled={paletteCommandDisabled(c.key, !!offline)}
-            trailing={!phone && keys ? <KeycapGroup keys={keys} /> : undefined}
+            trailing={!phone && keys ? <KeycapGroup keys={keys} className={KEYCAPS_FIT} /> : undefined}
           />
         )
       })}
@@ -389,7 +392,7 @@ function PaletteInteractive({ variant, commands, sessions, offline, offlineReaso
             label={c.label}
             active={i === nav.active}
             disabled={paletteCommandDisabled(c.key, !!offline)}
-            trailing={!phone && keys ? <KeycapGroup keys={keys} /> : undefined}
+            trailing={!phone && keys ? <KeycapGroup keys={keys} className={KEYCAPS_FIT} /> : undefined}
             {...rowEvents(i)}
           />
         )

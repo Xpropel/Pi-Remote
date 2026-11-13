@@ -5,21 +5,21 @@ import { piRootGeometry, type PiRootGeometry } from "./geometry"
 import { usePiPrivacy } from "./privacyContext"
 
 /**
- * Headless 根（P2.5）：把 PiRoot 里**与视觉无关**的产品布局逻辑抽出来，供 cursor（现有界面）与两套变体 v2 共用：
- * - 产品模式：根节点 fixed 铺满窗口、高 100dvh（不支持 dvh 的浏览器由变体 CSS 兜底），键盘开着时平移到 visualViewport.offsetTop；
+ * Headless 根（P2.5）：把 PiRoot 里**与视觉无关**的产品布局逻辑抽出来，供 cursor 界面（PiRoot）复用：
+ * - 产品模式：根节点 fixed 铺满窗口、高 100dvh（不支持 dvh 的浏览器由调用方 CSS 的 100vh 兜底），键盘开着时平移到 visualViewport.offsetTop；
  * - 舞台模式（开发画廊）：根节点 absolute inset-0 铺满舞台；
  * - 安全区顶实测：一个高 = env(safe-area-inset-top) 的隐形探针 + ResizeObserver（转屏重量）；
  * - 几何 / 键盘计算见 ./geometry.ts（纯函数）；`data-pi-theme` / `data-pi-layout` / `data-pi-mode` 镜像到 `<html>`；
  * - 通过 PiFrameContext 交出视口帧（PiFrame），供「手机 dock / sheet 让位 / 贴底滚动」这类纯行为读。
  *
- * 本模块**没有任何视觉**：不加 className、不定义 token、不引 CSS。变体 v2 的用法（自己写根 DOM 的类名 / 样式）：
+ * 本模块**没有任何视觉**：不加 className、不定义 token、不引 CSS。用法（调用方自己写根 DOM 的类名 / 样式）：
  *
  * ```tsx
  * import { PiHeadlessRoot } from "@/pi/headless"
  *
- * export function ClaudeApp({ relay, ui, act, layout, theme, device, keyboardOpen }: VariantAppProps) {
+ * export function CursorShell({ relay, ui, act, layout, theme, device, keyboardOpen }: VariantAppProps) {
  *   return (
- *     <PiHeadlessRoot ui="claude" viewport={layout} theme={theme} keyboard={keyboardOpen} device={device} className="claude-root">
+ *     <PiHeadlessRoot ui="cursor" viewport={layout} theme={theme} keyboard={keyboardOpen} device={device} className="cursor-root">
  *       …自己的 DOM / CSS…
  *     </PiHeadlessRoot>
  *   )
@@ -68,7 +68,7 @@ export interface PiHeadlessRootProps extends PiHeadlessRootOptions {
   geometry?: PiRootGeometry
   /** 与 geometry 配对的探针 ref；不传 = 组件内部自己建 */
   probeRef?: RefObject<HTMLDivElement | null>
-  /** 视觉类名（变体自己的 CSS / Tailwind；headless 自己不产生类名） */
+  /** Visual class names (the shell's own CSS / Tailwind; headless itself emits no class names) */
   className?: string
   /** 额外内联样式（cursor 用它传 --cw-pi-* 变量；变体一般不用） */
   style?: CSSProperties

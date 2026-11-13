@@ -3,7 +3,7 @@
  * P3 起 adapters.ts 的 piSessionGroups 在两者重叠处委托给这里。纯函数，node --test 直接加载。
  */
 import { attentionForRoom, type AttentionItem } from "../../relay/attention.ts"
-import { baseName, type Device, type ListedSession } from "../../relay/devices.ts"
+import { baseName, pathKeyOf, type Device, type ListedSession } from "../../relay/devices.ts"
 import { rowMarkerOf, type PiRowMarkerKind } from "./rowMarker.ts"
 
 export type PiGrouping = "device" | "flat"
@@ -138,9 +138,23 @@ function attentionRowsOf(attention: readonly AttentionItem[], devices: readonly 
 }
 
 /**
+ * 收起的组露哪些行：前 maxRows 行，加上排在后面的待处理行（等你回答 / 出错，同组自动展开的口径），保持原顺序；
+ * 其余进「更多 N」。否则待处理行落在第 maxRows 行之后时，组自动展开了也看不到它。
+ */
+export function cappedGroupRows<T extends { id: string }>(sorted: readonly T[], maxRows: number, attention: readonly AttentionItem[]): T[] {
+  if (sorted.length <= maxRows) return [...sorted]
+  return sorted.filter((session, index) => {
+    if (index < maxRows) return true
+    const kind = attentionForRoom(attention, session.id)?.kind
+    return kind === "waiting" || kind === "error"
+  })
+}
+
+/**
  * 会话 → 侧栏模型。
  * - device：按（设备, cwd）分组，设备照传入顺序、目录照 projects 顺序（会话里多出来的目录接在后面）；
- *   组内在线在前、再按 updatedAt 新到旧；每组露 maxRows 行 + more；expanded 里的组出全部行（末行由 PiSidebar 渲染"收起"）；
+ *   组内在线在前、再按 updatedAt 新到旧；每组露 maxRows 行（排在后面的待处理行也露，见 cappedGroupRows）+ more；
+ *   expanded 里的组出全部行（末行由 PiSidebar 渲染"收起"）；
  *   没有会话的目录是文件夹行；设备离线整组 offline、行 dimmed。
  * - flat：一个按 updatedAt 倒序的列表，不折叠、不出文件夹行，上限 limit；行带 subtitle（groupHeaderOf，离线接" · 未连接"）。
  * 设备不在 devices 里的会话不出现（没有设备就没有归属，不猜）。
@@ -174,42 +188,55 @@ export function sidebarGroups(
 
   // 长会话列表（R4 性能）：只扫一遍把 session 按 device+cwd 分桶，并且按出现顺序记下「不在 projects 里的 cwd」，
   // 之后按设备/目录顺序组装。原实现是 设备×目录×会话 的重复 filter（2000 会话 / 20 设备≈9.5ms，展开≈18.6ms），
-  // 这里是 O(sessions + groups)；输出与旧实现逐字段一致（fuzz 对比过）。
+  // 这里是 O(sessions + groups)。
+  // 同一目录的不同写法（D:/x、D:\x、d:\x）按设备平台归成一组（pathKeyOf），组的 cwd / key 用白名单里的写法，不在白名单时用最先出现的写法。
+  const platformOf = new Map(devices.map((device) => [device.id, device.platform]))
+  const folderOf = (deviceId: string, cwd: string) => `${deviceId}\u0000${pathKeyOf(cwd, platformOf.get(deviceId))}`
   const byKey = new Map<string, PiSidebarSession[]>()
   const extraCwdsOf = new Map<string, string[]>()
   for (const session of sessions) {
-    const key = `${session.deviceId}\u0000${session.cwd}`
+    const key = folderOf(session.deviceId, session.cwd)
     const bucket = byKey.get(key)
-    if (bucket) bucket.push(session)
-    else byKey.set(key, [session])
+    if (bucket) {
+      bucket.push(session)
+      continue
+    }
+    byKey.set(key, [session])
     let extras = extraCwdsOf.get(session.deviceId)
     if (!extras) {
       extras = []
       extraCwdsOf.set(session.deviceId, extras)
     }
-    if (!extras.includes(session.cwd)) extras.push(session.cwd)
+    extras.push(session.cwd)
   }
 
   const open = new Set(expanded)
   const groups: PiSidebarGroup[] = []
   for (const device of shown) {
     const extraCwds = extraCwdsOf.get(device.id) ?? []
-    const cwds = [...device.projects]
-    for (const cwd of extraCwds) if (!cwds.includes(cwd)) cwds.push(cwd)
+    const cwds: string[] = []
+    const listed = new Set<string>()
+    for (const cwd of [...device.projects, ...extraCwds]) {
+      const key = folderOf(device.id, cwd)
+      if (listed.has(key)) continue
+      listed.add(key)
+      cwds.push(cwd)
+    }
     for (const cwd of cwds) {
-      const mine = byKey.get(`${device.id}\u0000${cwd}`) ?? []
+      const mine = byKey.get(folderOf(device.id, cwd)) ?? []
       mine.sort((a, b) => Number(b.online) - Number(a.online) || b.updatedAt - a.updatedAt)
       const key = sidebarGroupKey(device.id, cwd)
       const unfolded = open.has(key) && mine.length > maxRows
+      const visible = unfolded ? mine : cappedGroupRows(mine, maxRows, attention)
       const group: PiSidebarGroup = {
         key,
         label: groupHeaderOf(shown.length, filter, device, cwd) ?? "",
         deviceId: device.id,
         cwd,
-        rows: (unfolded ? mine : mine.slice(0, maxRows)).map((x) => rowOf(x, device, attention)),
+        rows: visible.map((x) => rowOf(x, device, attention)),
       }
       if (!device.online) group.offline = true
-      if (!unfolded && mine.length > maxRows) group.more = mine.length - maxRows
+      if (mine.length > visible.length) group.more = mine.length - visible.length
       if (mine.length === 0) group.folderOnly = true
       if (unfolded) group.expanded = true
       groups.push(group)

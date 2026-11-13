@@ -1,12 +1,13 @@
 /**
  * 设置页 v2 → 宿主消费 · 纯逻辑（无 React / 无 DOM，node --test 直载）。
  *
- * 设置页只负责把本机偏好写进 `pi_remote_pi_settings_v2`；本文件把其中四类偏好
+ * 设置页只负责把本机偏好写进 `pi_remote_pi_settings_v2`；本文件把其中五类偏好
  * 变成宿主可执行的决定，供 `pi/hooks/usePiSettingsHost.ts` 接线：
  *   1. 默认设备：连接成功且当前无选中 / 当前选中离线时选回默认设备（手动选择后不再覆盖）；
  *   2. 通知：等待 / 出错 / 完成 × 仅页面外 / 总是 × 声音 / 角标 × 隐私模式；
  *   3. 快捷键：偏好键帽 ↔ 真实 KeyboardEvent 的匹配、浏览器保留键识别、输入框保护；
- *   4. 隐私：标题正文脱敏的判断（真实数据不动）。
+ *   4. 隐私：标题正文脱敏的判断（真实数据不动）；
+ *   5. 外观：强调色 / 字号 / 密度 / 界面字体 → <html> 上的属性（pi-theme.css 第 5 节按属性改令牌）。
  *
  * 本文件不读 storage（store 读取也在这里，但由调用方注入 storage），不碰 DOM，不改设置页。
  */
@@ -120,16 +121,30 @@ export function notificationSoundVisible(gate: PiNotificationGate, kind: PiNotif
 export interface PiNotificationNotice {
   level: "success" | "error" | "warning"
   title: string
+  /** 同类合并：连着几次同类事件只留一张卡（×n）。 */
+  dedupeKey: string
+  /** 回合结果（完成 / 出错）共用：新结果顶掉旧结果。 */
+  scope?: string
+  /** 产生它的会话（`room:<id>`）：还没轮到上屏就离开了那个会话，这张不再出来（noticeCore N9）。 */
+  context?: string
 }
+
+/** 回合结果提醒共用的 scope。 */
+export const TURN_END_NOTICE_SCOPE = "notify:turn-end"
+/** 等待提醒的 scope：提醒过的等待全部结束（答了 / 取消 / 停止回合）时按它撤回。 */
+export const WAITING_NOTICE_SCOPE = "notify:waiting"
 
 /**
  * 应用内提醒文案：只写事件类型，不写会话标题 / 正文。
  * 隐私模式与非隐私模式都安全，正文永远不会进入提醒。
+ * 等待口径与侧栏一致：「等你回答」。
  */
 export function notificationNoticeOf(gate: PiNotificationGate, kind: PiNotificationKind, away: boolean): PiNotificationNotice | null {
   if (!notificationEventOn(gate, kind) || !notificationAwayOk(gate, away)) return null
-  if (kind === "waiting") return { level: "warning", title: "有任务等你确认" }
-  return kind === "error" ? { level: "error", title: "回合出错" } : { level: "success", title: "任务完成" }
+  if (kind === "waiting") return { level: "warning", title: "有任务等你回答", dedupeKey: "notify:waiting", scope: WAITING_NOTICE_SCOPE }
+  return kind === "error"
+    ? { level: "error", title: "回合出错", dedupeKey: "notify:error", scope: TURN_END_NOTICE_SCOPE }
+    : { level: "success", title: "任务完成", dedupeKey: "notify:done", scope: TURN_END_NOTICE_SCOPE }
 }
 
 /**
@@ -141,6 +156,55 @@ export function freshWaitingKeys(previous: readonly string[] | null, current: re
   if (previous === null) return []
   const seen = new Set(previous)
   return current.filter((key) => !seen.has(key))
+}
+
+/**
+ * 等待提醒的账本：baseline = 首份真实数据到达时已挂着的 key；seen = 上一份等待 key；
+ * notified = 提醒卡算着的 key（弹过提醒、还在等），全部消失时撤回那张卡。
+ */
+export interface WaitingNoticeLedger {
+  baseline: readonly string[]
+  seen: readonly string[]
+  notified: readonly string[]
+}
+
+/**
+ * 等待提醒记一步账，返回这一步该提醒的新 key，以及要不要撤回已弹的提醒卡。
+ * - ready=false（还没连上 / 断线中）：不建账，什么都不提醒；重连后重新建基线。
+ * - 首份真实数据：已挂着的全记进基线不补发。knownKeys 是全部会话的等待 key（含当前会话账本里的），
+ *   当前会话的实时弹窗晚一步到时也认得出是旧的。
+ * - 之后：比上一份多出来、又不在基线里、也没提醒过的才算新；已经消失的基线 key 移出（同 id 再出现就是新的）。
+ * - 撤回：提醒过的 key 都不在等了（答了 / 取消 / 停止回合关掉弹窗）→ retract（撤回卡片，不等 ttl）。
+ *   「还在等」同时认实时弹窗和名册 / 账本：切会话时实时弹窗晚一步到，不能把卡先撤再弹。
+ */
+export function waitingNoticeStep(
+  ledger: WaitingNoticeLedger | null,
+  input: { ready: boolean; waitingKeys: readonly string[]; knownKeys: readonly string[] },
+): { ledger: WaitingNoticeLedger | null; fresh: string[]; retract: boolean } {
+  if (!input.ready) return { ledger: null, fresh: [], retract: false }
+  if (ledger === null) {
+    return {
+      ledger: { baseline: [...new Set([...input.knownKeys, ...input.waitingKeys])], seen: input.waitingKeys, notified: [] },
+      fresh: [],
+      retract: false,
+    }
+  }
+  const baseline = new Set(ledger.baseline)
+  const live = new Set([...input.knownKeys, ...input.waitingKeys])
+  const notified = ledger.notified.filter((key) => live.has(key))
+  const announced = new Set(notified)
+  const fresh = freshWaitingKeys(ledger.seen, input.waitingKeys).filter((key) => !baseline.has(key) && !announced.has(key))
+  return {
+    ledger: { baseline: ledger.baseline.filter((key) => live.has(key)), seen: input.waitingKeys, notified },
+    fresh,
+    retract: ledger.notified.length > 0 && notified.length === 0,
+  }
+}
+
+/** 弹出等待提醒后记账：这些 key 全部消失时 waitingNoticeStep 给出 retract。没建账时原样返回。 */
+export function waitingNoticeAnnounced(ledger: WaitingNoticeLedger | null, keys: readonly string[]): WaitingNoticeLedger | null {
+  if (ledger === null || keys.length === 0) return ledger
+  return { ...ledger, notified: [...new Set([...ledger.notified, ...keys])] }
 }
 
 /**
@@ -294,7 +358,35 @@ export function shortcutBlockedByOverlay(state: PiShortcutOverlayState): boolean
   return state.menu || state.sheet || state.dialog || state.palette || state.settings
 }
 
+/** 键帽连成一段文字：mac 符号修饰键直接贴后一键（⌘N、⇧Tab），其余用「+」连（Ctrl+L）。 */
+function chordText(keys: readonly string[]): string {
+  return keys.reduce((text, key, index) => (index === 0 || /^[⌘⇧⌥⌃]$/.test(keys[index - 1]) ? text + key : `${text}+${key}`), "")
+}
+
 /** 冲突提示文案（一次会话每个组合只提示一次，由 hook 去重）。 */
 export function browserShortcutHintOf(binding: PiShortcutBinding): string {
-  return `快捷键 ${binding.keys.join("")} 与浏览器默认快捷键冲突，可能被浏览器先处理；可在设置 › 快捷键改键`
+  return `快捷键 ${chordText(binding.keys)} 与浏览器默认快捷键冲突，可能被浏览器先处理；可在设置 › 快捷键改键`
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. 外观                                                              */
+/* ------------------------------------------------------------------ */
+
+export type PiAppearancePrefs = Pick<SettingsPrefs, "accent" | "fontSize" | "density" | "uiFont">
+
+/** 宿主镜像到 <html> 的外观属性；pi-theme.css 第 5 节按它们改令牌。 */
+export const PI_APPEARANCE_ATTRS = ["data-pi-accent", "data-pi-font-size", "data-pi-density", "data-pi-ui-font"] as const
+export type PiAppearanceAttr = (typeof PI_APPEARANCE_ATTRS)[number]
+
+/**
+ * 外观偏好 → <html> 属性值；null = 不写。令牌原值就是紫、标准字号、紧凑、系统字体，
+ * 这四档不写属性，没改过外观的界面一像素不变。
+ */
+export function appearanceAttrsOf(prefs: PiAppearancePrefs): Record<PiAppearanceAttr, string | null> {
+  return {
+    "data-pi-accent": prefs.accent === "violet" ? null : prefs.accent,
+    "data-pi-font-size": prefs.fontSize === "standard" ? null : prefs.fontSize,
+    "data-pi-density": prefs.density === "compact" ? null : prefs.density,
+    "data-pi-ui-font": prefs.uiFont === "system" ? null : prefs.uiFont,
+  }
 }

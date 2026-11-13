@@ -3,6 +3,7 @@ import { Layers, Settings } from "@/components/kit/icons"
 import { PiDeviceMenu, PiPlatformIcon, piDeviceStatusText, type PiDevice } from "@/components/pi/shared"
 import { usePiMenuSurface, usePiStatic } from "@/components/pi/shared/layers"
 import { cn } from "@/lib/utils"
+import { PI_SHORTCUT_KEYS, piPlatformOf } from "@/pi/model/shortcuts"
 import { DENSITY_OPTIONS, THEME_OPTIONS } from "./options"
 import type { CPrefs } from "./types"
 import { C_SECONDARY, SEGMENT_ITEM, SEGMENT_ITEM_PHONE, SEGMENT_ON, SEGMENT_TRACK, segmentTrackH, type CVariant } from "./styles"
@@ -56,7 +57,7 @@ export interface PiDisplayOptionsProps {
   static?: boolean
   /** P4：改一项偏好（设备筛选、分组、主题、工具显示） */
   onPrefsChange?: (patch: Partial<CPrefs>) => void
-  /** P4："全部设置…"（= ⌘,） */
+  /** P4："全部设置…"（= ⌘, / Ctrl+,） */
   onOpenSettings?: () => void
 }
 
@@ -89,7 +90,7 @@ function DeviceFilterRows({ devices, counts, value, now, onSelect }: { devices: 
 
 /**
  * 显示选项（K01 C03 H06；待用户确认 6）：账户区滑杆图标打开。设备筛选（PiDeviceMenu 的行样式，含"全部设备"）
- * —— 分组方式 —— 主题（分段）—— 工具显示（分段）—— 全部设置… ⌘,。打开后的内容整套推断。
+ * —— 分组方式 —— 主题（分段）—— 工具显示（分段）—— 全部设置… ⌘,（键帽取 PI_SHORTCUT_KEYS，Windows / Linux 写 Ctrl+,；静态画廊按 mac 画）。打开后的内容整套推断。
  * 桌面宽 260，从滑杆上方弹出、左缘与左栏对齐；手机是 PiSheet"显示选项"的内容，行 48。
  * P4 可交互：桌面放进锚定菜单（PiMenu：设备 / 分组 / 全部设置… 是 Radix Item，↑↓ 可达、选中后关菜单；分段钮可点）；
  * 手机 sheet 里同一组项可点（选中后由调用方决定关不关 sheet）。
@@ -102,6 +103,7 @@ export function PiDisplayOptions({ variant, prefs, devices, counts, now, bare, c
   const radix = !isStatic && !sheet && surface.kind !== "static"
   const change = isStatic ? undefined : onPrefsChange
   const setDevice = (value: string) => change?.({ deviceFilter: value })
+  const settingsKeys = PI_SHORTCUT_KEYS.settings[isStatic ? "mac" : piPlatformOf(typeof navigator === "undefined" ? null : navigator)]
   return (
     <MenuSurface
       {...(radix ? surface : undefined)}
@@ -147,7 +149,7 @@ export function PiDisplayOptions({ variant, prefs, devices, counts, now, bare, c
         />
       </div>
       <MenuSeparator />
-      <MenuItem icon={<Settings />} shortcut={phone ? undefined : "⌘,"} chevron={phone} onSelect={isStatic ? undefined : onOpenSettings}>
+      <MenuItem icon={<Settings />} shortcut={phone ? undefined : settingsKeys} chevron={phone} onSelect={isStatic ? undefined : onOpenSettings}>
         全部设置…
       </MenuItem>
     </MenuSurface>

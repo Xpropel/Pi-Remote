@@ -11,7 +11,7 @@
  *   所以侧栏组内的顺序不会因为搜索而变；被搜到的房间行尾时间会跟着刷新（同原来按设备寻址时的那一个房间）。
  */
 import { bodySearchPageOf, type BodySearchHit, type BodySearchPage, type BodySearchUnanswered } from "../shell/searchModel.ts"
-import { errorCode, RelayError, roomDeviceId, type RoomInfo } from "./devices.ts"
+import { errorCode, pathKeyOf, RelayError, roomDeviceId, type RoomInfo } from "./devices.ts"
 
 export type BodySearchRoom = Pick<RoomInfo, "id" | "online" | "deviceId" | "cwd" | "lastActivity" | "enc">
 
@@ -22,11 +22,6 @@ export type BodySearchTarget =
 
 /** 一个目标的回包：allSettled 的结果配上目标 */
 export type BodySearchReply = { target: BodySearchTarget; ok: true; data: unknown } | { target: BodySearchTarget; ok: false; error: unknown }
-
-/** cwd 的分组键：只统一斜杠和末尾的斜杠，大小写照原样（pi 的会话目录按 cwd 原文算，大小写不同就是两个目录） */
-function cwdKey(cwd: string): string {
-  return cwd.replace(/\\/g, "/").replace(/\/+$/, "")
-}
 
 /** Within one cwd group, whether to replace the current pick with `room`:
  *  the open room wins; otherwise the most recently active one (ties keep the
@@ -40,14 +35,15 @@ function preferred(room: BodySearchRoom, pick: BodySearchRoom, openRoomId: strin
 
 /**
  * 选目标：这台设备（roomDeviceId 同侧栏的归属口径）的在线房间，每个 cwd 选一个；没有 cwd 的房间（旧扩展）不知道扫哪个目录，各算一个。
+ * 同一个 cwd 按设备平台判（pathKeyOf）：Windows / macOS 的文件系统不分大小写，D:\x 与 d:/x 是同一个会话目录；Linux 区分大小写。
  * 顺序：打开的房间那一组在前，其余按最近活动新到旧（合并时同一会话文件以先到的为准，见 mergeBodySearchReplies）。
  * 一个在线房间都没有时只回一个按设备寻址的目标。
  */
-export function bodySearchTargetsOf(deviceId: string, rooms: readonly BodySearchRoom[], openRoomId: string | null = null): BodySearchTarget[] {
+export function bodySearchTargetsOf(deviceId: string, rooms: readonly BodySearchRoom[], openRoomId: string | null = null, platform?: string | null): BodySearchTarget[] {
   const picks = new Map<string, BodySearchRoom>()
   for (const room of rooms) {
     if (!room.online || roomDeviceId(room) !== deviceId) continue
-    const key = room.cwd ? `cwd:${cwdKey(room.cwd)}` : `room:${room.id}`
+    const key = room.cwd ? `cwd:${pathKeyOf(room.cwd, platform)}` : `room:${room.id}`
     const pick = picks.get(key)
     if (!pick || preferred(room, pick, openRoomId)) picks.set(key, room)
   }
@@ -78,7 +74,7 @@ export function bodySearchErrorReasonOf(error: unknown): string {
 /**
  * 合并各房间的回包。
  * - 每个回包先用 bodySearchPageOf 归一，形状不对的按这个目标失败算（bad_reply），不硬撑。
- * - 去重按会话文件路径（斜杠统一，大小写照原样）：同一个文件被两个目标回了，留命中条数多的，一样多留 mtime 新的，再一样留先到的。
+ * - 去重按会话文件路径（pathKeyOf，按设备平台）：同一个文件被两个目标回了，留命中条数多的，一样多留 mtime 新的，再一样留先到的。
  * - 排序按 mtime 新到旧（每个扩展自己也是这样排的），一样时命中条数多的在前。
  * - truncated：任一页没扫完就算；已扫 / 总数是各页之和。
  * - 有目标失败、也有成功的：page.unanswered 记下失败目标的 cwd 和错误码（呈现层写「部分结果」）。
@@ -87,6 +83,7 @@ export function bodySearchErrorReasonOf(error: unknown): string {
 export function mergeBodySearchReplies(
   query: string,
   replies: readonly BodySearchReply[],
+  platform?: string | null,
 ): { ok: true; page: BodySearchPage } | { ok: false; error: unknown } {
   const pages: BodySearchPage[] = []
   const unanswered: BodySearchUnanswered[] = []
@@ -128,7 +125,7 @@ export function mergeBodySearchReplies(
   const byPath = new Map<string, BodySearchHit>()
   for (const page of pages) {
     for (const hit of page.results) {
-      const key = hit.session.replace(/\\/g, "/")
+      const key = pathKeyOf(hit.session, platform)
       const seen = byPath.get(key)
       if (!seen || hit.matchCount > seen.matchCount || (hit.matchCount === seen.matchCount && hit.mtime > seen.mtime)) byPath.set(key, hit)
     }

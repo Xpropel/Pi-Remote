@@ -361,7 +361,8 @@ test("没有 deviceId 的 room_register 不带 deviceId，account 仍是 admin",
   const mac = bridge.roomPayload();
   assert.equal(mac.platform, "macos");
   assert.equal(mac.deviceName, "Mac");
-  assert.equal(mac.label, process.env.PI_REMOTE_LABEL || "Pi-Remote", "没有会话名和 LABEL 时用目录名");
+  assert.equal(mac.label, "Pi-Remote", "没有会话名时用目录名，设备标签（PI_REMOTE_LABEL）不进房间 label");
+  assert.equal(mac.sessionName, null, "未命名会话单列 sessionName: null");
 });
 
 test("状态文件到期后即使还在磁盘上也会断开", async () => {

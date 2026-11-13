@@ -119,9 +119,9 @@ test("隐私模式：标题不带会话正文；应用内提醒始终只有事�
   assert.equal(host.titleRoomOf("修复登录按钮", privacy), "", "隐私模式下标题不出现正文")
 
   const notice = host.notificationNoticeOf(normal, "done", true)
-  assert.deepEqual(notice, { level: "success", title: "任务完成" })
+  assert.deepEqual(notice, { level: "success", title: "任务完成", dedupeKey: "notify:done", scope: "notify:turn-end" })
   assert.deepEqual(host.notificationNoticeOf(privacy, "done", true), notice, "隐私模式不改变提醒文案（本来就不带正文）")
-  assert.deepEqual(host.notificationNoticeOf(normal, "error", true), { level: "error", title: "回合出错" })
+  assert.deepEqual(host.notificationNoticeOf(normal, "error", true), { level: "error", title: "回合出错", dedupeKey: "notify:error", scope: "notify:turn-end" })
   assert.equal(host.notificationNoticeOf(normal, "done", false), null, "仅页面外：在场不发应用内提醒")
   assert.deepEqual(host.notificationNoticeOf(gateOf({ notifyComplete: true, notifyOnlyWhenAway: false }), "done", false), notice)
   assert.equal(host.notificationNoticeOf(gateOf({ notifyComplete: false }), "done", true), null)
@@ -189,6 +189,10 @@ test("快捷键：浏览器保留键识别与提示文案", () => {
   assert.equal(newSession.browserConflict, true)
   assert.match(host.browserShortcutHintOf(newSession), /⌘N/)
   assert.match(host.browserShortcutHintOf(newSession), /设置 › 快捷键/)
+  // 文字键之间用「+」连，mac 符号修饰键贴着写
+  assert.match(host.browserShortcutHintOf({ ...newSession, keys: ["Ctrl", "L"] }), /快捷键 Ctrl\+L 与/)
+  assert.match(host.browserShortcutHintOf({ ...newSession, keys: ["Ctrl", "Shift", "O"] }), /快捷键 Ctrl\+Shift\+O 与/)
+  assert.match(host.browserShortcutHintOf({ ...newSession, keys: ["⇧", "⌘", "O"] }), /快捷键 ⇧⌘O 与/)
   assert.equal(bindings.find((item) => item.id === "newSession").keys.join(""), "⌘N")
 })
 

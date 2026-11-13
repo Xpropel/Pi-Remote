@@ -14,6 +14,12 @@
 export const STREAM_TEXT =
   "font-(family-name:--cw-font-sans) text-(length:--cw-text-base) leading-(--cw-leading-base) font-(--cw-weight-regular)"
 
+/**
+ * 正文字色：读 --cw-pi-stream-fg（pi-theme.css：浅色 = --cw-text，深色压暗一档，亮字压在深底上会显得比浅色模式粗），
+ * 没有 Pi 主题时就是 --cw-text。标题、加粗仍用 --cw-text。
+ */
+export const STREAM_FG = "text-[color:var(--cw-pi-stream-fg,var(--cw-text))]"
+
 /** 内缩组的水平外边距 */
 export const STREAM_INSET = "mx-(--stream-inset)"
 

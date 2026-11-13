@@ -7,7 +7,7 @@
  *   → 右上为页面内容；无窗口控制按钮。
  *
  * 入口：宿主渲染 <SettingsPage p={...} />（设置是全页覆盖层，关闭/返回 = p.act.openSession()）。
- * style / theme 可由宿主显式传入；不传时分别跟随 p.ui.prefs.ui 与当前文档主题。
+ * theme 可由宿主显式传入；不传时跟随当前文档主题。
  * 第二阶段页面不要改这个文件：改对应 pages/*.tsx 即可。
  */
 import { useCallback, useMemo, useRef, useState, type ComponentType } from "react"
@@ -17,13 +17,13 @@ import { SettingsProvider, useSettingsLocalState } from "./SettingsContext"
 import {
   SETTINGS_PAGES,
   settingsPageIdOf,
-  settingsStyleOf,
   settingsThemeOf,
   type SettingsActions,
   type SettingsPageId,
-  type SettingsStyle,
   type SettingsTheme,
 } from "./types"
+import { SettingsToast } from "./toast"
+import { useSettingsToast } from "./useSettingsToast"
 import { SettingsBackButton, SettingsIcon } from "./ui"
 import { AboutPage } from "./pages/AboutPage"
 import { AppearancePage } from "./pages/AppearancePage"
@@ -66,8 +66,6 @@ function themeFromDocument(): SettingsTheme {
 
 export interface SettingsPageProps {
   p: PiContainerProps
-  /** 六套皮肤之一；不传跟随当前变体（cursor / claude / codex）。 */
-  style?: SettingsStyle
   /** 实际明暗；不传读 <html data-pi-theme>，再退系统偏好。 */
   theme?: SettingsTheme
   /** 受控当前页；不传用内部状态。 */
@@ -81,10 +79,8 @@ export interface SettingsPageProps {
 }
 
 /**
- * Last active settings tab, kept at module level. Switching the UI style
- * (Cursor / Claude / Codex) swaps the whole variant shell, which remounts
- * this page and used to reset the tab to "general" (F1); theme (light/dark)
- * switches never remounted, so only style switches bounced. An explicit
+ * Last active settings tab, kept at module level so a remount of this page
+ * restores it instead of bouncing back to "general" (F1). An explicit
  * `page` / `initialPage` from a host still wins over the remembered tab.
  */
 let lastSettingsPage: SettingsPageId | null = null
@@ -100,18 +96,17 @@ export function rememberSettingsPage(page: SettingsPageId): void {
   lastSettingsPage = settingsPageIdOf(page)
 }
 
-export function SettingsPage({ p, style, theme, page, initialPage, onPageChange, onBack }: SettingsPageProps) {
+export function SettingsPage({ p, theme, page, initialPage, onPageChange, onBack }: SettingsPageProps) {
   const [innerPage, setInnerPage] = useState<SettingsPageId>(() => settingsPageIdOf(page ?? initialPage ?? lastSettingsPage ?? "general"))
   const [documentTheme] = useState<SettingsTheme>(themeFromDocument)
   const activePage = settingsPageIdOf(page ?? innerPage)
-  const activeStyle = settingsStyleOf(style ?? p.ui.prefs.ui)
   const activeTheme = theme ?? documentTheme
   const [prefs, prefActions] = useSettingsLocalState()
+  const { toast, show: showToast } = useSettingsToast()
 
   const setPage = useCallback(
     (next: SettingsPageId) => {
-      // Remember every tab the user lands on so a variant-shell remount
-      // (style switch) restores it instead of bouncing back to "general".
+      // Remember every tab the user lands on so a remount restores it.
       lastSettingsPage = next
       if (page === undefined) setInnerPage(next)
       onPageChange?.(next)
@@ -126,12 +121,12 @@ export function SettingsPage({ p, style, theme, page, initialPage, onPageChange,
         if (onBack) onBack()
         else p.act.openSession()
       },
-      notify: (text, tone) => p.relay.notify(text, tone),
+      notify: showToast,
       openPairing: () => openPiDialog(p, { id: PI_UI_IDS.pairing }),
       openHostDiag: (deviceId) => openPiDialog(p, { id: PI_UI_IDS.hostDiag, arg: deviceId }),
       reconnect: () => p.relay.reconnectNow(),
     }),
-    [prefActions, p, onBack],
+    [prefActions, p, onBack, showToast],
   )
 
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -150,7 +145,6 @@ export function SettingsPage({ p, style, theme, page, initialPage, onPageChange,
   return (
     <SettingsProvider
       p={p}
-      style={activeStyle}
       theme={activeTheme}
       page={activePage}
       setPage={setPage}
@@ -161,7 +155,8 @@ export function SettingsPage({ p, style, theme, page, initialPage, onPageChange,
         ref={rootRef}
         className="settings-root"
         data-pi-settings=""
-        data-pi-settings-style={activeStyle}
+        // 恒为 cursor：tokens.css 的颜色块与 settings.css 的焦点环选择器按这个属性命中（去掉会改变优先级）
+        data-pi-settings-style="cursor"
         data-pi-theme={activeTheme}
         data-pi-settings-page={activePage}
         role="dialog"
@@ -198,6 +193,7 @@ export function SettingsPage({ p, style, theme, page, initialPage, onPageChange,
             <ActivePage />
           </div>
         </main>
+        <SettingsToast toast={toast} prefix="settings-toast" />
       </div>
     </SettingsProvider>
   )

@@ -3,12 +3,14 @@
  * 纯函数，node --test 直接加载（相对导入带 .ts）。口径：
  * - 诚实数据（design §1.9）：时间戳缺就不写用时；思考时长只有界面层实时观测到起止时才有（observedMs），快照恢复的历史写"已思考"。
  * - 工具块上由 transcript 提升的 patch（G5）交给 diff 卡（PiToolBlock.details.patch）；write 没有 patch，diff 卡用 input.content。
- * - 默认展开（推断，和 replica 各屏一致）：回合在跑、没在等你回答、右 pane 没开时，展开本回合的思考块和正在跑的终端卡
- *   （pane 开着时终端输出在终端视图里展开，§1.8 同一条命令只在一处展开）；回合结束后，最近一个有回复的回合里失败的终端卡展开
- *   （stderr 红字看得到）。
+ * - 默认展开（推断，和 replica 各屏一致）：回合在跑、没在等你批准 / 回答、右 pane 没开时，展开本回合的思考块和正在跑的终端卡
+ *   （pane 开着时终端输出在终端视图里展开，§1.8 同一条命令只在一处展开）；失败的终端卡只在报错还要看时展开（stderr 红字看得到）：
+ *   回合以出错结束，或它是回合里最后一条命令；中途失败、智能体自己绕过去的收起（见 liveExpandedOf）。
  */
 import { isLiveThinking, toolDisplayState, type Block, type Item } from "../../relay/transcript.ts"
+import { turnErrorOf } from "./turnError.ts"
 import { agentIsActive, type AgentEntry } from "../../chat/capsules/workingModel.ts"
+import { abortedToolResult } from "../../chat/capsules/terminalModel.ts"
 import { assistantMarkdown } from "../../conversation/messageActionsModel.ts"
 import type { PiItem, PiSubagent, PiUserItem } from "../../components/pi/shared/types.ts"
 import type { OutboxEntry } from "./outbox.ts"
@@ -90,13 +92,28 @@ function turnRanges(items: readonly Item[]): [number, number][] {
   return out
 }
 
+/**
+ * pi 在跑的回合在 items 里的 [起, 止)：最后一个回合；流尾只有一条还没交到 pi 的用户消息（排队等注入 = awaiting、发送失败）的回合跳过 ——
+ * 排队的消息要等前一回合的工具跑完才插进去，在那之前 pi 还在前一回合里（同 PiTranscript 的 runningTurnOf）。
+ */
+function activeRangeOf(items: readonly Item[]): [number, number] | undefined {
+  const ranges = turnRanges(items)
+  let t = ranges.length - 1
+  for (; t > 0; t--) {
+    const [from, to] = ranges[t]
+    const first = items[from]
+    if (to - from > 1 || first.kind !== "user" || (first.status !== "awaiting" && !first.failed)) break
+  }
+  return ranges[t]
+}
+
 function stamp(n: unknown): number | null {
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : null
 }
 
-/** 正在跑的回合从什么时候开始：最后一条用户消息的时间戳；没有就用它后面第一条助手消息的开始时间；都没有返回 null（不编） */
+/** 正在跑的回合从什么时候开始：它的用户消息的时间戳；没有就用它后面第一条助手消息的开始时间；都没有返回 null（不编） */
 export function turnStartOf(items: readonly Item[]): number | null {
-  const last = turnRanges(items).at(-1)
+  const last = activeRangeOf(items)
   if (!last) return null
   const first = items[last[0]]
   if (first.kind === "user" && stamp(first.timestamp) !== null) return stamp(first.timestamp)
@@ -108,7 +125,7 @@ export function turnStartOf(items: readonly Item[]): number | null {
 }
 
 /**
- * 运行行（PiTranscript 的 running）：回合在跑才有。waiting = 有审批卡在等你（"等你回答"只在卡上表达，流末尾不放运行行，§5）。
+ * 运行行（PiTranscript 的 running）：回合在跑才有。waiting = 有审批卡在等你（"等你批准 / 等你回答"只在卡上表达，流末尾不放运行行，§5）。
  * since 为 null 时运行行不写用时。
  */
 export function runningOf(items: readonly Item[], busy: boolean, waiting: boolean): { since: number | null; line: boolean } | null {
@@ -125,32 +142,63 @@ export type PiExpandInput = {
   paneOpen: boolean
 }
 
-/** 默认展开的块（工具块 id、思考块键），规则见文件头 */
+/** 失败的终端卡（拒绝 / 超时 / 停止打断的只是一行灰字，不算） */
+function isFailedCard(block: Block): block is ToolBlock {
+  return isTerminalTool(block) && toolDisplayState(block) === "failed" && block.outcome !== "timeout" && !abortedToolResult(block.outputText)
+}
+
+/** 回合里最后一条终端命令（不管结果）；没有返回 null */
+function lastCommandOf(turn: readonly Item[]): Block | null {
+  for (let i = turn.length - 1; i >= 0; i--) {
+    const it = turn[i]
+    if (it.kind !== "assistant") continue
+    for (let k = it.blocks.length - 1; k >= 0; k--) if (isTerminalTool(it.blocks[k])) return it.blocks[k]
+  }
+  return null
+}
+
+/** 回合以出错结束：最后一条助手消息的结尾是红字出错行（停止、截断不算） */
+function endedWithError(turn: readonly Item[]): boolean {
+  for (let i = turn.length - 1; i >= 0; i--) {
+    const it = turn[i]
+    if (it.kind === "assistant") return turnErrorOf(it.stopReason, it.errorMessage)?.error === true
+  }
+  return false
+}
+
+/**
+ * 默认展开的块（工具块 id、思考块键），规则见文件头。失败的终端卡：
+ * - 回合在跑：还是本回合最后一条命令时展开（报错看得到），智能体接着跑别的命令（绕过去了）就收起，只留"失败 · 退出 N"卡头；
+ * - 回合结束（最近一个有回复的回合）：以出错结束时，所有失败卡展开；否则只展开失败的最后一条命令，中途失败、后面又跑了别的命令的收起。
+ */
 export function liveExpandedOf(items: readonly Item[], input: PiExpandInput): string[] {
   const out: string[] = []
-  const turns = turnRanges(items)
   if (input.running) {
-    const last = turns.at(-1)
+    const last = activeRangeOf(items)
     if (input.waiting || input.paneOpen || !last) return out
+    const lastCommand = lastCommandOf(items.slice(last[0], last[1]))
     for (let i = last[0]; i < last[1]; i++) {
       const it = items[i]
       if (it.kind !== "assistant") continue
       it.blocks.forEach((block, index) => {
         if (block.kind === "thinking" && block.text.trim()) out.push(thinkingKey(it.key, index))
         else if (isTerminalTool(block) && toolDisplayState(block) === "running") out.push(block.id)
+        else if (block === lastCommand && isFailedCard(block)) out.push(block.id)
       })
     }
     return out
   }
-  // 回合结束：最近一个有回复的回合里失败的终端卡（拒绝 / 超时只是一行灰字，不算）
+  const turns = turnRanges(items)
   for (let t = turns.length - 1; t >= 0; t--) {
     const [from, to] = turns[t]
     const turn = items.slice(from, to)
     if (!turn.some((it) => it.kind === "assistant")) continue
+    const allFailed = endedWithError(turn)
+    const lastCommand = lastCommandOf(turn)
     for (const it of turn) {
       if (it.kind !== "assistant") continue
       for (const block of it.blocks) {
-        if (isTerminalTool(block) && toolDisplayState(block) === "failed" && block.outcome !== "timeout") out.push(block.id)
+        if (isFailedCard(block) && (allFailed || block === lastCommand)) out.push(block.id)
       }
     }
     break

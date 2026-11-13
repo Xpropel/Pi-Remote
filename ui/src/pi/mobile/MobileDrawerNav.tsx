@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
-import type { PiSidebarSession } from "../sidebar/types.ts"
+import { PI_SIDEBAR_COPY, type PiSidebarSession } from "../sidebar/types.ts"
 import { usePiMotion } from "../hooks/useReducedMotion.ts"
-import { IconChevronDown, IconFolder, IconMonitor, IconSearch, IconSend, IconSettings } from "./icons"
+import { MOBILE_GROUP_TONE_LABEL, mobileGroupToneOf } from "./groupTone.ts"
+import { IconArchive, IconChevronDown, IconFolder, IconInbox, IconMonitor, IconPin, IconSearch, IconSend, IconSettings } from "./icons"
 import { LongPressCard } from "./LongPressCard"
 import type { PiMobileNavProps } from "./types.ts"
 
@@ -11,7 +12,8 @@ const DRAWER_CLOSE_MS = 240
 
 /**
  * P11-MOB-02/03 抽屉式侧栏：宽 clamp(屏宽−68, 288, 340)、全高贴左、遮罩 z20<抽屉 z30。
- * 内部：设备行 48 / 新会话 48（左对齐）/ 朴素行 44 / 分区 26 / 工作区 40 / 会话 48 / 身份行 48+安全段 30。
+ * 内部：头 54（Pi-Remote + 搜索）/ 设备行 48 / 新会话 48（左对齐）/ 朴素行 44 / 分区 26 / 工作区 40 / 会话 48 / 身份行 48+安全段 30。
+ * onSearch 由外壳给：它要先把抽屉直接关掉再开搜索页（搜索页替换整页，抽屉的关闭动画来不及回报）。
  */
 export function MobileDrawerNav({
   mode,
@@ -19,8 +21,11 @@ export function MobileDrawerNav({
   actions,
   open,
   onClose,
+  onSearch,
   onOpenSession,
-}: PiMobileNavProps & { open: boolean; onClose: () => void }) {
+  onRowMenu,
+  archiveView = false,
+}: PiMobileNavProps & { open: boolean; onClose: () => void; onSearch?: () => void }) {
   const [deviceMenu, setDeviceMenu] = useState(false)
   const [preview, setPreview] = useState<PiSidebarSession | null>(null)
   const asideRef = useRef<HTMLElement>(null)
@@ -125,6 +130,8 @@ export function MobileDrawerNav({
   const activeDevice = data.devices.find((device) => device.id === data.selectedDeviceId) ?? data.devices.find((device) => device.current) ?? data.devices[0]
   const pinnedGroup = data.groups.find((group) => group.kind === "pinned")
   const workspaceGroups = data.groups.filter((group) => group.kind !== "pinned" && group.kind !== "archive")
+  const showInbox = typeof data.inboxCount === "number" && !!actions.openInbox
+  const inboxCount = data.inboxCount ?? 0
   const pick = (sessionKey: string) => {
     onOpenSession(sessionKey)
     beginClose()
@@ -134,6 +141,14 @@ export function MobileDrawerNav({
     <div className="pm-drawer-layer" data-pi-mobile-mode={mode} data-pi-mobile-surface="P11-MOB-02" data-closing={phase === "closing" ? "" : undefined}>
       <button type="button" className="pm-drawer-mask" aria-label="关闭侧栏" onClick={beginClose} />
       <aside ref={asideRef} className="pm-drawer" role="dialog" aria-modal="true" aria-label="侧栏" data-pi-mobile-surface="P11-MOB-03">
+        <div className="pm-drawer-head">
+          <span className="pm-topbar-title">Pi-Remote</span>
+          {onSearch ? (
+            <button type="button" className="pm-icon-btn" aria-label="搜索" onClick={onSearch}>
+              <IconSearch size={20} />
+            </button>
+          ) : null}
+        </div>
         <div className="pm-drawer-scroll">
           <div className="pm-drawer-device-wrap">
             <button
@@ -177,12 +192,38 @@ export function MobileDrawerNav({
             {data.newSessionLabel ?? "新会话"}
           </button>
           <nav className="pm-drawer-naive" aria-label="侧栏导航">
+            {showInbox ? (
+              <button
+                type="button"
+                className="pm-drawer-naive-row"
+                aria-label={inboxCount > 0 ? `待答，${inboxCount} 项待处理` : undefined}
+                onClick={() => {
+                  actions.openInbox?.()
+                  beginClose()
+                }}
+              >
+                <IconInbox size={17} />
+                待答
+                {inboxCount > 0 ? (
+                  <span className="pm-nav-badge" aria-hidden>
+                    {inboxCount > 99 ? "99+" : inboxCount}
+                  </span>
+                ) : null}
+              </button>
+            ) : null}
             <button type="button" className="pm-drawer-naive-row" onClick={() => actions.togglePlainRow?.("workspace")}>
               <IconFolder size={17} open />
               工作区
             </button>
-            <button type="button" className="pm-drawer-naive-row" onClick={() => actions.togglePlainRow?.("archive")}>
-              <IconFolder size={17} />
+            <button
+              type="button"
+              className="pm-drawer-naive-row"
+              data-active={archiveView ? "" : undefined}
+              aria-pressed={archiveView}
+              title={PI_SIDEBAR_COPY.archiveTitle}
+              onClick={() => actions.togglePlainRow?.("archive")}
+            >
+              <IconArchive size={17} />
               归档
             </button>
             {(data.localPages ?? []).map((page) => (
@@ -204,6 +245,7 @@ export function MobileDrawerNav({
           {pinnedGroup && pinnedGroup.sessions.length > 0 ? (
             <section className="pm-drawer-section" aria-label={pinnedGroup.label}>
               <div className="pm-drawer-section-head">
+                <IconPin size={14} />
                 <span>{pinnedGroup.label}</span>
               </div>
               {pinnedGroup.sessions.map((session) => (
@@ -211,40 +253,51 @@ export function MobileDrawerNav({
               ))}
             </section>
           ) : null}
-          <section className="pm-drawer-section" aria-label="工作区">
+          <section className="pm-drawer-section" aria-label={archiveView ? "已归档" : "工作区"}>
             <div className="pm-drawer-section-head">
-              <span>工作区</span>
-              <span className="pm-drawer-section-tools" aria-hidden>
-                <IconSearch size={16} />
-                <IconFolder size={16} open />
-              </span>
-            </div>
-            {workspaceGroups.map((group) => (
-              <div className="pm-drawer-group" key={group.id}>
-                <button type="button" className="pm-drawer-workspace" aria-expanded={!group.collapsed} onClick={() => actions.toggleGroup(group.id)}>
-                  <span className="pm-workspace-icon">
-                    <IconFolder size={17} open={!group.collapsed} />
-                  </span>
-                  <span className="pm-workspace-name">{group.label}</span>
+              <span>{archiveView ? "已归档" : "工作区"}</span>
+              {archiveView ? (
+                <button type="button" className="pm-section-action" onClick={() => actions.togglePlainRow?.("archive")}>
+                  返回
                 </button>
-                {!group.collapsed
-                  ? group.sessions.map((session) => (
-                      <DrawerSessionRow key={session.key} session={session} selected={session.selected} onOpen={pick} onLongPress={setPreview} />
-                    ))
-                  : null}
-                {/* D-3: rows past the per-group cap need a visible way in. */}
-                {!group.collapsed && actions.toggleExpanded && group.more != null && group.more > 0 ? (
-                  <button type="button" className="pm-group-more" onClick={() => actions.toggleExpanded?.(group.id)}>
-                    更多 {group.more}
-                  </button>
-                ) : null}
-                {!group.collapsed && actions.toggleExpanded && group.expanded ? (
-                  <button type="button" className="pm-group-more" onClick={() => actions.toggleExpanded?.(group.id)}>
-                    收起
-                  </button>
-                ) : null}
+              ) : null}
+            </div>
+            {archiveView && workspaceGroups.length === 0 ? (
+              <div className="pm-empty">
+                <p className="pm-empty-title">{PI_SIDEBAR_COPY.archiveEmpty}</p>
+                <p className="pm-empty-hint">{PI_SIDEBAR_COPY.archiveHint}</p>
               </div>
-            ))}
+            ) : null}
+            {workspaceGroups.map((group) => {
+              const tone = group.collapsed ? mobileGroupToneOf(group) : "idle"
+              return (
+                <div className="pm-drawer-group" key={group.id}>
+                  <button type="button" className="pm-drawer-workspace" aria-expanded={!group.collapsed} title={group.cwd || undefined} onClick={() => actions.toggleGroup(group.id)}>
+                    <span className="pm-workspace-icon">
+                      <IconFolder size={17} open={!group.collapsed} />
+                    </span>
+                    <span className="pm-workspace-name">{group.label}</span>
+                    {tone !== "idle" ? <span className="pm-group-tone" data-tone={tone} role="img" aria-label={MOBILE_GROUP_TONE_LABEL[tone]} /> : null}
+                  </button>
+                  {!group.collapsed
+                    ? group.sessions.map((session) => (
+                        <DrawerSessionRow key={session.key} session={session} selected={session.selected} onOpen={pick} onLongPress={setPreview} />
+                      ))
+                    : null}
+                  {/* D-3: rows past the per-group cap need a visible way in. */}
+                  {!group.collapsed && actions.toggleExpanded && group.more != null && group.more > 0 ? (
+                    <button type="button" className="pm-group-more" onClick={() => actions.toggleExpanded?.(group.id)}>
+                      更多 {group.more}
+                    </button>
+                  ) : null}
+                  {!group.collapsed && actions.toggleExpanded && group.expanded ? (
+                    <button type="button" className="pm-group-more" onClick={() => actions.toggleExpanded?.(group.id)}>
+                      收起
+                    </button>
+                  ) : null}
+                </div>
+              )
+            })}
           </section>
           <div className="pm-drawer-gap" aria-hidden />
         </div>
@@ -261,7 +314,22 @@ export function MobileDrawerNav({
         </div>
         <div className="pm-safe-bottom" aria-hidden />
       </aside>
-      {preview ? <LongPressCard session={preview} onPin={actions.togglePin} onArchive={actions.toggleArchive} onClose={() => setPreview(null)} /> : null}
+      {preview ? (
+        <LongPressCard
+          session={preview}
+          onPin={actions.togglePin}
+          onArchive={actions.toggleArchive}
+          onMore={
+            onRowMenu
+              ? () => {
+                  onRowMenu(preview)
+                  beginClose()
+                }
+              : undefined
+          }
+          onClose={() => setPreview(null)}
+        />
+      ) : null}
     </div>
   )
 }
@@ -306,6 +374,7 @@ function DrawerSessionRow({
       <button
         type="button"
         className="pm-drawer-session-btn"
+        data-pi-row-key={session.id}
         data-selected={selected ? "" : undefined}
         aria-haspopup="dialog"
         aria-label={`${session.title}${session.dateTimeLabel ? ` · ${session.dateTimeLabel}` : ""}（长按或 Shift+F10 打开操作卡）`}

@@ -90,6 +90,19 @@ export function menuShadowClass(elevation: "menu" | "popover" = "menu"): string 
   return elevation === "popover" ? "shadow-(--cw-shadow-popover)" : "shadow-(--cw-shadow-menu)"
 }
 
+/*
+ * 菜单行的悬停 / 高亮 / 选中底（--cw-pi-menu-hl）与菜单内分隔线（--cw-pi-menu-divider），所有菜单式列表共用。
+ * 令牌在 pi-theme.css；没加载到时回退成前景色按比例叠底（浅色 7% ≈ #EDEDED，深色 ≈ #303032），
+ * 不能回退到 --cw-row-hover / --cw-divider-soft：它们在深色卡面 #222224 上几乎看不出来。
+ * 类名必须整串写出来（Tailwind 只认源码里的字面类名，拼出来的不生成样式）。
+ */
+export const MENU_ROW_HL = "bg-[color:var(--cw-pi-menu-hl,color-mix(in_srgb,var(--cw-text)_7%,transparent))]"
+export const MENU_ROW_HL_HOVER = "hover:bg-[color:var(--cw-pi-menu-hl,color-mix(in_srgb,var(--cw-text)_7%,transparent))]"
+export const MENU_ROW_HL_DATA =
+  "data-[highlighted]:bg-[color:var(--cw-pi-menu-hl,color-mix(in_srgb,var(--cw-text)_7%,transparent))] data-[state=open]:bg-[color:var(--cw-pi-menu-hl,color-mix(in_srgb,var(--cw-text)_7%,transparent))]"
+export const MENU_DIVIDER_BG = "bg-[color:var(--cw-pi-menu-divider,color-mix(in_srgb,var(--cw-text)_8%,transparent))]"
+export const MENU_DIVIDER_BORDER = "border-[color:var(--cw-pi-menu-divider,color-mix(in_srgb,var(--cw-text)_8%,transparent))]"
+
 interface SurfaceImplProps extends MenuSurfaceProps {
   /** 内部用：Submenu 的子卡渲染成 Radix SubContent */
   layer?: "content" | "sub-content"

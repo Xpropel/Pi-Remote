@@ -1,9 +1,7 @@
 /**
- * 会话标题文本规则（设计 D §2.1）：首条用户消息作标题素材时的清洗口径，全 UI 一份。
- *
- * 优先级（改名 label → pi 会话名 → 首条消息 → label → cwd 目录名 → id 前缀）不在
- * 这里管——各标题函数（useRelay.roomTitle / attentionRoomTitle / devices 的
- * ListedSession.title）早就同源定版；本模块只钉死"首条消息"这一段的生成规则：
+ * 会话标题规则，全 UI 一份：回落链由 sessionTitleOf 定（会话名 → 首条消息 → 工作区名），
+ * 侧栏、待答、顶栏、命令面板、标签页标题等都经它出（useRelay.roomTitle / attentionRoomTitle /
+ * devices 的 ListedSession.title 只是转调）。"首条消息"这一段的生成规则（设计 D §2.1）：
  *  1. 取材：第一条含文本的 user 消息（纯图片/纯附件不作素材，顺延下一条）——
  *     取材发生在生成端（extension 清单/扫描、relay 索引），本模块处理拿到手的文本；
  *  2. 清洗：多行折叠为一行（换行与连续空白 → 单空格）；删除控制字符
@@ -33,7 +31,7 @@ export function truncateCodePoints(text: string, max: number): string {
 
 /**
  * 首条消息 → 标题文本：清洗折叠 + 80 码点截。入参为空/纯空白/全控制字符时返回 ""，
- * 调用方据此顺延到标题优先级的下一档（label/目录名/id），不要拿空串当标题。
+ * 调用方据此顺延到标题优先级的下一档（工作区名），不要拿空串当标题。
  */
 export function cleanSessionTitleText(raw: string | null | undefined): string {
   if (!raw) return ""
@@ -45,4 +43,43 @@ export function cleanSessionTitleText(raw: string | null | undefined): string {
     .trim()
   if (!folded) return ""
   return truncateCodePoints(folded, SESSION_TITLE_MAX)
+}
+
+/** 标题素材：会话名、首条消息、工作区目录。房间 label、会话 id 都不是素材。 */
+export type SessionTitleSource = {
+  name?: string | null
+  firstMessage?: string | null
+  cwd?: string | null
+}
+
+/** 三档素材都没有时的占位：原始会话编号不进标题位。 */
+export const UNTITLED_SESSION_TITLE = "未命名会话"
+
+/**
+ * 会话标题：会话名（/name 或网页重命名）→ 首条消息（清洗）→ 工作区名 → 占位。
+ * 可以给多份素材（房间、清单条目），逐档找第一份有值的：会话名总压过首条消息，与素材先后无关。
+ * 房间 label 不进这条链：旧扩展在会话未命名时把设备标签（PI_REMOTE_LABEL，如「我的电脑」）
+ * 填进 label，网页分不出它和会话名；会话名由 relay 以 room.name 单独下发。
+ */
+export function sessionTitleOf(...sources: readonly (SessionTitleSource | null | undefined)[]): string {
+  for (const source of sources) {
+    const name = typeof source?.name === "string" ? source.name.trim() : ""
+    if (name) return name
+  }
+  for (const source of sources) {
+    const first = cleanSessionTitleText(source?.firstMessage)
+    if (first) return first
+  }
+  for (const source of sources) {
+    const folder = workspaceNameOf(source?.cwd)
+    if (folder) return folder
+  }
+  return UNTITLED_SESSION_TITLE
+}
+
+/** cwd 末段（与 devices.ts 的 baseName 同规则；本文件保持无导入）。 */
+function workspaceNameOf(cwd: string | null | undefined): string {
+  if (typeof cwd !== "string" || !cwd) return ""
+  const parts = cwd.split(/[/\\]/).filter(Boolean)
+  return parts[parts.length - 1] || cwd
 }

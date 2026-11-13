@@ -9,9 +9,9 @@
  * it is gone. Offline / capability / permission answers prove nothing, are
  * never cached, and must never exclude a folder.
  *
- * Results live in a module-level cache shared by all three shells (Cursor /
- * Claude / Codex new-session pages), keyed by device + normalized folder
- * path, so each folder is probed at most once per app run.
+ * Results live in a module-level cache shared by every new-session surface,
+ * keyed by device + folder key (folderKeyOf under the device platform), so
+ * each folder is probed at most once per app run.
  */
 import { useEffect, useMemo, useState } from "react"
 import type { Device } from "../../relay/devices.ts"
@@ -29,13 +29,13 @@ const inflight = new Map<string, Promise<FolderExistence | null>>()
 
 const EMPTY_SET: ReadonlySet<string> = new Set()
 
-function cacheKey(deviceId: string, folder: string): string {
-  return `${deviceId}\n${folderKeyOf(folder)}`
+function cacheKey(deviceId: string, folder: string, platform?: string | null): string {
+  return `${deviceId}\n${folderKeyOf(folder, platform)}`
 }
 
 /** Cached verdict for one folder, or null when it was never (successfully) probed. */
-export function folderExistenceOf(deviceId: string, folder: string): FolderExistence | null {
-  return cache.get(cacheKey(deviceId, folder)) ?? null
+export function folderExistenceOf(deviceId: string, folder: string, platform?: string | null): FolderExistence | null {
+  return cache.get(cacheKey(deviceId, folder, platform)) ?? null
 }
 
 /** Every folder currently proven missing on one device (raw paths). */
@@ -56,8 +56,8 @@ export function missingFoldersOf(deviceId: string): ReadonlySet<string> {
  * capability, permission, timeout) -- null is never cached, so a later
  * render may probe again.
  */
-export function probeFolderExistence(deviceId: string, folder: string, listDirs: ListDirsFn): Promise<FolderExistence | null> {
-  const key = cacheKey(deviceId, folder)
+export function probeFolderExistence(deviceId: string, folder: string, listDirs: ListDirsFn, platform?: string | null): Promise<FolderExistence | null> {
+  const key = cacheKey(deviceId, folder, platform)
   const hit = cache.get(key)
   if (hit) return Promise.resolve(hit)
   const pending = inflight.get(key)
@@ -84,7 +84,7 @@ export function probeFolderExistence(deviceId: string, folder: string, listDirs:
   return run
 }
 
-type ProbeDevice = Pick<Device, "id" | "online" | "browseRoots"> & { features?: readonly string[] }
+type ProbeDevice = Pick<Device, "id" | "online" | "browseRoots"> & { features?: readonly string[]; platform?: string | null }
 
 /**
  * React seam for the new-session pages: probes the currently effective
@@ -97,19 +97,20 @@ type ProbeDevice = Pick<Device, "id" | "online" | "browseRoots"> & { features?: 
 export function useMissingFolders(probe: { listDirs: ListDirsFn } | null, device: ProbeDevice | null, folder: string | null): ReadonlySet<string> {
   const [tick, setTick] = useState(0)
   const deviceId = device?.id ?? null
+  const platform = device?.platform
   const canBrowse = device ? browseAccessOf(device).canBrowse : false
   const listDirs = probe?.listDirs
   useEffect(() => {
     if (!listDirs || !deviceId || !folder || !canBrowse) return
-    if (folderExistenceOf(deviceId, folder) !== null) return
+    if (folderExistenceOf(deviceId, folder, platform) !== null) return
     let live = true
-    void probeFolderExistence(deviceId, folder, listDirs).then((result) => {
+    void probeFolderExistence(deviceId, folder, listDirs, platform).then((result) => {
       if (live && result === "missing") setTick((n) => n + 1)
     })
     return () => {
       live = false
     }
-  }, [listDirs, deviceId, folder, canBrowse])
+  }, [listDirs, deviceId, folder, canBrowse, platform])
   // The tick is the invalidation signal for the module-level cache: a probe
   // that lands "missing" bumps it and the set below is rebuilt.
   // eslint-disable-next-line react-hooks/exhaustive-deps

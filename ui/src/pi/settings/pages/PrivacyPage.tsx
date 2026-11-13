@@ -123,7 +123,6 @@ export function PrivacyPage() {
     }
     act.mergePrefs(parsed.prefs)
     p.act.setPref("theme", parsed.prefs.appearanceTheme)
-    p.act.setUiVariant(parsed.prefs.appearanceStyle)
     act.notify("已导入本机设置")
   }
 

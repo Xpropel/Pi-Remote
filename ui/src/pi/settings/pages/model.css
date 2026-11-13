@@ -1,0 +1,37 @@
+/**
+ * 设置 › 模型与会话 · 页面级样式（只消费 tokens.css 的 --st-*）。
+ * 供应商卡里，模型行、「另有 N 个」与「添加模型」缩进到供应商名之下，层级一眼可见。
+ */
+
+.settings-root .settings-card:has([data-settings-provider]) > .settings-row:not(.settings-row--action) {
+  padding-left: 40px;
+}
+
+.settings-model-provider {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.settings-model-provider-name {
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.settings-model-provider-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--st-text-3);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.settings-model-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

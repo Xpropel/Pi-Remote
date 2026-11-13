@@ -26,8 +26,8 @@
  * waiting 条目随 dialog_close 收缩 dialogs 自动消失；设备条目随设备恢复在线消失。
  */
 // test/*.test.mjs 用 node 直接跑 .ts 源文件，相对导入必须带扩展名
-import { baseName, roomDeviceId, type Device, type RoomInfo } from "./devices.ts"
-import { cleanSessionTitleText } from "./titleText.ts"
+import { roomDeviceId, type Device, type RoomInfo } from "./devices.ts"
+import { sessionTitleOf } from "./titleText.ts"
 import type { InboxEntry } from "./inbox.ts"
 
 /** 未决 dialog 的最小形状（与 PromptWaiting 的 DialogCard 结构兼容，只取聚合用到的字段）。 */
@@ -98,18 +98,9 @@ export type AttentionItem = {
 /** 清单排序：等应答的最急，其次出错、设备掉线，最后完成未读；同级按信号时刻先后。 */
 const KIND_PRIORITY: Record<AttentionKind, number> = { waiting: 0, error: 1, "device-offline": 2, done: 3 }
 
-/** 会话标题：与 useRelay.roomTitle 同一优先级（改名 label → 会话名 → 首条消息 → label → 目录名 → id 前缀）。 */
+/** 会话标题：同一出口 sessionTitleOf（会话名 → 首条消息 → 工作区名）；没有房间时写「会话」。 */
 export function attentionRoomTitle(room: RoomInfo | null | undefined): string {
-  if (!room) return "会话"
-  const folder = room.cwd ? baseName(room.cwd) : ""
-  if (room.label && room.label !== folder && room.label !== room.id) return room.label
-  if (room.name) return room.name
-  // 首条消息作标题要过清洗规则（设计 D §2.1：折叠/去控制字符/80 码点截）；清洗后为空顺延下一档
-  const first = cleanSessionTitleText(room.firstMessage)
-  if (first) return first
-  if (room.label) return room.label
-  if (room.cwd) return baseName(room.cwd)
-  return room.id.slice(0, 8)
+  return room ? sessionTitleOf(room) : "会话"
 }
 
 /** dialog 没有标题时的等待文案（按种类给一句人话；未知种类回落通用句）。 */
@@ -125,7 +116,7 @@ function dialogWaitingText(kind: string): string {
     case "editor":
       return "等你输入"
     default:
-      return "有弹窗等你处理"
+      return "有弹窗等你回答"
   }
 }
 
@@ -149,7 +140,7 @@ export function attentionItemsOf(snapshot: AttentionSnapshot): AttentionItem[] {
       deviceId: currentDeviceId,
       dialogId: dialog.dialogId,
       title: attentionRoomTitle(currentRoom),
-      detail: dialog.title ? `等你处理：${dialog.title}` : dialogWaitingText(dialog.kind),
+      detail: dialog.title ? `等你回答：${dialog.title}` : dialogWaitingText(dialog.kind),
       at: dialog.startedAt,
       ...(typeof dialog.answerable === "boolean" ? { answerable: dialog.answerable } : {}),
     })
@@ -165,7 +156,7 @@ export function attentionItemsOf(snapshot: AttentionSnapshot): AttentionItem[] {
       deviceId: currentDeviceId,
       dialogId: null,
       title: attentionRoomTitle(currentRoom),
-      detail: snapshot.uiPrompt.title || "有弹窗等你处理",
+      detail: snapshot.uiPrompt.title || "有弹窗等你回答",
       at: snapshot.uiPrompt.startedAt,
     })
   }
@@ -206,7 +197,7 @@ export function attentionItemsOf(snapshot: AttentionSnapshot): AttentionItem[] {
           deviceId,
           dialogId: null,
           title: attentionRoomTitle(room),
-          detail: entry.title || "有弹窗等你处理",
+          detail: entry.title || "有弹窗等你回答",
           at: entry.at,
           answerable: false,
         })
@@ -226,7 +217,7 @@ export function attentionItemsOf(snapshot: AttentionSnapshot): AttentionItem[] {
         deviceId,
         dialogId: waiting.dialogId,
         title: attentionRoomTitle(room),
-        detail: waiting.title || "有弹窗等你处理",
+        detail: waiting.title || "有弹窗等你回答",
         at: waiting.startedAt,
         answerable: waiting.answerable === true,
       })
@@ -240,7 +231,7 @@ export function attentionItemsOf(snapshot: AttentionSnapshot): AttentionItem[] {
         deviceId,
         dialogId: null,
         title: attentionRoomTitle(room),
-        detail: room.waitingPrompt.title || "有弹窗等你处理",
+        detail: room.waitingPrompt.title || "有弹窗等你回答",
         at: room.waitingPrompt.at,
         answerable: false,
       })
@@ -409,7 +400,7 @@ function settle(draft: RoomTurnDraft, roomId: string, currentRoomId: string, now
  */
 export function trackRoomListEdges(
   tracker: RoomTurnTracker,
-  rooms: readonly { id: string; busy: boolean }[],
+  rooms: readonly { id: string; busy: boolean; turnStopped?: boolean }[],
   currentRoomId: string,
   now = Date.now(),
 ): RoomTurnTracker {
@@ -420,8 +411,11 @@ export function trackRoomListEdges(
     seen.add(room.id)
     const prev = draft.busy.get(room.id)
     if (prev === undefined) draft.busy.set(room.id, room.busy)
-    else if (prev && !room.busy) settle(draft, room.id, currentRoomId, now)
-    else if (!prev && room.busy) rise(draft, room.id)
+    else if (prev && !room.busy) {
+      // relay 说这一轮是用户停止的：与 aborted 同口径，落沿不产记录
+      if (room.turnStopped === true) draft.aborted.add(room.id)
+      settle(draft, room.id, currentRoomId, now)
+    } else if (!prev && room.busy) rise(draft, room.id)
   }
   for (const roomId of [...draft.busy.keys()]) {
     if (seen.has(roomId)) continue
@@ -438,6 +432,8 @@ export type RoomTurnEvent = {
   type?: string
   message?: { role?: string; stopReason?: string; errorMessage?: string }
   assistantMessageEvent?: { type?: string }
+  /** 新扩展在用户停止后给这一轮的收尾事件打的标（另有一帧 turn_stopped 先到） */
+  stopped?: boolean
 }
 
 /**
@@ -452,6 +448,12 @@ export function trackRoomEventEdge(
   now = Date.now(),
 ): RoomTurnTracker {
   if (!roomId || roomId === currentRoomId || !event || typeof event !== "object") return tracker
+  // 停止信号：之后的余波（再起一个 turn、以 error 收尾）都不算，落沿按中断处理
+  if ((event.type === "turn_stopped" || event.stopped === true) && !tracker.aborted.has(roomId)) {
+    const draft = draftOf(tracker)
+    draft.aborted.add(roomId)
+    tracker = draft
+  }
   switch (event.type) {
     case "agent_start":
     case "turn_start": {

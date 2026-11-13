@@ -151,6 +151,8 @@ const MAX_ROOM_STATES = 1000;
 const NON_TERMINAL_STOP_REASONS = new Set(["toolUse", "pending", "deferred"]);
 // 出现这些事件 = 新一轮活动开始，上一回合的"已通知"标记与旧成败结论一并作废。
 const TURN_ACTIVITY_TYPES = new Set(["agent_start", "turn_start", "message_start", "before_agent_start"]);
+// 停止信号（turn_stopped / stopped:true / 助手 aborted）只在新一轮运行时清：停止后的余波 turn 不翻案。
+const RUN_START_TYPES = new Set(["agent_start", "before_agent_start"]);
 
 function createNotifier(config, dependencies = {}) {
   const log = typeof dependencies.log === "function" ? dependencies.log : () => {};
@@ -171,13 +173,14 @@ function createNotifier(config, dependencies = {}) {
   }
 
   // roomId → { lastOutcome: "ok" | "error" | null, settledNotified: bool,
-  //            sawMessage: bool（本回合是否观察到任何 message_end）, dialogs: Map<key, expiresAt> }
+  //            sawMessage: bool（本回合是否观察到任何 message_end）, stopped: bool（本轮被用户停止）,
+  //            dialogs: Map<key, expiresAt> }
   const roomStates = new Map();
 
   function stateFor(roomId) {
     let roomState = roomStates.get(roomId);
     if (!roomState) {
-      roomState = { lastOutcome: null, settledNotified: false, sawMessage: false, dialogs: new Map() };
+      roomState = { lastOutcome: null, settledNotified: false, sawMessage: false, stopped: false, dialogs: new Map() };
       roomStates.set(roomId, roomState);
       if (roomStates.size > MAX_ROOM_STATES) {
         // 房间状态只是去重/成败的短时记忆，超限丢最旧一条即可，不影响主流程。
@@ -215,6 +218,8 @@ function createNotifier(config, dependencies = {}) {
     if (!roomId) return;
     const roomState = stateFor(roomId);
 
+    if (type === "turn_stopped" || event.stopped === true) roomState.stopped = true;
+    else if (RUN_START_TYPES.has(type)) roomState.stopped = false;
     if (TURN_ACTIVITY_TYPES.has(type)) {
       roomState.settledNotified = false;
       roomState.lastOutcome = null;
@@ -230,6 +235,7 @@ function createNotifier(config, dependencies = {}) {
           // aborted 单列（C-2）：用户主动打断既不是"完成"也不是"出错"，归入
           // 静默终态，落定时不推——免得用户刚按下打断就收到一条"回合完成"。
           roomState.lastOutcome = stopReason === "aborted" ? "aborted" : (stopReason === "error" || !!assistantMessage.errorMessage ? "error" : "ok");
+          if (stopReason === "aborted") roomState.stopped = true;
         }
       }
       return;
@@ -239,7 +245,7 @@ function createNotifier(config, dependencies = {}) {
       roomState.settledNotified = true;
       const outcome = roomState.lastOutcome;
       roomState.lastOutcome = null;
-      if (outcome === "aborted") return; // C-2：被用户打断的回合不推任何一条
+      if (outcome === "aborted" || roomState.stopped) return; // C-2：被用户打断/停止的回合不推任何一条
       // 低-24：落定前一条 message_end 都没观察到（扩展在模型返回前就失败/事件流断了）时，
       // 不能默认按"回合完成"推送——那会把失败报成成功。保留"只有中间态/无 stopReason 时按完成"
       // 的既有兼容口径（与 rooms 摘要副本等价性测试同源），只堵"零观察"这一种假完成。

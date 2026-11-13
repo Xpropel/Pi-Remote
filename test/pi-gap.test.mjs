@@ -69,11 +69,11 @@ describe("联动测试 10：默认目录撞上运行中的会话", () => {
     assert.match(ex, /act\.openSession\(\)/, "回到会话视图")
     assert.doesNotMatch(ex, /sendText/, "不发送")
   })
-  test("最近用过的目录都有运行会话：退回原规则（最近的那个），不去挑没用过的目录", () => {
+  test("最近用过的目录都有运行会话：取白名单里空闲的项目目录；白名单也全在运行才退回最近的那个", () => {
     const sessions = [entry("a", PROJ, 300), entry("b", PROJ2, 100)]
     assert.equal(pick([room("a", PROJ), room("b", PROJ2)], sessions).folder, PROJ)
-    // 只有一个最近目录且在运行：同样退回它（不跳到没用过的 projects[0]）
-    assert.equal(pick([room("a", PROJ)], [entry("a", PROJ, 300)]).folder, PROJ)
+    // 只有一个最近目录且在运行：换白名单里没有在线会话的 projects[0]
+    assert.equal(pick([room("a", PROJ)], [entry("a", PROJ, 300)]).folder, PROJ2)
     // 没有最近目录：第一个允许的目录
     assert.equal(pick([], []).folder, PROJ2)
   })

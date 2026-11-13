@@ -169,7 +169,8 @@ export function PiNoticeCard({
       <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">{NOTICE_ICON[level]}</span>
       <div className="flex min-w-0 flex-1 flex-col">
         <div className={cn("flex items-baseline gap-1.5", phone ? "pr-[76px]" : "pr-14")}>
-          <span className="text-(length:--cw-text-base) leading-[20px] font-semibold text-(--cw-text)">{title}</span>
+          {/* 只有一句话的通知不加粗到 semibold：一行粗字在浮层里太抢 */}
+          <span className={cn("text-(length:--cw-text-base) leading-[20px] text-(--cw-text)", body ? "font-semibold" : "font-medium")}>{title}</span>
           {merged ? <span className="text-(length:--cw-text-sm) text-(--cw-pi-text-secondary)">×{merged}</span> : null}
         </div>
         {body && <p className="mt-0.5 mb-0 text-(length:--cw-text-md) leading-[19px] text-(--cw-text-2)">{body}</p>}

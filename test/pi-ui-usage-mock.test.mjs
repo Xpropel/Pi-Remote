@@ -372,11 +372,11 @@ test("生产隔离：变体/设置页不引用 dev fixture 与 dev overrides；�
       }
     }
   }
-  // 1) 三套变体（生产挂载）不得引用 mock fixture / dev overrides / dev preview
+  // 1) 产品界面（生产挂载）不得引用 mock fixture / dev overrides / dev preview
   walk(path.join(ROOT, "ui/src/pi/variants"), [/PI_UI_USAGE_FIXTURES/, /designTargets/, /displayOverrides/, /previewState/, /previewReason/, /devPreview/, /usage-fixtures/])
   // 2) Settings 挂载的 <UsageActivityPage> 标签不得传 dev 专用 props
   const mountChecks = []
-  for (const file of ["ui/src/pi/variants/claude/pages/ClaudeSettingsPage.tsx", "ui/src/pi/variants/codex/pages/CodexSettingsPage.tsx", "ui/src/pi/usage/PiSettingsUsageMount.tsx"]) {
+  for (const file of ["ui/src/components/pi/composer/PiSettingsPage.tsx", "ui/src/pi/settings/pages/UsagePage.tsx", "ui/src/pi/settings/mobile/pages/UsagePage.tsx"]) {
     const full = path.join(ROOT, file)
     if (!fs.existsSync(full)) continue
     const source = fs.readFileSync(full, "utf8")

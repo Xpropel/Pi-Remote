@@ -152,7 +152,7 @@ export function PiDevicePairing({
             </div>
             <p className="m-0 text-(length:--cw-text-sm) leading-(--cw-leading-sm) text-(--cw-pi-text-secondary)">
               {admin.hint}
-              {admin.saved ? "" : ` ${admin.required}。`}
+              {admin.saved ? "" : `${admin.required}。`}
             </p>
           </div>
         ) : (

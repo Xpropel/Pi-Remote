@@ -221,7 +221,7 @@ export const C_STATS = {
 
 /** 空会话建议（来源 = 现有空会话建议列表） */
 export const NEW_SESSION_SUGGESTIONS = [
-  { key: "tests", label: "看看测试为什么失败", primary: true },
+  { key: "tests", label: "看看测试为什么失败" },
   { key: "explain", label: "解释这个目录的结构" },
   { key: "todo", label: "列出代码里的 TODO" },
 ]

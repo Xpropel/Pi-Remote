@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react"
 import { noteSlashCommandUsed } from "@/chat/slashUsage"
+import { modelAutoStored } from "@/components/pi/composer/modelAuto"
 import { saveLegacyStyle, useLegacyPrefs, useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
-import { modelPillName, modelRowsOf, thinkingSegmentsOf, type PiModelRow } from "@/pi/model/models"
+import { modelDefaultOf, modelPillName, modelRowsOf, thinkingSegmentsOf, type PiModelRow } from "@/pi/model/models"
 import { settingsPrefsOf, settingsWritesOf, type PiSettingsPrefs } from "@/pi/model/settingsView"
+import { roomDeviceId } from "@/relay/devices"
 import { roomTitle } from "@/relay/useRelay"
-import type { PiContainerProps, Relay } from "./types"
+import type { PiUiActions } from "@/pi/hooks/usePiUiState"
+import type { PiContainerProps, PiVariant, Relay } from "./types"
 
 /*
  * c 线容器共用的 id、取数 hook 和小函数（P5.5；不含 JSX，免得 .tsx 文件同时导出组件和非组件）。
  * 只给 c 线的 Composer / NewSession / CommandPalette / Dialogs / Settings / DisplayOptions 容器用。
  */
 
-/** c 线自己的浮层 id（ui.menu = 桌面锚定菜单 / tray 面板；ui.sheet = 手机 sheet）。arg：模型菜单 = 悬停 / 选中行（静态截图用） */
+/** c 线自己的浮层 id（ui.menu = 桌面锚定菜单 / tray 面板；ui.sheet = 手机 sheet）。arg：模型菜单 = 悬停 / 选中行（静态截图用）；排队 = 要直接编辑的那一条 */
 export const C_IDS = {
   plus: "c:plus",
   model: "c:model",
@@ -20,8 +23,19 @@ export const C_IDS = {
   newDevice: "c:new-device",
   newFolder: "c:new-folder",
   newPlus: "c:new-plus",
-  newModel: "c:new-model",
+  /** 手机新会话页的文件夹浏览器（全高 sheet）：放在 ui.sheet 里，手机导航把它当一层，系统返回只关它 */
+  newBrowse: "c:new-browse",
 } as const
+
+/**
+ * 打开排队面板并直接编辑这一条（给对话流里排队气泡的「编辑」用；queueId = remoteQueue 条目的 id）。
+ * 桌面开 tray 上方的面板，手机开排队 sheet；ComposerContainer / ComposerSheets 读到 arg 后进入那一条的编辑、聚焦编辑框，再把 arg 去掉。
+ * 那一条已经在发 / 不在队里时照常提示「这条已经在发了，改不了」，面板仍打开。
+ */
+export function openQueueEdit(act: Pick<PiUiActions, "openMenu" | "openSheet">, variant: PiVariant, queueId: string): void {
+  if (variant === "phone") act.openSheet({ id: C_IDS.queue, arg: queueId })
+  else act.openMenu({ id: C_IDS.queue, arg: queueId })
+}
 
 /** 当前会话已载入（不是只点选的 lazySession） */
 export function sessionLoaded(relay: Pick<Relay, "lazySession" | "roomId">): boolean {
@@ -97,6 +111,23 @@ export function currentSessionTitle(relay: Pick<Relay, "rooms" | "roomId">): str
   return room ? roomTitle(room) : null
 }
 
+/** 当前房间所在的设备 id；没有房间时 null */
+function currentRoomDeviceId(relay: Pick<Relay, "rooms" | "roomId">): string | null {
+  const room = relay.rooms.find((r) => r.id === relay.roomId)
+  return room ? roomDeviceId(room) : null
+}
+
+/** 各设备默认模型的名字（get_available_models 回包的 defaultModel）：null = 回包没带。新会话页靠它，进出页面不必每次都等回包 */
+const deviceDefaultModelNames = new Map<string, string | null>()
+
+function useRememberDeviceDefault(deviceId: string | null, data: unknown, ready: boolean) {
+  const name = ready ? (modelDefaultOf(data)?.name ?? null) : undefined
+  useEffect(() => {
+    if (deviceId && name !== undefined) deviceDefaultModelNames.set(deviceId, name)
+  }, [deviceId, name])
+  return name
+}
+
 /** 模型表与思考级别（菜单 / sheet 开着时才取） */
 export function useModelData(relay: Relay, open: boolean) {
   const ready = open && commandsReady(relay)
@@ -104,9 +135,25 @@ export function useModelData(relay: Relay, open: boolean) {
   const levels = useRelayCommand(relay.runCommand, ready ? "get_available_thinking_levels" : null, undefined, `${relay.roomId}|${relay.model}`)
   const model = relay.model
   const modelMeta = relay.modelMeta
+  useRememberDeviceDefault(currentRoomDeviceId(relay), models.data, models.phase === "ready")
   const rows: PiModelRow[] = useMemo(() => (models.phase === "ready" ? modelRowsOf(models.data, { model, modelMeta }) : []), [models.phase, models.data, model, modelMeta])
   const segments = useMemo(() => (levels.phase === "ready" ? thinkingSegmentsOf(levels.data) : []), [levels.phase, levels.data])
-  return { rows, segments, raw: models.data }
+  /** 菜单的读取行：每次打开都重新问，回包到之前是 loading（不冒充「还没有配置任何模型」） */
+  const listPhase = models.phase === "loading" || models.phase === "error" ? models.phase : undefined
+  return { rows, segments, raw: models.data, listPhase, listError: models.error, reload: models.reload }
+}
+
+/**
+ * 新会话将用的模型 = 那台设备的默认模型（harness_start 不能指定模型，新会话页只读显示，绝不发 set_model / set_thinking_level）。
+ * 名字只能从 get_available_models 的回包里读，而命令要经某个房间跑：只在当前房间就在这台设备上时问一次（只读）。
+ * 问不到（没有这台设备的房间、回包没带默认模型）返回 null，由页面写「设备默认模型」。
+ */
+export function useDeviceDefaultModelName(relay: Relay, deviceId: string | null): string | null {
+  const ready = !!deviceId && currentRoomDeviceId(relay) === deviceId && commandsReady(relay)
+  const models = useRelayCommand(relay.runCommand, ready ? "get_available_models" : null, undefined, `${relay.roomId}|${deviceId ?? ""}`)
+  const fresh = useRememberDeviceDefault(ready ? deviceId : null, models.data, models.phase === "ready")
+  const name = fresh !== undefined ? fresh : deviceId ? (deviceDefaultModelNames.get(deviceId) ?? null) : null
+  return name ? modelPillName({ model: name }) : null
 }
 
 /** composer 里的模型选择器文字：模型名（去掉"Claude "）· 思考级别原值（design：Sonnet 4.5 · medium） */
@@ -170,7 +217,8 @@ function modelAutoScopeOf(relay: Pick<Relay, "selectedDevice">): string {
   return relay.selectedDevice?.id || "local"
 }
 
-export function useModelAuto(relay: Pick<Relay, "selectedDevice">): { auto: boolean | undefined; setAuto: (next: boolean) => void } {
+/** 菜单的 Auto 开关和输入框旁的按钮读同一个值：只有用户亲手打开过才算开（modelAutoStored） */
+export function useModelAuto(relay: Pick<Relay, "selectedDevice">): { auto: boolean; setAuto: (next: boolean) => void } {
   const record = useSyncExternalStore(subscribeModelAuto, loadModelAutoRecord, modelAutoServer)
   const scope = modelAutoScopeOf(relay)
   const setAuto = (next: boolean) => {
@@ -181,7 +229,7 @@ export function useModelAuto(relay: Pick<Relay, "selectedDevice">): { auto: bool
     }
     window.dispatchEvent(new Event(MODEL_AUTO_EVENT))
   }
-  return { auto: record[scope], setAuto }
+  return { auto: modelAutoStored(record, scope), setAuto }
 }
 
 /** 切模型 / 思考级别：失败时选择器回到原值（选择器读 relay，本来就没改），出 warning 通知 */

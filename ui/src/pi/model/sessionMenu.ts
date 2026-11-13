@@ -24,7 +24,7 @@
  * 扩展 / attach / relay 仍然拒绝时，报错改写成中文、原文放在括号里（sessionDeleteErrorText）。
  * 禁用项的原因给读屏用（aria-describedby），见 PiSessionMenu 的 state。
  */
-import { cwdInProjects, deviceErrorText, errorCode, roomDeviceId, type Device, type RoomInfo } from "../../relay/devices.ts"
+import { deviceErrorText, errorCode, roomDeviceId, samePath, type Device, type RoomInfo } from "../../relay/devices.ts"
 
 export type PiSessionMenuKey = "open" | "rename" | "fork" | "clone" | "export" | "tab" | "tree" | "compact" | "copy-cwd" | "copy-id" | "delete"
 
@@ -65,7 +65,7 @@ export type PiSessionDeleteRoute = { running: boolean; via: "device" | "room" | 
 export type PiSessionDeleteRoom = Pick<RoomInfo, "id" | "online" | "deviceId" | "cwd" | "lastActivity">
 
 /** sessionDeleteRouteOf 用到的设备字段（看在线与 attach 声明的文件能力） */
-export type PiSessionDeleteDevice = Pick<Device, "online" | "features"> | null | undefined
+export type PiSessionDeleteDevice = (Pick<Device, "online" | "features"> & { platform?: string | null }) | null | undefined
 
 export type PiSessionMenuModel = {
   /** 菜单作用的是当前选中的会话 */
@@ -100,7 +100,7 @@ const off = (reason: string): PiSessionMenuItemState => ({ disabled: true, reaso
  * 删除的路由（P9 B，判序见文件头）：
  * 1. 目标正在运行（有 id 相同的在线房间）→ running；
  * 2. relay 有 session.purge 且设备在线、features 含 session.files → via "device"；
- * 3. 这台设备（roomDeviceId，同侧栏的归属口径）上和目标同目录（cwdInProjects）的在线房间 →
+ * 3. 这台设备（roomDeviceId，同侧栏的归属口径）上和目标同目录（samePath，按设备平台）的在线房间 →
  *    via "room"（当前房间优先，否则最近活动的；同 R25）；
  * 4. 设备不在线 → 原因 deleteDeviceOffline；
  * 5. 其余：serverPurge 为真 → deleteNeedsUpdate，否则维持 deleteNoRoom。
@@ -117,7 +117,7 @@ export function sessionDeleteRouteOf(
   if (serverPurge && device?.online && features.includes("session.files")) return { running: false, via: "device", roomId: null }
   const cwd = row.cwd ?? ""
   const candidates = cwd
-    ? rooms.filter((room) => room.online && room.id !== row.id && !!room.cwd && roomDeviceId(room) === row.deviceId && cwdInProjects([room.cwd], cwd))
+    ? rooms.filter((room) => room.online && room.id !== row.id && !!room.cwd && roomDeviceId(room) === row.deviceId && samePath(room.cwd, cwd, device?.platform))
     : []
   const current = currentRoomId ? candidates.find((room) => room.id === currentRoomId) : undefined
   const pick = current ?? candidates.reduce<PiSessionDeleteRoom | null>((best, room) => (!best || (room.lastActivity || 0) >= (best.lastActivity || 0) ? room : best), null)

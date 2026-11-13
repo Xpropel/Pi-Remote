@@ -475,7 +475,6 @@ function NewComposer({ ui, act, variant }: PlaySlotProps) {
         )
       }
       plusMenu={phone ? undefined : <PiAttachMenu variant="desktop" className="w-[280px]" commandsDisabled onPick={(k) => set({ last: `new-attach:${k}` })} />}
-      modelMenu={phone ? undefined : <ModelMenuContent c={c} set={set} variant="desktop" />}
       below={variant === "desktop" ? <SuggestionPills data-cw-id="pi-new-suggestions" items={NEW_SESSION_SUGGESTIONS} /> : undefined}
     />
   )

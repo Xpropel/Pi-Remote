@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { PiSettingsHost } from "@/pi/hooks/PiSettingsHost"
 import { usePiDevice } from "@/pi/hooks/usePiDevice"
 import { usePiTheme } from "@/pi/hooks/usePiTheme"
@@ -8,7 +8,8 @@ import type { PiApprovalGateTier } from "@/pi/model/prefs"
 import { PI_UI_IDS } from "@/pi/containers/types"
 import { PairLinkLanding } from "@/pi/PairLinkLanding"
 import { PiVariantBoundary } from "@/pi/PiVariantBoundary"
-import { PiVariantLoading, piVariantDefOf, type VariantAppProps } from "@/pi/variants"
+import { CursorApp } from "@/pi/variants/cursor/CursorApp"
+import type { VariantAppProps } from "@/pi/variants/types"
 import { TUNNEL_COPY } from "@/relay/devices"
 import { takePairLinkFromLocation } from "@/relay/pairLink"
 import { useRelay } from "@/relay/useRelay"
@@ -23,19 +24,14 @@ import "@/pi/styles/privacy.css"
  * P6.1（p6-base）：PiRoot 走产品模式（device = usePiDevice()：1024 断点 + useMobileViewport 的键盘与可视视口；
  * 安全区取 env()、根高 100dvh，见 PiRoot / pi-theme.css）；keyboardOpen 交给容器树。
  * P6.4（a 线）：主题 = usePiTheme(prefs.theme)：首帧由 index.html 的脚本按同一条规则写好，这里接手（设置里改了立刻生效，跟随系统时跟 matchMedia）。
- *
- * P1 架构线（PI-UI-REFS，`.agents/tasks/pi-ui-refs-2026-10-26/brief.md` §架构契约 3）：在 useRelay / usePiUiState / usePiTheme
- * 之后按 prefs.ui 选入口。`useRelay` 只调这一次，切换变体只换下面的展示树 —— 连接、room、草稿等 relay 状态都保留，不重连、不丢数据。
- * cursor 走现有 PiRoot + PiAppBody（variants/cursor/CursorApp.tsx，静态 import、不过 lazy，外观/行为不变）；
- * claude / codex 用 React.lazy（variants/index.ts），首次切到时才拉 chunk，加载期由 PiVariantLoading 占位。
- * 根元素 data-pi-ui="<id>" 由各变体根节点（PiRoot 的 ui 参数）写，见 brief §架构契约 6。
+ * 展示树只有一套：CursorApp（PiRoot + PiAppBody），外面包 PiVariantBoundary 兜住渲染异常（不白屏）。
  */
 export default function PiApp() {
   const relay = useRelay()
   const device = usePiDevice()
   const [ui, act] = usePiUiState()
   // 二维码设备链接落地（qr-pairing §3.2）：启动时命中 #pair= 就先进落地视图（hash 在取码时已清掉，
-  // 码只留在内存里）；落地页与皮肤无关（三套变体共用一份），退出后才进下面的变体树。
+  // 码只留在内存里），退出后才进下面的界面树。
   const [pairEntry, setPairEntry] = useState(() => takePairLinkFromLocation())
   // P11 prefs-sync（additive）：mobileNav 跨设备跟随账号。
   // 1) 采用服务端值（旧 relay = null 不覆盖本地）；采用后记入 lastPushed，避免回声回发。
@@ -101,10 +97,9 @@ export default function PiApp() {
     }
   }, [adoptedSwitches, act])
   // Room-scoped notices (e.g. the encrypted-room notice) describe the room
-  // on screen. Leaving the session view ends that context in every shell,
-  // so retract them here, at the one root all variants share (PiAppBody
-  // only serves the cursor tree): the current room's scope, plus any
-  // room-scoped notice that landed late (a crypto_required frame from a
+  // on screen. Leaving the session view ends that context on desktop and
+  // phone alike, so retract them here at the app root: the current room's
+  // scope, plus any room-scoped notice that landed late (a crypto_required frame from a
   // background room restore) — swept whenever the visible notice list
   // changes while off the session view. Unscoped (global) notices are
   // untouched.
@@ -116,19 +111,6 @@ export default function PiApp() {
     }
   }, [ui.view, relay.roomId, relay.notices, relay])
   const theme = usePiTheme(ui.prefs.theme, act)
-  // 首帧脚本（index.html）为避免闪 cursor，按 pi_remote_pi_prefs.ui 预写了 <html data-pi-ui> 和该变体的 S0 临时底色（Lead 裁决 Q2）。
-  // React 接管后以偏好为准：__PI_UI_READY__ 让首帧脚本不再写；data-pi-ui 跟着 prefs.ui 走（<html> 上也留一份，portal 的浮层能被
-  // 变体 CSS 作用域命中）；临时底色交给变体 CSS / PiRoot（主题变了也清一次，避免首帧脚本在系统主题切换时又写回来）。
-  useEffect(() => {
-    const root = document.documentElement
-    const scope = window as Window & { __PI_UI_READY__?: boolean }
-    scope.__PI_UI_READY__ = true
-    root.setAttribute("data-pi-ui", ui.prefs.ui)
-    root.style.removeProperty("background-color")
-  }, [ui.prefs.ui, theme])
-  // 变体注册表：id → 入口组件（cursor 同步、claude/codex 惰性）；非法 / 缺失的 prefs.ui 已在迁移时回落 cursor
-  const variant = piVariantDefOf(ui.prefs.ui)
-  const Variant = variant.Component
   const app: VariantAppProps = {
     relay,
     ui,
@@ -139,7 +121,7 @@ export default function PiApp() {
     device: device.frame,
   }
   // 免服务器模式 §4.3：页面经 Cloudflare quick tunnel 打开时，顶部居中一条小徽标说明连接方式。
-  // 纯前端判定（relay.isViaTunnel 看页面源 hostname），三套皮肤共用一份、只提示不拦截操作；
+  // 纯前端判定（relay.isViaTunnel 看页面源 hostname），只提示不拦截操作；
   // 落地页（扫隧道二维码链接新设备时先到这里）与主界面都出示。
   const tunnelBadge = relay.isViaTunnel ? (
     <div className="pointer-events-none fixed inset-x-0 top-2 z-[90] flex justify-center px-4">
@@ -149,7 +131,7 @@ export default function PiApp() {
     </div>
   ) : null
   if (pairEntry) {
-    // 成功后「查看设备列表」：先把配对对话框的开态写进 ui 状态，再退落地页——变体树挂载时它就是开的
+    // 成功后「查看设备列表」：先把配对对话框的开态写进 ui 状态，再退落地页——界面树挂载时它就是开的
     const showDevices = () => {
       const overlay = { id: PI_UI_IDS.pairing }
       if (device.viewport === "phone") act.openSheet(overlay)
@@ -171,10 +153,8 @@ export default function PiApp() {
   return (
     <PiSettingsHost relay={relay} ui={ui} act={act} keyboardOpen={device.frame.keyboard}>
       {tunnelBadge}
-      <PiVariantBoundary variant={variant.id} onFallback={() => act.setUiVariant("cursor")}>
-        <Suspense fallback={<PiVariantLoading variant={variant.id} />}>
-          <Variant {...app} />
-        </Suspense>
+      <PiVariantBoundary>
+        <CursorApp {...app} />
       </PiVariantBoundary>
     </PiSettingsHost>
   )

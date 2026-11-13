@@ -1,5 +1,6 @@
-import { useState, type ComponentProps, type ReactNode } from "react"
-import { MenuSurface } from "@/components/kit"
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react"
+import { MENU_DIVIDER_BG, MENU_ROW_HL_HOVER, MenuSurface } from "@/components/kit"
+import { ArrowUp, Pencil, Plus, RotateCcw, X, type LucideIcon } from "@/components/kit/icons"
 import { PiButton } from "@/components/pi/shared"
 import { usePiStatic } from "@/components/pi/shared/layers"
 import { cn } from "@/lib/utils"
@@ -267,19 +268,41 @@ function ScheduleCreateForm({
           {error}
         </span>
       )}
-      <div className={cn("flex justify-end", phone ? "gap-3" : "gap-1.5", t.sub)}>
-        <TextButton variant={variant} strong disabled={saving} onClick={saving ? undefined : submit}>
-          {saving ? "创建中…" : "创建定时"}
-        </TextButton>
-        <span aria-hidden className="text-(--cw-text-4)">·</span>
-        <TextButton variant={variant} disabled={saving} onClick={saving ? undefined : onClose}>
+      <div className={cn("flex justify-end gap-2", phone ? "pt-1" : "pt-0.5")}>
+        <PiButton kind="outline" variant={variant} className={phone ? "flex-1" : FORM_BUTTON} disabled={saving} onClick={onClose}>
           收起
-        </TextButton>
+        </PiButton>
+        <PiButton variant={variant} className={phone ? "flex-1" : FORM_BUTTON} disabled={saving} onClick={submit}>
+          {saving ? "创建中…" : "创建定时"}
+        </PiButton>
       </div>
     </div>
   )
 }
 
+/** 面板里的表单按钮（新建定时、就地编辑）：比弹窗底部的按钮矮一档，跟 13px 的行字配 */
+const FORM_BUTTON = "h-7 px-3"
+
+/** 桌面行尾的小图标钮：24 见方、悬停才出底色；名字给读屏（aria-label），悬停提示给鼠标（title） */
+function IconAction({ icon: Icon, label, title, disabled, onClick }: { icon: LucideIcon; label: string; title?: string; disabled?: boolean; onClick?: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={title ?? label}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "inline-flex size-6 shrink-0 items-center justify-center rounded-[6px]",
+        disabled ? "text-(--cw-text-4)" : cn("text-(--cw-icon-fg) hover:text-(--cw-text)", MENU_ROW_HL_HOVER),
+      )}
+    >
+      <Icon aria-hidden strokeWidth={1.5} className="size-[15px]" />
+    </button>
+  )
+}
+
+/** 文字钮：手机的行内动作（没有悬停提示，光给图标不够直白；点击区 44），桌面只用在冲突提示的「用我的 / 用新的」 */
 function TextButton({
   variant,
   children,
@@ -302,10 +325,10 @@ function TextButton({
       disabled={disabled}
       aria-label={label}
       className={cn(
-        "inline-flex shrink-0 items-center rounded-[4px] px-0.5 hover:underline",
+        "inline-flex shrink-0 items-center rounded-[6px]",
+        variant === "phone" ? cn(TOUCH_44, "h-8 px-2") : cn("h-6 px-1.5", MENU_ROW_HL_HOVER),
         strong ? "font-(--cw-weight-medium) text-(--cw-text)" : "text-(--cw-text-2)",
-        disabled && "text-(--cw-text-4) hover:no-underline",
-        variant === "phone" && cn(TOUCH_44, "px-1"),
+        disabled && "text-(--cw-text-4) hover:bg-transparent",
       )}
     >
       {children}
@@ -313,21 +336,27 @@ function TextButton({
   )
 }
 
-/** outbox 行的文字按钮：等着的"取消"、正在发的"取消"置灰、失败的"重试 · 取消"；awaiting 已在设备手里，本页取消不了（同置灰） */
+/** outbox 行的动作：等着的"取消"、正在发的"取消"置灰、失败的"重试 / 取消"；awaiting 已在设备手里，本页取消不了（同置灰） */
 function OutboxActions({ variant, item, on }: { variant: CVariant; item: PiQueueOutboxItem; on?: (action: "cancel" | "retry") => void }) {
-  const dot = <span aria-hidden className="text-(--cw-text-4)">·</span>
   const replaying = item.status === "replaying" || item.status === "awaiting"
+  const retry = on && (() => on("retry"))
+  const cancel = on && !replaying ? () => on("cancel") : undefined
+  if (variant !== "phone") {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-0.5">
+        {item.status === "failed" && <IconAction icon={RotateCcw} label={`重试：${item.text}`} title="重试" onClick={retry} />}
+        <IconAction icon={X} label={`取消：${item.text}`} title={replaying ? "正在发送，取消不了" : "取消"} disabled={replaying} onClick={cancel} />
+      </span>
+    )
+  }
   return (
-    <span className={cn("inline-flex shrink-0 items-center", variant === "phone" ? "gap-3" : "gap-1.5")}>
+    <span className="inline-flex shrink-0 items-center gap-1">
       {item.status === "failed" && (
-        <>
-          <TextButton variant={variant} strong label={`重试：${item.text}`} onClick={on && (() => on("retry"))}>
-            重试
-          </TextButton>
-          {dot}
-        </>
+        <TextButton variant={variant} strong label={`重试：${item.text}`} onClick={retry}>
+          重试
+        </TextButton>
       )}
-      <TextButton variant={variant} disabled={replaying} label={`取消：${item.text}`} onClick={on && !replaying ? () => on("cancel") : undefined}>
+      <TextButton variant={variant} disabled={replaying} label={`取消：${item.text}`} onClick={cancel}>
         取消
       </TextButton>
     </span>
@@ -335,17 +364,23 @@ function OutboxActions({ variant, item, on }: { variant: CVariant; item: PiQueue
 }
 
 function Actions({ variant, on }: { variant: CVariant; on?: (action: PiQueueAction) => void }) {
-  const dot = <span aria-hidden className="text-(--cw-text-4)">·</span>
+  if (variant !== "phone") {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-0.5">
+        <IconAction icon={ArrowUp} label="立即发送" onClick={on && (() => on("send-now"))} />
+        <IconAction icon={Pencil} label="编辑" onClick={on && (() => on("edit"))} />
+        <IconAction icon={X} label="取消" onClick={on && (() => on("cancel"))} />
+      </span>
+    )
+  }
   return (
-    <span className={cn("inline-flex shrink-0 items-center", variant === "phone" ? "gap-3" : "gap-1.5")}>
+    <span className="inline-flex shrink-0 items-center gap-1">
       <TextButton variant={variant} strong onClick={on && (() => on("send-now"))}>
         立即发送
       </TextButton>
-      {dot}
       <TextButton variant={variant} onClick={on && (() => on("edit"))}>
         编辑
       </TextButton>
-      {dot}
       <TextButton variant={variant} onClick={on && (() => on("cancel"))}>
         取消
       </TextButton>
@@ -390,7 +425,25 @@ export function PiQueuePanel({
   const scheduleItems = schedules ?? []
   const armedSchedules = scheduleItems.filter((s) => s.state === "armed").length
   const [scheduleFormOpen, setScheduleFormOpen] = useState(false)
+  // 进入一条的编辑（面板里的「编辑」、对话流里排队气泡的「编辑」）或全文拉到、保存失败回来：焦点放进编辑框、光标在末尾
+  // （点下去的「编辑」钮已经换成编辑框，不放的话焦点掉到 body）
+  const editRef = useRef<HTMLTextAreaElement>(null)
+  const editReadyId = !isStatic && editing?.phase === "ready" ? editing.id : null
+  useEffect(() => {
+    const el = editRef.current
+    if (!editReadyId || !el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [editReadyId])
   const pending = remote.items.filter((i) => i.status === "pending").length + host.steering.length + host.followUp.length + outboxItems.length + armedSchedules
+  const rowY = phone ? "py-2" : "py-1.5"
+  // 段名是灰色小字；不是第一段时上面先画一条细线（和菜单分隔线同一种，桌面卡里贯穿卡宽）
+  const sectionHead = (label: ReactNode, first: boolean) => (
+    <>
+      {!first && <div aria-hidden className={cn("mt-1.5 mb-1 h-px shrink-0", MENU_DIVIDER_BG, !bare && "-mx-4")} />}
+      <div className={cn("pt-1.5 pb-0.5", t.sub, C_SECONDARY)}>{label}</div>
+    </>
+  )
   const outboxRow = (item: PiQueueOutboxItem, index: number) => {
     const failed = item.status === "failed"
     const on = isStatic || !onOutboxAction ? undefined : (action: "cancel" | "retry") => onOutboxAction(item.cid, action)
@@ -411,14 +464,14 @@ export function PiQueuePanel({
             : "连上后按顺序发送"
     return (
       // 行的 key 不用 cid：重试会换新 cid（等同重新发一条），用 cid 当 key 行会重建、焦点丢掉；按在队里的位置
-      <div key={`outbox-${index}`} data-slot="pi-queue-outbox-row" data-status={item.status} className="flex min-w-0 flex-col gap-0.5 py-2">
+      <div key={`outbox-${index}`} data-slot="pi-queue-outbox-row" data-status={item.status} className={cn("flex min-w-0 flex-col gap-0.5", rowY)}>
         <div className="flex min-w-0 items-center gap-3">
           <span className={cn("min-w-0 flex-1 truncate text-(--cw-text)", t.main)}>{item.text}</span>
           {!phone && <OutboxActions variant={variant} item={item} on={on} />}
         </div>
         <span className={cn(t.sub, failed ? C_ERROR : C_SECONDARY)}>{sub}</span>
         {phone && (
-          <div className={cn("flex justify-end pt-1", t.sub)}>
+          <div className={cn("-mr-2 flex justify-end", t.sub)}>
             <OutboxActions variant={variant} item={item} on={on} />
           </div>
         )}
@@ -428,7 +481,7 @@ export function PiQueuePanel({
   const remoteRow = (item: PiRemoteQueueItem) => {
     if (item.status === "injected") {
       return (
-        <div key={item.id} className={cn("flex min-w-0 items-center gap-2 py-2", t.sub)}>
+        <div key={item.id} className={cn("flex min-w-0 items-center gap-2", rowY, t.sub)}>
           <span className={cn("min-w-0 truncate", C_SECONDARY)}>{item.text}</span>
           <span className={cn("ml-auto shrink-0", C_SECONDARY)}>已插入</span>
         </div>
@@ -438,7 +491,6 @@ export function PiQueuePanel({
     const meta = `${DELIVERY_LABEL[item.segment]} · ${scheduleSourceLabel(item.cid) ?? sourceLabel(item.source)} · ${agoText(item.at, now)}`
     if (!isStatic && editing?.id === item.id) {
       const busy = editing.phase !== "ready"
-      const dot = <span aria-hidden className="text-(--cw-text-4)">·</span>
       return (
         <div key={item.id} data-slot="pi-queue-editing" className="flex min-w-0 flex-col gap-1.5 py-2">
           {editing.phase === "loading" ? (
@@ -447,6 +499,7 @@ export function PiQueuePanel({
             </span>
           ) : (
             <textarea
+              ref={editRef}
               data-cw-id="pi-queue-edit"
               aria-label="编辑排队的消息"
               rows={phone ? 3 : 2}
@@ -460,15 +513,13 @@ export function PiQueuePanel({
             />
           )}
           {editing.note && (
-            <span role="alert" className={cn("inline-flex flex-wrap items-center gap-1.5", t.sub, C_ERROR)}>
-              {editing.note}
+            <span role="alert" className={cn("inline-flex flex-wrap items-center gap-x-1", t.sub, C_ERROR)}>
+              <span className="mr-1">{editing.note}</span>
               {editing.conflict && onEditResolve && (
                 <>
-                  {dot}
                   <TextButton variant={variant} strong onClick={() => onEditResolve("mine")}>
                     用我的
                   </TextButton>
-                  {dot}
                   <TextButton variant={variant} onClick={() => onEditResolve("theirs")}>
                     用新的
                   </TextButton>
@@ -477,14 +528,19 @@ export function PiQueuePanel({
             </span>
           )}
           {!editFooter && (
-            <div className={cn("flex justify-end", phone ? "gap-3" : "gap-1.5", t.sub)}>
-              <TextButton variant={variant} strong disabled={busy} onClick={busy ? undefined : onEditSave}>
-                {editing.phase === "saving" ? "保存中…" : "保存"}
-              </TextButton>
-              {dot}
-              <TextButton variant={variant} disabled={editing.phase === "saving"} onClick={editing.phase === "saving" ? undefined : onEditCancel}>
+            <div className="flex justify-end gap-2">
+              <PiButton
+                kind="outline"
+                variant={variant}
+                className={phone ? "flex-1" : FORM_BUTTON}
+                disabled={editing.phase === "saving"}
+                onClick={editing.phase === "saving" ? undefined : onEditCancel}
+              >
                 取消
-              </TextButton>
+              </PiButton>
+              <PiButton variant={variant} className={phone ? "flex-1" : FORM_BUTTON} disabled={busy} onClick={busy ? undefined : onEditSave}>
+                {editing.phase === "saving" ? "保存中…" : "保存"}
+              </PiButton>
             </div>
           )}
         </div>
@@ -494,7 +550,7 @@ export function PiQueuePanel({
     // 那排按钮点下去只会回一句"这条已经在发了，改不了"。失败行只留正文和原因。
     const actionable = item.status === "pending"
     return (
-      <div key={item.id} className="flex min-w-0 flex-col gap-0.5 py-2">
+      <div key={item.id} className={cn("flex min-w-0 flex-col gap-0.5", rowY)}>
         <div className="flex min-w-0 items-center gap-3">
           <span className={cn("min-w-0 flex-1 truncate text-(--cw-text)", t.main)}>{item.text}</span>
           {!phone && actionable && <Actions variant={variant} on={actionsOf(item.id)} />}
@@ -503,7 +559,7 @@ export function PiQueuePanel({
           {item.status === "failed" ? `发送失败 · ${item.error ?? "重试"}` : meta}
         </span>
         {phone && actionable && (
-          <div className={cn("flex justify-end pt-1", t.sub)}>
+          <div className={cn("-mr-2 flex justify-end", t.sub)}>
             <Actions variant={variant} on={actionsOf(item.id)} />
           </div>
         )}
@@ -524,65 +580,47 @@ export function PiQueuePanel({
       )}
       {outboxItems.length > 0 && (
         <>
-          <div className={cn("pt-2", t.sub, C_SECONDARY)}>{outbox?.title}</div>
-          <div className="flex flex-col divide-y divide-(--cw-divider-soft)">{outboxItems.map(outboxRow)}</div>
+          {sectionHead(outbox?.title, true)}
+          <div className="flex flex-col">{outboxItems.map(outboxRow)}</div>
         </>
       )}
-      {/* 空段不出（queueSectionsOf）；不是第一段时段头上加分隔线（和"终端里排的"同一写法） */}
+      {/* 空段不出（queueSectionsOf）；不是第一段时段头上加分隔线 */}
       {remote.items.length > 0 && (
         <>
-          <div className={cn(outboxItems.length > 0 ? "mt-2 border-t border-solid border-(--cw-divider) pt-3" : "pt-2", t.sub, C_SECONDARY)}>网页发的</div>
-          <div className="flex flex-col divide-y divide-(--cw-divider-soft)">{remote.items.map(remoteRow)}</div>
+          {sectionHead("网页发的", outboxItems.length === 0)}
+          <div className="flex flex-col">{remote.items.map(remoteRow)}</div>
         </>
       )}
       {hostRows.length > 0 && (
         <>
-          <div
-            className={cn(
-              outboxItems.length > 0 || remote.items.length > 0 ? "mt-2 border-t border-solid border-(--cw-divider) pt-3" : "pt-2",
-              t.sub,
-              C_SECONDARY,
-            )}
-          >
-            终端里排的 · 只读
-          </div>
+          {sectionHead("终端里排的 · 只读", outboxItems.length === 0 && remote.items.length === 0)}
           <div className="flex flex-col">
             {hostRows.map((r) => (
-              <div key={r.key} className="flex min-w-0 flex-col gap-0.5 py-2">
+              <div key={r.key} className={cn("flex min-w-0 flex-col gap-0.5", rowY)}>
                 <span className={cn("min-w-0 truncate text-(--cw-text)", t.main)}>{r.text}</span>
                 <span className={cn(t.sub, C_SECONDARY)}>{r.meta}</span>
               </div>
             ))}
           </div>
-          <div className={cn("border-t border-solid border-(--cw-divider-soft) pt-2", t.sub, C_SECONDARY)}>要改或撤回，请回到电脑终端</div>
+          <div className={cn("pt-0.5 pb-1 text-(--cw-text-4)", t.sub)}>要改或撤回，请回到电脑终端</div>
         </>
       )}
       {/* 定时段（D-§3.7）：与排队卡同一列；armed 可取消（不可原地编辑，改 = 取消重建），终态只报结局 */}
       {schedules !== undefined && (scheduleItems.length > 0 || (!isStatic && onScheduleCreate)) && (
         <>
-          <div
-            className={cn(
-              outboxItems.length > 0 || remote.items.length > 0 || hostRows.length > 0 ? "mt-2 border-t border-solid border-(--cw-divider) pt-3" : "pt-2",
-              t.sub,
-              C_SECONDARY,
-            )}
-          >
-            定时
-          </div>
-          <div className="flex flex-col divide-y divide-(--cw-divider-soft)">
+          {sectionHead("定时", outboxItems.length === 0 && remote.items.length === 0 && hostRows.length === 0)}
+          <div className="flex flex-col">
             {scheduleItems.map((s) => (
-              <div key={s.id} data-slot="pi-schedule-row" data-state={s.state} className="flex min-w-0 flex-col gap-0.5 py-2">
+              <div key={s.id} data-slot="pi-schedule-row" data-state={s.state} className={cn("flex min-w-0 flex-col gap-0.5", rowY)}>
                 <div className="flex min-w-0 items-center gap-3">
                   <span className={cn("min-w-0 flex-1 truncate text-(--cw-text)", t.main)}>{scheduleDisplayText(s)}</span>
                   {!phone && s.state === "armed" && !isStatic && onScheduleCancel && (
-                    <TextButton variant={variant} label={`取消定时：${scheduleDisplayText(s)}`} onClick={() => onScheduleCancel(s.id)}>
-                      取消
-                    </TextButton>
+                    <IconAction icon={X} label={`取消定时：${scheduleDisplayText(s)}`} title="取消定时" onClick={() => onScheduleCancel(s.id)} />
                   )}
                 </div>
                 <span className={cn(t.sub, s.state === "failed" ? C_ERROR : C_SECONDARY)}>{scheduleStatusLine(s, now)}</span>
                 {phone && s.state === "armed" && !isStatic && onScheduleCancel && (
-                  <div className={cn("flex justify-end pt-1", t.sub)}>
+                  <div className={cn("-mr-2 flex justify-end", t.sub)}>
                     <TextButton variant={variant} label={`取消定时：${scheduleDisplayText(s)}`} onClick={() => onScheduleCancel(s.id)}>
                       取消
                     </TextButton>
@@ -596,11 +634,19 @@ export function PiQueuePanel({
             (scheduleFormOpen ? (
               <ScheduleCreateForm variant={variant} segment={scheduleSegment ?? "steer"} onCreate={onScheduleCreate} onClose={() => setScheduleFormOpen(false)} />
             ) : (
-              <div className={cn("pt-1", t.sub)}>
-                <TextButton variant={variant} strong onClick={() => setScheduleFormOpen(true)}>
-                  ＋ 定时发送…
-                </TextButton>
-              </div>
+              <button
+                type="button"
+                data-slot="pi-schedule-add"
+                className={cn(
+                  "-mx-2 mt-0.5 inline-flex items-center gap-1.5 self-start rounded-[6px] px-2 text-(--cw-text-2) hover:text-(--cw-text)",
+                  phone ? "h-11" : cn("h-7", MENU_ROW_HL_HOVER),
+                  t.main,
+                )}
+                onClick={() => setScheduleFormOpen(true)}
+              >
+                <Plus aria-hidden strokeWidth={1.5} className="size-[15px] shrink-0 text-(--cw-icon-fg)" />
+                定时发送…
+              </button>
             ))}
         </>
       )}

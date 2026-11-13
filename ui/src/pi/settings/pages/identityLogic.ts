@@ -74,6 +74,15 @@ export function registrationErrorTextOf(view: IdentityStateView): string {
 /** Roster unavailable note (old relay or identity core not wired up yet). */
 export const VIEWERS_UNSUPPORTED_TEXT = "当前连接没有提供观看端名册（旧版中转服务，或身份核心尚未接通），这里不会假装列出名单。"
 
+/** 名册只对管理员开放：普通观看端被拒是预期结果，不当读取失败。 */
+export const VIEWERS_ADMIN_ONLY_TEXT = "只有管理员能查看已授权的观看端名单。"
+
+/** 中转的拒绝只经名册通道带回文案（「需要管理员令牌」），没有错误码可认，所以两种都认。 */
+export function viewerRosterAdminOnlyOf(error: unknown): boolean {
+  if (error && typeof error === "object" && (error as { code?: unknown }).code === "admin_required") return true
+  return error instanceof Error && error.message.includes("需要管理员")
+}
+
 /* ------------------------------------------------------------------ */
 /* Identity state shaping                                              */
 /* ------------------------------------------------------------------ */

@@ -1,6 +1,6 @@
 // Pi-Remote 设置页 v2 · 第一阶段框架契约测试（纯 Node，无浏览器）。
-// 守卫：11 页 IA / 桌面几何 / 六套 --st-* token 与侧栏定版 token 同源 / 样式作用域 /
-//       Claude 只给页标题与分组标题衬线 / 无窗口控制按钮 / ◐◌ 徽标与不可用口径 /
+// 守卫：11 页 IA / 桌面几何 / 浅 / 深两套 --st-* token 与侧栏定版 token 同源 / 样式作用域 /
+//       无窗口控制按钮 / ◐◌ 徽标与不可用口径 /
 //       General 页交互与只读状态 / 新 localStorage 键的版本与逐字段校验。
 import test from "node:test"
 import assert from "node:assert/strict"
@@ -67,7 +67,7 @@ test("11 页 IA：顺序、文案、图标、分组、使用活动宽列", () =>
   assert.equal(types.settingsPageIdOf("nope"), "general")
 })
 
-test("桌面几何与皮肤契约：260 / 30 / 15 / 692 / 880，3×2 六套", () => {
+test("桌面几何与主题契约：260 / 30 / 15 / 692 / 880，浅 / 深两套", () => {
   assert.deepEqual(types.SETTINGS_METRICS, {
     railWidth: 260,
     navRowHeight: 30,
@@ -77,15 +77,12 @@ test("桌面几何与皮肤契约：260 / 30 / 15 / 692 / 880，3×2 六套", ()
     pagePaddingTop: 24,
     pagePaddingX: 34,
   })
-  assert.deepEqual([...types.SETTINGS_STYLES], ["cursor", "claude", "codex"])
   assert.deepEqual([...types.SETTINGS_THEMES], ["dark", "light"])
-  assert.equal(types.settingsStyleOf("claude"), "claude")
-  assert.equal(types.settingsStyleOf("nope"), "cursor")
   assert.equal(types.settingsThemeOf("light"), "light")
   assert.equal(types.settingsThemeOf(null), null)
 })
 
-test("六套 token：六组选择器齐全、每次 22 个色位、颜色字面值全部来自统一侧栏 token", () => {
+test("浅 / 深两套 token：选择器齐全、每套 22 个色位、颜色字面值全部来自统一侧栏 token", () => {
   const tokens = stripComments(read("ui/src/pi/settings/tokens.css"))
   const sidebar = stripComments(read("ui/src/pi/sidebar/tokens.css"))
   const required = [
@@ -95,7 +92,7 @@ test("六套 token：六组选择器齐全、每次 22 个色位、颜色字面�
     "--st-accent", "--st-accent-soft", "--st-online", "--st-wait", "--st-error", "--st-idle",
     "--st-tile-bg", "--st-backdrop", "--st-selected-ring",
   ]
-  for (const style of types.SETTINGS_STYLES) {
+  for (const style of ["cursor"]) {
     for (const theme of types.SETTINGS_THEMES) {
       const self = `[data-pi-settings][data-pi-settings-style="${style}"][data-pi-theme="${theme}"]`
       // 祖先主题选择器用 :where() 降低特异性（根属性优先）；兼容未降特异性的旧写法。
@@ -127,7 +124,7 @@ test("六套 token：六组选择器齐全、每次 22 个色位、颜色字面�
   assert.match(tokens, /--st-nav-icon:\s*15px/)
 })
 
-test("样式全部作用域化；Claude 页标题 / 分组标题 / 左栏标题走衬线；无窗口控制按钮", () => {
+test("样式全部作用域化；只有页标题 / 分组标题用 display 字体（无衬线）；无窗口控制按钮", () => {
   const css = stripComments(read("ui/src/pi/settings/settings.css"))
   const rules = [...css.matchAll(/([^{}]+)\{/g)]
     .map((match) => match[1].trim())
@@ -144,42 +141,13 @@ test("样式全部作用域化；Claude 页标题 / 分组标题 / 左栏标题�
   }
 
   const tokens = stripComments(read("ui/src/pi/settings/tokens.css"))
-  assert.equal((tokens.match(/--st-font-display:/g) ?? []).length, 3, "字体显示 token 只应有基础 + Claude 两套")
-  for (const theme of types.SETTINGS_THEMES) {
-    const marker = `[data-pi-settings-style="claude"][data-pi-theme="${theme}"]`
-    assert.match(blockOf(tokens, marker), /--st-font-display:\s*var\(--st-font-serif\)/, `Claude ${theme} 必须衬线`)
-  }
+  assert.equal((tokens.match(/--st-font-display:/g) ?? []).length, 1, "字体显示 token 只有基础一套")
+  assert.match(tokens, /--st-font-display:\s*var\(--st-font-sans\)/)
+  assert.doesNotMatch(tokens, /--st-font-serif/, "衬线字体栈随 Claude 皮肤删除")
   assert.equal((css.match(/font-family:\s*var\(--st-font-display\)/g) ?? []).length, 2, "只有页标题与分组标题可用 display 字体")
   assert.match(css, /\.settings-page-title\s*\{[^}]*font-family:\s*var\(--st-font-display\)/)
   assert.match(css, /\.settings-group-label\s*\{[^}]*font-family:\s*var\(--st-font-display\)/)
   assert.match(css, /\.settings-rail-title\s*\{[^}]*font-family:\s*var\(--st-font-sans\)/, "左栏标题基础规则保持无衬线")
-  assert.match(
-    css,
-    /\[data-pi-settings\]\[data-pi-settings-style="claude"\]\s+\.settings-rail-title\s*\{[^}]*font-family:\s*var\(--st-font-serif\)/,
-    "Claude 左栏标题按设计源用衬线",
-  )
-
-  // Codex 变体 reset（[data-pi-ui="codex"] h2/p { margin:0 }）也必须在设置页作用域复位。
-  assert.match(
-    css,
-    /\[data-pi-settings\]\[data-pi-settings-style="codex"\] \.settings-group-label \{[^}]*margin:\s*18px 0 8px/,
-    "Codex 分组标题缺 18/8 复位",
-  )
-  assert.match(
-    css,
-    /\[data-pi-settings\]\[data-pi-settings-style="codex"\] \.settings-group--first \.settings-group-label \{[^}]*margin-top:\s*16px/,
-    "Codex 首组分组标题缺 16px 复位",
-  )
-  assert.match(
-    css,
-    /\[data-pi-settings\]\[data-pi-settings-style="codex"\]\.settings-root \{[^}]*line-height:\s*21px/,
-    "Codex 设置根行高未回到 21px",
-  )
-  assert.match(
-    css,
-    /\[data-pi-settings\]\[data-pi-settings-style="codex"\] \.settings-group-description \{[^}]*margin:\s*8px 2px 0/,
-    "Codex 分组说明缺 8/2/0 复位",
-  )
 
   // 设计册总则：网页端不放窗口红黄绿控制。
   assert.doesNotMatch(settingsSourceText, /traffic[-_ ]?light|红绿灯|window-controls?/i)
@@ -198,7 +166,7 @@ test("本机持久化：新键、版本、逐字段校验、坏数据回落、�
   assert.equal(defaults.sidebarPersistentSearch, true)
   assert.equal(defaults.speechToText, true)
   assert.equal(defaults.dictationShortcut, "Caps Lock")
-  assert.equal(defaults.appearanceStyle, "cursor")
+  assert.equal("appearanceStyle" in defaults, false, "界面风格只剩一套，不再存")
   assert.equal(defaults.appearanceTheme, "system")
   assert.equal(defaults.fontSize, "standard")
   assert.equal(defaults.density, "compact")
@@ -252,6 +220,12 @@ test("本机持久化：新键、版本、逐字段校验、坏数据回落、�
   assert.deepEqual(dirty.prefs.shortcuts.newSession, ["Alt", "N"])
   assert.deepEqual(dirty.prefs.shortcuts.stopGeneration, ["Esc"], "空键位回落默认")
   assert.equal("extraUnknown" in dirty.prefs, false)
+
+  // 老用户存过的界面风格（claude / codex）：同版本照常读入、该字段静默丢掉，强调色与明暗等其余设置原样保留
+  const legacy = model.parseSettingsLocal({ v: 1, updatedAt: 5, prefs: { appearanceStyle: "claude", accent: "clay", appearanceTheme: "dark", autoScroll: false } })
+  assert.equal(legacy.updatedAt, 5)
+  assert.equal("appearanceStyle" in legacy.prefs, false)
+  assert.deepEqual([legacy.prefs.accent, legacy.prefs.appearanceTheme, legacy.prefs.autoScroll], ["clay", "dark", false])
 
   const wrongVersion = model.parseSettingsLocal({ v: 99, prefs: { autoScroll: false }, updatedAt: 9 })
   assert.equal(wrongVersion.v, 1)
@@ -319,7 +293,7 @@ test("●/◐/◌ 口径：徽标文案、inert 判定、General 页真实接线
 test("壳与页文件：11 个入口齐、data 标记、内容列宽、返回原会话、统一 barrel", () => {
   const shell = read("ui/src/pi/settings/SettingsPage.tsx")
   assert.match(shell, /data-pi-settings=""/)
-  assert.match(shell, /data-pi-settings-style=\{activeStyle\}/)
+  assert.match(shell, /data-pi-settings-style="cursor"/)
   assert.match(shell, /data-pi-theme=\{activeTheme\}/)
   assert.match(shell, /data-pi-settings-page=\{activePage\}/)
   assert.match(shell, /settings-column--wide/)

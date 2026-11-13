@@ -133,7 +133,7 @@ export function attentionDotOf(input: {
 }): AttentionDot {
   switch (input.item?.kind) {
     case "waiting":
-      return { tone: "warning", pulse: true, label: "等你处理" }
+      return { tone: "warning", pulse: true, label: "等你回答" }
     case "error":
       return { tone: "danger", pulse: false, label: "回合出错了" }
     case "done":

@@ -3,7 +3,10 @@
  *
  * 布局 / 字号 / 边框 / 圆角来自设计册第 3、7、9 页（左栏 260、页签 30、图标 15；
  * 内容列 692 居中、使用活动 880）。颜色一律用 tokens.css 的 --st-*，本文件不出现字面色值。
- * Claude 的衬线只作用于页标题与分组标题（--st-font-display），其余和五套共用。
+ *
+ * 特异性：壳的复位 `.settings-root button / select …` 是 (0,1,1)，会吃掉单类组件规则里的
+ * padding / background / color；按钮与表单控件上的组件样式一律挂在 .settings-root 下（(0,2,0)）。
+ * 手机外壳也加载本文件，但它的根不是 .settings-root，挂在 .settings-root 下的规则不会波及手机。
  */
 
 [data-pi-settings],
@@ -24,15 +27,24 @@
 .settings-root {
   position: fixed;
   inset: 0;
-  /* 低于宿主浮层（sheet 40 / modal 50），保证设置内打开的配对、诊断盖在设置之上。 */
-  z-index: 35;
+  /* 与宿主通知槽同档、在 DOM 里排在它前面：连接类通知仍浮在设置之上；配对 / 诊断（sheet / modal 档）照旧盖住设置。 */
+  z-index: var(--cw-pi-z-popover);
   display: flex;
   align-items: stretch;
   overflow: hidden;
   background: var(--st-page-bg);
   color: var(--st-text-1);
+  font-size: 13px;
   -webkit-backdrop-filter: var(--st-backdrop);
   backdrop-filter: var(--st-backdrop);
+}
+
+.settings-root[data-pi-theme="light"] {
+  color-scheme: light;
+}
+
+.settings-root[data-pi-theme="dark"] {
+  color-scheme: dark;
 }
 
 .settings-root button,
@@ -55,7 +67,7 @@
 .settings-root button:disabled,
 .settings-root select:disabled,
 .settings-root input:disabled {
-  cursor: default;
+  cursor: not-allowed;
 }
 
 .settings-root :focus-visible {
@@ -79,6 +91,11 @@
   outline-offset: 2px;
 }
 
+/* 卡内通栏的整行按钮：外环会压到卡片描边和相邻行，收进行内。同样要压过 pi-theme 的 (0,4,0) 外环规则。 */
+[data-pi-settings][data-pi-settings-style][data-pi-theme] .settings-card > .settings-row--action:focus-visible {
+  outline-offset: -2px;
+}
+
 .settings-root .settings-icon {
   display: block;
   flex: none;
@@ -92,10 +109,12 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 20px 14px 16px;
+  padding: 18px 12px 16px;
   overflow-y: auto;
   background: var(--st-rail-bg);
   border-right: 1px solid var(--st-border);
+  scrollbar-width: thin;
+  scrollbar-color: var(--st-disabled-ring) transparent;
   -webkit-backdrop-filter: var(--st-backdrop);
   backdrop-filter: var(--st-backdrop);
 }
@@ -104,53 +123,56 @@
   padding: 0 10px;
   color: var(--st-text-1);
   font-family: var(--st-font-sans);
-  font-size: 17px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  line-height: 1.3;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.4;
 }
 
-.settings-back {
+.settings-root .settings-back {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   width: 100%;
   height: 28px;
-  margin-top: 5px;
+  margin-top: 6px;
   padding: 0 10px;
-  border-radius: 6px;
+  border-radius: var(--st-radius-control);
   color: var(--st-text-3);
   font-size: 12.5px;
   line-height: 1;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
-.settings-back:hover {
+.settings-root .settings-back:hover {
   background: var(--st-hover-bg);
   color: var(--st-text-1);
 }
 
 .settings-back-icon {
   flex: none;
-  color: var(--st-text-4);
+  color: var(--st-icon);
 }
 
 .settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-top: 14px;
+  gap: 1px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--st-divider);
 }
 
-.settings-nav-item {
+.settings-root .settings-nav-item {
   display: flex;
   align-items: center;
   gap: 9px;
   width: 100%;
   height: var(--st-nav-h);
   padding: 0 10px;
-  border-radius: var(--st-radius-row);
-  color: var(--st-text-3);
-  font-size: 13.5px;
+  border-radius: var(--st-radius-control);
+  color: var(--st-text-2);
+  font-size: 13px;
   font-weight: 400;
   line-height: 1;
   user-select: none;
@@ -163,19 +185,19 @@
   color: var(--st-icon);
 }
 
-.settings-nav-item:hover {
+.settings-root .settings-nav-item:hover {
   background: var(--st-hover-bg);
-  color: var(--st-text-2);
+  color: var(--st-text-1);
 }
 
-.settings-nav-item[aria-current="page"] {
+.settings-root .settings-nav-item[aria-current="page"] {
   background: var(--st-selected-bg);
   color: var(--st-text-1);
-  font-weight: 550;
+  font-weight: 500;
 }
 
 .settings-nav-item[aria-current="page"] .settings-icon {
-  color: var(--st-text-2);
+  color: var(--st-text-1);
 }
 
 /* ---------------- 右栏与内容列 ---------------- */
@@ -184,8 +206,12 @@
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 24px 34px 18px;
+  padding: 24px 34px 56px;
   background: transparent;
+  /* 切页时有无滚动条不应让内容列左右跳。 */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--st-disabled-ring) transparent;
 }
 
 .settings-column {
@@ -217,16 +243,16 @@
   color: var(--st-text-1);
   font-family: var(--st-font-display);
   font-size: 20px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
+  font-weight: 600;
+  letter-spacing: 0;
   line-height: 1.35;
 }
 
 .settings-page-note {
   margin: 0;
   color: var(--st-text-3);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.55;
 }
 
 .settings-group {
@@ -234,39 +260,62 @@
 }
 
 .settings-group-label {
-  margin: 18px 0 8px;
-  color: var(--st-text-4);
+  margin: 28px 2px 8px;
+  color: var(--st-text-2);
   font-family: var(--st-font-display);
-  font-size: 12.5px;
-  font-weight: 400;
+  font-size: 13px;
+  font-weight: 600;
   letter-spacing: 0;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .settings-group--first .settings-group-label {
+  margin-top: 20px;
+}
+
+/* 没有分组标题的卡片也要和上一块拉开。 */
+.settings-group > .settings-card:first-child {
   margin-top: 16px;
 }
 
 .settings-group-description {
   margin: 8px 2px 0;
   color: var(--st-text-4);
-  font-size: 11.5px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .settings-card {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  padding: 2px 16px;
+  padding: 0 16px;
   background: var(--st-card-bg);
-  border: 1px solid var(--st-menu-border);
+  border: 1px solid var(--st-card-border);
   border-radius: var(--st-radius-card);
   box-shadow: var(--st-card-shadow);
 }
 
-.settings-card > * + * {
-  border-top: 1px solid var(--st-border);
+/* 卡内每一行通栏：分隔线、悬停底铺满卡宽，左右 16 的留白由行自己补回（与设备页「添加设备」同一做法）。 */
+.settings-root .settings-card > * {
+  width: calc(100% + 32px);
+  max-width: none;
+  margin-inline: -16px;
+  padding-inline: 16px;
+}
+
+.settings-root .settings-card > * + * {
+  border-top: 1px solid var(--st-divider);
+}
+
+.settings-root .settings-card > :first-child {
+  border-top-left-radius: calc(var(--st-radius-card) - 1px);
+  border-top-right-radius: calc(var(--st-radius-card) - 1px);
+}
+
+.settings-root .settings-card > :last-child {
+  border-bottom-left-radius: calc(var(--st-radius-card) - 1px);
+  border-bottom-right-radius: calc(var(--st-radius-card) - 1px);
 }
 
 /* ---------------- 行 ---------------- */
@@ -274,31 +323,48 @@
 .settings-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  min-height: 40px;
-  padding: 4px 0;
+  min-height: 46px;
+  padding: 10px 0;
 }
 
 .settings-row--stack {
   display: block;
   min-height: 0;
-  padding: 7px 0 8px;
+  padding-block: 12px;
 }
 
-.settings-row--action {
-  border-radius: 6px;
+/* 卡内的说明行 / 空态行：不撑到标准行高。 */
+.settings-row--note {
+  min-height: 0;
+  padding-block: 11px;
+}
+
+/* 卡内小标题（如「内置」）：贴着下面那组行，中间不画分隔线。 */
+.settings-row--subhead {
+  min-height: 0;
+  padding-block: 14px 2px;
+}
+
+.settings-root .settings-card > .settings-row--subhead + * {
+  border-top: 0;
+}
+
+.settings-root .settings-row--action {
+  border-radius: 0;
   color: inherit;
+  transition: background-color 120ms ease;
 }
 
-.settings-row--action:hover:not(:disabled) {
-  background: var(--st-hover-bg);
+.settings-root .settings-row--action:hover:not(:disabled) {
+  background: var(--st-row-hover-bg);
 }
 
-.settings-row--action:disabled {
-  cursor: default;
+.settings-root .settings-row--action:active:not(:disabled) {
+  background: var(--st-selected-bg);
 }
 
 .settings-row-grow {
@@ -311,11 +377,11 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   color: var(--st-text-1);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .settings-row-title-text {
@@ -327,11 +393,11 @@
 .settings-row-description {
   display: block;
   max-width: 100%;
-  margin-top: 1px;
+  margin-top: 2px;
   color: var(--st-text-4);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 400;
-  line-height: 1.4;
+  line-height: 1.5;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -340,16 +406,21 @@
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   white-space: nowrap;
 }
 
-.settings-row[data-settings-inert="true"] .settings-row-controls {
-  opacity: 0.55;
+/* ◐ / ◌ 行：标题降一档；控件各自画禁用态，不再整块叠透明度（值仍要一眼读得出）。 */
+.settings-row[data-settings-inert="true"] .settings-row-title {
+  color: var(--st-text-2);
 }
 
-.settings-row--action:disabled .settings-chevron {
-  opacity: 0.45;
+.settings-root .settings-row--action:disabled .settings-row-title {
+  color: var(--st-text-2);
+}
+
+.settings-root .settings-row--action:disabled .settings-chevron {
+  color: var(--st-disabled-ring);
 }
 
 .settings-value {
@@ -397,32 +468,137 @@
   display: inline-flex;
   align-items: center;
   height: 18px;
-  padding: 0 7px;
+  padding: 0 6px;
   border: 1px solid transparent;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 550;
-  letter-spacing: 0.01em;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1;
   white-space: nowrap;
 }
 
 .settings-badge--bridge {
   color: var(--st-badge-bridge-fg);
   background: var(--st-badge-bridge-bg);
-  border-color: color-mix(in srgb, var(--st-wait) 22%, transparent);
+  border-color: color-mix(in srgb, var(--st-wait) 24%, transparent);
 }
 
 .settings-badge--reserved {
-  /* 徽标是 10.5px 小字，且坐在 --st-tile-bg 上；用深一档的 text-3 保 ≥4.5:1。 */
+  /* 徽标是 11px 小字，且坐在 --st-tile-bg 上；用深一档的 text-3 保 ≥4.5:1。 */
   color: var(--st-text-3);
   background: var(--st-badge-reserved-bg);
-  border-color: var(--st-border);
+  border-color: var(--st-divider);
+}
+
+/* 组标题右侧挂徽标（整组同一状态时，徽标挂在组标题上）。 */
+.settings-group-label--badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 页首口径框：如实说明本页哪些是真机制、哪些只是预留。 */
+.settings-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--st-card-border);
+  border-radius: var(--st-radius-card);
+  background: var(--st-notice-bg);
+  color: var(--st-text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-callout-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--st-text-3);
+}
+
+.settings-mono {
+  font-family: var(--st-font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0;
+}
+
+.settings-inline-title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+/* 行尾弱签（「默认关」「内置」）：比状态徽标更轻，只描边。 */
+.settings-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border: 1px solid var(--st-divider);
+  border-radius: 4px;
+  color: var(--st-text-4);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* ---------------- 按钮 ---------------- */
+
+.settings-root .settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--st-control-border);
+  border-radius: var(--st-radius-control);
+  background: var(--st-control-bg);
+  color: var(--st-text-1);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  text-align: center;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.settings-root .settings-button:hover:not(:disabled) {
+  border-color: var(--st-control-border-hover);
+  background: var(--st-control-hover-bg);
+}
+
+.settings-root .settings-button--primary {
+  border-color: transparent;
+  background: var(--st-switch-on);
+  color: var(--st-switch-knob-on);
+}
+
+.settings-root .settings-button--primary:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--st-switch-on) 86%, var(--st-card-bg));
+}
+
+.settings-root .settings-button--danger {
+  color: var(--st-error);
+}
+
+.settings-root .settings-button:disabled {
+  border-color: var(--st-disabled-ring);
+  background: transparent;
+  color: var(--st-disabled-fg);
 }
 
 /* ---------------- 开关 ---------------- */
 
 /* 壳的 .settings-root button 复位（(0,1,1)）会把组件的 background:none；开关没有
- * 页面级复位时必须自己提高一级（A11Y-04：六皮肤所有页面的轨道都要有颜色）。 */
+ * 页面级复位时必须自己提高一级（A11Y-04：浅 / 深所有页面的轨道都要有颜色）。 */
 .settings-root .settings-switch {
   position: relative;
   width: 36px;
@@ -432,7 +608,6 @@
   border: 0;
   border-radius: 999px;
   background: var(--st-switch-off);
-  box-shadow: inset 0 0 0 1px var(--st-border);
   transition: background-color 120ms ease;
 }
 
@@ -446,7 +621,7 @@
   background: var(--st-switch-knob);
   box-shadow: var(--st-knob-shadow);
   /* The knob travels via transform, not the layout property `left`
-     (same pattern as the kit/Claude switches): 2px inset + 16px travel
+     (same pattern as the kit switches): 2px inset + 16px travel
      lands exactly where left: 18px used to put it. */
   transition: transform 120ms ease;
 }
@@ -457,12 +632,29 @@
 
 .settings-switch.is-on .settings-switch-thumb {
   transform: translateX(16px);
-  /* ON thumb color follows --st-switch-knob-on (dark skins use a dark knob on the light ink track). */
+  /* ON thumb color follows --st-switch-knob-on (the dark theme uses a dark knob on the light ink track). */
   background: var(--st-switch-knob-on);
 }
 
-.settings-switch:disabled {
-  opacity: 0.5;
+/* 禁用：轨道换浅一档（开 / 关仍分得清、旋钮位置照常），不叠透明度。 */
+.settings-root .settings-switch:disabled,
+.settings-root .settings-row[data-settings-inert="true"] .settings-switch {
+  background: var(--st-switch-off-disabled);
+}
+
+.settings-root .settings-switch.is-on:disabled,
+.settings-root .settings-row[data-settings-inert="true"] .settings-switch.is-on {
+  background: var(--st-switch-on-disabled);
+}
+
+.settings-switch:disabled .settings-switch-thumb,
+.settings-row[data-settings-inert="true"] .settings-switch-thumb {
+  background: var(--st-switch-knob-disabled);
+}
+
+.settings-switch.is-on:disabled .settings-switch-thumb,
+.settings-row[data-settings-inert="true"] .settings-switch.is-on .settings-switch-thumb {
+  background: color-mix(in srgb, var(--st-switch-knob-on) 85%, var(--st-card-bg));
 }
 
 /* ---------------- 单选 ---------------- */
@@ -471,113 +663,151 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0;
-  margin-top: 4px;
+  gap: 2px;
+  margin-top: 8px;
 }
 
-.settings-radio {
+.settings-root .settings-radio {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   min-height: 28px;
-  margin-top: 2px;
   padding: 0;
-  color: var(--st-text-3);
+  color: var(--st-text-2);
   font-size: 13px;
   /* Pinned: the selected state (.is-on) changes color only -- the label
      weight never changes across settings pages. */
   font-weight: 400;
-  line-height: 1.35;
+  line-height: 1.4;
   user-select: none;
 }
 
-.settings-radio-ring {
+.settings-radio-ring,
+.settings-inline-ring {
   display: grid;
   place-items: center;
   width: 16px;
   height: 16px;
   flex: none;
-  border: 1.5px solid color-mix(in srgb, var(--st-text-1) 28%, transparent);
+  border: 1.5px solid var(--st-radio-ring);
   border-radius: 50%;
   background: var(--st-field-bg);
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
-.settings-radio-ring::after {
-  width: 8px;
-  height: 8px;
+.settings-radio-ring::after,
+.settings-inline-ring::after {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--st-text-1);
+  background: var(--st-switch-knob-on);
   content: "";
   opacity: 0;
 }
 
-.settings-radio.is-on {
+.settings-root .settings-radio:hover:not(:disabled) .settings-radio-ring,
+.settings-root .settings-inline-option:hover:not(:disabled) .settings-inline-ring {
+  border-color: var(--st-field-focus-ring);
+}
+
+.settings-root .settings-radio.is-on {
   color: var(--st-text-1);
 }
 
-.settings-radio.is-on .settings-radio-ring {
-  border-color: var(--st-text-1);
+.settings-root .settings-radio.is-on .settings-radio-ring,
+.settings-root .settings-inline-option.is-on .settings-inline-ring {
+  border-color: var(--st-switch-on);
+  background: var(--st-switch-on);
 }
 
-.settings-radio.is-on .settings-radio-ring::after {
+.settings-radio.is-on .settings-radio-ring::after,
+.settings-inline-option.is-on .settings-inline-ring::after {
   opacity: 1;
 }
 
-.settings-radio:disabled {
-  opacity: 0.55;
+/* 禁用：未选项退成浅圈 + 弱一档文字；已选项保留实心（浅一档），当前值仍一眼可读。 */
+.settings-root .settings-radio:disabled,
+.settings-root .settings-inline-option:disabled {
+  color: var(--st-disabled-fg);
+}
+
+.settings-root .settings-radio:disabled .settings-radio-ring,
+.settings-root .settings-inline-option:disabled .settings-inline-ring {
+  border-color: var(--st-disabled-ring);
+  background: transparent;
+}
+
+.settings-root .settings-radio.is-on:disabled,
+.settings-root .settings-inline-option.is-on:disabled {
+  color: var(--st-text-3);
+}
+
+.settings-root .settings-radio.is-on:disabled .settings-radio-ring,
+.settings-root .settings-inline-option.is-on:disabled .settings-inline-ring {
+  border-color: var(--st-disabled-fill);
+  background: var(--st-disabled-fill);
+}
+
+/* 没有行标题的单选组（审批页「整组一项」）不再顶出一截空白。 */
+.settings-radio-group:first-child {
+  margin-top: 0;
+}
+
+/* 选项自带说明的纵排单选：圈对齐首行，说明在标题下方。 */
+.settings-root .settings-radio--multiline {
+  align-items: flex-start;
+  padding-block: 5px;
+  white-space: normal;
+}
+
+.settings-radio--multiline .settings-radio-ring {
+  margin-top: 1px;
+}
+
+.settings-radio-text {
+  display: block;
+  min-width: 0;
+}
+
+.settings-radio-title {
+  display: block;
+}
+
+.settings-radio-warn {
+  color: var(--st-badge-bridge-fg);
 }
 
 .settings-inline-options {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 6px 16px;
   flex: none;
 }
 
-.settings-inline-option {
+.settings-root .settings-inline-option {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: var(--st-text-3);
+  gap: 7px;
+  min-height: 28px;
+  color: var(--st-text-2);
   font-size: 12.5px;
   line-height: 1.35;
   user-select: none;
 }
 
-.settings-inline-ring {
-  display: grid;
-  place-items: center;
-  width: 13px;
-  height: 13px;
-  flex: none;
-  border: 1.5px solid color-mix(in srgb, var(--st-text-1) 28%, transparent);
-  border-radius: 50%;
-  background: var(--st-field-bg);
-}
-
-.settings-inline-ring::after {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--st-text-1);
-  content: "";
-  opacity: 0;
-}
-
-.settings-inline-option.is-on {
+.settings-root .settings-inline-option.is-on {
   color: var(--st-text-1);
 }
 
-.settings-inline-option.is-on .settings-inline-ring {
-  border-color: var(--st-text-1);
+.settings-inline-ring {
+  width: 14px;
+  height: 14px;
 }
 
-.settings-inline-option.is-on .settings-inline-ring::after {
-  opacity: 1;
-}
-
-.settings-inline-option:disabled {
-  opacity: 0.55;
+.settings-inline-ring::after {
+  width: 5px;
+  height: 5px;
 }
 
 /* ---------------- 分段 ---------------- */
@@ -586,38 +816,50 @@
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 3px;
-  border-radius: 999px;
+  padding: 2px;
+  border-radius: 8px;
   background: var(--st-tile-bg);
-  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--st-text-1) 5%, transparent), inset 0 0 0 1px var(--st-border);
+  box-shadow: inset 0 0 0 1px var(--st-divider);
 }
 
-.settings-segment {
+.settings-root .settings-segment {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 6px 15px;
-  border-radius: 999px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 6px;
   color: var(--st-text-3);
   font-size: 12.5px;
+  font-weight: 500;
   line-height: 1;
   white-space: nowrap;
   user-select: none;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .settings-segment .settings-icon {
-  color: var(--st-icon);
+  color: currentColor;
 }
 
-.settings-segment.is-on {
+.settings-root .settings-segment:hover:not(:disabled) {
   color: var(--st-text-1);
-  font-weight: 600;
-  background: var(--st-menu-bg);
-  box-shadow: 0 1px 5px color-mix(in srgb, var(--st-text-1) 13%, transparent), inset 0 0 0 1px var(--st-border);
 }
 
-.settings-segment:disabled {
-  opacity: 0.55;
+.settings-root .settings-segment.is-on {
+  color: var(--st-text-1);
+  background: var(--st-raised-bg);
+  box-shadow: var(--st-raised-shadow);
+}
+
+.settings-root .settings-segment:disabled {
+  color: var(--st-disabled-fg);
+}
+
+.settings-root .settings-segment.is-on:disabled {
+  color: var(--st-text-3);
+  box-shadow: inset 0 0 0 1px var(--st-divider);
 }
 
 /* ---------------- 下拉 ---------------- */
@@ -626,34 +868,50 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  max-width: 280px;
+  max-width: 300px;
 }
 
-.settings-select {
+.settings-root .settings-select {
   appearance: none;
   -webkit-appearance: none;
+  min-width: 132px;
   max-width: 100%;
-  padding: 0 20px 0 0;
-  border: 0;
-  outline: 0;
-  color: var(--st-text-3);
-  background: transparent;
+  height: 28px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--st-control-border);
+  border-radius: var(--st-radius-control);
+  background: var(--st-control-bg);
+  color: var(--st-text-1);
   font-size: 12.5px;
-  line-height: 28px;
-  text-align: right;
+  line-height: 26px;
+  text-align: left;
   text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.settings-root .settings-select:hover:not(:disabled) {
+  border-color: var(--st-control-border-hover);
+  background: var(--st-control-hover-bg);
 }
 
 .settings-select-chevron {
   position: absolute;
-  right: 0;
-  color: var(--st-text-4);
+  right: 8px;
+  color: var(--st-text-3);
   pointer-events: none;
 }
 
-.settings-select:disabled {
-  opacity: 0.55;
+/* 禁用：去掉底色、边线变浅，值本身仍用 text-3（读得出当前选的是什么）。 */
+.settings-root .settings-select:disabled {
+  border-color: var(--st-disabled-ring);
+  background: transparent;
+  color: var(--st-text-3);
+}
+
+.settings-select:disabled + .settings-select-chevron {
+  color: var(--st-disabled-ring);
 }
 
 /* ---------------- 滑杆 ---------------- */
@@ -662,10 +920,10 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
-.settings-slider {
+.settings-root .settings-slider {
   appearance: none;
   -webkit-appearance: none;
   flex: 1;
@@ -677,7 +935,7 @@
   background: linear-gradient(
     to right,
     var(--st-slider-accent) 0 var(--settings-slider-fill),
-    var(--st-tile-bg) var(--settings-slider-fill) 100%
+    var(--st-slider-track) var(--settings-slider-fill) 100%
   );
   cursor: pointer;
 }
@@ -685,30 +943,44 @@
 .settings-slider::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: var(--st-switch-knob);
-  box-shadow: var(--st-knob-shadow), inset 0 0 0 1px var(--st-border);
+  box-shadow: var(--st-knob-shadow), 0 0 0 1px var(--st-control-border);
 }
 
 .settings-slider::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border: 0;
   border-radius: 50%;
   background: var(--st-switch-knob);
-  box-shadow: var(--st-knob-shadow), inset 0 0 0 1px var(--st-border);
+  box-shadow: var(--st-knob-shadow), 0 0 0 1px var(--st-control-border);
 }
 
-.settings-slider:disabled {
-  opacity: 0.5;
+.settings-root .settings-slider:disabled {
+  background: linear-gradient(
+    to right,
+    var(--st-disabled-fill) 0 var(--settings-slider-fill),
+    var(--st-slider-track) var(--settings-slider-fill) 100%
+  );
+}
+
+.settings-slider:disabled::-webkit-slider-thumb {
+  background: var(--st-switch-knob-disabled);
+  box-shadow: 0 0 0 1px var(--st-disabled-ring);
+}
+
+.settings-slider:disabled::-moz-range-thumb {
+  background: var(--st-switch-knob-disabled);
+  box-shadow: 0 0 0 1px var(--st-disabled-ring);
 }
 
 .settings-slider-end {
   flex: none;
   color: var(--st-text-4);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1;
 }
 
@@ -721,39 +993,49 @@
   text-align: right;
 }
 
+.settings-row[data-settings-inert="true"] .settings-slider-value {
+  color: var(--st-text-3);
+}
+
 /* ---------------- 颜色点 ---------------- */
 
 .settings-color-dots {
+  --settings-dot-gap: var(--st-page-bg);
   display: inline-flex;
   align-items: center;
-  gap: 13px;
+  gap: 12px;
   flex: none;
 }
 
-.settings-color-dot {
-  width: 24px;
-  height: 24px;
+.settings-card .settings-color-dots {
+  --settings-dot-gap: var(--st-card-bg);
+}
+
+.settings-root .settings-color-dot {
+  width: 22px;
+  height: 22px;
   flex: none;
   border: 0;
   border-radius: 50%;
   background: var(--settings-dot-color);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-text-1) 12%, transparent), 0 1px 2px color-mix(in srgb, var(--st-text-1) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-text-1) 14%, transparent);
+  transition: box-shadow 120ms ease;
 }
 
-.settings-color-dot.is-on {
+.settings-root .settings-color-dot.is-on {
   box-shadow:
-    0 0 0 2px var(--st-page-bg),
-    0 0 0 4px var(--settings-dot-color),
-    inset 0 0 0 1px color-mix(in srgb, var(--st-menu-bg) 25%, transparent);
+    0 0 0 2px var(--settings-dot-gap),
+    0 0 0 3.5px var(--settings-dot-color),
+    inset 0 0 0 1px color-mix(in srgb, var(--st-text-1) 14%, transparent);
 }
 
-.settings-color-dot:disabled {
-  opacity: 0.55;
+.settings-root .settings-color-dot:disabled {
+  opacity: 0.45;
 }
 
 .settings-color-current {
   min-width: 26px;
-  margin-left: 3px;
+  margin-left: 2px;
   color: var(--st-text-3);
   font-size: 12.5px;
   line-height: 1;
@@ -769,62 +1051,191 @@
 }
 
 .settings-keycap {
-  display: inline-block;
-  min-width: 24px;
-  padding: 5px 7px;
-  border: 1px solid var(--st-menu-border);
-  border-bottom-width: 2px;
-  border-radius: 6px;
-  background: var(--st-field-bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--st-control-border);
+  border-radius: 5px;
+  background: var(--st-raised-bg);
   color: var(--st-text-2);
   font-family: var(--st-font-mono);
-  font-size: 12px;
-  font-weight: 400;
+  font-size: 11.5px;
+  font-weight: 500;
   line-height: 1;
-  text-align: center;
-  box-shadow: 0 1px 1px color-mix(in srgb, var(--st-text-1) 5%, transparent);
+  box-shadow: 0 1px 0 var(--st-control-border);
 }
 
-.settings-keycap-capture {
+.settings-root .settings-keycap-capture {
   display: inline-flex;
   align-items: center;
   min-height: 28px;
-  padding: 0;
-  border-radius: 6px;
+  padding: 0 4px;
+  margin-right: -4px;
+  border-radius: var(--st-radius-control);
   color: inherit;
+  transition: background-color 120ms ease;
 }
 
-.settings-keycap-capture:hover .settings-keycap {
-  border-color: var(--st-selected-ring);
+.settings-root .settings-keycap-capture:hover:not(:disabled) {
+  background: var(--st-row-hover-bg);
 }
 
-.settings-keycap-capture.is-recording {
-  padding: 0 6px;
+.settings-keycap-capture:hover:not(:disabled) .settings-keycap {
+  border-color: var(--st-control-border-hover);
+}
+
+.settings-root .settings-keycap-capture.is-recording {
+  padding: 0 8px;
   background: var(--st-accent-soft);
 }
 
 .settings-keycap-recording {
-  color: var(--st-accent);
+  color: var(--st-text-1);
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
 }
 
-.settings-keycap-capture:disabled {
-  opacity: 0.55;
+.settings-keycap-capture:disabled .settings-keycap {
+  border-color: var(--st-disabled-ring);
+  background: transparent;
+  box-shadow: none;
+  color: var(--st-text-3);
 }
 
-/* ---------------- 页脚说明 ---------------- */
+/* ---------------- 页脚说明与状态条 ---------------- */
 
 .settings-note {
   margin: 10px 2px 0;
   color: var(--st-text-4);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
+}
+
+/* 写桥结果 / 只读原因 / 读取中 / 待重启：图标 + 文字，底色是状态色的一层薄雾。 */
+.settings-note[data-settings-write-feedback] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--st-notice-bg);
+  color: var(--st-text-2);
+}
+
+.settings-note-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--st-text-3);
+}
+
+.settings-note-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-note-detail {
+  color: var(--st-text-3);
+}
+
+.settings-note-details {
+  margin-top: 4px;
+}
+
+.settings-note-details > summary {
+  width: fit-content;
+  color: var(--st-text-3);
+  cursor: pointer;
+}
+
+.settings-note-details > summary:hover {
+  color: var(--st-text-1);
+}
+
+.settings-note-details > span {
+  display: block;
+  margin-top: 2px;
+  color: var(--st-text-3);
+}
+
+.settings-note[data-settings-write-feedback="ok"] {
+  background: var(--st-notice-ok-bg);
+}
+
+.settings-note[data-settings-write-feedback="ok"] .settings-note-icon {
+  color: var(--st-online);
+}
+
+.settings-note[data-settings-write-feedback="warn"] {
+  background: var(--st-notice-warn-bg);
+}
+
+.settings-note[data-settings-write-feedback="warn"] .settings-note-icon {
+  color: var(--st-wait);
+}
+
+.settings-note[data-settings-write-feedback="bad"] {
+  background: var(--st-notice-bad-bg);
+}
+
+.settings-note[data-settings-write-feedback="bad"] .settings-note-icon {
+  color: var(--st-error);
 }
 
 .settings-placeholder .settings-card {
   min-height: 64px;
+}
+
+/* ---------------- 轻提示（act.notify） ---------------- */
+
+.settings-toast-region {
+  position: absolute;
+  right: 0;
+  bottom: 28px;
+  left: var(--st-rail-w);
+  z-index: var(--cw-pi-z-raised);
+  display: flex;
+  justify-content: center;
+  padding: 0 24px;
+  pointer-events: none;
+}
+
+.settings-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 520px;
+  padding: 9px 14px;
+  border: 1px solid var(--st-menu-border);
+  border-radius: 10px;
+  background: var(--st-raised-bg);
+  color: var(--st-text-1);
+  font-size: 12.5px;
+  line-height: 1.45;
+  box-shadow: var(--st-float-shadow);
+  pointer-events: auto;
+  animation: pi-overlay-in var(--pi-motion-in) var(--pi-ease-out) both;
+}
+
+.settings-toast[data-leaving] {
+  animation: pi-fade-out var(--pi-motion-out) var(--pi-ease-out) both;
+}
+
+.settings-toast-icon {
+  flex: none;
+  color: var(--st-online);
+}
+
+.settings-toast[data-tone="warn"] .settings-toast-icon {
+  color: var(--st-wait);
+}
+
+.settings-toast[data-tone="bad"] .settings-toast-icon {
+  color: var(--st-error);
 }
 
 /* ---------------- 宽屏收口 ---------------- */
@@ -843,313 +1254,22 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .settings-nav-item,
-  .settings-switch,
-  .settings-switch-thumb {
+  .settings-root .settings-nav-item,
+  .settings-root .settings-back,
+  .settings-root .settings-row--action,
+  .settings-root .settings-switch,
+  .settings-switch-thumb,
+  .settings-radio-ring,
+  .settings-inline-ring,
+  .settings-root .settings-segment,
+  .settings-root .settings-select,
+  .settings-root .settings-button,
+  .settings-root .settings-color-dot,
+  .settings-root .settings-keycap-capture {
     transition: none;
   }
-}
 
-/* ---------------- Claude 变体 reset 的显式复位 ----------------
- * Claude 的 styles/reset.css 用 [data-pi-ui="claude"] h1..h6 / p / select 等作用域选择器
- * 把设置页组件打回 inherit / 0，且变体 CSS 懒加载后于本文件。下面统一用设置页作用域
- * [data-pi-settings][data-pi-settings-style="claude"]（高于 reset 的 (0,1,1)）复位到六套共用
- * 设计值；只影响 Claude，其余皮肤和手机壳（.settings-mobile）不受影响。
- */
-
-/* reset 把 Claude 变体的 18px 行高留在设置根上；桌面设置页回到统一 21px（13.5 × 1.555，
- * 与其余皮肤浏览器默认继承值同值），避免小字号元素被 normal 重新按字号计算。 */
-[data-pi-settings][data-pi-settings-style="claude"].settings-root {
-  line-height: 21px;
-}
-
-/* 页标题 / 分组标题：reset 把字号 / 字重置为 inherit；分组间距也归零。 */
-[data-pi-settings][data-pi-settings-style="claude"] .settings-page-title {
-  font-size: 20px;
-  font-weight: 650;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-group-label {
-  margin: 18px 0 8px;
-  font-size: 12.5px;
-  font-weight: 400;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-group--first .settings-group-label {
-  margin-top: 16px;
-}
-
-/* 页级分组间距（镜像 pages/*.css 的既有值，避免上面的复位覆盖页级节奏）。 */
-[data-pi-settings][data-pi-settings-style="claude"] .settings-appearance .settings-group-label {
-  margin: 20px 0 10px;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-appearance
-  .settings-appearance-section--first
-  .settings-group-label {
-  margin-top: 18px;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-about .settings-group-label {
-  margin: 22px 0 10px;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-shortcuts .settings-group--first .settings-group-label {
-  margin-top: 20px;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-appearance > .settings-note {
-  margin-top: 16px;
-}
-
-/* select：reset 的 padding:0 盖掉右侧 20px chevron 占位。 */
-[data-pi-settings][data-pi-settings-style="claude"] .settings-select {
-  padding: 0 20px 0 0;
-}
-
-/* 滑杆：reset 的 [data-pi-ui="claude"] input { background: transparent } (0,1,1)
- * 把 Claude 皮肤的滑杆轨道打回透明，只剩 thumb；按设置页值补回渐变（A11Y-04：
- * 强调段用 --st-slider-accent，Claude 浅色已加深到对卡底 ≥3:1）。 */
-[data-pi-settings][data-pi-settings-style="claude"] .settings-slider {
-  background: linear-gradient(
-    to right,
-    var(--st-slider-accent) 0 var(--settings-slider-fill),
-    var(--st-tile-bg) var(--settings-slider-fill) 100%
-  );
-}
-
-/* 左栏「设置」标题：Claude 设计源用衬线（其余皮肤仍走基础规则的 sans）。 */
-[data-pi-settings][data-pi-settings-style="claude"] .settings-rail-title {
-  font-family: var(--st-font-serif);
-}
-
-/* reset 对 h2/h3 的字号 / 字重归一，除页标题 / 分组标题外的页面标题一并复位。 */
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-state-title,
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-card-title {
-  font-size: 15.5px;
-  font-weight: 650;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-about-licenses-title {
-  font-size: 13.5px;
-  font-weight: 600;
-}
-
-/* reset 把 p / ul 的 margin 归零；按页面原值复位注记与列表间距。 */
-[data-pi-settings][data-pi-settings-style="claude"] .settings-group-description {
-  margin: 8px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-note {
-  margin: 10px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-appearance-preview {
-  margin: 10px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-shortcut-hint {
-  margin: 9px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-shortcut-empty {
-  margin: 14px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-shortcut-conflict {
-  margin: -2px 0 7px;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-subtitle {
-  margin: 4px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-stale {
-  margin: 10px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-coverage {
-  margin: 8px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-chart-note {
-  margin: 10px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-model-note {
-  margin: 9px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-footnote {
-  margin: 14px auto 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-empty-body {
-  margin: 5px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-state-body {
-  margin: 6px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-state-error {
-  margin: 8px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-hint {
-  margin: 3px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-quota-sub {
-  margin: 2px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-stat-sub {
-  margin: 4px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-usage-stat-value {
-  margin: 6px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-about-licenses-note {
-  margin: 4px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-about-licenses-list {
-  margin: 8px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="claude"] .settings-about-footnote {
-  margin: 18px 0 0;
-}
-
-/* ---------------- Codex 变体 reset 的显式复位 ----------------
- * Codex 的 codex.css 用 [data-pi-ui="codex"] h1..h4 / p / ul… { margin: 0 }（(0,1,1)）
- * 把设置页组件 (0,1,0) 的间距全部打平（分隔感丢失、行距也被 body 的 22px 带偏）。
- * 与 Claude 段同理，用设置页作用域复位；只影响桌面设置页，手机壳与其余皮肤不受影响。
- */
-[data-pi-settings][data-pi-settings-style="codex"].settings-root {
-  line-height: 21px;
-}
-
-/* 分组标题：首组 16/8，其余 18/8（页标题字号 / 字重不受 Codex reset 影响，无需复位）。 */
-[data-pi-settings][data-pi-settings-style="codex"] .settings-group-label {
-  margin: 18px 0 8px;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-group--first .settings-group-label {
-  margin-top: 16px;
-}
-
-/* 页级分组间距（镜像 pages/*.css 的既有值，避免上面的复位覆盖页级节奏）。 */
-[data-pi-settings][data-pi-settings-style="codex"] .settings-appearance .settings-group-label {
-  margin: 20px 0 10px;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-appearance
-  .settings-appearance-section--first
-  .settings-group-label {
-  margin-top: 18px;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-about .settings-group-label {
-  margin: 22px 0 10px;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-shortcuts .settings-group--first .settings-group-label {
-  margin-top: 20px;
-}
-
-/* reset 把 p / ul 的 margin 归零；按页面原值复位说明、注记与列表间距。 */
-[data-pi-settings][data-pi-settings-style="codex"] .settings-group-description {
-  margin: 8px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-note {
-  margin: 10px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-appearance > .settings-note {
-  margin-top: 16px;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-appearance-preview {
-  margin: 10px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-shortcut-hint {
-  margin: 9px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-shortcut-empty {
-  margin: 14px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-shortcut-conflict {
-  margin: -2px 0 7px;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-subtitle {
-  margin: 4px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-stale {
-  margin: 10px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-coverage {
-  margin: 8px 2px 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-chart-note {
-  margin: 10px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-model-note {
-  margin: 9px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-footnote {
-  margin: 14px auto 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-empty-body {
-  margin: 5px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-state-body {
-  margin: 6px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-state-error {
-  margin: 8px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-hint {
-  margin: 3px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-quota-sub {
-  margin: 2px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-stat-sub {
-  margin: 4px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-usage-stat-value {
-  margin: 6px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-about-licenses-note {
-  margin: 4px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-about-licenses-list {
-  margin: 8px 0 0;
-}
-
-[data-pi-settings][data-pi-settings-style="codex"] .settings-about-footnote {
-  margin: 18px 0 0;
+  .settings-toast {
+    animation: none;
+  }
 }

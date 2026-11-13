@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { sessionStatusLineOf, sidebarDataOf } from "@/pi/model/sidebarSource"
 import { sidebarGroups } from "@/pi/model/sidebarGroups"
+import { sidebarSearchSessionsOf } from "@/pi/model/sidebarSearch"
 import type { VariantAppProps } from "@/pi/variants/types"
 import {
   clearSidebarScope,
@@ -45,6 +46,8 @@ export interface MobileSidebarDataInput {
   search?: PiSidebarSearchState
   localPages?: PiSidebarLocalPage[]
   deviceMenuOpen?: boolean
+  /** 归档视图：列表只剩本机归档的行，组全部展开（同桌面侧栏） */
+  archiveView?: boolean
 }
 
 type GroupBuild = {
@@ -84,7 +87,7 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
   const account = relay.serverName || "local"
   const deviceId = relay.selectedDeviceId ?? ""
   const scope = sidebarStorageScope(account, deviceId)
-  const scopeState = sidebarScopeStateOf(local, scope)
+  const scopeState = useMemo(() => sidebarScopeStateOf(local, scope), [local, scope])
   const persist = useCallback((next: PiSidebarLocalState) => {
     setLocal(next)
     try {
@@ -93,7 +96,8 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       // 存量/隐私模式失败：本会话内仍可用（不假装已持久化）
     }
   }, [])
-  const data = useMemo(() => {
+  const archiveView = input.archiveView === true
+  const { data, archivedCount } = useMemo(() => {
     const base = sidebarDataOf({
       devices: relay.devices,
       rooms: relay.rooms,
@@ -110,7 +114,9 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       [...base.devices].map((device) => ({ id: device.id, name: device.name, online: device.online, platform: device.platform, current: device.id === relay.selectedDeviceId })),
       relay.selectedDeviceId ?? null,
     )
-    const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: p.ui.prefs.grouping, expanded: p.ui.expanded })
+    // 搜索页按这份数据筛：开着时不截行，「更多 N」里收起的会话也搜得到（列表 / 抽屉这时被搜索页盖住）
+    const uncapped = input.search?.open ? { maxRows: Number.POSITIVE_INFINITY } : {}
+    const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: p.ui.prefs.grouping, expanded: p.ui.expanded, ...uncapped })
     const sessionOf = new Map(base.sessions.map((session) => [session.id, session]))
     // 设计 D §2.2：一行实时状态（roomStatusLine）的输入面——房间事实按 id 索引、未读落定按 roomId 索引
     const roomById = new Map(relay.rooms.map((r) => [r.id, r]))
@@ -135,8 +141,9 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
           timeLabel: row.trailingText ?? (listed && !listed.online ? storedTimeLabel(now, row.at) : relativeTimeLabel(now, row.at)),
           dateTimeLabel: fullTimeLabel(row.at),
           // 设计 D §2.4 第四层：两行制第二行承载状态全句（waiting/running/error/done/offline）；
-          // 空闲态让位给原来的副标题（路径/设备），不拿"空闲"挤掉信息——状态优先只对有信息量的态生效
-          summary: status.tone === "idle" ? (row.subtitle ?? "") : status.text,
+          // 空闲态让位给原来的副标题（路径/设备），不拿"空闲"挤掉信息——状态优先只对有信息量的态生效；
+          // 没有副标题时才写「空闲 · N 分钟前」，第二行不留空
+          summary: status.tone === "idle" ? (row.subtitle || status.text) : status.text,
           statusLine: status.text,
           cwd: listed?.cwd ?? cwd,
           deviceName: dev?.name ?? "",
@@ -153,15 +160,19 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
         kind: "workspace",
         label: group.label || sidebarWorkspaceLabel(cwd),
         cwd,
-        collapsed: folderCollapsed,
+        collapsed: !archiveView && folderCollapsed,
         sessions,
         count: sessions.length,
         more: group.more,
         expanded: group.expanded,
       }
     })
-    const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: scopeState.archives })
-    return {
+    // 只数名册里还在的会话：已删掉的会话留在归档表里不算，免得入口写着有、点进去是空的
+    const archivedCount = groups.reduce((count, group) => count + group.sessions.filter((session) => session.archived).length, 0)
+    const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: scopeState.archives, archiveView, folders: scopeState.folders })
+    const shownGroups = overlaid.filter((group) => group.sessions.length > 0 || group.kind === "pinned")
+    const search = input.search ?? { open: false, query: "" }
+    const data = {
       style: input.style,
       theme: input.theme,
       serverName: sidebarIdentityNameOf(relay.serverName, typeof location === "undefined" ? "" : location.host),
@@ -170,7 +181,7 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       devices: sortedDevices.map((device: PiSidebarDevice) => ({ ...device, current: device.id === relay.selectedDeviceId })),
       selectedDeviceId: relay.selectedDeviceId ?? null,
       deviceMenuOpen: input.deviceMenuOpen,
-      groups: overlaid.filter((group) => group.sessions.length > 0 || group.kind === "pinned"),
+      groups: shownGroups,
       // Pending-answer count (design D section 1): without it the drawer
       // never renders the inbox row on any phone shell.
       inboxCount: base.attention.filter((item) => item.kind === "waiting" || item.kind === "error" || item.kind === "done").length,
@@ -178,16 +189,29 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       newSessionLabel: "新会话",
       width: clampSidebarWidth(p.ui.prefs.sidebarWidth),
       collapsed: p.ui.prefs.sidebarCollapsed,
-      search: input.search ?? { open: false, query: "" },
+      // 搜索结果同桌面一份规则（sidebarSearchSessionsOf：searchSessions 命中、分组区顺序）
+      search: search.open && search.query.trim() ? { ...search, results: sidebarSearchSessionsOf(shownGroups, search.query, (session) => sessionOf.get(session.id)?.firstMessage) } : search,
       now,
     } satisfies PiSidebarData
-  }, [relay, p.ui.prefs, input, scopeState, now])
+    return { data, archivedCount }
+  }, [relay, p.ui.prefs, p.ui.expanded, input, scopeState, now, archiveView, deviceId])
   const togglePin = useCallback((key: string) => persist(toggleSidebarPin(local, scope, key)), [local, persist, scope])
   const toggleArchive = useCallback((key: string) => persist(toggleSidebarArchive(local, scope, key)), [local, persist, scope])
   const toggleGroup = useCallback((groupId: string) => {
     const current = sidebarScopeStateOf(local, scope)
-    const next = setSidebarFolderCollapsed(local, scope, groupId, !(current.folders[groupId] ?? true))
+    // 按界面上的折叠态翻（待处理自动展开的组没存过值）；归档视图里组总是展开，仍按存的值翻
+    const shown = archiveView ? undefined : data.groups.find((group) => group.id === groupId && group.kind === "workspace")
+    const next = setSidebarFolderCollapsed(local, scope, groupId, shown ? !shown.collapsed : !(current.folders[groupId] ?? true))
     persist(next)
+  }, [archiveView, data.groups, local, persist, scope])
+  /** 一次写多组（各写各的会互相覆盖，只剩最后一组生效） */
+  const setGroupsCollapsed = useCallback((groupIds: readonly string[], collapsed: boolean) => {
+    persist(groupIds.reduce((state, groupId) => setSidebarFolderCollapsed(state, scope, groupId, collapsed), local))
+  }, [local, persist, scope])
+  // 新会话常落在默认折叠的组里：当前会话所在的组没手动开合过就记成展开（同桌面 useSidebarLocalState.revealFolder），开合过的不动
+  const revealFolder = useCallback((groupId: string) => {
+    if (sidebarScopeStateOf(local, scope).folders[groupId] !== undefined) return
+    persist(setSidebarFolderCollapsed(local, scope, groupId, false))
   }, [local, persist, scope])
   // Group row-cap expansion lives in the shared UI state (same key space as
   // the desktop shells: sidebarGroups group key), not in this local store.
@@ -204,5 +228,17 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       // 忽略
     }
   }, [])
-  return { data, togglePin, toggleArchive, toggleGroup, toggleExpanded, clearLocal }
+  return {
+    data,
+    archivedCount,
+    pins: scopeState.pins,
+    archives: scopeState.archives,
+    togglePin,
+    toggleArchive,
+    toggleGroup,
+    setGroupsCollapsed,
+    toggleExpanded,
+    revealFolder,
+    clearLocal,
+  }
 }

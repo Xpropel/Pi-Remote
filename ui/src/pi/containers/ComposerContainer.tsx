@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { ModelExplainerCard } from "@/components/kit/menu/ModelExplainerCard"
 import {
   PiAttachMenu,
@@ -29,6 +29,7 @@ import { rememberSettingsPage } from "@/pi/settings/SettingsPage"
 import { rememberMobileSettingsPage } from "@/pi/settings/mobile/MobileSettingsPage"
 import { useTranscriptStick } from "@/pi/hooks/useTranscriptStick"
 import { changesOfSessionCached, createChangesCache } from "@/components/pi/composer/sessionChanges"
+import { mentionPathsIn } from "@/components/pi/composer/mentionInline"
 import { queueEditInvalidationOf, sharedSendNowLock } from "@/components/pi/composer/queueGuard"
 import { composerTriggerOf, slashMenuGroups } from "@/pi/model/composerInput"
 import { composerViewOf, PI_SLOW_ACK_MS } from "@/pi/model/composerView"
@@ -152,6 +153,9 @@ export function ModelMenuContent({
         auto={auto}
         onAutoChange={onAutoChange}
         onConfigureModels={onConfigureModels}
+        listPhase={data.listPhase}
+        listError={data.listError}
+        onRetry={data.reload}
       />
     )
   }
@@ -184,6 +188,9 @@ export function ModelMenuContent({
       auto={auto}
       onAutoChange={onAutoChange}
       onConfigureModels={onConfigureModels}
+      listPhase={data.listPhase}
+      listError={data.listError}
+      onRetry={data.reload}
     />
   )
 }
@@ -361,6 +368,7 @@ function useQueue(relay: Relay) {
       relay.outbox.length +
       relay.schedules.filter((s) => s.state === "armed").length,
     editing: editing ? { id: editing.id, text: editing.text, phase: editing.phase, conflict: editing.conflict, note: editing.note } : null,
+    beginEdit,
     onEditChange: (text: string) => editing && patch(editing.id, { text, note: editing.conflict ? editing.note : null }),
     onEditSave: () => save(),
     onEditCancel: () => setEditing(null),
@@ -382,6 +390,23 @@ function useQueue(relay: Relay) {
     },
     onOutboxAction: (cid: string, action: "cancel" | "retry") => (action === "cancel" ? relay.outboxCancel(cid) : relay.outboxRetry(cid)),
   }
+}
+
+/**
+ * 「编辑第 N 条」的请求（openQueueEdit 带来的 arg = 条目 id）：进入那一条的编辑，再把 arg 去掉——
+ * 不去掉的话同一条取消后再点一次，arg 没变就进不去了。
+ */
+function useQueueEditRequest(arg: string | undefined, queue: Pick<ReturnType<typeof useQueue>, "editing" | "beginEdit">, dropArg: () => void) {
+  const latest = useRef({ queue, dropArg })
+  useLayoutEffect(() => {
+    latest.current = { queue, dropArg }
+  })
+  useEffect(() => {
+    if (!arg) return
+    const { queue: q, dropArg: drop } = latest.current
+    if (q.editing?.id !== arg) q.beginEdit(arg)
+    drop()
+  }, [arg])
 }
 
 /** 草稿里没有 @ 时的候选池：同一个空数组，避免每次渲染造新引用（UI·perf 中-2） */
@@ -663,6 +688,8 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
     copy: extras?.statusCopy,
     turnError,
   })
+  // 手机会话页顶栏的副标题已经写了设备名（PhoneApp → MobileNavShell 的 sessionSubtitle），框下状态行不再重复；分支照旧
+  const status = phone && !isStatic && view.status.device ? { ...view.status, device: undefined } : view.status
 
   /* ---------- tray ---------- */
   const items = relay.transcript.items
@@ -671,6 +698,7 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
   const changes = useMemo(() => changesOfSessionCached(items, changesCache), [items, changesCache])
   const menuId = ui.menu?.id
   const sheetId = ui.sheet?.id
+  useQueueEditRequest(!phone && menuId === C_IDS.queue ? ui.menu?.arg : undefined, queue, () => act.openMenu({ id: C_IDS.queue }))
   const tray: PiTrayItem[] = trayItemsOf({
     taskList: relay.taskList,
     remoteQueue: relay.remoteQueue.items,
@@ -794,10 +822,18 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
   // 候选池 = 本会话工具入参里的路径 + 文件视图读过的文件（mention.ts，按会话分槽），合并后上限 20
   // UI·perf 中-2：@ 候选只在草稿里真有 @ 时才扫历史（@ 菜单也只在这时可能弹出）。
   // 否则流式期间每 50ms 都要把上万条历史从头扫一遍；草稿里没有 @ 时返回空池，菜单本来就打不开，行为不变。
+  // 会话目录里的文件用相对路径（mentionPathsIn）：菜单、句子里的 @、chip 和发出去的都是同一个写法
   const poolWanted = isStatic || draft.includes("@")
+  const sessionRoom = relay.rooms.find((r) => r.id === roomId)
+  const sessionLazy = relay.lazySession?.id === roomId ? relay.lazySession : null
+  const sessionCwd = sessionRoom?.cwd ?? sessionLazy?.cwd ?? ""
+  const sessionPlatform = relay.devices.find((d) => d.id === (sessionRoom?.deviceId ?? sessionLazy?.deviceId))?.platform ?? null
   const mentionPool = useMemo(
-    () => (poolWanted ? mergeMentionCandidates(collectTranscriptFiles(items), viewedMentionFiles(roomId)).map((f) => f.path) : EMPTY_MENTION_POOL),
-    [poolWanted, items, roomId],
+    () =>
+      poolWanted
+        ? mentionPathsIn(mergeMentionCandidates(collectTranscriptFiles(items), viewedMentionFiles(roomId)).map((f) => f.path), sessionCwd, sessionPlatform)
+        : EMPTY_MENTION_POOL,
+    [poolWanted, items, roomId, sessionCwd, sessionPlatform],
   )
   const slashGroups: SlashGroup[] = useMemo(() => slashBrowseGroupsOf(BUILTIN_ROWS, resources, usageOrder), [resources, usageOrder])
 
@@ -861,7 +897,7 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
         onScrollDown={stick.onScrollDown}
         panel={panel}
         onPanelClose={act.closeMenu}
-        status={view.status}
+        status={status}
         statusTrailing={phone ? undefined : extras?.statusTrailing}
         keyboardOpen={keyboardOpen}
         onDeliveryChange={(value) => relay.setSendMode(value)}
@@ -925,6 +961,7 @@ export function ComposerSheets(p: PiContainerProps) {
   const sheetId = ui.sheet?.id
   const attach = useAttach(p)
   const queue = useQueue(relay)
+  useQueueEditRequest(sheetId === C_IDS.queue ? ui.sheet?.arg : undefined, queue, () => act.openSheet({ id: C_IDS.queue }))
   const now = useNow(1000)
   const isStatic = usePiStatic()
   const modelData = useModelData(relay, sheetId === C_IDS.model)

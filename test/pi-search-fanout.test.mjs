@@ -45,15 +45,20 @@ describe("目标选择 bodySearchTargetsOf", () => {
   test("lastActivity 一样时取列表里更靠后的（同 pickEntryRoom）", () => {
     assert.deepEqual(bodySearchTargetsOf("mac", [room("x", "/p", 0), room("y", "/p", 0)]).map((t) => t.roomId), ["y"])
   })
-  test("cwd 只统一斜杠和末尾斜杠（同一个目录）；大小写不同按两个目录（pi 的会话目录按 cwd 原文算）", () => {
+  test("同一个目录按设备平台判（pathKeyOf）：末尾斜杠都不计；macOS 不分大小写、反斜杠是普通字符；Linux 区分大小写；Windows / 平台未知两种斜杠等价且不分大小写", () => {
     const rooms = [room("a", "/tmp/proj", 1), room("b", "/tmp/proj/", 2), room("c", "\\tmp\\proj", 3), room("d", "/tmp/Proj", 4)]
-    assert.deepEqual(
-      bodySearchTargetsOf("mac", rooms).map((t) => [t.roomId, t.cwd]),
-      [
-        ["d", "/tmp/Proj"],
-        ["c", "\\tmp\\proj"],
-      ],
-    )
+    const targets = (platform) => bodySearchTargetsOf("mac", rooms, null, platform).map((t) => [t.roomId, t.cwd])
+    assert.deepEqual(targets("macos"), [
+      ["d", "/tmp/Proj"],
+      ["c", "\\tmp\\proj"],
+    ])
+    assert.deepEqual(targets("linux"), [
+      ["d", "/tmp/Proj"],
+      ["c", "\\tmp\\proj"],
+      ["b", "/tmp/proj/"],
+    ])
+    assert.deepEqual(targets("windows"), [["d", "/tmp/Proj"]])
+    assert.deepEqual(targets(undefined), [["d", "/tmp/Proj"]], "旧设备没报平台：沿用最宽松的口径")
   })
   test("没有 cwd 的房间（旧扩展）不知道扫哪个目录，各算一个目标", () => {
     const rooms = [room("n1", null, 1), room("n2", null, 2)]
@@ -157,7 +162,8 @@ describe("接线（源码口径）", () => {
     const src = read("relay/useRelay.ts")
     const at = src.indexOf("const searchSessionBodies = useCallback(")
     const fn = src.slice(at, src.indexOf("const sessionNameForPath", at))
-    assert.match(fn, /bodySearchTargetsOf\(deviceId, authedRef\.current \? roomsRef\.current : \[\], roomRef\.current\)/, "连接没认证时不按房间发")
+    assert.match(fn, /const platform = devicePlatformOf\(devicesRef\.current, deviceId\)/, "同目录、同文件按设备平台判")
+    assert.match(fn, /bodySearchTargetsOf\(deviceId, authedRef\.current \? roomsRef\.current : \[\], roomRef\.current, platform\)/, "连接没认证时不按房间发")
     assert.match(fn, /Promise\.allSettled\(\s*roomTargets\.map\(\(target\) => channel\.command\(target\.roomId, "search_session_bodies", \{ query \}/)
     assert.match(fn, /mergeBodySearchReplies\(\s*query,/)
     assert.match(fn, /if \(!merged\.ok\) throw merged\.error\s*return merged\.page/)

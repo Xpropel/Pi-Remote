@@ -99,7 +99,8 @@ export function SyntaxHighlight({ code, lang = "tsx", block, tokenizeOptions, cl
       data-slot="syntax-highlight"
       data-lang={lang}
       className={cn(
-        "font-(family-name:--cw-font-mono) whitespace-pre text-(--cw-text)",
+        // 字色同对话正文（--cw-pi-stream-fg，深色下压暗一档，见 kit/stream/styles 的 STREAM_FG），没有 Pi 主题时 = --cw-text
+        "font-(family-name:--cw-font-mono) whitespace-pre text-[color:var(--cw-pi-stream-fg,var(--cw-text))]",
         block &&
           "block text-[length:var(--cw-diff-code-size,var(--cw-text-code-block))] leading-[var(--cw-diff-row-h,var(--cw-leading-code))]",
         className,

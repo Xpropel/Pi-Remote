@@ -1,3 +1,4 @@
+import { MENU_ROW_HL_HOVER } from "@/components/kit"
 import { PiButton, PiDialog, usePiStatic } from "@/components/pi/shared"
 import { cn } from "@/lib/utils"
 import { PiDialogNote, PiDialogStatus, PiTextBlock } from "./PiDialogParts"
@@ -72,7 +73,7 @@ export function PiInspectDialog({
                 className={cn(
                   "inline-flex shrink-0 items-center rounded-(--cw-radius-pill) border border-solid px-2.5 whitespace-nowrap",
                   phone ? "h-11 px-3 text-[13px]" : "h-7 text-(length:--cw-text-sm)",
-                  on ? "border-transparent bg-(--cw-row-selected) font-(--cw-weight-medium) text-(--cw-text)" : "border-(--cw-border) text-(--cw-text-2) hover:bg-(--cw-row-hover)",
+                  on ? "border-transparent bg-(--cw-row-selected) font-(--cw-weight-medium) text-(--cw-text)" : cn("border-(--cw-border) text-(--cw-text-2)", MENU_ROW_HL_HOVER),
                 )}
               >
                 {p.label}

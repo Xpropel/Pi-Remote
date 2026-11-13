@@ -12,7 +12,7 @@
 .settings-ext-mono {
   font-family: var(--st-font-mono);
   font-size: 12.5px;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .settings-ext-inline {
@@ -22,26 +22,29 @@
 }
 
 .settings-ext-tag {
-  display: inline-block;
-  margin-left: 7px;
-  padding: 1px 5px;
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--st-divider);
   border-radius: 4px;
-  background: var(--st-tile-bg);
   color: var(--st-text-4);
   font-size: 10.5px;
   font-weight: 400;
-  line-height: 1.45;
+  line-height: 1;
   vertical-align: 1px;
 }
 
 .settings-ext-note {
   color: var(--st-text-4);
-  font-size: 11.5px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .settings-ext-subhead {
   color: var(--st-text-4);
-  font-size: 11.5px;
-  letter-spacing: 0.04em;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }

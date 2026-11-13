@@ -67,7 +67,7 @@ export function UnifiedDiff({
       data-slot="unified-diff"
       data-line-numbers={lineNumbers ? "" : undefined}
       data-wrap={wrap ? "" : undefined}
-      className={cn(DIFF_CODE_TEXT, "text-(--cw-text)", className)}
+      className={cn(DIFF_CODE_TEXT, "text-[color:var(--cw-pi-stream-fg,var(--cw-text))]", className)}
       {...rest}
     >
       {rows.map((row, i) =>

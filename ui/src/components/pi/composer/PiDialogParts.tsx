@@ -1,7 +1,8 @@
 import type { ReactNode } from "react"
+import { MENU_DIVIDER_BORDER, MENU_ROW_HL_HOVER } from "@/components/kit"
 import { PiSpinner } from "@/components/pi/shared/PiSpinner"
 import { cn } from "@/lib/utils"
-import { C_ERROR, C_SECONDARY, TOUCH_44, type CVariant } from "./styles"
+import { C_ERROR, C_SECONDARY, ROW_FOCUS, TOUCH_44, type CVariant } from "./styles"
 
 /*
  * 弹窗家族（P5.5，design §2 H：G03 G04 G08–G10 G12 G14–G18）共用的小件：读取状态、按钮行上方的红字、键值行、JSON 块、列表行。
@@ -93,7 +94,8 @@ export function PiKVRows({ variant, rows }: { variant: CVariant; rows: readonly 
         <div
           key={label}
           className={cn(
-            "flex min-w-0 items-baseline justify-between gap-4 border-b border-solid border-(--cw-divider-soft) py-2 last:border-b-0",
+            "flex min-w-0 items-baseline justify-between gap-4 border-b border-solid py-2 last:border-b-0",
+            MENU_DIVIDER_BORDER,
             phone ? "min-h-11 text-[15px]" : "min-h-8 text-(length:--cw-text-md)",
           )}
         >
@@ -157,7 +159,9 @@ export function PiDialogListRow({
       aria-current={current ? "true" : undefined}
       onClick={onClick}
       className={cn(
-        "flex w-full min-w-0 items-center gap-3 rounded-[7px] px-2 text-left hover:bg-(--cw-row-hover) disabled:hover:bg-transparent",
+        "flex w-full min-w-0 items-center gap-3 rounded-[var(--cw-menu-item-radius,6px)] px-2 text-left disabled:hover:bg-transparent",
+        MENU_ROW_HL_HOVER,
+        ROW_FOCUS,
         phone ? "min-h-12 py-1.5 text-[15px]" : "min-h-8 py-1 text-(length:--cw-text-md)",
       )}
       style={indent ? { paddingLeft: 8 + Math.min(indent, 12) * 14 } : undefined}

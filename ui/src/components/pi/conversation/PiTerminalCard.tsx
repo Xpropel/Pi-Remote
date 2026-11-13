@@ -1,8 +1,9 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { PiSpinner } from "@/components/pi/shared/PiSpinner"
-import { ChevronDown, createLucideIcon, KitIcon } from "@/components/kit/icons"
+import { createLucideIcon, KitIcon } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
-import { T_ATTENTION, T_ERROR, T_SECONDARY } from "./styles"
+import { CARD, CARD_GAP, CARD_HEAD_H, CARD_ICON, INSET_FOCUS, PiDisclosure } from "./PiCard"
+import { ROW_HL_FOCUS, ROW_HL_HOVER, T_ATTENTION, T_ERROR, T_SECONDARY } from "./styles"
 
 /** 横向终端图标（几何照 ch2/TerminalCard 的 TerminalWideIcon；不 import ch2，免得带进 ch2.css） */
 export const PiTerminalIcon = createLucideIcon("PiTerminalWide", [
@@ -23,7 +24,7 @@ export type PiTerminalStatus =
   | "aborted"
   | "denied"
   | "unknown"
-  /** 工具块 state = waiting_approval（数据源将来才给；推断）：卡在审批前，行尾蓝字"等你确认" */
+  /** 工具块 state = waiting_approval（数据源将来才给；推断）：卡在审批前，行尾蓝字"等你批准" */
   | "waiting"
   /** 工具块 state = queued：行尾灰字"排队中" */
   | "queued"
@@ -79,7 +80,9 @@ export function PiTerminalCard({
   truncated,
   className,
 }: PiTerminalCardProps) {
-  const [open, setOpen] = useState(!!openProp)
+  // open 是容器给的默认（运行中展开、跑完收起；失败的卡报错还要看时展开，见 liveExpandedOf），跟着它变。用户点过以后听用户的
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const open = userOpen ?? !!openProp
   const scroller = useRef<HTMLDivElement>(null)
   const outLines = output ? output.replace(/\n$/, "").split("\n") : []
   const errLines = stderr ? stderr.replace(/\n$/, "").split("\n") : []
@@ -99,28 +102,27 @@ export function PiTerminalCard({
       data-pi-part="terminal-card"
       data-state={status}
       data-open={open ? "" : undefined}
-      className={cn(
-        // relative：排在后面的卡压在前一行文字开关的 44 外扩区之上，卡头整条都点得到
-        "relative my-(--cw-space-2) w-full min-w-0 overflow-hidden rounded-(--cw-radius-card) border border-(--cw-border) bg-(--cw-surface)",
-        className,
-      )}
+      // relative（CARD）：排在后面的卡压在前一行文字开关的 44 外扩区之上，卡头整条都点得到
+      className={cn(CARD, CARD_GAP, className)}
     >
       <button
         type="button"
         aria-expanded={hasOutput ? open : undefined}
-        onClick={() => hasOutput && setOpen(!open)}
-        // 卡头是开关：手机（wrap）至少 44 高（§4.4；B2），长命令最多折成两行（R2-B-m3），单行时仍是 44；桌面保持 Cursor 的 31
+        onClick={() => hasOutput && setUserOpen(!open)}
+        // 卡头是开关：手机（wrap）至少 44 高（§4.4；B2），长命令最多折成两行（R2-B-m3），单行时仍是 44；桌面 31（同 diff 卡头，PiCard）
         className={cn(
-          wrap ? "min-h-11 py-[3px]" : "h-[31px]",
-          "flex w-full min-w-0 items-center gap-[6px] pr-2.5 pl-[7px] text-left font-(family-name:--cw-font-sans) text-(length:--cw-text-base) leading-(--cw-leading-base) outline-none focus-visible:bg-(--cw-row-hover)",
+          wrap ? "min-h-11 py-[3px]" : CARD_HEAD_H,
+          "flex w-full min-w-0 items-center gap-2 pr-2.5 pl-2.5 text-left font-(family-name:--cw-font-sans) text-(length:--cw-text-base) leading-(--cw-leading-base) outline-none",
+          INSET_FOCUS,
+          hasOutput ? cn(ROW_HL_HOVER, ROW_HL_FOCUS) : "cursor-default",
         )}
       >
         {status === "running" ? (
-          <span className="inline-grid size-[15px] shrink-0 place-items-center">
-            <PiSpinner size={13} tone="muted" arc={0.5} label="运行中" />
+          <span className="inline-grid size-[14px] shrink-0 place-items-center">
+            <PiSpinner size={12} tone="muted" arc={0.5} label="运行中" />
           </span>
         ) : (
-          <KitIcon icon={PiTerminalIcon} size={15} className="text-(--cw-text-3)" />
+          <KitIcon icon={PiTerminalIcon} size={CARD_ICON} className="text-(--cw-text-3)" />
         )}
         {/* 手机没有悬停看全文：命令放不下时折到第二行（和输出区一样按字符折，两行装得最满），再长才省略（R2-B-m3）；桌面单行截断 */}
         <span className={cn("min-w-0 flex-1", wrap ? "line-clamp-2 break-all" : "truncate")}>
@@ -129,7 +131,7 @@ export function PiTerminalCard({
             className={cn(
               "font-(family-name:--cw-font-mono) text-(length:--cw-text-code)",
               // 命令段是要读的细节：secondary（§4.6；R2-B-01，浅 --cw-text-3 只有 3.78:1）
-              phrase != null ? cn("ml-[6px]", T_SECONDARY) : "text-(--cw-text)",
+              phrase != null ? cn("ml-1.5", T_SECONDARY) : "text-[color:var(--cw-pi-stream-fg,var(--cw-text))]",
             )}
           >
             {command}
@@ -145,14 +147,7 @@ export function PiTerminalCard({
             {trailing.text}
           </span>
         )}
-        {hasOutput && (
-          <ChevronDown
-            aria-hidden
-            size={14}
-            strokeWidth={1.5}
-            className={cn("shrink-0 text-(--cw-text-4) transition-transform", !open && "-rotate-90")}
-          />
-        )}
+        {hasOutput && <PiDisclosure open={open} />}
       </button>
       {open && hasOutput && (
         <div
@@ -195,7 +190,7 @@ function trailingText(
 ): { text: string; error?: boolean; attention?: boolean } | null {
   switch (status) {
     case "waiting":
-      return { text: "等你确认", attention: true }
+      return { text: "等你批准", attention: true }
     case "queued":
       return { text: "排队中" }
     case "failed":

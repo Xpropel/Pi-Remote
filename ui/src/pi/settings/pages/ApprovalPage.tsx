@@ -15,8 +15,8 @@
  * 本页没有 ○ 本机项：不写 localStorage、不调 act.setPref。
  * 设计稿里这几组是「整组一项」，所以状态徽标挂在组标题上（组内每行不再重复挂徽标）。
  */
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react"
-import { Info } from "lucide-react"
+import { useMemo, useState, type ReactNode } from "react"
+import { Info, X } from "lucide-react"
 import { commandErrorText, commandsReady, useRelayCommand } from "@/pi/containers/cShared"
 import { useSettings } from "../SettingsContext"
 import { settingsItemInert } from "../types"
@@ -58,24 +58,6 @@ import {
   SettingsSwitch,
 } from "../ui"
 
-const MONO: CSSProperties = { fontFamily: "var(--st-font-mono)", fontSize: 12.5, letterSpacing: "0.01em" }
-
-const BRIEF_STYLE: CSSProperties = {
-  display: "flex",
-  alignItems: "flex-start",
-  gap: 8,
-  marginTop: 14,
-  padding: "10px 14px",
-  border: "1px solid var(--st-border)",
-  borderRadius: "var(--st-radius-card)",
-  background: "var(--st-tile-bg)",
-  color: "var(--st-text-3)",
-  fontSize: 11.5,
-  lineHeight: 1.55,
-}
-
-const BRIEF_ICON_STYLE: CSSProperties = { flex: "none", marginTop: 2, color: "var(--st-text-4)" }
-
 /** 组标题带状态徽标（SettingsGroup 不支持徽标；这里用同一套 class 局部实现）。 */
 function ApprovalGroup({
   label,
@@ -92,7 +74,7 @@ function ApprovalGroup({
 }) {
   return (
     <section className={first ? "settings-group settings-group--first" : "settings-group"}>
-      <h2 className="settings-group-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <h2 className="settings-group-label settings-group-label--badge">
         <span>{label}</span>
         <SettingsStatusBadge status={status} />
       </h2>
@@ -148,29 +130,17 @@ function ChoiceGroup({
               role="radio"
               aria-checked={on}
               disabled={inert}
-              className={on ? "settings-radio is-on" : "settings-radio"}
+              className={`settings-radio${on ? " is-on" : ""}${multiline ? " settings-radio--multiline" : ""}`}
               onClick={() => {
                 if (!inert) onChange?.(option.value)
               }}
-              style={
-                multiline
-                  ? { alignItems: "flex-start", height: "auto", marginTop: 6, whiteSpace: "normal" }
-                  : undefined
-              }
             >
-              <span
-                className="settings-radio-ring"
-                style={multiline ? { marginTop: 2 } : undefined}
-                aria-hidden="true"
-              />
-              <span style={{ display: "block", minWidth: 0 }}>
-                <span style={{ display: "block", fontSize: 13, lineHeight: 1.35 }}>{option.label}</span>
+              <span className="settings-radio-ring" aria-hidden="true" />
+              <span className="settings-radio-text">
+                <span className="settings-radio-title">{option.label}</span>
                 {option.description ? <span className="settings-row-description">{option.description}</span> : null}
                 {option.note ? (
-                  <span
-                    className="settings-row-description"
-                    style={option.warn ? { color: "var(--st-wait)" } : undefined}
-                  >
+                  <span className={option.warn ? "settings-row-description settings-radio-warn" : "settings-row-description"}>
                     {option.note}
                   </span>
                 ) : null}
@@ -185,32 +155,14 @@ function ChoiceGroup({
 
 /** 行尾弱签（设计稿 .tag：「默认关」）。 */
 function TagChip({ children }: { children: ReactNode }) {
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        marginLeft: 7,
-        padding: "0 5px",
-        height: 16,
-        lineHeight: "15px",
-        fontSize: 10.5,
-        fontWeight: 400,
-        color: "var(--st-text-4)",
-        border: "1px solid var(--st-border)",
-        borderRadius: 5,
-        verticalAlign: "2px",
-      }}
-    >
-      {children}
-    </span>
-  )
+  return <span className="settings-tag">{children}</span>
 }
 
 function ToolTitle({ row }: { row: ApprovalToolRow }) {
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+    <span className="settings-inline-title">
       <span>{row.label}</span>
-      {row.mono ? <span style={{ ...MONO, marginLeft: 6 }}>{row.displayName}</span> : null}
+      {row.mono ? <span className="settings-mono">{row.displayName}</span> : null}
       {row.note ? <TagChip>{row.note}</TagChip> : null}
     </span>
   )
@@ -269,8 +221,8 @@ export function ApprovalPage() {
       <SettingsPageTitle title="审批与执行" />
 
       {/* 口径框：如实说明本页哪些是真机制、哪些只是设计预留 */}
-      <div style={BRIEF_STYLE} role="note" data-settings-brief="">
-        <Info size={13} strokeWidth={1.8} aria-hidden="true" style={BRIEF_ICON_STYLE} />
+      <div className="settings-callout" role="note" data-settings-brief="">
+        <Info size={14} strokeWidth={2} aria-hidden="true" className="settings-callout-icon" />
         <span>{APPROVAL_BRIEF}</span>
       </div>
 
@@ -327,10 +279,8 @@ export function ApprovalPage() {
       {/* ◌ 免审命令名单 */}
       <ApprovalGroup label="免审命令名单" status="reserved" note={APPROVAL_ALLOWLIST_NOTE}>
         {APPROVAL_ALLOWLIST.map((command) => (
-          <SettingsRow key={command} title={<span style={MONO}>{command}</span>}>
-            <span aria-hidden="true" style={{ padding: "0 2px", color: "var(--st-text-5)", fontSize: 16, lineHeight: 1 }}>
-              ×
-            </span>
+          <SettingsRow key={command} title={<span className="settings-mono">{command}</span>}>
+            <X size={14} strokeWidth={2} aria-hidden="true" className="settings-chevron" />
           </SettingsRow>
         ))}
         <SettingsActionRow title="添加命令" disabled />

@@ -2,14 +2,16 @@
  *
  *  生命周期仍然全部由 noticeCore 的纯 reducer 决定；本文件只补：
  *  - 订阅（useSyncExternalStore）
- *  - 到期定时器（只按最早 expiresAt 排一次）
+ *  - 到期定时器（只按最早的可见卡到期 / 排队卡过时排一次）
  *  - action 回调表
+ *  - 页面可见性 → set-hidden（后台时倒计时冻结）
  */
 
 import {
   emptyNotices,
   noticeActionCloses,
   noticeReducer,
+  noticeStaleAt,
   type NoticeAction,
   type NoticeInput,
   type NoticeItem,
@@ -28,11 +30,10 @@ function emit() {
   for (const listener of listeners) listener()
 }
 
+/** 下一次要 tick 的时刻：可见卡到期，或排队的卡过时（N9：可见卡长时间停着时「+N」也要按时减）。 */
 function scheduleTick() {
-  const next = state.visible.reduce<number>((min, item) => {
-    if (item.expiresAt === null) return min
-    return item.expiresAt < min ? item.expiresAt : min
-  }, Number.POSITIVE_INFINITY)
+  const deadlines = [...state.visible.map((item) => item.expiresAt), ...state.queue.map(noticeStaleAt)]
+  const next = deadlines.reduce<number>((min, at) => (at !== null && at < min ? at : min), Number.POSITIVE_INFINITY)
   if (!Number.isFinite(next)) {
     if (tickTimer !== null) clearTimeout(tickTimer)
     tickTimer = null
@@ -47,6 +48,8 @@ function scheduleTick() {
     tickTimer = null
     tickAt = 0
     dispatch({ type: "tick", now: Date.now() })
+    // 定时器偶尔比截止时刻早 1ms 到：状态没变时 commit 不会重排，这里补排一次
+    scheduleTick()
   }, Math.max(0, next - Date.now()))
 }
 
@@ -72,6 +75,15 @@ function commit(next: NoticeState) {
 
 function dispatch(event: Parameters<typeof noticeReducer>[1]) {
   commit(noticeReducer(state, event))
+}
+
+function syncPageHidden() {
+  dispatch({ type: "set-hidden", hidden: document.visibilityState === "hidden", now: Date.now() })
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", syncPageHidden)
+  syncPageHidden()
 }
 
 export function getNoticeSnapshot(): NoticeState {

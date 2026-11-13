@@ -10,12 +10,12 @@
  * - 未认证不放任无限 loading：等待上限（协议 8s + 1s 宽限）到点收口成可重试 timeout；
  * - `stale: true` 表示 relay 回的是缓存（设备离线/超时），UI 可标「数据可能不是最新」。
  *
- * 用法（claude/codex 设置页）：
+ * 用法（设置 › 使用活动）：
  * ```tsx
  * const usage = useUsageActivity(relay, { deviceId: relay.selectedDevice?.id })
  * // usage.snapshot（null = 空态）、usage.loading、usage.stale、usage.reason、usage.error、usage.refresh()
  * ```
- * 本文件归属 arch：UI 页面（UsageActivityPage/usage.css）由 claude 线实现，只消费本 hook 的返回形状。
+ * 本文件归属 arch：UI 页面（UsageActivityPage/usage.css、设置页 v2 的 UsagePage）只消费本 hook 的返回形状。
  */
 import { useCallback, useEffect, useRef, useState } from "react"
 import { validateUsageSnapshot } from "./validate.ts"

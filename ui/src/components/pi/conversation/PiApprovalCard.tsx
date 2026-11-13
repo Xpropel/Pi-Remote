@@ -16,7 +16,7 @@ import { T_ATTENTION, T_ERROR, T_SECONDARY } from "./styles"
 import type { PiDialogCard } from "@/components/pi/shared/types"
 import { approvalPartsOf, dialogIsApproval, dialogSealedBlockedText } from "@/pi/model/dialogCard"
 
-export type PiApprovalState = "open" | "sending" | "failed" | "answered-elsewhere" | "denied" | "expired"
+export type PiApprovalState = "open" | "sending" | "failed" | "answered-elsewhere" | "denied" | "expired" | "stopped"
 
 /** 收成一行灰字的回执（已拒绝 / 已超时）停留多久后消失（§3.4、M-06） */
 export const PI_APPROVAL_RECEIPT_MS = 8000
@@ -49,7 +49,7 @@ export interface PiApprovalCardProps {
 export type PiApprovalAnswer = { action: "allow" | "submit" | "deny"; value?: string; values?: string[]; note?: string }
 
 /**
- * "等你回答"审批卡（PiApprovalCard；compose from kit: Button(solid-black), CodeChip, InlineLink, Spinner）。
+ * 审批卡（PiApprovalCard；compose from kit: Button(solid-black), CodeChip, InlineLink, Spinner）：工具审批写"等你批准"，提问 / 弹窗写"等你回答"。
  * 唯一常驻 dock 的卡（§1.7），放在 tray 上方、与对话列同宽，阴影比普通卡重一档（--cw-pi-approval-shadow）。整卡版式是推断。
  * select：整宽描边选项行；multiselect：复选行 + 已选计数 + 黑"确认"（未达最少选择数时不可点）；
  * confirm：黑"允许" + 描边"拒绝"；input / editor：输入框 + 黑"提交"。
@@ -90,6 +90,13 @@ export function PiApprovalCard({
   }
   if (state === "answered-elsewhere") {
     return <ReceiptLine className={cn("mx-0", T_SECONDARY)}>已在其他设备回答</ReceiptLine>
+  }
+  if (state === "stopped") {
+    return (
+      <ReceiptLine data-pi-part="approval-stopped" role="status" className={cn("mx-0", T_SECONDARY)}>
+        {dialogIsApproval(dialog) ? "回合已停止，未批准" : "回合已停止，未作答"}
+      </ReceiptLine>
+    )
   }
   if (state === "denied") {
     return (
@@ -144,7 +151,7 @@ export function PiApprovalCard({
           <CircleHelp aria-hidden size={16} strokeWidth={1.75} className={cn("shrink-0", T_ATTENTION)} />
         )}
         <span id={headId} className="min-w-0 flex-1 truncate font-(--cw-weight-semibold) text-(--cw-text)">
-          {approval ? "需要你的批准" : "pi 在等你回答"}
+          {approval ? "pi 在等你批准" : "pi 在等你回答"}
         </span>
         {/* 倒计时不逐秒播报（§4.7）：可见文字对读屏隐藏，播报只走下面的 live region */}
         <span aria-hidden className={cn("shrink-0 tabular-nums", T_SECONDARY)}>
@@ -158,9 +165,7 @@ export function PiApprovalCard({
       <div ref={scrollRef} className={cn("min-h-0 overflow-y-auto px-3.5 pt-2 pb-3", SCROLL_FADE)}>
         {approvalParts ? (
           <>
-            {approvalParts.question && (
-              <div className="text-(length:--cw-text-base) leading-(--cw-leading-base) text-(--cw-text)">{approvalParts.question}</div>
-            )}
+            {approvalParts.question && <div className={QUESTION}>{approvalParts.question}</div>}
             {approvalParts.command && (
               <pre className="mt-1.5 max-h-40 overflow-y-auto rounded-(--cw-radius-input) bg-(--cw-code-chip-bg) px-2.5 py-2 font-(family-name:--cw-font-mono) text-(length:--cw-text-code) leading-[1.5] whitespace-pre-wrap break-all text-(--cw-code-chip-fg)">
                 {approvalParts.command}
@@ -169,9 +174,7 @@ export function PiApprovalCard({
           </>
         ) : (
           <>
-            {dialog.title && (
-              <div className="text-(length:--cw-text-base) leading-(--cw-leading-base) text-(--cw-text)">{dialog.title}</div>
-            )}
+            {dialog.title && <div className={QUESTION}>{dialog.title}</div>}
             {dialog.message && (
               <div className="mt-1.5">
                 <CodeChip className="text-(length:--cw-text-code) leading-[1.5]">{dialog.message}</CodeChip>
@@ -195,11 +198,7 @@ export function PiApprovalCard({
                   aria-selected={busy}
                   disabled={state === "sending"}
                   onClick={interactive ? () => answer({ action: "submit", value: opt }) : undefined}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-(--cw-radius-button) border border-(--cw-border) bg-(--cw-surface) px-3 text-left text-(length:--cw-text-md) text-(--cw-text)",
-                    "hover:bg-(--cw-row-hover) disabled:text-(--cw-text-3)",
-                    rowH,
-                  )}
+                  className={cn(OPTION, "border-(--cw-border)", rowH)}
                 >
                   <span className="min-w-0 flex-1">{opt}</span>
                   {busy && <PiSpinner size={12} tone="muted" label="发送中" />}
@@ -225,12 +224,7 @@ export function PiApprovalCard({
                   aria-checked={on}
                   disabled={state === "sending" || atMax}
                   onClick={interactive ? () => toggleChecked(opt) : undefined}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-(--cw-radius-button) border bg-(--cw-surface) px-3 text-left text-(length:--cw-text-md) text-(--cw-text)",
-                    "hover:bg-(--cw-row-hover) disabled:text-(--cw-text-3)",
-                    on ? "border-(--cw-pi-field-focus-border)" : "border-(--cw-border)",
-                    rowH,
-                  )}
+                  className={cn(OPTION, on ? "border-(--cw-pi-field-focus-border)" : "border-(--cw-border)", rowH)}
                 >
                   <span
                     aria-hidden
@@ -388,6 +382,13 @@ export function PiApprovalCard({
   )
 }
 
+/** 卡里的问题 / 标题：正文字色（--cw-pi-stream-fg，深色下压暗一档，同对话正文） */
+const QUESTION = "text-(length:--cw-text-base) leading-(--cw-leading-base) text-[color:var(--cw-pi-stream-fg,var(--cw-text))]"
+
+/** 选项行（select / multiselect）：整宽描边行，悬停变浅灰、按下再深一档；描边色由调用处给（多选勾上时加深） */
+const OPTION =
+  "flex w-full cursor-pointer items-center gap-2 rounded-(--cw-radius-button) border bg-(--cw-surface) px-3 text-left text-(length:--cw-text-md) text-(--cw-text) transition-colors duration-(--pi-motion-out) enabled:hover:bg-[color:var(--cw-pi-menu-hl,var(--cw-row-hover))] enabled:active:bg-(--cw-row-selected) disabled:cursor-default disabled:text-(--cw-text-3)"
+
 /** 可交互态的输入框（input / editor 型、拒绝理由）：和静态占位框同一个外观 */
 const INPUT =
   "w-full rounded-(--cw-radius-input) border border-(--cw-border) bg-(--cw-surface) px-3 py-2 text-(--cw-text) placeholder:text-(--cw-text-4) disabled:text-(--cw-text-3) focus-visible:border-(--cw-pi-field-focus-border)"
@@ -430,14 +431,20 @@ function useScrollFade() {
 const ANNOUNCE_DELAY_MS = 150
 
 /**
- * 读屏播报文字（§4.7；规则在 pi/model/approvalAnnounce.ts）：卡出现后播报一次"pi 在等你回答：<标题>，<问题>"，
+ * 读屏播报文字（§4.7；规则在 pi/model/approvalAnnounce.ts）：卡出现后播报一次"pi 在等你回答：<标题>，<问题>"（工具审批是"等你批准"），
  * 剩 10 秒时换成"还剩 10 秒"再播报一次；换了一张卡重新来。剩余时间不逐秒播报（倒计时的可见文字 aria-hidden）。
  * 先渲染空的 live region、过 ANNOUNCE_DELAY_MS 再填字。依赖都是基本类型，父组件频繁重渲染也不会把定时器一直往后推。
  */
 function useApprovalAnnouncement(dialog: PiDialogCard, remainingMs: number | null, state: PiApprovalState): string {
   const [said, setSaid] = useState<ApprovalAnnounceState>(APPROVAL_ANNOUNCE_IDLE)
   const active = state === "open" || state === "sending" || state === "failed"
-  const next = approvalAnnounceStep(said, { dialogId: dialog.dialogId, active, question: approvalQuestionOf(dialog), remainingMs })
+  const next = approvalAnnounceStep(said, {
+    dialogId: dialog.dialogId,
+    active,
+    question: approvalQuestionOf(dialog),
+    remainingMs,
+    approval: dialogIsApproval(dialog),
+  })
   const pending = next !== said
   const { dialogId, text, warned } = next
   const delay = said.dialogId !== dialogId ? ANNOUNCE_DELAY_MS : 0
@@ -469,7 +476,7 @@ export function PiPromptSignal({ startedAt, now }: { startedAt: number; now: num
   return (
     <ReceiptLine data-pi-part="prompt-signal" className={cn("mx-0 flex items-center gap-1.5", T_SECONDARY)}>
       <CircleHelp aria-hidden size={14} strokeWidth={1.75} className={T_ATTENTION} />
-      电脑上有一个确认框在等待 · 已等 {piDuration(now - startedAt, { zero: true })}
+      电脑上有一个弹窗在等你回答 · 已等 {piDuration(now - startedAt, { zero: true })}
     </ReceiptLine>
   )
 }

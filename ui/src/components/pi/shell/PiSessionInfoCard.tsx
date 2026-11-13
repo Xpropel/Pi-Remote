@@ -121,7 +121,7 @@ export function PiSessionInfoCard({ variant, title, device, branch, cwd, model, 
           <span className="min-w-0 truncate">{row.text}</span>
         </div>
       ))}
-      <div className="mt-1.5 border-t border-solid border-(--cw-divider-soft) pt-1.5 text-(length:--cw-text-sm)">
+      <div className="mt-1.5 border-t border-solid border-(--cw-pi-menu-divider) pt-1.5 text-(length:--cw-text-sm)">
         {/* kit InlineLink 自己 preventDefault，不改地址栏的 hash */}
         <InlineLink href="#usage" onClick={onUsage ? () => onUsage() : undefined}>
           用量明细

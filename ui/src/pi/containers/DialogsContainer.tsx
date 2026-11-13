@@ -13,6 +13,7 @@ import {
   PiTreeDialog,
   PiUsageDialog,
 } from "@/components/pi/composer"
+import { regenerateTargetOf } from "@/components/pi/composer/regenerateTarget"
 import { FORK_APPEND_HINT, FORK_BACKFILL_COPY, mergeForkDraft } from "@/chat/slashParse"
 import { noteSlashCommandUsed } from "@/chat/slashUsage"
 import { DEFAULT_TREE_JUMP_MODE, filterTree, flattenTree, treeJumpArgs, type TreeFilterMode, type TreeJumpMode } from "@/chat/treeFlatten"
@@ -130,19 +131,19 @@ function ConfirmContainer(props: PiContainerProps & { kind: "regenerate" | "clon
       },
     )
   }
-  const Dialog = kind === "regenerate" ? PiRegenerateDialog : PiCloneDialog
-  return (
-    <Dialog
-      viewport={shell.viewport}
-      subtitle={shell.target.title}
-      busy={relay.busy}
-      offline={offline}
-      working={working}
-      error={error}
-      onConfirm={confirm}
-      onOpenChange={shell.onOpenChange}
-    />
-  )
+  const common = {
+    viewport: shell.viewport,
+    subtitle: shell.target.title,
+    busy: relay.busy,
+    offline,
+    working,
+    error,
+    onConfirm: confirm,
+    onOpenChange: shell.onOpenChange,
+  }
+  // 能跑时才引原文：没载入的会话要先发一条，重发的就不是现在这条了
+  if (kind === "regenerate") return <PiRegenerateDialog {...common} resend={offline ? null : regenerateTargetOf(relay.transcript.items)} />
+  return <PiCloneDialog {...common} />
 }
 
 /** 压缩（G04）：可选总结要求 → compact（回包要等压缩落定）→ 写前后 token */

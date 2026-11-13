@@ -6,8 +6,7 @@
  * 13 个界面 = 设置首页 + 11 页与桌面同名内容 + 「交互」。
  * 首页 → 内容页 / 内容页 → 首页用本地 page state；首页返回 = 退出设置并回原会话。
  *
- * 六套皮肤：根属性同时挂 data-pi-settings / data-pi-settings-style / data-pi-theme，
- * 复用 tokens.css 的 --st-*；Claude 的衬线只作用于顶栏标题与分组标题。
+ * 根属性同时挂 data-pi-settings / data-pi-settings-style / data-pi-theme，复用 tokens.css 的 --st-*（浅 / 深两套）。
  * 桌面外壳 SettingsPage 与共享 model / context / ui 原子都不改。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react"
@@ -16,14 +15,14 @@ import { openPiDialog, PI_UI_IDS, piDialogOf, type PiContainerProps } from "@/pi
 import { useSettingsDialogFocus } from "../dialogFocus.ts"
 import { SettingsProvider, useSettingsLocalState } from "../SettingsContext.tsx"
 import {
-  settingsStyleOf,
   settingsThemeOf,
   type SettingsActions,
   type SettingsPageId,
-  type SettingsStyle,
   type SettingsTheme,
   type SettingsThemePref,
 } from "../types.ts"
+import { SettingsToast } from "../toast.tsx"
+import { useSettingsToast } from "../useSettingsToast.ts"
 import { MOBILE_SETTINGS_COPY, MOBILE_SETTINGS_PAGE_LABELS, mobileContentPageOf, mobilePageIdOf, type MobileSettingsPageId } from "./types.ts"
 import { MobileIndexPage } from "./pages/IndexPage.tsx"
 import { GeneralPage } from "./pages/GeneralPage.tsx"
@@ -42,7 +41,7 @@ import "../tokens.css"
 import "../settings.css"
 import "./mobile.css"
 
-const CONTENT_COMPONENTS: Record<SettingsPageId | "interaction", ComponentType<{ onPreviewStyle?: (style: SettingsStyle) => void; onPreviewTheme?: (theme: SettingsThemePref) => void }>> = {
+const CONTENT_COMPONENTS: Record<SettingsPageId | "interaction", ComponentType<{ onPreviewTheme?: (theme: SettingsThemePref) => void }>> = {
   general: GeneralPage,
   model: ModelPage,
   approval: ApprovalPage,
@@ -93,8 +92,6 @@ function useResolvedTheme(): SettingsTheme {
 
 export interface MobileSettingsPageProps {
   p: PiContainerProps
-  /** 六套皮肤之一；不传跟随当前变体（cursor / claude / codex）。 */
-  style?: SettingsStyle
   /** 实际明暗；不传读 <html data-pi-theme>，再退系统偏好。 */
   theme?: SettingsTheme
   /** 受控当前页；不传用内部 page state。 */
@@ -109,9 +106,8 @@ export interface MobileSettingsPageProps {
 
 /**
  * Last active mobile settings page, kept at module level for the same
- * reason as the desktop SettingsPage (F1): a UI style switch swaps the
- * whole variant shell and remounts this page, which used to reset it to
- * the index. An explicit `page` / `initialPage` still wins.
+ * reason as the desktop SettingsPage (F1): a remount restores it instead
+ * of resetting to the index. An explicit `page` / `initialPage` still wins.
  */
 let lastMobileSettingsPage: MobileSettingsPageId | null = null
 
@@ -121,16 +117,14 @@ export function rememberMobileSettingsPage(page: MobileSettingsPageId): void {
   lastMobileSettingsPage = mobilePageIdOf(page)
 }
 
-export function MobileSettingsPage({ p, style, theme, page, initialPage, onPageChange, onExit }: MobileSettingsPageProps) {
+export function MobileSettingsPage({ p, theme, page, initialPage, onPageChange, onExit }: MobileSettingsPageProps) {
   const [innerPage, setInnerPage] = useState<MobileSettingsPageId>(() => mobilePageIdOf(page ?? initialPage ?? lastMobileSettingsPage ?? "index"))
-  const [previewStyle, setPreviewStyle] = useState<SettingsStyle | null>(null)
   const [previewTheme, setPreviewTheme] = useState<SettingsThemePref | null>(null)
   const [prefs, prefActions] = useSettingsLocalState()
   const documentOrSystemTheme = useResolvedTheme()
   const mainRef = useRef<HTMLElement | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const activePage = mobilePageIdOf(page ?? innerPage)
-  const activeStyle = style ?? previewStyle ?? settingsStyleOf(p.ui.prefs.ui)
   const activeTheme =
     theme ??
     (previewTheme === null
@@ -143,7 +137,7 @@ export function MobileSettingsPage({ p, style, theme, page, initialPage, onPageC
 
   const navigate = useCallback(
     (next: MobileSettingsPageId) => {
-      // Remember the page so a variant-shell remount restores it (F1).
+      // Remember the page so a remount restores it (F1).
       lastMobileSettingsPage = next
       if (page === undefined) setInnerPage(next)
       onPageChange?.(next)
@@ -164,16 +158,17 @@ export function MobileSettingsPage({ p, style, theme, page, initialPage, onPageC
     navigate("index")
   }, [activePage, exit, navigate])
 
+  const { toast, show: showToast } = useSettingsToast()
   const act = useMemo<SettingsActions>(
     () => ({
       ...prefActions,
       back,
-      notify: (text, tone) => p.relay.notify(text, tone),
+      notify: showToast,
       openPairing: () => openPiDialog(p, { id: PI_UI_IDS.pairing }),
       openHostDiag: (deviceId) => openPiDialog(p, { id: PI_UI_IDS.hostDiag, arg: deviceId }),
       reconnect: () => p.relay.reconnectNow(),
     }),
-    [prefActions, back, p],
+    [prefActions, back, p, showToast],
   )
 
   useEffect(() => {
@@ -193,19 +188,20 @@ export function MobileSettingsPage({ p, style, theme, page, initialPage, onPageC
     if (activePage === "index") return <MobileIndexPage onNavigate={navigate} />
     const Component = CONTENT_COMPONENTS[activePage === "interaction" ? "interaction" : activePage]
     if (activePage === "appearance") {
-      return <AppearancePage onPreviewStyle={setPreviewStyle} onPreviewTheme={setPreviewTheme} />
+      return <AppearancePage onPreviewTheme={setPreviewTheme} />
     }
     return <Component />
   }
 
   return (
-    <SettingsProvider p={p} style={activeStyle} theme={activeTheme} page={providerPage} setPage={(next) => navigate(next)} prefs={prefs} act={act}>
+    <SettingsProvider p={p} theme={activeTheme} page={providerPage} setPage={(next) => navigate(next)} prefs={prefs} act={act}>
       <div
         ref={rootRef}
         className="settings-mobile"
         data-pi-settings=""
         data-pi-settings-mobile=""
-        data-pi-settings-style={activeStyle}
+        // 恒为 cursor：tokens.css 的颜色块与 mobile.css 的焦点环选择器按这个属性命中（去掉会改变优先级）
+        data-pi-settings-style="cursor"
         data-pi-theme={activeTheme}
         data-pi-settings-page={activePage}
         data-sm-reduced-motion={prefs.reducedMotion ? "true" : undefined}
@@ -228,6 +224,7 @@ export function MobileSettingsPage({ p, style, theme, page, initialPage, onPageC
         <main ref={mainRef} className="sm-main" data-sm-scroll="">
           {renderPage()}
         </main>
+        <SettingsToast toast={toast} prefix="sm-toast" />
       </div>
     </SettingsProvider>
   )

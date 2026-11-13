@@ -1,5 +1,5 @@
 /**
- * P11 gallery 注入接口（arch 冻结；dev 画廊/验证线按此出六套截图）。
+ * P11 gallery 注入接口（arch 冻结；dev 画廊/验证线按此出两套截图）。
  * 只放"风格×明暗"预设与 token 无关的展示元数据；**不放 mock 会话数据**（dev fixture 在 pi/dev 下，task-37）。
  */
 import { PI_SIDEBAR_STYLES, PI_SIDEBAR_THEMES, type PiSidebarStyle, type PiSidebarTheme } from "./types.ts"
@@ -16,7 +16,7 @@ export const PI_SIDEBAR_GALLERY_PRESETS: readonly PiSidebarGalleryPreset[] = PI_
     id: `${style}-${theme}`,
     style,
     theme,
-    label: `${style === "cursor" ? "Cursor" : style === "claude" ? "Claude" : "Codex"} · ${theme === "dark" ? "深色" : "浅色"}`,
+    label: `Cursor · ${theme === "dark" ? "深色" : "浅色"}`,
   })),
 )
 

@@ -2,6 +2,7 @@ import {
   Fragment,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentProps,
@@ -15,6 +16,7 @@ import { FileChip, GhostIconButton, MediaImage, RoundIconButton, TextSelector } 
 import { Square, X } from "@/components/kit/icons"
 import { usePiFrame } from "@/components/pi/shared/frame"
 import { usePiControllableOpen, usePiLayer, usePiStatic } from "@/components/pi/shared/layers"
+import { PiSpinner } from "@/components/pi/shared/PiSpinner"
 import { cn } from "@/lib/utils"
 import { composerBlockOf, composerButtonLabel } from "@/pi/model/composerButton"
 import { useComposerEnter } from "@/pi/headless/useComposerEnter"
@@ -22,13 +24,23 @@ import { PiMenuCloseContext } from "./menuClose"
 import { PiCMenu } from "./PiCMenu"
 import { PiComposerAssistMenu } from "./PiComposerMenu"
 import type { CImage, SlashGroup, SlashRow } from "./types"
-import { C_SECONDARY, inputText, TOUCH_44_BOX, TOUCH_44_SELECTOR, type CVariant } from "./styles"
+import { C_SECONDARY, inputText, SEND_MUTED_STILL, TOUCH_44_BOX, TOUCH_44_SELECTOR, type CVariant } from "./styles"
+import { inlineMentionRanges } from "./mentionInline"
 import { useComposerAssist } from "./useComposerAssist"
 
 export type { PiComposerButton } from "@/pi/model/composerButton"
 
-/** TextSelector 文案段改用需要读的灰（标签 span 自己设色，盖过按钮继承的 kit secondary 色） */
-const C_SECONDARY_LABEL = "[&>[data-slot=text-selector-label]]:text-[color:var(--cw-pi-text-secondary,var(--cw-text-3))]"
+/** 句子里的 @ 引用垫的 pill（字由上面的输入框画，这里只画底色；外扩 2px 用 box-shadow，不挪字的位置） */
+const MENTION_PILL = "rounded-[4px] bg-(--cw-link-chip-bg) text-transparent shadow-[0_0_0_2px_var(--cw-link-chip-bg)] [box-decoration-break:clone]"
+
+/**
+ * TextSelector 文案段（模型名、"· 思考级别"）改用需要读的灰（两段 span 自己设色，盖过按钮继承的 kit secondary 色）；
+ * 两段的色是自己设的，kit 的「悬停 / 打开时深一级」到不了它们，这里照 kit secondary 的口径补上（--cw-text-2）
+ */
+const C_SECONDARY_LABEL = cn(
+  "[&>[data-slot=text-selector-label]]:text-[color:var(--cw-pi-text-secondary,var(--cw-text-3))] [&>[data-slot=text-selector-detail]]:text-[color:var(--cw-pi-text-secondary,var(--cw-text-3))]",
+  "hover:[&>[data-slot^=text-selector-]]:text-(--cw-text-2) [&:is([data-state=open],[data-open],[data-forced=hover],[data-forced=pressed])>[data-slot^=text-selector-]]:text-(--cw-text-2)",
+)
 
 /**
  * 手机引用 chip 的点击区（§4.4 ≥ 44，N8）：视觉高约 25，::after 高 44、下沿 = chip 下沿，只往上外扩约 19（框的上内距 12 和上一行之间）；
@@ -55,14 +67,34 @@ const ASSIST_MAX_PHONE = 288
 const ASSIST_MAX_DESKTOP = 360
 /** composer 上沿和浮层下沿的间距（菜单锚点的 mb-2） */
 const MENU_GAP = 8
+/** 输入框上方浮层的入场：和 Radix 菜单同一套（motion.css 的 pi-overlay-in；减少动效时由全局规则关掉） */
+const MENU_ENTER = "animate-[pi-overlay-in_var(--pi-motion-in)_var(--pi-ease-out)_both]"
 /** 按下时不抢输入框的焦点（手机：键盘不收，design §4.2 第 6、7 条） */
 const keepFocus = (event: { preventDefault(): void }) => event.preventDefault()
+/** 发出后等回执超过这么久，黑圆钮里的 ↑ 才换成转圈（和框下"发送中…"同一个门槛，快的发送不闪一下） */
+const SENDING_SPINNER_DELAY = 200
+
+/** on 持续为真超过 ms 之后才返回真 */
+function useLate(on: boolean, ms: number): boolean {
+  const [late, setLate] = useState(false)
+  useEffect(() => {
+    if (!on) return
+    const timer = window.setTimeout(() => setLate(true), ms)
+    return () => {
+      window.clearTimeout(timer)
+      setLate(false)
+    }
+  }, [on, ms])
+  return on && late
+}
 /** 手机顶栏内容高（量不到顶栏时的兜底：安全区 + 52 = 舞台 99） */
 const PHONE_TOPBAR_H = 52
 
 /**
  * 手机 composer 上方的浮层能用多高（P6.3，design §4.2 第 7 条：限在 99…(可视视口高 − dock − 8)）：
  * 从顶栏下沿到 composer 上沿 − 8。可视视口变了（键盘、visualViewport 的 resize / scroll 经视口帧）或 composer 长高时重量。
+ * 菜单先开、键盘后弹时 composer 只是被推高、尺寸不变，ResizeObserver 不报，所以开着时也直接听视口。
+ * 手机顶栏不一定在 composer 所在的 [data-pi-shell] 里，按整页找。
  * active 为假（没有浮层开着）时返回 null。
  */
 function useMenuRoom(rootRef: RefObject<HTMLDivElement | null>, active: boolean): number | null {
@@ -76,15 +108,24 @@ function useMenuRoom(rootRef: RefObject<HTMLDivElement | null>, active: boolean)
       return
     }
     const measure = () => {
-      const bar = el.closest("[data-pi-shell]")?.querySelector("[data-pi-topbar]")
-      const limit = bar ? bar.getBoundingClientRect().bottom : vvOffsetTop + safeTop + PHONE_TOPBAR_H
+      const bar = document.querySelector("[data-pi-topbar]")
+      const limit = bar ? bar.getBoundingClientRect().bottom : (window.visualViewport?.offsetTop ?? vvOffsetTop) + safeTop + PHONE_TOPBAR_H
       const next = Math.max(0, Math.floor(el.getBoundingClientRect().top - MENU_GAP - limit))
       setRoom((prev) => (prev === next ? prev : next))
     }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
-    return () => ro.disconnect()
+    const vv = window.visualViewport
+    window.addEventListener("resize", measure)
+    vv?.addEventListener("resize", measure)
+    vv?.addEventListener("scroll", measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener("resize", measure)
+      vv?.removeEventListener("resize", measure)
+      vv?.removeEventListener("scroll", measure)
+    }
   }, [rootRef, active, vvHeight, vvOffsetTop, safeTop, keyboardOpen])
   return room
 }
@@ -112,7 +153,7 @@ function KeyboardMenu({ kind, maxHeight, onClose, children }: { kind: "plus" | "
     return () => document.removeEventListener("pointerdown", onDown, true)
   }, [])
   return (
-    <div data-slot="pi-composer-menu-anchor" className="absolute inset-x-0 bottom-full z-(--cw-pi-z-popover) mb-2">
+    <div data-slot="pi-composer-menu-anchor" className={cn("absolute inset-x-0 bottom-full z-(--cw-pi-z-popover) mb-2", MENU_ENTER)}>
       <div
         ref={ref}
         data-pi-composer-popover={kind}
@@ -274,6 +315,10 @@ export function PiFollowUpComposer({
   const block = composerBlockOf(state, blockedBy ?? null, hasContent)
   const btn = block.button
   const canSend = btn.variant === "send" && !btn.disabled
+  // S2 发送中（等回执）：可交互时过了门槛才转圈；静态态（画廊）直接画转圈
+  const sending = btn.variant === "send" && btn.disabled
+  const sendingLate = useLate(!isStatic && sending, SENDING_SPINNER_DELAY)
+  const spinning = sending && (isStatic || sendingLate)
   const hint = blocked ? BLOCKED_PLACEHOLDER : (placeholder ?? FOLLOW_UP_PLACEHOLDER)
   // 非默认短占位（§1.6 的"写好先排队""输入已禁用""发送时载入"）用需要读的灰字（§4.6）
   const reasonHint = !value && hint !== FOLLOW_UP_PLACEHOLDER
@@ -298,6 +343,17 @@ export function PiFollowUpComposer({
     mentions: mentionList,
     addMention: (path) => setMentions([...mentionList, path]),
   })
+  // 句子里的 @ 引用：输入框底下垫一层同排版的透明字，只给引用画 pill；滚动跟着输入框
+  const inlineMentions = useMemo(() => (isStatic ? [] : inlineMentionRanges(value, mentionPool ?? [])), [isStatic, value, mentionPool])
+  const pillsRef = useRef<HTMLDivElement>(null)
+  const syncPills = () => {
+    const el = inputRef.current
+    const under = pillsRef.current
+    if (!el || !under) return
+    under.scrollTop = el.scrollTop
+    under.scrollLeft = el.scrollLeft
+  }
+  useLayoutEffect(syncPills)
   // P6.3（design §4.2 第 7 条）：手机键盘开着（menusAsSheet 为假）时 + / 模型是输入框上方的浮层（KeyboardMenu），按下不抢输入框焦点；
   // 键盘收起回到 sheet（容器开）。桌面照旧是锚定菜单（PiCMenu）
   const popoverMenus = !isStatic && phone && !sheetMenus
@@ -353,8 +409,23 @@ export function PiFollowUpComposer({
     setFocusWithin(false)
     if (!menuOpenRef.current) setExpanded(false)
   }
-  // v1.2 撤回 fix-c 的"手机 S5 / 未载入自动两层"：两层只在聚焦、多行、有附件 / 引用或键盘打开（layered）时出现
-  const twoLayer = layered || value.includes("\n") || images.length > 0 || mentionList.length > 0 || focusLayer
+  // 桌面：两层只在聚焦、多行、有附件 / 引用或 layered 时出现。
+  // 手机一直两层（Cursor 手机端同一做法）：390 宽的单行胶囊放下"模型 · 思考级别"后，占位只剩两个字；
+  // 只有 S7 / 审批禁用（模型选择器隐藏，下层没东西）仍是单行
+  const twoLayer = (phone && !hideModel) || layered || value.includes("\n") || images.length > 0 || mentionList.length > 0 || focusLayer
+
+  // 桌面 + / 模型锚定菜单和斜杠 / @ 菜单一样浮在框上沿以上 MENU_GAP，不压框边、不盖输入区：
+  // Radix 从触发钮量 sideOffset，所以要加上触发钮上沿到框上沿的距离（两层时钮在下层），打开时量
+  const [triggerDrop, setTriggerDrop] = useState(0)
+  const anchoredOpen = !isStatic && !sheetMenus && !popoverMenus && (plusIsOpen || modelIsOpen)
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    if (!anchoredOpen || !root) return
+    const trigger = root.querySelector<HTMLElement>(plusIsOpen ? '[data-cw-id="pi-composer-plus"]' : '[data-cw-id="pi-composer-model"]')
+    if (!trigger) return
+    const next = Math.max(0, Math.round(trigger.getBoundingClientRect().top - root.getBoundingClientRect().top))
+    setTriggerDrop((prev) => (prev === next ? prev : next))
+  }, [anchoredOpen, plusIsOpen, twoLayer])
 
   // 两层时输入区随内容长高（最高 132 / 200，超出框内滚动）；单行时一行
   useLayoutEffect(() => {
@@ -433,7 +504,7 @@ export function PiFollowUpComposer({
   )
   const plus =
     !isStatic && !sheetMenus && !popoverMenus && plusMenu != null && !disabled && !blocked ? (
-      <PiCMenu trigger={plusButton} open={plusIsOpen} onOpenChange={setPlusOpen} side="top" align="start" sideOffset={8}>
+      <PiCMenu trigger={plusButton} open={plusIsOpen} onOpenChange={setPlusOpen} side="top" align="start" sideOffset={triggerDrop + MENU_GAP}>
         {plusMenu}
       </PiCMenu>
     ) : (
@@ -444,8 +515,9 @@ export function PiFollowUpComposer({
       data-cw-id="pi-composer-model"
       tone="secondary"
       size={phone ? "lg" : "md"}
-      // P5：模型不支持思考级别时（thinking 为空）只写模型名
-      label={model.thinking ? `${model.name} · ${model.thinking}` : model.name}
+      // P5：模型不支持思考级别时（thinking 为空）只写模型名。思考级别单独一段不收缩：放不下时截模型名，级别一直看得见
+      label={model.name}
+      detail={model.thinking ? `· ${model.thinking}` : undefined}
       aria-label={model.thinking ? `模型 ${model.name}，思考级别 ${model.thinking}，切换模型` : `模型 ${model.name}，切换模型`}
       aria-haspopup={!isStatic && sheetMenus ? "dialog" : "menu"}
       aria-expanded={modelPressed ? true : false}
@@ -461,7 +533,7 @@ export function PiFollowUpComposer({
     ? null
     : (modelSlot ??
       (!isStatic && !sheetMenus && !popoverMenus && modelMenu != null && !disabled ? (
-        <PiCMenu trigger={selector} open={modelIsOpen} onOpenChange={setModelOpen} side="top" align="end" sideOffset={8}>
+        <PiCMenu trigger={selector} open={modelIsOpen} onOpenChange={setModelOpen} side="top" align="end" sideOffset={triggerDrop + MENU_GAP}>
           {modelMenu}
         </PiCMenu>
       ) : (
@@ -484,7 +556,11 @@ export function PiFollowUpComposer({
       disabled={btn.disabled && btn.variant !== "send-muted"}
       aria-disabled={btn.disabled || undefined}
       size={phone ? 40 : "md"}
+      icon={spinning ? <PiSpinner size={phone ? 16 : 12} strokeWidth={phone ? 2 : 1.75} label="正在发送" className="text-(--cw-primary-fg)" /> : undefined}
       className={cn(
+        btn.variant === "send-muted" && SEND_MUTED_STILL,
+        // 转圈时黑圆不再半透明：这时它表示"正在发"，不是"不能点"；悬停也不变色
+        spinning && "disabled:opacity-100 disabled:hover:bg-(--cw-primary)",
         phone && "relative after:absolute after:inset-[-4px] after:content-['']",
         phone && btn.variant !== "stop" && "[&>svg]:size-[18px]",
         phone && btn.variant === "stop" && "[&>span]:size-[12px] [&>span]:rounded-[3px]",
@@ -567,43 +643,69 @@ export function PiFollowUpComposer({
       {!draft && caret && <span className={hintColor}>{hint}</span>}
     </div>
   ) : (
-    <textarea
-      ref={inputRef}
-      data-cw-id="pi-composer-input"
-      rows={1}
-      wrap={twoLayer ? "soft" : "off"}
-      value={value}
-      placeholder={hint}
-      aria-label={hint}
-      readOnly={blocked}
-      aria-readonly={blocked || undefined}
-      disabled={disabled}
-      enterKeyHint={phone ? "enter" : "send"}
-      spellCheck={false}
-      onChange={(event) => {
-        const el = event.currentTarget
-        if (onDraftChange) onDraftChange(el.value)
-        else setInnerDraft(el.value)
-        setCaretAt(el.selectionStart ?? el.value.length)
-      }}
-      onSelect={(event) => setCaretAt(event.currentTarget.selectionStart ?? 0)}
-      onFocus={(event) => {
-        setExpanded(true)
-        // 草稿可能是外面改的（斜杠命令填进来、"命令…"）：聚焦时按输入框的真实光标对齐一次
-        setCaretAt(event.currentTarget.selectionStart ?? value.length)
-      }}
-      onKeyDown={onKeyDown}
-      {...assist.inputAria}
-      className={cn(
-        "block w-full min-w-0 resize-none border-0 bg-transparent p-0 text-(--cw-text)",
-        inputText(variant),
-        reasonHint ? "placeholder:text-[color:var(--cw-pi-text-secondary,var(--cw-text-3))]" : "placeholder:text-(--cw-text-4)",
-        // 单行胶囊里输入框只有一行高（22）：上下各补 11 的内距、再用负外距抵掉，点击区 44（§4.4），胶囊高度和文字位置不变
-        twoLayer ? "overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" : "-my-[11px] overflow-hidden py-[11px]",
-        disabled && "cursor-not-allowed",
+    <div data-slot="pi-composer-field" className="relative min-w-0">
+      {inlineMentions.length > 0 && (
+        <div
+          ref={pillsRef}
+          aria-hidden
+          data-slot="pi-composer-mention-pills"
+          className={cn(
+            "pointer-events-none absolute inset-0 overflow-hidden text-transparent",
+            inputText(variant),
+            // 与输入框同样折行：两层 soft wrap；单行不折、上下各 11 的内距（输入框的负外距让这一层正好盖住它的整个盒子）
+            twoLayer ? "break-words whitespace-pre-wrap" : "py-[11px] whitespace-pre",
+          )}
+        >
+          {inlineMentions.map((r, i) => (
+            <Fragment key={r.start}>
+              {value.slice(i === 0 ? 0 : inlineMentions[i - 1]!.end, r.start)}
+              <mark className={MENTION_PILL}>{value.slice(r.start, r.end)}</mark>
+            </Fragment>
+          ))}
+          {value.slice(inlineMentions[inlineMentions.length - 1]!.end)}
+          {value.endsWith("\n") ? "\u200b" : null}
+        </div>
       )}
-      style={{ maxHeight: twoLayer ? (phone ? INPUT_MAX_PHONE : INPUT_MAX_DESKTOP) : undefined }}
-    />
+      <textarea
+        ref={inputRef}
+        data-cw-id="pi-composer-input"
+        rows={1}
+        wrap={twoLayer ? "soft" : "off"}
+        value={value}
+        placeholder={hint}
+        aria-label={hint}
+        readOnly={blocked}
+        aria-readonly={blocked || undefined}
+        disabled={disabled}
+        enterKeyHint={phone ? "enter" : "send"}
+        spellCheck={false}
+        onChange={(event) => {
+          const el = event.currentTarget
+          if (onDraftChange) onDraftChange(el.value)
+          else setInnerDraft(el.value)
+          setCaretAt(el.selectionStart ?? el.value.length)
+        }}
+        onSelect={(event) => setCaretAt(event.currentTarget.selectionStart ?? 0)}
+        onFocus={(event) => {
+          setExpanded(true)
+          // 草稿可能是外面改的（斜杠命令填进来、"命令…"）：聚焦时按输入框的真实光标对齐一次
+          setCaretAt(event.currentTarget.selectionStart ?? value.length)
+        }}
+        onKeyDown={onKeyDown}
+        onScroll={syncPills}
+        {...assist.inputAria}
+        className={cn(
+          // relative：画在 pill 层（absolute）上面
+          "relative block w-full min-w-0 resize-none border-0 bg-transparent p-0 text-(--cw-text)",
+          inputText(variant),
+          reasonHint ? "placeholder:text-[color:var(--cw-pi-text-secondary,var(--cw-text-3))]" : "placeholder:text-(--cw-text-4)",
+          // 单行胶囊里输入框只有一行高（22）：上下各补 11 的内距、再用负外距抵掉，点击区 44（§4.4），胶囊高度和文字位置不变
+          twoLayer ? "overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" : "-my-[11px] overflow-hidden py-[11px]",
+          disabled && "cursor-not-allowed",
+        )}
+        style={{ maxHeight: twoLayer ? (phone ? INPUT_MAX_PHONE : INPUT_MAX_DESKTOP) : undefined }}
+      />
+    </div>
   )
 
   // 子元素都带 key：单行 ↔ 两层切换时 top（里面是输入框）留在原地不重建，焦点和光标不丢
@@ -662,7 +764,7 @@ export function PiFollowUpComposer({
   )
   // 斜杠 / @ 菜单：浮在 composer 上沿（宽 = composer 宽），不占高度；手机再限在顶栏下沿以下（menuRoom）
   const assistMenu = assist.open ? (
-    <div key="assist" data-slot="pi-composer-menu-anchor" className="absolute inset-x-0 bottom-full z-(--cw-pi-z-popover) mb-2">
+    <div key="assist" data-slot="pi-composer-menu-anchor" className={cn("absolute inset-x-0 bottom-full z-(--cw-pi-z-popover) mb-2", MENU_ENTER)}>
       <PiComposerAssistMenu
         assist={assist}
         variant={variant}

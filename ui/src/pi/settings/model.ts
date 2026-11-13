@@ -2,8 +2,9 @@
  * 设置页 v2 · 纯数据层（无 React / 无 DOM，node --test 直载）。
  *
  * 唯一持久化键：`pi_remote_pi_settings_v2`（版本 + 逐字段校验）。
- * 绝不读写旧版偏好键：旧偏好属于宿主（主题 / 变体 / 侧栏宽度等），
+ * 绝不读写旧版偏好键：旧偏好属于宿主（主题 / 侧栏宽度等），
  * 设置页 v2 的本地偏好自成一份，互不污染。
+ * 旧版本存过的 appearanceStyle（cursor / claude / codex 界面风格）按未知字段丢弃，版本号不升。
  */
 import {
   SETTINGS_ACCENTS,
@@ -21,7 +22,6 @@ import {
   SETTINGS_SEND_KEYS,
   SETTINGS_SHORTCUT_ACTIONS,
   SETTINGS_START_VIEWS,
-  SETTINGS_STYLES,
   SETTINGS_UI_FONTS,
   SETTINGS_USAGE_METRICS,
   SETTINGS_USAGE_RANGES,
@@ -64,7 +64,6 @@ export const DEFAULT_SETTINGS_PREFS: SettingsPrefs = {
   speechToText: true,
   dictationShortcut: SETTINGS_DICTATION_SHORTCUT_DEFAULT,
 
-  appearanceStyle: "cursor",
   appearanceTheme: "system",
   accent: "violet",
   fontSize: "standard",
@@ -182,7 +181,6 @@ export function normalizeSettingsPrefs(value: unknown, base: SettingsPrefs = DEF
     speechToText: bool(source.speechToText, base.speechToText),
     dictationShortcut: text(source.dictationShortcut, base.dictationShortcut, 60),
 
-    appearanceStyle: pick(source.appearanceStyle, SETTINGS_STYLES, base.appearanceStyle),
     appearanceTheme: pick(source.appearanceTheme, THEME_PREFS, base.appearanceTheme),
     accent: pick(source.accent, SETTINGS_ACCENTS, base.accent),
     fontSize: pick(source.fontSize, SETTINGS_FONT_SIZES, base.fontSize),

@@ -107,6 +107,7 @@ export function ATokenInput({
     <div
       className={cn(
         "flex min-w-0 items-center border border-solid border-(--cw-border) bg-(--cw-surface) pr-1 pl-3 focus-within:border-(--cw-pi-field-focus-border)",
+        invalid && "border-(--cw-pi-error) focus-within:border-(--cw-pi-error)",
         SCALE[scale],
         "px-0 pr-1 pl-3",
         className,

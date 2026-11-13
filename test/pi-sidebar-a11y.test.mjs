@@ -49,11 +49,11 @@ test("对比度 token 已抬升（暗色 t5/icon-muted 不再是原低对比值�
   assert.equal(css.includes("--sb-t5: #b3afa4;"), false)
 })
 
-test("未选中会话标题六套深浅对比度 ≥4.5（色值对最高亮度底/最低亮度底保守计算）", async () => {
+test("未选中会话标题浅 / 深对比度 ≥4.5（色值对最高亮度底/最低亮度底保守计算）", async () => {
   const tokens = await read("tokens.css")
-  // 六个 :root 块顺序与 tokens.css 一致；抽每块 t2 值（未选中标题实际使用 --sb-t2）
+  // 两个颜色块顺序与 tokens.css 一致（深在前、浅在后）；抽每块 t2 值（未选中标题实际使用 --sb-t2）
   const t2s = [...tokens.matchAll(/--sb-t2:\s*(#[0-9a-fA-F]{6}|rgba\([^)]*\))/g)].map((m) => m[1])
-  assert.equal(t2s.length, 6)
+  assert.equal(t2s.length, 2)
   const parse = (color) => {
     if (color.startsWith("#")) {
       const n = parseInt(color.slice(1), 16)
@@ -68,8 +68,8 @@ test("未选中会话标题六套深浅对比度 ≥4.5（色值对最高亮度�
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
   }
   const ratio = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
-  // 保守：tokens.css 块顺序 = 每套 dark/light 交替；暗对 #0d0d0d、亮对 #ffffff
-  const bgs = [lum(parse("#0d0d0d")), lum(parse("#ffffff")), lum(parse("#0d0d0d")), lum(parse("#ffffff")), lum(parse("#0d0d0d")), lum(parse("#ffffff"))]
+  // 保守：暗对 #0d0d0d、亮对 #ffffff
+  const bgs = [lum(parse("#0d0d0d")), lum(parse("#ffffff"))]
   t2s.forEach((value, i) => {
     const r = ratio(lum(parse(value)), bgs[i])
     assert.ok(r >= 4.5, `第 ${i + 1} 套未选中标题对比度 ${r.toFixed(2)} < 4.5（${value}）`)
@@ -92,11 +92,9 @@ test("D-3 行可辨识：行 aria-label 与悬停气泡带完整时间戳，时�
   assert.equal(longPress.includes("session.dateTimeLabel"), true)
 })
 
-test("D-3 存储行时间：四壳都按在线与否在 storedTimeLabel / relativeTimeLabel 间分流并填 dateTimeLabel", async () => {
+test("D-3 存储行时间：桌面 / 手机侧栏都按在线与否在 storedTimeLabel / relativeTimeLabel 间分流并填 dateTimeLabel", async () => {
   const shells = [
     "pi/containers/CursorUnifiedSidebar.tsx",
-    "pi/variants/codex/sidebar/CodexUnifiedSidebar.tsx",
-    "pi/variants/claude/sidebar/ClaudeUnifiedSidebar.tsx",
     "pi/mobile/useMobileSidebarData.ts",
   ]
   for (const path of shells) {
@@ -116,10 +114,7 @@ test("D-3 分组可达：截断组有「更多 N / 收起」行且各宿主都�
   assert.equal(css.includes(".sb-root .sb-groupmore"), true)
   const hosts = [
     "pi/containers/CursorUnifiedSidebar.tsx",
-    "pi/variants/codex/sidebar/CodexUnifiedSidebar.tsx",
     "pi/containers/PhoneApp.tsx",
-    "pi/variants/codex/shell/CodexPhone.tsx",
-    "pi/variants/claude/shell/ClaudePhoneShell.tsx",
   ]
   for (const path of hosts) {
     const source = await readRoot(path)
@@ -131,12 +126,10 @@ test("D-3 分组可达：截断组有「更多 N / 收起」行且各宿主都�
   assert.equal(drawer.includes("pm-group-more"), true)
 })
 
-test("P2 收口：portal 气泡在 .sb-root 内且 Claude 标题衬线、ink3 文本抬升、浅色状态点非文字 ≥3、焦点恢复", async () => {
+test("P2 收口：portal 气泡在 .sb-root 内、ink3 文本抬升、浅色状态点非文字 ≥3、焦点恢复", async () => {
   const card = await read("components/SidebarHoverCard.tsx")
   assert.equal(card.includes("document.querySelector(\"[data-pi-sidebar]\")"), true)
   const css = await read("sidebar.css")
-  assert.equal(css.includes('[data-pi-sidebar-style="claude"] .sb-bubble-title'), true)
-  assert.equal(css.includes("--sb-serif"), true)
   assert.equal(css.includes(".sb-search-empty { color: var(--sb-t3"), true)
   const tokens = await read("tokens.css")
   assert.equal(tokens.includes("--sb-wait: #a06b00;"), true)

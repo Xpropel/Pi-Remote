@@ -52,6 +52,7 @@
 
   /* 文件类型图标色（K4 提出；#5 #12 #13 #15 文件行） */
   --cw-file-icon-json: #a88b4f; /* `{}` */
+  --cw-file-icon-js: #806c0a; /* "JS"：橄榄黄，与 json 的金棕分开；#F7F7F7 上 4.8 */
   --cw-file-icon-html: #b5785a; /* `</>` */
   --cw-file-icon-ts: #5f7680; /* "TS" */
   --cw-file-icon-tsx: #5e7774; /* atom */

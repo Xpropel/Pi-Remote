@@ -47,9 +47,9 @@ export function NotificationsPage() {
       <SettingsPageTitle title="通知" />
 
       <SettingsGroup label="提醒时机" first>
-        <SettingsRow title="等待你确认时" description="会话停下来等你拍板时提醒">
+        <SettingsRow title="等你回答时" description="会话停下来等你回答或批准时提醒">
           <SettingsSwitch
-            label="等待你确认时"
+            label="等你回答时"
             checked={prefs.notifyWaiting}
             onChange={(checked) => act.setPref("notifyWaiting", checked)}
           />

@@ -4,7 +4,7 @@
  * 行首标记按真实注意力（attentionForRoom + rowMarkerOf），组名"设备名/目录名"。
  */
 import { attentionForRoom, type AttentionItem } from "../../relay/attention.ts"
-import { attributeSessionsAcrossDevices, baseName, mergeDeviceSessions, type Device, type ListedSession, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
+import { attributeSessionsAcrossDevices, baseName, mergeDeviceSessions, pathKeyOf, type Device, type ListedSession, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
 import type { BodySearchPage } from "../../shell/searchModel.ts"
 import { rowMarkerOf, type PiRowMarkerKind } from "./rowMarker.ts"
 
@@ -94,16 +94,16 @@ export type PiPaletteBodyHit = {
  * selected one; the extension scans that device's plaintext session files, and
  * the relay refuses enc rooms before the command ever leaves the server), so
  * every row is stamped with that device. Hits the title section already shows
- * (same session id, or same file path after slash normalization) are dropped:
- * a session must appear once, in the title section. Page order is kept (the
- * merge already sorted by mtime, newest first).
+ * (same session id, or the same file path by the shared device-path rule,
+ * pathKeyOf) are dropped: a session must appear once, in the title section.
+ * Page order is kept (the merge already sorted by mtime, newest first).
  */
 export function paletteBodyHitsOf(
   page: BodySearchPage,
-  device: { id: string; name: string },
+  device: { id: string; name: string; platform?: string | null },
   exclude: readonly { id: string; path?: string }[],
 ): PiPaletteBodyHit[] {
-  const norm = (path: string) => path.replace(/\\/g, "/")
+  const norm = (path: string) => pathKeyOf(path, device.platform)
   const shownIds = new Set(exclude.map((x) => x.id))
   const shownPaths = new Set(exclude.flatMap((x) => (x.path ? [norm(x.path)] : [])))
   return page.results

@@ -4,7 +4,7 @@ import type { Forced } from "@/components/kit/types"
 import { Check, ChevronRight } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
 import { KbdHint } from "../controls/KbdHint"
-import { useMenuContext, type MenuKind } from "./MenuSurface"
+import { MENU_ROW_HL, MENU_ROW_HL_DATA, MENU_ROW_HL_HOVER, useMenuContext, type MenuKind } from "./MenuSurface"
 
 export interface MenuItemProps extends Omit<ComponentProps<"div">, "onSelect"> {
   /** 行首图标（16px 盒、线宽 1.5、--cw-icon-fg）。多选行可传 <><Checkbox variant="menu" /><Folder /></> */
@@ -57,9 +57,9 @@ export function menuItemClass({ kind, size = "md", weak, dim, forcedOn, twoLine 
     twoLine && "items-start py-1",
     weak ? "text-(--cw-text-4)" : dimmed ? "text-(--cw-text-2)" : "text-(--cw-text)",
     // 高亮：Radix 的 data-highlighted、子菜单打开的 data-state=open、静态模式的 :hover、帧态强制
-    "data-[highlighted]:bg-(--cw-row-hover) data-[state=open]:bg-(--cw-row-hover)",
-    kind === "static" && "hover:bg-(--cw-row-hover)",
-    forcedOn && "bg-(--cw-row-hover)",
+    MENU_ROW_HL_DATA,
+    kind === "static" && MENU_ROW_HL_HOVER,
+    forcedOn && MENU_ROW_HL,
     dimmed && "data-[highlighted]:text-(--cw-text) data-[state=open]:text-(--cw-text)",
     dimmed && kind === "static" && "hover:text-(--cw-text)",
     dimmed && forcedOn && "text-(--cw-text)",

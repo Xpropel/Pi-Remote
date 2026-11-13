@@ -182,29 +182,3 @@ describe("pi structure", () => {
     }
   })
 })
-
-test("Codex 桌面走 P11 UnifiedSidebar，自写 CodexSidebar/行组件已退场", async () => {
-  const fs = await import("node:fs/promises")
-  const desktop = await fs.readFile(new URL("../ui/src/pi/variants/codex/shell/CodexDesktop.tsx", import.meta.url), "utf8")
-  const adapter = await fs.readFile(new URL("../ui/src/pi/variants/codex/sidebar/CodexUnifiedSidebar.tsx", import.meta.url), "utf8")
-  assert.equal(desktop.includes("<CodexUnifiedSidebar"), true, "CodexDesktop 只渲染统一侧栏适配")
-  assert.equal(/import .*CodexSidebar"/.test(desktop), false, "CodexDesktop 不得再 import 旧 CodexSidebar")
-  assert.equal(adapter.includes("UnifiedSidebar"), true, "适配层使用共享 UnifiedSidebar")
-  const dir = new URL("../ui/src/pi/variants/codex/sidebar/", import.meta.url)
-  for (const dead of ["CodexSidebar.tsx", "CodexPinnedSection.tsx", "CodexProjectGroup.tsx", "CodexThreadRow.tsx"]) {
-    await assert.rejects(fs.access(new URL(dead, dir)), `${dead} 应已删除（死代码）`)
-  }
-  await assert.rejects(fs.access(new URL("../ui/src/pi/variants/codex/phone/CodexPhoneList.tsx", import.meta.url)), "CodexPhoneList.tsx 应已删除")
-})
-
-test("Codex 产品标题栏无 macOS 假窗口三色点（移除 cx-dots/WindowDots）", async () => {
-  const fs = await import("node:fs/promises")
-  const titlebar = await fs.readFile(new URL("../ui/src/pi/variants/codex/chrome/CodexTitleBar.tsx", import.meta.url), "utf8")
-  const css = await fs.readFile(new URL("../ui/src/pi/variants/codex/styles/codex.css", import.meta.url), "utf8")
-  for (const marker of ["WindowDots", "cx-dots", "cx-dot-close", "cx-dot-min", "cx-dot-max"]) {
-    assert.equal(titlebar.includes(marker), false, `产品标题栏不应出现 ${marker}`)
-  }
-  for (const marker of [".cx-dots", ".cx-dot {", ".cx-dot-close", ".cx-dot-min", ".cx-dot-max"]) {
-    assert.equal(css.includes(marker), false, `产品 CSS 不应出现 ${marker}`)
-  }
-})

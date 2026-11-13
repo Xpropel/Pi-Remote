@@ -16,7 +16,6 @@ const gallery = process.env.PI_GALLERY === "1"
  * 让「改 UI 代码」不失效第三方库缓存（入口 chunk 变小、vendor hash 稳定）；
  * 首屏引用闭包总量保持 ~等价（只多几个可缓存请求）。只对产品构建生效：
  * - gallery 构建必须单 chunk（file:// 内联），不走这里；
- * - 变体（Claude/Codex）本来就是 lazy chunk，不在此列；
  * - shiki 语言包/内核本来就是按需懒加载 chunk，不能拉进首屏 vendor。
  * 分组顺序 = 匹配优先级（同优先级按声明顺序），test 用 [\\/] 兼容 Windows 路径。
  */

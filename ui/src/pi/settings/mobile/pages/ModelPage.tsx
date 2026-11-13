@@ -16,6 +16,7 @@ import { Plus } from "lucide-react"
 import { thinkingLevelZh } from "@/pi/model/models"
 import { useSettings } from "../../SettingsContext.tsx"
 import {
+  authSourceLabelOf,
   availableModelCountOf,
   hostSettingsOf,
   modelChoicesOf,
@@ -25,7 +26,7 @@ import {
   settingBool,
 } from "../model.ts"
 import { hostCommandsReady, useHostCommand } from "../data.ts"
-import { MODEL_THINKING_LEVELS, tokenCountLabel } from "../../pages/modelData.ts"
+import { MODEL_THINKING_LEVELS, providerFoldOf, tokenCountLabel } from "../../pages/modelData.ts"
 import {
   SETTINGS_WRITE_REMAINING_READONLY_NOTE,
   compactionEnabledPatch,
@@ -85,7 +86,10 @@ export function ModelPage() {
   const providersQuery = useHostCommand(relay, "get_provider_auth", ready, relay.roomId)
   const modelsQuery = useHostCommand(relay, "get_available_models", ready, relay.roomId)
   const settings = hostSettingsOf(settingsDoc.data)
-  const providers = providersOf(providersQuery.data)
+  const providers = useMemo(() => providersOf(providersQuery.data), [providersQuery.data])
+  const providerFold = useMemo(() => providerFoldOf(providers, (provider) => !provider.connected), [providers])
+  const [providersExpanded, setProvidersExpanded] = useState(false)
+  const visibleProviders = providersExpanded ? [...providerFold.primary, ...providerFold.folded] : providerFold.primary
 
   // 设置只认 get_settings：读不到就是 —，不拿当前会话的模型 / 思考档冒充持久默认。
   const settingsReady = settingsDoc.phase === "ready"
@@ -194,7 +198,7 @@ export function ModelPage() {
           {providers.length === 0 ? (
             <MobileEmpty title="供应商清单" body={providersEmpty} />
           ) : (
-            providers.map((provider) => (
+            visibleProviders.map((provider) => (
               <div key={provider.id} className="sm-provider">
                 <div className="sm-provider-head">
                   <span className="sm-provider-name">{provider.name}</span>
@@ -205,17 +209,29 @@ export function ModelPage() {
                 <div className="sm-provider-meta">
                   {provider.models > 0 ? `${provider.models} 个模型 · ` : ""}
                   {provider.configured ? "密钥已配置" : "未配置密钥"}
-                  {provider.authSource ? ` · 来源 ${provider.authSource}` : ""}
+                  {provider.authSource ? ` · 来源 ${authSourceLabelOf(provider.authSource)}` : ""}
                 </div>
-                {thinkingRows.map((row) => (
-                  <MobileRow key={row.model} title={row.model} description={`思考·${ChineseThinking(row.level)}`} status="bridge">
-                    <MobileSwitch label={`${row.model}（只读）`} checked disabled />
-                  </MobileRow>
-                ))}
               </div>
             ))
           )}
+          {providerFold.folded.length > 0 ? (
+            <MobileActionRow
+              title={providersExpanded ? "收起未配置的供应商" : `另有 ${providerFold.folded.length} 个未配置的供应商`}
+              value={providersExpanded ? "收起" : "展开"}
+              onClick={() => setProvidersExpanded((open) => !open)}
+            />
+          ) : null}
         </MobileCard>
+        {/* 每模型思考档位是全局设置里的一张表，不按供应商重复列。 */}
+        {thinkingRows.length > 0 ? (
+          <MobileCard>
+            {thinkingRows.map((row) => (
+              <MobileRow key={row.model} title={row.model} description={`思考·${ChineseThinking(row.level)}`} status="bridge">
+                <MobileSwitch label={`${row.model}（只读）`} checked disabled />
+              </MobileRow>
+            ))}
+          </MobileCard>
+        ) : null}
         <MobileCard>
           <MobileActionRow title="添加模型" description="手动填入模型名" status="bridge" disabled leading={<Plus size={16} strokeWidth={2} aria-hidden="true" />} />
         </MobileCard>

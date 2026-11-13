@@ -23,6 +23,10 @@
   --cw-pi-sidebar-w: 256px;
   --cw-pi-rail-w: 48px;
   --cw-pi-pane-w: 460px;
+  /* 平板档（768–1023）桌面外壳的侧栏槽宽 = 统一侧栏的折叠宽（sidebar/tokens.css 的 --sb-width-collapsed） */
+  --cw-pi-tablet-rail-w: 56px;
+  /* 平板档 pane 浮层最多盖住正文（视口减窄栏）的一半；平板档只在产品模式，外壳就是整个视口 */
+  --cw-pi-pane-float-max-w: calc((100vw - var(--cw-pi-tablet-rail-w)) / 2);
   --cw-pi-chat-max-w: 768px;
   --cw-pi-topbar-h: 44px;
   --cw-pi-topbar-h-phone: 52px;
@@ -53,6 +57,12 @@
   /* v1.4（输入框聚焦修复）：文本输入的聚焦提示 = 自身 / 字段容器的 1px 中性描边，不用蓝环、不用品牌色。
      浅色 #8A8A8A 在 --cw-surface #FDFDFD 上 3.4:1（非文字 3:1 门槛）；深色值在下面的深色块里重设。 */
   --cw-pi-field-focus-border: #8a8a8a;
+  /* 菜单 / 浮层列表行的悬停、高亮、选中底（menu-hl）与菜单分隔线（menu-divider）。用半透明叠色：菜单卡、侧栏、页面底上都看得出。
+     浅色在菜单卡 #FDFDFD 上 = 实测行悬停 #EEEEEE、分隔线 #EBEBEB；深色值见深色块 */
+  --cw-pi-menu-hl: rgba(0, 0, 0, 0.06);
+  --cw-pi-menu-divider: rgba(0, 0, 0, 0.07);
+  /* 对话流正文字色（kit AgentProse / UserMessage / 代码块读它）：浅色 = --cw-text，深色压暗一档（见深色块） */
+  --cw-pi-stream-fg: var(--cw-text);
   /*
    * P4（PLAN 4.1，修 ui-audit §2.2 的遮罩穿透）：Pi 里的层级只用这五档，部件不再自己写 z 数字（R2/p4-lanes.md §2）。
    * 弹窗 / 命令面板 / 灯箱都在 modal 档：PiDesktopShell、PiPhonePage 的 overlay 槽，以及可交互 PiDialog portal 出去的那一层；
@@ -213,6 +223,8 @@
   --cw-sidebar-nav-fg: #b4b4b8;
   --cw-scrollbar-thumb: #3a3a3d;
   --cw-file-icon-json: #c9a96a;
+  /* JS 徽章：与 json 的暖黄分开、偏柠檬黄；--cw-code-chip-bg #2C2C2F 上 7.6，--cw-surface-pane #1E1E20 上 9.1 */
+  --cw-file-icon-js: #d4c05a;
   --cw-file-icon-html: #d3977a;
   --cw-file-icon-ts: #8fa6b0;
   --cw-file-icon-tsx: #8aa6a2;
@@ -231,6 +243,11 @@
   /* 视觉审查第 1 轮：警告文字 = 深色橙（bg 上 8.7、surface 上 7.7）；蓝色数字 = 深色 --cw-blue（bg 上 5.9） */
   --cw-pi-warning: #d9ae57;
   --cw-pi-attention-text: #3a9bd9;
+  /* 菜单高亮 / 分隔线：深色菜单卡 #222224 上约 #313133 / #343436（--cw-row-hover #262628 在卡面上几乎看不出） */
+  --cw-pi-menu-hl: rgba(255, 255, 255, 0.07);
+  --cw-pi-menu-divider: rgba(255, 255, 255, 0.08);
+  /* 对话正文 = --cw-text 88% + --cw-bg 12%（#ededef → #d3d3d5，bg 上约 12:1），长段落不刺眼 */
+  --cw-pi-stream-fg: #d3d3d5;
   /* kit Switch 的圆点（tokens.local.css 默认 #FFFFFF）：深色下略灰的白点（kit-requests pi a4，原先是对 [data-slot=switch-thumb] 的覆盖） */
   --cw-switch-thumb: #f2f2f2;
 }
@@ -332,6 +349,12 @@
   }
   to {
     opacity: 1;
+  }
+}
+/* 侧栏「运行中」状态环（sidebar.css 不能写关键帧，放这里；减少动效时被下面的总开关停掉，留一段静止的弧） */
+@keyframes pi-sb-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -441,18 +464,9 @@
 }
 
 /*
- * 平板档 768–1023（design J09、D16，PLAN 6.1）：< 1024 一律走手机版式（PhoneApp）；视口宽 ≥ 768 时对话页的对话列和 dock 限宽 768、水平居中。
- * 只认 PiPhonePage page="chat"：列表页、推入页、sheet 不限宽。
+ * 平板档 768–1023：走桌面外壳（≥ 768 都是桌面，shell/breakpoints.ts），侧栏收成 --cw-pi-tablet-rail-w 窄栏、展开是浮层，
+ * 右 pane 浮在正文上不挤压对话列（PiDesktopShell 的 tablet，DesktopApp 只在产品模式按视口宽给）。手机版式只到 767。
  */
-@media (min-width: 768px) {
-  [data-pi-root][data-pi-mode="product"][data-pi-layout="phone"] [data-pi-shell="phone"][data-pi-page="chat"] > [data-pi-dock],
-  [data-pi-root][data-pi-mode="product"][data-pi-layout="phone"] [data-pi-shell="phone"][data-pi-page="chat"] [data-pi-part="transcript"][data-variant="phone"] {
-    width: 100%;
-    max-width: var(--cw-pi-chat-max-w);
-    margin-left: auto;
-    margin-right: auto;
-  }
-}
 
 /*
  * R5 P1（cursor 大屏留白）：设计基准 1440 的正文版心 = 768px；浏览器窗口/缩放让 CSS 视口变宽后仍是 768 会留下大片空白。
@@ -478,4 +492,155 @@
   [data-pi-root][data-pi-ui="cursor"][data-pi-mode="product"] {
     --cw-pi-chat-max-w: 1040px;
   }
+}
+
+/*
+ * ---------- 5. 外观偏好（设置 › 外观） ----------
+ * PiSettingsHost 把偏好镜像到 <html>：data-pi-accent / data-pi-font-size / data-pi-density / data-pi-ui-font（model/settingsHost.ts
+ * appearanceAttrsOf）。默认档（紫、标准、紧凑、系统字体）不写属性，令牌原值不动。主题读 <html> 上的 data-pi-theme（usePiTheme 维护）。
+ */
+
+/*
+ * 强调色 = 运行中状态色：侧栏 --sb-run*（手机列表的 --pm-run 跟着它）、设置页 --st-accent*（图表、状态点、少量文字）。
+ * (0,4,0) 压过 sidebar/tokens.css、settings/tokens.css 的主题块 (0,3,0)。文字也用 --st-accent，所以按文字算：
+ * 浅色在页 #FDFDFD / 卡 #F6F6F6 上 ≥ 5.1（亮度不高于默认紫，淡底徽章上也不比紫差），深色在页 #222224 / 卡 #262628 上 ≥ 5.8；
+ * 侧栏底（#EEEEEE / #1C1C1E）上的状态环（非文字）两套都 ≥ 4.7。
+ */
+:root[data-pi-accent="blue"][data-pi-theme="light"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --sb-run: #1b68b5;
+  --sb-run-soft: rgba(27, 104, 181, 0.26);
+  --sb-run-glow: rgba(27, 104, 181, 0.14);
+  --st-accent: #1b68b5;
+  --st-accent-soft: rgba(27, 104, 181, 0.26);
+}
+:root[data-pi-accent="clay"][data-pi-theme="light"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --sb-run: #a84e2c;
+  --sb-run-soft: rgba(168, 78, 44, 0.26);
+  --sb-run-glow: rgba(168, 78, 44, 0.14);
+  --st-accent: #a84e2c;
+  --st-accent-soft: rgba(168, 78, 44, 0.26);
+}
+:root[data-pi-accent="green"][data-pi-theme="light"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --sb-run: #26754a;
+  --sb-run-soft: rgba(38, 117, 74, 0.26);
+  --sb-run-glow: rgba(38, 117, 74, 0.14);
+  --st-accent: #26754a;
+  --st-accent-soft: rgba(38, 117, 74, 0.26);
+}
+:root[data-pi-accent="graphite"][data-pi-theme="light"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --sb-run: #5f5f66;
+  --sb-run-soft: rgba(95, 95, 102, 0.26);
+  --sb-run-glow: rgba(95, 95, 102, 0.14);
+  --st-accent: #5f5f66;
+  --st-accent-soft: rgba(95, 95, 102, 0.26);
+}
+:root[data-pi-accent="blue"][data-pi-theme="dark"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --sb-run: #6aa6e6;
+  --sb-run-soft: rgba(106, 166, 230, 0.28);
+  --sb-run-glow: rgba(106, 166, 230, 0.16);
+  --st-accent: #6aa6e6;
+  --st-accent-soft: rgba(106, 166, 230, 0.28);
+}
+:root[data-pi-accent="clay"][data-pi-theme="dark"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --sb-run: #e08c6c;
+  --sb-run-soft: rgba(224, 140, 108, 0.28);
+  --sb-run-glow: rgba(224, 140, 108, 0.16);
+  --st-accent: #e08c6c;
+  --st-accent-soft: rgba(224, 140, 108, 0.28);
+}
+:root[data-pi-accent="green"][data-pi-theme="dark"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --sb-run: #5cc58a;
+  --sb-run-soft: rgba(92, 197, 138, 0.28);
+  --sb-run-glow: rgba(92, 197, 138, 0.16);
+  --st-accent: #5cc58a;
+  --st-accent-soft: rgba(92, 197, 138, 0.28);
+}
+:root[data-pi-accent="graphite"][data-pi-theme="dark"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --sb-run: #a5a5ab;
+  --sb-run-soft: rgba(165, 165, 171, 0.28);
+  --sb-run-glow: rgba(165, 165, 171, 0.16);
+  --st-accent: #a5a5ab;
+  --st-accent-soft: rgba(165, 165, 171, 0.28);
+}
+
+/*
+ * 字号：小 / 大各挪一档（正文 ±1px，行高跟着走），作用于对话正文、代码、kit 界面字号和侧栏行。
+ * 桌面写在 <html> 上，排除手机版式；手机在第 3 节的手机尺寸上挪，<html> 与 PiRoot 根节点两处都要压过第 3 节。
+ */
+:root:root[data-pi-font-size="small"]:not([data-pi-layout="phone"]) {
+  --cw-text-md: 12px;
+  --cw-text-base: 13px;
+  --cw-text-lg: 14px;
+  --cw-text-code: 11px;
+  --cw-text-code-block: 12px;
+  --cw-leading-base: 20px;
+  --cw-leading-tight: 17px;
+  --cw-leading-code: 20px;
+  --sb-font-size: 12px;
+  --sb-line-height: 17px;
+}
+:root:root[data-pi-font-size="large"]:not([data-pi-layout="phone"]) {
+  --cw-text-sm: 13px;
+  --cw-text-md: 14px;
+  --cw-text-base: 15px;
+  --cw-text-lg: 16px;
+  --cw-text-code: 13px;
+  --cw-text-code-block: 14px;
+  --cw-leading-base: 23px;
+  --cw-leading-tight: 19px;
+  --cw-leading-code: 22px;
+  --sb-font-size: 14px;
+  --sb-line-height: 20px;
+}
+:root:root[data-pi-font-size="small"][data-pi-layout="phone"],
+:root[data-pi-font-size="small"] [data-pi-root][data-pi-layout="phone"] {
+  --cw-text-md: 14px;
+  --cw-text-base: 14px;
+  --cw-text-lg: 16px;
+  --cw-text-code: 12px;
+  --cw-text-code-block: 12px;
+  --cw-leading-base: 21px;
+  --cw-leading-tight: 19px;
+}
+:root:root[data-pi-font-size="large"][data-pi-layout="phone"],
+:root[data-pi-font-size="large"] [data-pi-root][data-pi-layout="phone"] {
+  --cw-text-sm: 14px;
+  --cw-text-md: 16px;
+  --cw-text-base: 16px;
+  --cw-text-lg: 18px;
+  --cw-text-code: 14px;
+  --cw-text-code-block: 14px;
+  --cw-leading-base: 24px;
+  --cw-leading-tight: 21px;
+}
+
+/*
+ * 密度：标准 / 宽松把桌面的列表行（侧栏 --cw-pi-density-step）、菜单行、浮层行各加 2 / 4px；
+ * 设置页的行高在 settings/pages/appearance.css。手机的行高是触控尺寸（第 3 节），不跟档位。
+ */
+:root:root[data-pi-density="standard"]:not([data-pi-layout="phone"]) {
+  --cw-pi-density-step: 2px;
+  --cw-row-h: 33px;
+  --cw-menu-row-h: 28px;
+  --cw-popover-row-h: 30px;
+}
+:root:root[data-pi-density="relaxed"]:not([data-pi-layout="phone"]) {
+  --cw-pi-density-step: 4px;
+  --cw-row-h: 35px;
+  --cw-menu-row-h: 30px;
+  --cw-popover-row-h: 32px;
+}
+
+/* 界面字体：kit、侧栏、设置页三套字体变量一起换；字体文件由 PiSettingsHost 引入（@fontsource-variable），没下载到时回落系统字体 */
+:root:root[data-pi-ui-font="inter"],
+:root:root[data-pi-ui-font="inter"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --cw-font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sb-font-sans: var(--cw-font-sans);
+  --st-font-sans: var(--cw-font-sans);
+}
+:root:root[data-pi-ui-font="geist"],
+:root:root[data-pi-ui-font="geist"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --cw-font-sans: "Geist Variable", Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sb-font-sans: var(--cw-font-sans);
+  --st-font-sans: var(--cw-font-sans);
 }

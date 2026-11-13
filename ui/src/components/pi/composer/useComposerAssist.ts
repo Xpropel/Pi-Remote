@@ -9,6 +9,7 @@ import {
   triggerSignature,
   type PiComposerTrigger,
 } from "@/pi/model/composerInput"
+import { insertMentionAt, mentionFitsInline } from "./mentionInline"
 import { filterMentions } from "./options"
 import type { SlashGroup, SlashRow } from "./types"
 
@@ -38,8 +39,9 @@ export interface ComposerAssistOptions {
   onSlashCommand?: (row: SlashRow) => void
   /** @ 候选池；不给 = 不弹 @ 菜单 */
   mentionPool?: readonly string[]
-  /** 已挂上的引用 */
+  /** 已挂上的引用 chip（其它入口挂的、或带空白写不进句子的路径） */
   mentions: readonly string[]
+  /** 选中的路径写不进句子时挂成 chip；能写进句子的直接插在光标处 */
   addMention: (path: string) => void
 }
 
@@ -88,6 +90,11 @@ export function useComposerAssist(o: ComposerAssistOptions) {
     }
     const path = mentionRows[index]
     if (!path) return
+    if (mentionFitsInline(path)) {
+      const next = insertMentionAt(o.draft, trigger.start, o.caret, path)
+      o.setDraft(next.draft, next.caret)
+      return
+    }
     const next = removeMentionQuery(o.draft, trigger.start, o.caret)
     o.setDraft(next.draft, next.caret)
     o.addMention(path)

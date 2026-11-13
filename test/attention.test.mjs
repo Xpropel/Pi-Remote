@@ -76,7 +76,7 @@ test("多信号并存：dialog + 别房出错 + 设备掉线同时成条，优�
     ["d-1", "d-2"],
   )
   // 有标题的 dialog 用标题，没标题的按种类给文案
-  assert.equal(items[0].detail, "等你处理：要删除这个文件吗？")
+  assert.equal(items[0].detail, "等你回答：要删除这个文件吗？")
   assert.equal(items[1].detail, "等你输入")
   assert.equal(items[2].title, "会话乙")
   assert.equal(items[3].title, "我的电脑")
@@ -179,7 +179,8 @@ test("attentionCountByDevice 按房间归属聚合，设备条目计入自身设
 })
 
 test("attentionRoomTitle 与 roomTitle 同一优先级", () => {
-  assert.equal(attentionRoomTitle(room("r1", { label: "改名", name: "会话名" })), "改名")
+  assert.equal(attentionRoomTitle(room("r1", { label: "我的电脑", name: "会话名" })), "会话名", "房间 label 不是标题素材")
+  assert.equal(attentionRoomTitle(room("r1b", { label: "我的电脑", firstMessage: "首条" })), "首条")
   assert.equal(attentionRoomTitle(room("r2", { name: "会话名", firstMessage: "首条" })), "会话名")
   assert.equal(attentionRoomTitle(room("r3", { firstMessage: "首条" })), "首条")
   assert.equal(attentionRoomTitle(room("r4", { cwd: "/work/project-x" })), "project-x")
@@ -395,7 +396,7 @@ test("presence 状态点语义表：注意力优先于运行 / 在线", () => {
   assert.deepEqual(attentionDotOf({ item: { kind: "waiting" }, busy: true, online: true }), {
     tone: "warning",
     pulse: true,
-    label: "等你处理",
+    label: "等你回答",
   })
   assert.deepEqual(attentionDotOf({ item: { kind: "error" }, busy: false, online: true }), {
     tone: "danger",
@@ -444,7 +445,7 @@ test("P9 A：别的房间的 waiting 成条（标题用会话名、answerable �
     ],
   )
   assert.equal(waiting[0].detail, "允许执行 npm test？", "waiting 自带标题当说明")
-  assert.equal(waiting[1].detail, "有弹窗等你处理", "没标题回落通用句")
+  assert.equal(waiting[1].detail, "有弹窗等你回答", "没标题回落通用句")
   assert.equal(waiting[0].answerable, true)
   assert.equal(waiting[1].answerable, false)
   assert.equal(waiting[0].at, 900)
@@ -551,14 +552,14 @@ test("状态行·waiting：多条取最早一条，文案按 kind 分（与 atte
   assert.equal(roomStatusLine({ online: true, busy: false, waiting: [{ kind: "select", startedAt: SL_NOW - 2 * MIN }] }, SL_NOW).text, "等你选择 · 2 分钟前")
   assert.equal(roomStatusLine({ online: true, busy: false, waiting: [{ kind: "input", startedAt: SL_NOW - 45_000 }] }, SL_NOW).text, "等你输入 · 刚刚")
   assert.equal(roomStatusLine({ online: true, busy: false, waiting: [{ kind: "editor", startedAt: SL_NOW - 45_000 }] }, SL_NOW).text, "等你输入 · 刚刚")
-  assert.equal(roomStatusLine({ online: true, busy: false, waiting: [{ kind: "mystery", startedAt: SL_NOW - 45_000 }] }, SL_NOW).text, "等你回复 · 刚刚")
+  assert.equal(roomStatusLine({ online: true, busy: false, waiting: [{ kind: "mystery", startedAt: SL_NOW - 45_000 }] }, SL_NOW).text, "等你回答 · 刚刚")
   assert.equal(dialogStatusPhrase("confirm"), "等你确认")
 })
 
-test("状态行·waitingPrompt 兜底：只有旧单槽信号时走等你处理", () => {
+test("状态行·waitingPrompt 兜底：只有旧单槽信号时走等你回答", () => {
   assert.deepEqual(
     roomStatusLine({ online: true, busy: false, waiting: [], waitingPrompt: { kind: "confirm", title: "标题不进状态行", at: SL_NOW - MIN } }, SL_NOW),
-    { text: "等你处理 · 1 分钟前", tone: "waiting" },
+    { text: "等你回答 · 1 分钟前", tone: "waiting" },
   )
 })
 

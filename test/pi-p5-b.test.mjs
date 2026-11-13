@@ -50,19 +50,19 @@ const S = 1000
 const M = 60 * S
 
 describe("model/turnError.ts：回合出错的原文对中文（stream-errors，D18）", () => {
-  test("overloaded_error → 服务繁忙，原文放括号里（和画廊屏同一句）", () => {
-    assert.deepEqual(turnErrorOf("error", "overloaded_error"), { text: "这一轮出错了：服务繁忙（overloaded_error）", error: true })
+  test("overloaded_error → 模型服务繁忙，原文进 detail（S3 第三轮：行里写人话，不露错误类型名）", () => {
+    assert.deepEqual(turnErrorOf("error", "overloaded_error"), { text: "这一轮出错了：模型服务繁忙", error: true, detail: "overloaded_error" })
   })
-  test("整段原文里认出类型：短的照写原文，长的（JSON）只写类型", () => {
+  test("整段原文里认出类型：行里写原因 +（状态码），不露 JSON", () => {
     assert.equal(turnErrorKindOf('529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'), "overloaded_error")
     const long = `529 ${JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "x".repeat(80) } })}`
     assert.ok(long.length > TURN_ERROR_RAW_MAX)
-    assert.equal(turnErrorOf("error", long).text, "这一轮出错了：请求太频繁（rate_limit_error）")
-    assert.equal(turnErrorOf("error", "Overloaded").text, "这一轮出错了：服务繁忙（Overloaded）")
+    assert.equal(turnErrorOf("error", long).text, "这一轮出错了：请求太频繁（529）")
+    assert.equal(turnErrorOf("error", "Overloaded").text, "这一轮出错了：模型服务繁忙")
   })
   test("上下文溢出（lane-mock M11）：OpenAI 兼容的 context_length_exceeded 和 Anthropic 的 prompt is too long 都写「上下文超出模型上限」", () => {
     const openai = `400: ${JSON.stringify({ type: "context_length_exceeded", code: "context_length_exceeded", message: "This model's maximum context length is 128000 tokens." })}`
-    assert.equal(turnErrorOf("error", openai).text, "这一轮出错了：上下文超出模型上限（context_length_exceeded）")
+    assert.equal(turnErrorOf("error", openai).text, "这一轮出错了：上下文超出模型上限（400）")
     const anthropic = `400 ${JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "prompt is too long: 210000 tokens > 200000 maximum" } })}`
     assert.equal(turnErrorKindOf(anthropic), "context_length_exceeded")
     assert.equal(turnErrorKindOf('400 {"type":"error","error":{"type":"invalid_request_error","message":"bad"}}'), "invalid_request_error")
@@ -72,8 +72,8 @@ describe("model/turnError.ts：回合出错的原文对中文（stream-errors，
     assert.deepEqual(turnErrorOf("error", "Request was aborted."), { text: "已停止生成", error: false })
     assert.equal(turnErrorOf("error", "upstream aborted the stream unexpectedly").error, true)
   })
-  test("认不出的原文照写（太长截短）；没有原文写「未知原因」，不编", () => {
-    assert.equal(turnErrorOf("error", "socket hang up").text, "这一轮出错了：socket hang up")
+  test("认不出的短原文照写（太长截短，全文进 detail）；没有原文写「未知原因」，不编", () => {
+    assert.equal(turnErrorOf("error", "upstream aborted the stream unexpectedly").text, "这一轮出错了：upstream aborted the stream unexpectedly")
     assert.equal(turnErrorOf("error", "y".repeat(100)).text, `这一轮出错了：${"y".repeat(TURN_ERROR_RAW_MAX)}…`)
     assert.equal(turnErrorOf("error", "").text, "这一轮出错了：未知原因")
     assert.equal(turnErrorOf("error", undefined).error, true)

@@ -5,8 +5,7 @@
  * 不在页面里造数；空态 / 旧 relay / 设备离线 / 超时都按 hook 的 reason 诚实呈现。
  * 口径：Token 按 API 处理量计、分天按设备本地时区、同一份会话记录只算一遍；**不显示费用**。
  * 布局：本页在 SETTINGS_PAGE_META.usage.wide = true，外壳给 880 内容列（其余页 692）。
- * 颜色：数据色全走 --st-accent（Cursor 紫 / Claude 陶土 / Codex 蓝）；陶土高亮两点（今天格描边、
- * 单日峰值）只在 Cursor / Claude 出现，Codex 两套改走自己的强调色。
+ * 颜色：数据色全走 --st-accent；陶土高亮两点（今天格描边、单日峰值）固定陶土色。
  */
 import { useState, type CSSProperties, type ReactNode } from "react"
 import {
@@ -190,8 +189,9 @@ export function UsagePage() {
 
   const days = snapshot.days
   const empty = days.length === 0
-  const short = !empty && days.length < 30
   const todayKey = usageTodayDayKey(snapshot)
+  // days 只含有记录的日子（稀疏）：按首个记录日算历史长短，不按条数——低频用户记录少不等于数据还在积累。
+  const short = !empty && days[0].date > addDaysToDayKey(todayKey, -29)
   const totals = snapshot.summary.totals
   const prevStart = addDaysToDayKey(todayKey, -59)
   const prevEnd = addDaysToDayKey(todayKey, -30)
@@ -202,9 +202,9 @@ export function UsagePage() {
   )
   const tokenMain = tokenParts(totals.tokens)
   const deltaNode = (current: number, previous: number): ReactNode => {
-    if (short || empty) return <span className="settings-usage-flat">数据积累中</span>
+    if (short || empty) return "数据积累中"
     const info = usageDeltaOf(current, previous)
-    if (!info.show) return <span className="settings-usage-flat">数据积累中</span>
+    if (!info.show) return "数据积累中"
     return (
       <>
         <span className={info.dir === "up" ? "settings-usage-up" : "settings-usage-flat"}>{info.text}</span> 较前 30 天
@@ -219,7 +219,9 @@ export function UsagePage() {
       value: String(totals.activeDays),
       unit: "/ 30 天",
       sub: short || empty ? (
-        <span className="settings-usage-flat">数据积累中 · 已记录 {days.length} 天</span>
+        <>
+          数据积累中 · 已记录 <span className="settings-usage-flat">{days.length} 天</span>
+        </>
       ) : (
         <>
           占近 30 天的 <span className="settings-usage-flat">{formatPercent(totals.activeDays / 30)}</span>
@@ -254,10 +256,15 @@ export function UsagePage() {
   for (let index = 0; index < cells.length; index += 7) weeks.push(cells.slice(index, index + 7))
   const monthLabels: { key: string; label: string }[] = []
   let lastMonth = ""
+  let lastLabelIndex = -1
   for (const week of weeks) {
     const first = week[0]?.date ?? ""
     const month = first.slice(0, 7)
     if (month !== lastMonth) {
+      // 首列常是上个月的零头：离下一个月份标签不足 3 列时让位，免得两个标签叠在一起。
+      const previous = monthLabels[lastLabelIndex]
+      if (previous && monthLabels.length - lastLabelIndex < 3) previous.label = ""
+      lastLabelIndex = monthLabels.length
       monthLabels.push({ key: first, label: first ? `${Number(first.slice(5, 7))}月` : "" })
       lastMonth = month
     } else {
@@ -519,7 +526,7 @@ export function UsagePage() {
                 </svg>
                 <p className="settings-usage-chart-note">
                   从 {days[0]?.date ?? "—"} 起累计到今天的 {METRIC_UNIT[metric]}总量：{metricTextOf(cumulativeValue, metric)}
-                  {days.length < 30 ? "（数据积累中）" : ""}
+                  {short ? "（数据积累中）" : ""}
                 </p>
                 <p className="settings-usage-chart-note">{cumulativeInsight}</p>
               </>

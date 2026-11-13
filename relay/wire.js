@@ -194,7 +194,9 @@ function snapshotBodyFrom(snapshot) {
 }
 function snapshotFrame(room, body) {
   const busy = !!(room.online && room.busy);
-  return `{"type":"snapshot","room":${JSON.stringify(room.id)},"busy":${busy},${body}}`;
+  // 最近一轮是用户停止的：重连的端据此不把它补报成完成/出错（稀疏，旧端忽略）
+  const stopped = room.online && room.turnStopped ? `"turnStopped":true,` : "";
+  return `{"type":"snapshot","room":${JSON.stringify(room.id)},"busy":${busy},${stopped}${body}}`;
 }
 
 module.exports = { RELAY_VERSION, RELAY_CAPS, hasCap, parseHello, helloVersionError, helloText, failureCode, errorFrame, send, broadcast, ackFrame, snapshotBodyFrom, snapshotFrame };

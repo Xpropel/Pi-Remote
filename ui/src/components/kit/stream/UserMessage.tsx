@@ -2,7 +2,7 @@ import type { ComponentPropsWithoutRef } from "react"
 import type { Forced } from "@/components/kit/types"
 import { ICON, Undo2 } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
-import { STREAM_TEXT } from "./styles"
+import { STREAM_FG, STREAM_TEXT } from "./styles"
 import { subId } from "./util"
 
 export interface UserMessageProps extends ComponentPropsWithoutRef<"div"> {
@@ -53,8 +53,9 @@ export function UserMessage({
       data-variant={variant}
       className={cn(
         STREAM_TEXT,
+        STREAM_FG,
         // 最小高 38 + 内容竖直居中（base 比对 #1：单行气泡 "Can we fix it?" 高 38、文字上距 8.5；两行吸顶气泡 54 = 42 + 6×2）
-        "relative my-(--cw-space-4) flex min-h-[38px] flex-col justify-center rounded-(--cw-radius-bubble) bg-(--cw-user-bubble) text-(--cw-text)",
+        "relative my-(--cw-space-4) flex min-h-[38px] flex-col justify-center rounded-(--cw-radius-bubble) bg-(--cw-user-bubble)",
         variant === "card"
           ? "border border-(--cw-border) shadow-(--cw-shadow-composer)"
           : "shadow-(--cw-shadow-float)",

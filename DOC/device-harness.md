@@ -16,7 +16,7 @@
 | 在线 | 这个会话的 pi 扩展还连着 relay。电脑开着但 pi 没开，服务器看不到它 |
 | 扩展 | 跑在 pi 进程里面，**会主动连 `7001`**。pi 退出，连接一起断 |
 | 启动方式 | 人在那台电脑上执行 `deploy\start-pi.cmd`（Mac 上尚无对应脚本） |
-| `PI_REMOTE_LABEL` | 会话标题的兜底显示名，不是设备编号 |
+| `PI_REMOTE_LABEL` | 已不再使用（保留只为兼容旧配置）：会话标题按「会话名 → 首条消息 → 工作区名」显示，设备显示名用 `PI_REMOTE_DEVICE_NAME` |
 
 命令已经会送到登记该会话的那条本机连接上。两台电脑如果同时开着 pi，会话能同时出现，但列表分不出是哪一台，两个同名目录会叠在一起。
 
@@ -94,7 +94,7 @@ PI_REMOTE_PROJECTS=D:\pi-myself;D:\work\app
 | `platform` | 本期连接命令填 `windows`；`mac` 留给后续 |
 | `projects` | 允许启动/新建 pi 的目录列表。网页只能从这个列表里选 |
 
-`PI_REMOTE_LABEL` 继续只当会话标题的兜底，不再兼作设备名。
+`PI_REMOTE_LABEL` 不再兼作设备名，也不再当会话标题的兜底（扩展已不读取它；标题回落链是会话名 → 首条消息 → 工作区名）。
 
 名册持久化：**每次执行连接命令时** `device_register` upsert 进 `data/accounts/admin/devices.jsonl`（§11）。窗口结束不删行；在线与否只留在内存里，文件只记名册和 `lastAttachAt`。进程重启后仍显示该设备未连接。
 同一 `deviceId` 的新窗口顶掉旧窗口（重复执行命令/进程重启）。不要顶掉这台设备上的 pi 扩展连接。

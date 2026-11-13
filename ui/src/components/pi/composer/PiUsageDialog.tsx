@@ -11,6 +11,7 @@ import {
   type PiReturnFocus,
   type PiUsageState,
 } from "@/components/pi/shared"
+import { MENU_DIVIDER_BORDER } from "@/components/kit"
 import { cn } from "@/lib/utils"
 import { C_ERROR, C_SECONDARY } from "./styles"
 
@@ -26,7 +27,7 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
 
 function KV({ label, value, mono }: { label: ReactNode; value: ReactNode; mono?: boolean }) {
   return (
-    <div className="flex min-h-8 min-w-0 items-center justify-between gap-4 border-b border-solid border-(--cw-divider-soft) last:border-b-0">
+    <div className={cn("flex min-h-8 min-w-0 items-center justify-between gap-4 border-b border-solid last:border-b-0", MENU_DIVIDER_BORDER)}>
       <span className={cn("min-w-0 truncate text-(length:--cw-text-md)", C_SECONDARY, mono && "font-(family-name:--cw-font-mono) text-(length:--cw-text-code)")}>
         {label}
       </span>
@@ -140,7 +141,7 @@ export function PiUsageDialog({
             </span>
           </div>
         </Section>
-        <Section title="token">
+        <Section title="Token">
           <KV label="输入" value={t.input != null ? piTokens(t.input) : "—"} />
           <KV label="输出" value={t.output != null ? piTokens(t.output) : "—"} />
           <KV label="缓存读取" value={t.cacheRead != null ? piTokens(t.cacheRead) : "—"} />

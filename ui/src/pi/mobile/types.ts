@@ -4,7 +4,7 @@
  * 双模式：`list`（默认，首页=会话列表）/ `drawer`（会话页为家，侧栏抽屉）。
  * 数据/动作与桌面共享（PiSidebarData/Actions），不复制数据层。
  */
-import type { PiSidebarActions, PiSidebarData } from "../sidebar/types.ts"
+import type { PiSidebarActions, PiSidebarData, PiSidebarSession } from "../sidebar/types.ts"
 
 export const PI_MOBILE_NAV_MODES = ["list", "drawer"] as const
 export type PiMobileNavMode = (typeof PI_MOBILE_NAV_MODES)[number]
@@ -24,6 +24,8 @@ export const PI_MOBILE_METRICS = {
   safeAreaBottom: 30,
   touchMin: 44,
   longPressCardMaxW: 320,
+  /** 宽屏手机布局（如 iPad mini 竖屏 744）的内容列上限：列表 / 会话 / 搜索 / 待答 / 通知同宽居中（mobile.css 的 --pm-column-gutter） */
+  columnMaxW: 640,
 } as const
 
 /** 移动壳 props：同一份数据/动作，mode 只换导航壳。 */
@@ -40,6 +42,20 @@ export interface PiMobileNavProps {
   /** 抽屉开合（受控时传入） */
   drawerOpen?: boolean
   onDrawerOpenChange?: (open: boolean) => void
+  /** 会话页顶栏：当前会话标题与副标题（设备名）；不给时标题退回 data.serverName */
+  sessionTitle?: string
+  sessionSubtitle?: string
+  /** 会话页顶栏左侧按钮上的计数：其他会话里等你处理的条数 */
+  sessionAttentionCount?: number
+  /** 点会话标题（会话信息）/ 右端 …（会话菜单）；不给就没有对应入口 */
+  onSessionInfo?: () => void
+  onSessionMenu?: () => void
+  /** 长按卡的「更多」：打开该行的完整会话菜单（改名 / 删除 / 分叉…）；不给就只有置顶 / 归档 */
+  onRowMenu?: (session: PiSidebarSession) => void
+  /** 归档视图（本机归档列表，同桌面侧栏的「归档」朴素行）：列表只剩归档行，由 actions.openArchiveView 开合 */
+  archiveView?: boolean
+  /** 本机归档的会话数（列表式首页的「归档」入口只在 > 0 时出现） */
+  archivedCount?: number
 }
 
 /** 设置项「移动端交互 UI」两卡（三套设置页共用；文案逐字见设计 M §6）。 */

@@ -46,7 +46,10 @@ export interface SidebarLocalState {
   archives: readonly string[]
   togglePin: (sessionKey: string) => void
   toggleArchive: (sessionKey: string) => void
-  toggleFolder: (groupId: string) => void
+  /** collapsedNow = 界面上此刻的折叠态（待处理自动展开的组靠它翻对）；不给时按存的值翻 */
+  toggleFolder: (groupId: string, collapsedNow?: boolean) => void
+  /** 组从没手动开合过时记成展开（当前会话所在的组用）；开合过的不动 */
+  revealFolder: (groupId: string) => void
   clearScope: () => void
 }
 
@@ -77,14 +80,18 @@ export function useSidebarLocalState(accountId: string | undefined | null, devic
   }, [])
   const togglePin = useCallback((key: string) => persist(toggleSidebarPin(state, scope, key)), [persist, state, scope])
   const toggleArchive = useCallback((key: string) => persist(toggleSidebarArchive(state, scope, key)), [persist, state, scope])
-  const toggleFolder = useCallback((groupId: string) => {
+  const toggleFolder = useCallback((groupId: string, collapsedNow?: boolean) => {
     const cur = sidebarScopeStateOf(state, scope)
-    persist(setSidebarFolderCollapsed(state, scope, groupId, !(cur.folders[groupId] ?? true)))
+    persist(setSidebarFolderCollapsed(state, scope, groupId, collapsedNow === undefined ? !(cur.folders[groupId] ?? true) : !collapsedNow))
+  }, [persist, state, scope])
+  const revealFolder = useCallback((groupId: string) => {
+    if (sidebarScopeStateOf(state, scope).folders[groupId] !== undefined) return
+    persist(setSidebarFolderCollapsed(state, scope, groupId, false))
   }, [persist, state, scope])
   const clearScope = useCallback(() => {
     const next = parseSidebarLocalState(state)
     delete next.scopes[scope]
     persist(next)
   }, [persist, state, scope])
-  return { scope, scopeState, pins: scopeState.pins, archives: scopeState.archives, togglePin, toggleArchive, toggleFolder, clearScope }
+  return { scope, scopeState, pins: scopeState.pins, archives: scopeState.archives, togglePin, toggleArchive, toggleFolder, revealFolder, clearScope }
 }

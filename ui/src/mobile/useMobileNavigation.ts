@@ -31,7 +31,7 @@ function currentUrl(route: MobileRoute): string {
 /**
  * 第 3 章 §3.1.1 的 L0/L1 导航栈。
  *
- * - 列表是根；打开会话 pushState，返回用浏览器回退，不自己造第二套栈。
+ * - 列表是根；从列表打开会话 pushState，已在对话页换会话 replaceState；返回用浏览器回退，不自己造第二套栈。
  * - 深链首次进入时先把当前历史项改写成 index，再 push conversation，
  *   所以刷新/分享后按一次返回一定回到对应设备的列表，不会直接退出站点。
  * - 弹层打开时压一条同 URL 的哨兵；popstate 先关最上层，再回列表，最后才退出。
@@ -132,9 +132,15 @@ export function useMobileNavigation({ overlayCount, closeTopOverlay }: OverlayOp
       if (current.screen === "conversation" && current.sessionId === sessionId && (current.deviceId || undefined) === (deviceId || undefined)) return
       routeLockRef.current = Date.now() + 350
       const next: MobileRoute = { screen: "conversation", sessionId, ...(deviceId ? { deviceId } : {}) }
-      // 让即将成为「下层」的列表历史项也带上设备，返回后刷新仍停在同一台设备。
-      window.history.replaceState({ __piMobile: "index" }, "", currentUrl({ screen: "index", deviceId }))
-      window.history.pushState({ __piMobile: "conversation" }, "", currentUrl(next))
+      const saved = state()
+      if (saved.__piMobile === "conversation" && !saved.__piMobileLayer) {
+        // 已在对话项上换会话（抽屉、命令面板、新会话起好）：原地换掉，栈仍是 [index, conversation]，返回一次就回列表。
+        window.history.replaceState({ __piMobile: "conversation" }, "", currentUrl(next))
+      } else {
+        // 让即将成为「下层」的列表历史项也带上设备，返回后刷新仍停在同一台设备。
+        window.history.replaceState({ __piMobile: "index" }, "", currentUrl({ screen: "index", deviceId }))
+        window.history.pushState({ __piMobile: "conversation" }, "", currentUrl(next))
+      }
       applyRoute(next)
     },
     [applyRoute],

@@ -36,7 +36,7 @@ function Lines({ lines }: { lines: string[] }) {
 /**
  * 悬停模型行时浮在 ModelMenu 右侧的说明卡（#19）。白卡同 MenuSurface（圆角、细边、柔和投影），全是 13px 文字、左对齐：
  * 粗体名 → 定位语 →（空行）上下文窗口 →（空行）橙色费用警告 →（空行）斜体版本行。行高 17、段间空一行（实测）。
- * Width is 248 (same as the Claude shell's model card); text wraps normally so the
+ * Width is 248; text wraps normally so the
  * facts line stays fully visible (at most two lines) instead of being cut off.
  * 位置由 ModelMenu 给（菜单右侧 5.3、垂直中心对齐悬停行；靠右无 room 时由菜单翻到左侧）。
  */

@@ -15,6 +15,7 @@ export interface PiNoDevicesProps {
 }
 
 const PILLS_ID = "pi-no-devices-pills"
+const STEPS = ["在设置 › 设备里用管理员令牌生成配对码", "在电脑终端运行页面给出的配对命令"]
 
 /**
  * 还没有设备（design §3.3 no-devices；PiCenteredState + PiMark + ch4/SuggestionPills）。
@@ -35,9 +36,15 @@ export function PiNoDevices({ variant, pairingSupported = true, onPair, onGuide,
       icon={<PiMark size={32} />}
       title="还没有电脑连上 Pi-Remote"
       body={
-        <ol className="m-0 mt-1 flex list-none flex-col gap-1 p-0 text-left">
-          <li>1. 在设置 › 设备里用管理员令牌生成配对码；</li>
-          <li>2. 在电脑终端运行页面给出的配对命令。</li>
+        <ol className="m-0 mt-2 flex list-none flex-col gap-2 p-0 text-left">
+          {STEPS.map((step, index) => (
+            <li key={step} className="flex items-start gap-2.5">
+              <span className="mt-px flex size-[18px] shrink-0 items-center justify-center rounded-full bg-(--cw-chip-bg) text-[11px] leading-none font-medium text-(--cw-text-2) tabular-nums">
+                {index + 1}
+              </span>
+              <span>{step}</span>
+            </li>
+          ))}
         </ol>
       }
       actions={

@@ -62,7 +62,7 @@ export interface DiffFold {
 export type DiffRow = DiffLine | DiffFold
 
 /** 文件类型图标（FileTypeIcon，specs/ch3 §1.8） */
-export type FileKind = "json" | "html" | "ts" | "tsx" | "txt" | "file"
+export type FileKind = "json" | "html" | "ts" | "js" | "tsx" | "txt" | "file"
 
 /** PR 状态胶囊 */
 export type PrStatus = "open" | "draft"

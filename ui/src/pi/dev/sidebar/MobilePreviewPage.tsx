@@ -5,7 +5,7 @@
  * URL 参数（search/hash 均可）：
  * - `mode=list|drawer`、`page=list|session`、`drawerOpen=1`
  * - `scenario=drawer-base|drawer-long|list-base|list-long|list-swipe|settings-nav|search|empty|longpress`
- * - `skin=cursor|claude|codex`、`theme=dark|light`、`pref=list|drawer`（settings-nav 默认值）
+ * - `theme=dark|light`、`pref=list|drawer`（settings-nav 默认值）
  */
 import { useEffect, useMemo, useState } from "react"
 import { MobileNavSetting, MobileNavShell } from "@/pi/mobile"

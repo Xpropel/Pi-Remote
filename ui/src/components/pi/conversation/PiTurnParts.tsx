@@ -246,7 +246,8 @@ export function PiUserTurn({
   }
   return (
     <div data-pi-part="user-turn" className="group" data-status={item.failed ? "failed" : item.outbox ? "outbox" : item.queued ? "queued" : item.status}>
-      <UserMessage variant="card" className={cn(status != null && "mb-1")}>
+      {/* 卡下空 12（卡上 16 和回合间 24 折叠）：回合的内容贴着自己的提问 */}
+      <UserMessage variant="card" className={cn(status != null ? "mb-1" : "mb-(--cw-space-3)")}>
         <div className={cn(remote && "pr-5")}>
           {item.text && <div className="whitespace-pre-wrap">{item.text}</div>}
           {item.images.length > 0 && (
@@ -259,17 +260,18 @@ export function PiUserTurn({
             </div>
           )}
         </div>
+        {/* 竖直对齐第一行文字的中线（卡内上距 8 + (行高 − 13) / 2 ≈ 12） */}
         {remote && (
           <Smartphone
             aria-label="从网页发送"
             size={13}
             strokeWidth={1.5}
-            className="absolute top-2.5 right-2.5 text-(--cw-text-4)"
+            className="absolute top-3 right-3 text-(--cw-text-3)"
           />
         )}
       </UserMessage>
       {status != null && (
-        <div className="mb-(--cw-space-4) flex justify-end px-1 text-(length:--cw-text-sm) leading-(--cw-leading-sm)">{status}</div>
+        <div className="mb-(--cw-space-3) flex justify-end px-1 text-(length:--cw-text-sm) leading-(--cw-leading-sm)">{status}</div>
       )}
     </div>
   )
@@ -317,10 +319,20 @@ export function PiReplyActions({
         }
       : undefined
   const onRegenerate = actions?.regenerate
+  // 桌面：更早回合的操作行悬停 / 聚焦到这一回合时才出现（最后一回合常显；触屏没有悬停，常显）
+  const onHover = !phone && !retry
   return (
     <div
       data-pi-part="reply-actions"
-      className={cn("mx-(--stream-inset) my-(--cw-space-2) flex items-center", phone ? "gap-6" : "gap-1")}
+      className={cn(
+        // 左缘往回收 3：钮里 14 的图标和正文左缘对齐（钮 20、图标居中）
+        "mr-(--stream-inset) ml-[calc(var(--stream-inset)_-_3px)] flex items-center",
+        phone ? "gap-6" : "gap-1",
+        onHover
+          ? // 藏着的行不再撑开回合间距：下边距 −18 和下一回合的 24 折叠成 6，正文到下一张用户卡 6 + 20 + 6 = 32
+            "mt-(--cw-space-1-5) -mb-[18px] opacity-0 transition-opacity duration-(--pi-motion-in) group-hover/turn:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100"
+          : "my-(--cw-space-1-5)",
+      )}
     >
       {/* 手机：图标视觉 20、间距 32 → 图标中心相距 52，44×44 点击区之间隔 8（§4.4；B2、R2-B-m5）；
           钮和灰字之间仍是原来的 24 + 6（灰字不是点击目标），免得灰字被挤到截断 */}

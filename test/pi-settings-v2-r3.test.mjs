@@ -67,25 +67,14 @@ test("P3-1 桌面语义不受影响：Ctrl/Cmd 与 Shift / Alt 的优先级照�
   }
 })
 
-test("P3-1 三套手机 composer / 新建页都传 mobile：裸 Enter 换行、外接键盘 Ctrl+Enter 一致", () => {
+test("P3-1 手机 composer / 新建页都传 mobile：裸 Enter 换行、外接键盘 Ctrl+Enter 一致", () => {
   const mobileWired = [
     ["ui/src/components/pi/composer/PiFollowUpComposer.tsx", /mobile: phone/],
     ["ui/src/components/pi/composer/PiEmptyComposer.tsx", /mobile: phone/],
-    ["ui/src/pi/variants/claude/composer/ClaudeComposer.tsx", /mobile: variant === "phone"/],
-    ["ui/src/pi/variants/codex/composer/CodexComposer.tsx", /mobile: phone/],
-    ["ui/src/pi/variants/claude/pages/ClaudeNewSession.tsx", /mobile: phone/],
-    ["ui/src/pi/variants/codex/pages/CodexNewSession.tsx", /mobile: phone/],
   ]
   for (const [file, pattern] of mobileWired) {
     assert.match(read(file), pattern, `${file} 未把手机壳标记传给共享 Enter 决策`)
   }
-  const claudeNew = read("ui/src/pi/variants/claude/pages/ClaudeNewSession.tsx")
-  assert.match(claudeNew, /phone = false/, "Claude 新建页要显式区分手机壳")
-  assert.match(
-    read("ui/src/pi/variants/claude/shell/ClaudePhoneShell.tsx"),
-    /<ClaudeNewSession p=\{p\} phone \/>/,
-    "Claude 手机壳的新建页要传 phone",
-  )
   const hook = read("ui/src/pi/headless/useComposerEnter.ts")
   assert.match(hook, /ctrlKey: event\.ctrlKey/)
   assert.match(hook, /metaKey: event\.metaKey/)

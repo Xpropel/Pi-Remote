@@ -1,14 +1,14 @@
 /**
- * P11 统一侧栏六套 token（数值唯一来源：桌面册 §9/§10/§11；实现变量前缀 --sb-*）。
+ * P11 统一侧栏 token，Cursor 风格浅 / 深两套（数值唯一来源：桌面册 §9/§10/§11；实现变量前缀 --sb-*）。
  *
- * 作用域：组件根 `[data-pi-sidebar]` + `[data-pi-sidebar-style="cursor|claude|codex"]`
+ * 作用域：组件根 `[data-pi-sidebar]` + `[data-pi-sidebar-style="cursor"]`
  *         + 主题（宿主 PiRoot 的 `data-pi-theme="dark|light"` 祖先，或组件根自带同名属性）。
  * 铁规：本文件自包含——不引用 `--cw-*` / 变体私有变量 / 全局元素选择器；
- *       变体只传 style/theme，不写 token 值；唯一非颜色差异是 Claude 衬线四类（用 --sb-font-title）。
- * 每个色位在六套都定义（验证线按 32 色位逐值 diff）。
+ *       宿主只传 style/theme，不写 token 值。
+ * 每个色位在浅 / 深两套都定义（验证线按 32 色位逐值 diff）。
  */
 
-/* ---------------- 几何（六套共用；与 types.ts PI_SIDEBAR_METRICS 同值） ---------------- */
+/* ---------------- 几何（浅 / 深共用；与 types.ts PI_SIDEBAR_METRICS 同值） ---------------- */
 [data-pi-sidebar] {
   --sb-width-default: 272px;
   --sb-width-min: 220px;
@@ -37,158 +37,75 @@
   --sb-radius-menu: 12px;
   --sb-radius-bubble: 10px;
   --sb-font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  --sb-font-serif: Georgia, "Times New Roman", "Songti SC", "STSongti-SC-Regular", "SimSun", serif;
-  /* 默认字体标题 = sans；Claude 六套 token 块覆写 */
   --sb-font-title: var(--sb-font-sans);
   --sb-font-workspace: var(--sb-font-sans);
 }
 
-/* ---------------- 六套颜色 ---------------- */
+/* ---------------- 颜色（浅 / 深） ---------------- */
 
-/* Cursor 深 */
+/* Cursor 深（与桌面 kit 深色同一组灰：侧栏 #1c1c1e、行悬停 #29292c、行选中 #2e2e31） */
 [data-pi-sidebar][data-pi-sidebar-style="cursor"][data-pi-theme="dark"],
 [data-pi-theme="dark"] [data-pi-sidebar][data-pi-sidebar-style="cursor"] {
-  --sb-bg: rgba(16, 16, 18, 0.94);
-  --sb-backdrop: blur(28px) saturate(1.2);
-  --sb-border: rgba(255, 255, 255, 0.06);
-  --sb-t1: #ededf0; --sb-t2: #c9c9cf; --sb-t3: #a9a9b1; --sb-t4: #94949c; --sb-t5: #8e8e96;
-  --sb-icon: #8e8e96; --sb-icon-muted: #8e8e96;
-  --sb-pill-bg: rgba(255, 255, 255, 0.09); --sb-pill-fg: #ffffff;
-  --sb-device-bg: rgba(255, 255, 255, 0.05);
-  --sb-menu-bg: rgb(30, 30, 34); --sb-menu-border: rgba(255, 255, 255, 0.09);
-  --sb-menu-selected-bg: rgba(139, 124, 246, 0.16); --sb-menu-selected-fg: #a78bfa;
+  --sb-bg: #1c1c1e;
+  --sb-backdrop: none;
+  --sb-border: #29292c;
+  --sb-t1: #ededef; --sb-t2: #d2d2d6; --sb-t3: #b4b4b8; --sb-t4: #8e8e93; --sb-t5: #8e8e93;
+  --sb-icon: #9a9aa0; --sb-icon-muted: #78787e;
+  --sb-pill-bg: rgba(255, 255, 255, 0.06); --sb-pill-fg: #ededef;
+  --sb-device-bg: rgba(255, 255, 255, 0.045);
+  --sb-menu-bg: #222224; --sb-menu-border: rgba(255, 255, 255, 0.08);
+  --sb-menu-selected-bg: rgba(255, 255, 255, 0.07); --sb-menu-selected-fg: #ededef;
   --sb-menu-divider: rgba(255, 255, 255, 0.07);
-  --sb-hover-bg: rgba(255, 255, 255, 0.045); --sb-hover-icon: #8e8e96;
-  --sb-selected-bg: rgba(255, 255, 255, 0.07); --sb-selected-ring: #c9c9d1; --sb-selected-shadow: none;
-  --sb-run: #a78bfa; --sb-run-soft: rgba(167, 139, 250, 0.20); --sb-run-glow: rgba(167, 139, 250, 0.13);
-  --sb-wait: #e0a63f; --sb-error: #ff6764; --sb-idle: #6f6f77; --sb-online: #3fb96f;
-  --sb-bubble-bg: rgba(30, 30, 34, 0.97); --sb-bubble-border: rgba(255, 255, 255, 0.10);
-  --sb-bubble-backdrop: none; --sb-bubble-icon: #8e8e96;
-  --sb-tile-bg: rgba(255, 255, 255, 0.09); --sb-tile-fg: #dcdce0; --sb-identity-fg: #dcdce0;
-  --sb-main-bg: rgba(20, 20, 23, 0.55); --sb-ink1: #ececf1; --sb-ink2: #a7a7b3; --sb-ink3: #6f6f7a;
+  --sb-hover-bg: rgba(255, 255, 255, 0.055); --sb-hover-icon: #d2d2d6;
+  --sb-selected-bg: rgba(255, 255, 255, 0.08); --sb-selected-ring: #b4b4b8; --sb-selected-shadow: none;
+  --sb-run: #a897cf; --sb-run-soft: rgba(168, 151, 207, 0.28); --sb-run-glow: rgba(168, 151, 207, 0.16);
+  --sb-wait: #d9ae57; --sb-error: #ec7186; --sb-idle: #6e6e73; --sb-online: #3fb96f;
+  --sb-bubble-bg: #222224; --sb-bubble-border: rgba(255, 255, 255, 0.08);
+  --sb-bubble-backdrop: none; --sb-bubble-icon: #8e8e93;
+  --sb-tile-bg: rgba(255, 255, 255, 0.07); --sb-tile-fg: #b4b4b8; --sb-identity-fg: #d2d2d6;
+  --sb-main-bg: #222224; --sb-ink1: #ededef; --sb-ink2: #b4b4b8; --sb-ink3: #66666b;
+  --sb-focus: #3a9bd9;
+  --sb-badge-bg: #3a9bd9; --sb-badge-fg: #0d0d0e;
+  --sb-kbd-bg: rgba(255, 255, 255, 0.08); --sb-kbd-fg: #b4b4b8;
+  --sb-mark-fg: #ededef;
+  --sb-scrollbar: rgba(255, 255, 255, 0.16);
+  --sb-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sb-shadow-menu: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 3px rgba(0, 0, 0, 0.32), 0 4px 12px rgba(0, 0, 0, 0.24);
+  --sb-shadow-popover: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 6px 18px rgba(0, 0, 0, 0.48);
 }
 
-/* Cursor 浅（按 Glass 语言推演） */
+/* Cursor 浅（实测 Cursor 3 浅色：侧栏 #EEEEEE、行悬停 #E8E8E8、行选中 #E2E2E2） */
 [data-pi-sidebar][data-pi-sidebar-style="cursor"][data-pi-theme="light"],
 [data-pi-theme="light"] [data-pi-sidebar][data-pi-sidebar-style="cursor"] {
-  --sb-bg: rgba(252, 252, 253, 0.72);
-  --sb-backdrop: blur(28px) saturate(1.3);
-  --sb-border: rgba(20, 20, 30, 0.09);
-  --sb-t1: #1d1d21; --sb-t2: #43434b; --sb-t3: #5d5d66; --sb-t4: #62626b; --sb-t5: #5d5d66;
-  --sb-icon: #83838d; --sb-icon-muted: #83838d;
-  --sb-pill-bg: rgba(20, 20, 40, 0.06); --sb-pill-fg: #1d1d21;
-  --sb-device-bg: rgba(20, 20, 40, 0.045);
-  --sb-menu-bg: #ffffff; --sb-menu-border: rgba(20, 20, 30, 0.09);
-  --sb-menu-selected-bg: rgba(20, 20, 40, 0.05); --sb-menu-selected-fg: #6d4bc4;
-  --sb-menu-divider: rgba(20, 20, 30, 0.08);
-  --sb-hover-bg: rgba(20, 20, 40, 0.045); --sb-hover-icon: #6d6d78;
-  --sb-selected-bg: rgba(20, 20, 40, 0.05); --sb-selected-ring: #6d6d78; --sb-selected-shadow: none;
-  --sb-run: #6d4bc4; --sb-run-soft: rgba(109, 75, 196, 0.12); --sb-run-glow: rgba(109, 75, 196, 0.16);
-  --sb-wait: #a06b00; --sb-error: #e5484d; --sb-idle: #8a8a93; --sb-online: #1f7a44;
-  --sb-bubble-bg: rgba(255, 255, 255, 0.92); --sb-bubble-border: rgba(20, 20, 30, 0.09);
-  --sb-bubble-backdrop: blur(20px) saturate(1.3); --sb-bubble-icon: #83838d;
-  --sb-tile-bg: rgba(0, 0, 0, 0.06); --sb-tile-fg: #43434b; --sb-identity-fg: #1d1d21;
-  --sb-main-bg: #ffffff; --sb-ink1: #1d1d21; --sb-ink2: #5d5d66; --sb-ink3: #9a9aa3;
-}
-
-/* Claude 深 */
-[data-pi-sidebar][data-pi-sidebar-style="claude"][data-pi-theme="dark"],
-[data-pi-theme="dark"] [data-pi-sidebar][data-pi-sidebar-style="claude"] {
-  --sb-bg: rgba(22, 22, 20, 0.94);
-  --sb-backdrop: blur(28px) saturate(1.15);
-  --sb-border: rgba(245, 244, 238, 0.10);
-  --sb-t1: #f5f4ee; --sb-t2: #cfccc2; --sb-t3: #a3a099; --sb-t4: #9a968d; --sb-t5: #8f8b82;
-  --sb-icon: #8f8b82; --sb-icon-muted: #8f8b82;
-  --sb-pill-bg: #232320; --sb-pill-fg: #f5f4ee;
-  --sb-device-bg: rgba(245, 244, 238, 0.045);
-  --sb-menu-bg: rgb(35, 35, 32); --sb-menu-border: rgba(245, 244, 238, 0.10);
-  --sb-menu-selected-bg: rgba(245, 244, 238, 0.07); --sb-menu-selected-fg: #a3a099;
-  --sb-menu-divider: rgba(245, 244, 238, 0.08);
-  --sb-hover-bg: rgba(245, 244, 238, 0.045); --sb-hover-icon: #8f8b82;
-  --sb-selected-bg: #232320; --sb-selected-ring: #d8d5cc; --sb-selected-shadow: none;
-  --sb-run: #cc6b49; --sb-run-soft: rgba(204, 107, 73, 0.18); --sb-run-glow: rgba(204, 107, 73, 0.16);
-  --sb-wait: #e0a63f; --sb-error: #ff6764; --sb-idle: #6f6b63; --sb-online: #3fb96f;
-  --sb-bubble-bg: rgba(35, 35, 32, 0.97); --sb-bubble-border: rgba(245, 244, 238, 0.12);
-  --sb-bubble-backdrop: none; --sb-bubble-icon: #8f8b82;
-  --sb-tile-bg: rgba(245, 244, 238, 0.08); --sb-tile-fg: #e8e5db; --sb-identity-fg: #e8e5db;
-  --sb-main-bg: rgba(29, 29, 27, 0.55); --sb-ink1: #f5f4ee; --sb-ink2: #a3a099; --sb-ink3: #6f6c66;
-  /* Claude 唯一非颜色差异：四类衬线（分区标题/工作区名/会话标题/气泡标题） */
-  --sb-font-title: var(--sb-font-serif);
-  --sb-font-workspace: var(--sb-font-serif);
-}
-
-/* Claude 浅 */
-[data-pi-sidebar][data-pi-sidebar-style="claude"][data-pi-theme="light"],
-[data-pi-theme="light"] [data-pi-sidebar][data-pi-sidebar-style="claude"] {
-  --sb-bg: rgba(249, 249, 247, 0.80);
-  --sb-backdrop: blur(28px) saturate(1.2);
-  --sb-border: rgba(20, 20, 19, 0.10);
-  --sb-t1: #141413; --sb-t2: #3d3c38; --sb-t3: #52514e; --sb-t4: #57544d; --sb-t5: #6f6c66;
-  --sb-icon: #8a8781; --sb-icon-muted: #8a8781;
-  --sb-pill-bg: #efede5; --sb-pill-fg: #141413;
-  --sb-device-bg: #f3f1ea;
-  --sb-menu-bg: #fffdf8; --sb-menu-border: rgba(20, 20, 19, 0.10);
-  --sb-menu-selected-bg: rgba(20, 20, 19, 0.05); --sb-menu-selected-fg: #52514e;
-  --sb-menu-divider: rgba(20, 20, 19, 0.08);
-  --sb-hover-bg: rgba(20, 20, 19, 0.04); --sb-hover-icon: #8a8781;
-  --sb-selected-bg: #ffffff; --sb-selected-ring: #52514e; --sb-selected-shadow: 0 1px 3px rgba(60, 50, 35, 0.08);
-  --sb-run: #d97757; --sb-run-soft: rgba(217, 119, 87, 0.13); --sb-run-glow: rgba(217, 119, 87, 0.18);
-  --sb-wait: #a06b00; --sb-error: #e5484d; --sb-idle: #8a8781; --sb-online: #1f7a44;
-  --sb-bubble-bg: rgba(255, 253, 248, 0.94); --sb-bubble-border: rgba(20, 20, 19, 0.10);
-  --sb-bubble-backdrop: blur(20px) saturate(1.25); --sb-bubble-icon: #8a8781;
-  --sb-tile-bg: #f3f1ea; --sb-tile-fg: #3d3c38; --sb-identity-fg: #141413;
-  --sb-main-bg: #faf9f5; --sb-ink1: #141413; --sb-ink2: #52514e; --sb-ink3: #8a8781;
-  --sb-font-title: var(--sb-font-serif);
-  --sb-font-workspace: var(--sb-font-serif);
-}
-
-/* Codex 深（实色，无玻璃） */
-[data-pi-sidebar][data-pi-sidebar-style="codex"][data-pi-theme="dark"],
-[data-pi-theme="dark"] [data-pi-sidebar][data-pi-sidebar-style="codex"] {
-  --sb-bg: #0d0d0d;
+  --sb-bg: #eeeeee;
   --sb-backdrop: none;
-  --sb-border: rgba(255, 255, 255, 0.08);
-  --sb-t1: #f2f2f2; --sb-t2: #cdcdcd; --sb-t3: rgba(242, 242, 242, 0.68); --sb-t4: rgba(242, 242, 242, 0.74); --sb-t5: rgba(242, 242, 242, 0.68);
-  --sb-icon: #8f8f96; --sb-icon-muted: rgba(242, 242, 242, 0.62);
-  --sb-pill-bg: rgba(255, 255, 255, 0.08); --sb-pill-fg: #ffffff;
-  --sb-device-bg: #1f1f1f;
-  --sb-menu-bg: #181818; --sb-menu-border: rgba(255, 255, 255, 0.08);
-  --sb-menu-selected-bg: rgba(255, 255, 255, 0.08); --sb-menu-selected-fg: rgba(242, 242, 242, 0.68);
-  --sb-menu-divider: rgba(255, 255, 255, 0.08);
-  --sb-hover-bg: rgba(255, 255, 255, 0.05); --sb-hover-icon: #8f8f96;
-  --sb-selected-bg: rgba(255, 255, 255, 0.08); --sb-selected-ring: #e9e9e9; --sb-selected-shadow: none;
-  --sb-run: #6cb0ee; --sb-run-soft: rgba(108, 176, 238, 0.18); --sb-run-glow: rgba(108, 176, 238, 0.16);
-  --sb-wait: #e0a63f; --sb-error: #ff6764; --sb-idle: rgba(242, 242, 242, 0.45); --sb-online: #3fb96f;
-  --sb-bubble-bg: rgba(24, 24, 24, 0.97); --sb-bubble-border: rgba(255, 255, 255, 0.08);
-  --sb-bubble-backdrop: none; --sb-bubble-icon: #8f8f96;
-  --sb-tile-bg: rgba(255, 255, 255, 0.08); --sb-tile-fg: #f2f2f2; --sb-identity-fg: #f2f2f2;
-  --sb-main-bg: #131313; --sb-ink1: #f2f2f2; --sb-ink2: rgba(242, 242, 242, 0.68); --sb-ink3: rgba(242, 242, 242, 0.68);
+  --sb-border: #e3e3e3;
+  --sb-t1: #1d1d1f; --sb-t2: #3a3a3d; --sb-t3: #57585a; --sb-t4: #6a6b6d; --sb-t5: #6a6b6d;
+  --sb-icon: #7a7a7a; --sb-icon-muted: #8a8a8a;
+  --sb-pill-bg: rgba(0, 0, 0, 0.04); --sb-pill-fg: #1d1d1f;
+  --sb-device-bg: rgba(0, 0, 0, 0.035);
+  --sb-menu-bg: #fdfdfd; --sb-menu-border: rgba(0, 0, 0, 0.08);
+  --sb-menu-selected-bg: rgba(0, 0, 0, 0.05); --sb-menu-selected-fg: #1d1d1f;
+  --sb-menu-divider: #e5e5e5;
+  --sb-hover-bg: rgba(0, 0, 0, 0.025); --sb-hover-icon: #3a3a3d;
+  --sb-selected-bg: rgba(0, 0, 0, 0.05); --sb-selected-ring: #57585a; --sb-selected-shadow: none;
+  --sb-run: #6e5ab8; --sb-run-soft: rgba(110, 90, 184, 0.26); --sb-run-glow: rgba(110, 90, 184, 0.14);
+  --sb-wait: #a06b00; --sb-error: #c63c55; --sb-idle: #a8a8a8; --sb-online: #1f7a44;
+  --sb-bubble-bg: #fdfdfd; --sb-bubble-border: rgba(0, 0, 0, 0.08);
+  --sb-bubble-backdrop: none; --sb-bubble-icon: #818284;
+  --sb-tile-bg: rgba(0, 0, 0, 0.05); --sb-tile-fg: #57585a; --sb-identity-fg: #3a3a3d;
+  --sb-main-bg: #fdfdfd; --sb-ink1: #1d1d1f; --sb-ink2: #57585a; --sb-ink3: #a8a8a8;
+  --sb-focus: #047abd;
+  --sb-badge-bg: #047abd; --sb-badge-fg: #ffffff;
+  --sb-kbd-bg: rgba(0, 0, 0, 0.06); --sb-kbd-fg: #57585a;
+  --sb-mark-fg: #1d1d1f;
+  --sb-scrollbar: rgba(0, 0, 0, 0.16);
+  --sb-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sb-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.06);
+  --sb-shadow-popover: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 6px 18px rgba(0, 0, 0, 0.12);
 }
 
-/* Codex 浅（实色，无玻璃） */
-[data-pi-sidebar][data-pi-sidebar-style="codex"][data-pi-theme="light"],
-[data-pi-theme="light"] [data-pi-sidebar][data-pi-sidebar-style="codex"] {
-  --sb-bg: #f3f3f3;
-  --sb-backdrop: none;
-  --sb-border: rgba(26, 28, 31, 0.10);
-  --sb-t1: #1a1c1f; --sb-t2: #3f4247; --sb-t3: rgba(26, 28, 31, 0.68); --sb-t4: rgba(26, 28, 31, 0.62); --sb-t5: rgba(26, 28, 31, 0.58);
-  --sb-icon: #74777d; --sb-icon-muted: rgba(26, 28, 31, 0.55);
-  --sb-pill-bg: rgba(26, 28, 31, 0.075); --sb-pill-fg: #1a1c1f;
-  --sb-device-bg: #ffffff;
-  --sb-menu-bg: #ffffff; --sb-menu-border: rgba(26, 28, 31, 0.10);
-  --sb-menu-selected-bg: rgba(26, 28, 31, 0.06); --sb-menu-selected-fg: rgba(26, 28, 31, 0.68);
-  --sb-menu-divider: rgba(26, 28, 31, 0.08);
-  --sb-hover-bg: rgba(26, 28, 31, 0.045); --sb-hover-icon: #74777d;
-  --sb-selected-bg: rgba(26, 28, 31, 0.075); --sb-selected-ring: #4a4e54; --sb-selected-shadow: none;
-  --sb-run: #2b7fd4; --sb-run-soft: rgba(43, 127, 212, 0.12); --sb-run-glow: rgba(43, 127, 212, 0.15);
-  --sb-wait: #a06b00; --sb-error: #e5484d; --sb-idle: rgba(26, 28, 31, 0.62); --sb-online: #1f7a44;
-  --sb-bubble-bg: rgba(255, 255, 255, 0.92); --sb-bubble-border: rgba(26, 28, 31, 0.10);
-  --sb-bubble-backdrop: blur(20px) saturate(1.3); --sb-bubble-icon: #74777d;
-  --sb-tile-bg: rgba(26, 28, 31, 0.07); --sb-tile-fg: #3f4247; --sb-identity-fg: #1a1c1f;
-  --sb-main-bg: #ffffff; --sb-ink1: #1a1c1f; --sb-ink2: rgba(26, 28, 31, 0.68); --sb-ink3: rgba(26, 28, 31, 0.62);
-}
-
-/* 基础外观（组件可直接使用的 defaults；六套覆盖色值） */
+/* 基础外观（组件可直接使用的 defaults；浅 / 深两套覆盖色值） */
 [data-pi-sidebar] {
   background: var(--sb-bg);
   color: var(--sb-t3);

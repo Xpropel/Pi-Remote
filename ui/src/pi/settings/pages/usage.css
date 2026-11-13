@@ -1,27 +1,13 @@
 /**
  * 设置 › 使用活动 · 页面级样式。
  *
- * 组件与六套皮肤只消费 --st-*；数据色统一由当前强调色派生。
- * 陶土高亮只用于 Cursor / Claude 的今天格描边与单日峰值；Codex 两套改走 Codex 蓝。
+ * 组件只消费 --st-*；数据色统一由当前强调色派生。
+ * 陶土高亮只用于今天格描边与单日峰值。
+ * 卡片的圆角、描边、阴影与共享 .settings-card 一致；分段控件沿用共享样式。
  */
 
 .settings-usage {
   --su-highlight: #d97757;
-}
-
-.settings-root[data-pi-settings-style="codex"] .settings-usage {
-  --su-highlight: var(--st-accent);
-}
-
-.settings-usage .settings-segment {
-  padding: 6px 15px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  line-height: 1;
-}
-
-.settings-usage .settings-segment.is-on {
-  background: var(--st-menu-bg);
 }
 
 .settings-usage-head {
@@ -35,48 +21,50 @@
   margin: 4px 0 0;
   color: var(--st-text-3);
   font-size: 12.5px;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .settings-usage-controls {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: 12px;
   flex: none;
 }
 
 .settings-usage-control {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .settings-usage-control-label {
-  padding-left: 6px;
+  padding-left: 2px;
   color: var(--st-text-4);
-  font-size: 10.5px;
-  letter-spacing: 0.4px;
+  font-size: 11px;
   line-height: 1;
 }
 
 .settings-usage-card {
+  border: 1px solid var(--st-card-border);
+  border-radius: var(--st-radius-card);
   background: var(--st-card-bg);
-  border: 1px solid var(--st-menu-border);
-  border-radius: 14px;
   box-shadow: var(--st-card-shadow);
 }
 
 .settings-usage-stale {
-  margin: 10px 2px 0;
-  color: var(--st-wait);
-  font-size: 11.5px;
+  margin: 14px 0 0;
+  padding: 8px 12px;
+  border-radius: var(--st-radius-row);
+  background: var(--st-notice-warn-bg);
+  color: var(--st-text-2);
+  font-size: 12px;
   line-height: 1.5;
 }
 
 .settings-usage-coverage {
-  margin: 8px 2px 0;
+  margin: 10px 2px 0;
   color: var(--st-text-4);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -86,12 +74,12 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  margin-top: 16px;
+  margin-top: 20px;
 }
 
 .settings-usage-stat {
   min-width: 0;
-  padding: 13px 15px 11px;
+  padding: 14px 16px 13px;
 }
 
 .settings-usage-stat-label {
@@ -101,38 +89,39 @@
   margin: 0;
   color: var(--st-text-3);
   font-size: 12px;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .settings-usage-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   flex: none;
   border-radius: 50%;
   background: var(--st-accent);
 }
 
 .settings-usage-stat-value {
-  margin: 6px 0 0;
+  margin: 8px 0 0;
   color: var(--st-text-1);
-  font-size: 27px;
-  font-weight: 650;
-  letter-spacing: -0.2px;
-  line-height: 1.15;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
 
 .settings-usage-stat-unit {
-  margin-left: 2px;
+  margin-left: 3px;
   color: var(--st-text-3);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 
 .settings-usage-stat-sub {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   color: var(--st-text-4);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -150,7 +139,7 @@
 
 .settings-usage-quota {
   margin-top: 12px;
-  padding: 14px 18px 13px;
+  padding: 14px 16px;
 }
 
 .settings-usage-quota-head {
@@ -161,20 +150,20 @@
 
 .settings-usage-quota-title {
   color: var(--st-text-1);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .settings-usage-quota-sub {
-  margin: 2px 0 0;
+  margin: 3px 0 0;
   color: var(--st-text-4);
-  font-size: 11.5px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .settings-usage-quota-bar {
-  height: 8px;
-  margin-top: 11px;
+  height: 6px;
+  margin-top: 12px;
   overflow: hidden;
   border-radius: 99px;
   background: var(--st-tile-bg);
@@ -195,14 +184,14 @@
   gap: 12px;
   margin-top: 8px;
   color: var(--st-text-4);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 /* ---------------- 热力图 ---------------- */
 
 .settings-usage-heat-card {
   margin-top: 12px;
-  padding: 16px 18px 13px;
+  padding: 16px 16px 14px;
 }
 
 .settings-usage-heat-head {
@@ -215,34 +204,35 @@
 .settings-usage-card-title {
   margin: 0;
   color: var(--st-text-1);
-  font-size: 15.5px;
-  font-weight: 650;
-  line-height: 1.35;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .settings-usage-hint {
-  margin: 3px 0 0;
+  margin: 2px 0 0;
   color: var(--st-text-4);
-  font-size: 11.5px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .settings-usage-legend {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   flex: none;
   color: var(--st-text-4);
   font-size: 11px;
 }
 
 .settings-usage-heat {
-  margin-top: 12px;
+  margin-top: 14px;
 }
 
 .settings-usage-heat-scroll {
   overflow-x: auto;
-  padding: 2px 0 2px;
+  padding: 2px 0;
+  scrollbar-width: thin;
 }
 
 .settings-usage-heat-grid {
@@ -268,7 +258,7 @@
   background: var(--st-tile-bg);
 }
 
-button.settings-usage-cell {
+.settings-usage button.settings-usage-cell {
   cursor: default;
 }
 
@@ -291,14 +281,14 @@ button.settings-usage-cell {
 .settings-usage-cell[data-today] {
   box-shadow:
     0 0 0 2px var(--st-card-bg),
-    0 0 0 4px var(--su-highlight);
+    0 0 0 3.5px var(--su-highlight);
 }
 
 .settings-usage-legend-cell {
   display: block;
   width: 10px;
   height: 10px;
-  border-radius: 2.5px;
+  border-radius: 2px;
   background: var(--st-tile-bg);
 }
 
@@ -328,7 +318,7 @@ button.settings-usage-cell {
 .settings-usage-month {
   overflow: visible;
   color: var(--st-text-4);
-  font-size: 10.5px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -337,9 +327,9 @@ button.settings-usage-cell {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 10px;
+  margin-top: 12px;
   color: var(--st-text-4);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -351,30 +341,30 @@ button.settings-usage-cell {
 .settings-usage-empty-title {
   margin: 0;
   color: var(--st-text-2);
-  font-size: 13.5px;
-  font-weight: 550;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .settings-usage-empty-body {
   margin: 5px 0 0;
   color: var(--st-text-4);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
 /* ---------------- 周柱 / 累计 ---------------- */
 
 .settings-usage-week {
-  margin-top: 8px;
+  margin-top: 14px;
 }
 
 .settings-usage-bars {
   display: flex;
   align-items: flex-end;
   gap: 6px;
-  height: 180px;
+  height: 168px;
   padding: 0 2px;
-  border-bottom: 1px solid var(--st-border);
+  border-bottom: 1px solid var(--st-divider);
 }
 
 .settings-usage-bar-col {
@@ -388,7 +378,7 @@ button.settings-usage-cell {
 .settings-usage-bar {
   display: block;
   width: 100%;
-  border-radius: 4px 4px 0 0;
+  border-radius: 3px 3px 0 0;
   background: linear-gradient(to top, var(--st-accent), color-mix(in srgb, var(--st-accent) 55%, var(--st-menu-bg)));
 }
 
@@ -399,7 +389,7 @@ button.settings-usage-cell {
 .settings-usage-chart-note {
   margin: 10px 0 0;
   color: var(--st-text-4);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -410,7 +400,7 @@ button.settings-usage-cell {
 .settings-usage-area {
   display: block;
   width: 100%;
-  height: 180px;
+  height: 168px;
 }
 
 .settings-usage-area-fill {
@@ -421,7 +411,7 @@ button.settings-usage-cell {
 .settings-usage-area-line {
   fill: none;
   stroke: var(--st-accent);
-  stroke-width: 1.2;
+  stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
 
@@ -437,7 +427,7 @@ button.settings-usage-cell {
 .settings-usage-detail,
 .settings-usage-models {
   min-width: 0;
-  padding: 13px 16px 11px;
+  padding: 14px 16px 12px;
 }
 
 .settings-usage-detail-row {
@@ -445,19 +435,20 @@ button.settings-usage-cell {
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  padding: 7px 0;
-  border-bottom: 0.5px dashed color-mix(in srgb, var(--st-text-1) 14%, transparent);
-  color: var(--st-text-3);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--st-divider);
+  color: var(--st-text-2);
   font-size: 12.5px;
 }
 
 .settings-usage-detail-row:last-child {
   border-bottom: 0;
+  padding-bottom: 2px;
 }
 
 .settings-usage-detail-value {
   color: var(--st-text-1);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -465,9 +456,9 @@ button.settings-usage-cell {
 
 .settings-usage-detail-value small {
   display: block;
-  margin-top: 1px;
+  margin-top: 2px;
   color: var(--st-text-4);
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 400;
 }
 
@@ -476,13 +467,14 @@ button.settings-usage-cell {
 }
 
 .settings-usage-models .settings-usage-card-title span {
+  margin-left: 4px;
   color: var(--st-text-4);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
 }
 
 .settings-usage-model-row {
-  padding: 7px 0 3px;
+  padding: 8px 0 2px;
 }
 
 .settings-usage-model-top {
@@ -494,7 +486,13 @@ button.settings-usage-cell {
 }
 
 .settings-usage-model-name {
-  color: var(--st-text-3);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--st-text-2);
+  font-family: var(--st-font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-usage-model-pct {
@@ -505,7 +503,7 @@ button.settings-usage-cell {
 
 .settings-usage-model-bar {
   display: block;
-  height: 8px;
+  height: 6px;
   margin-top: 6px;
   overflow: hidden;
   border-radius: 99px;
@@ -533,33 +531,33 @@ button.settings-usage-cell {
 }
 
 .settings-usage-model-note {
-  margin: 9px 0 0;
+  margin: 10px 0 0;
   color: var(--st-text-4);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
 /* ---------------- 口径注记 / 状态卡 / tooltip ---------------- */
 
 .settings-usage-footnote {
-  margin: 14px auto 0;
-  max-width: 860px;
+  margin: 16px auto 0;
+  max-width: 760px;
   color: var(--st-text-4);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.7;
   text-align: center;
 }
 
 .settings-usage-state {
-  margin-top: 16px;
+  margin-top: 20px;
   padding: 28px 22px;
 }
 
 .settings-usage-state-title {
   margin: 0;
   color: var(--st-text-1);
-  font-size: 15.5px;
-  font-weight: 650;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .settings-usage-state-body {
@@ -572,39 +570,54 @@ button.settings-usage-cell {
 .settings-usage-state-error {
   margin: 8px 0 0;
   color: var(--st-text-4);
+  font-family: var(--st-font-mono);
   font-size: 11.5px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .settings-usage .settings-usage-retry {
-  margin-top: 12px;
-  padding: 6px 12px;
-  border: 1px solid var(--st-menu-border);
-  border-radius: 8px;
-  background: var(--st-field-bg);
-  color: var(--st-text-2);
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  margin-top: 14px;
+  padding: 0 12px;
+  border: 1px solid var(--st-control-border);
+  border-radius: var(--st-radius-control);
+  background: var(--st-control-bg);
+  color: var(--st-text-1);
+  font-size: 12.5px;
+  font-weight: 500;
   line-height: 1;
+}
+
+.settings-usage .settings-usage-retry:hover {
+  border-color: var(--st-control-border-hover);
+  background: var(--st-control-hover-bg);
 }
 
 .settings-usage-tip {
   position: fixed;
-  z-index: 60;
+  z-index: var(--cw-pi-z-raised);
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   max-width: 280px;
-  padding: 8px 12px 9px;
+  padding: 8px 12px;
   border: 1px solid var(--st-menu-border);
-  border-radius: 11px;
-  background: var(--st-menu-bg);
+  border-radius: var(--st-radius-row);
+  background: var(--st-raised-bg);
   color: var(--st-text-1);
-  box-shadow: 0 10px 32px color-mix(in srgb, var(--st-text-1) 16%, transparent), 0 2px 8px color-mix(in srgb, var(--st-text-1) 10%, transparent);
-  font-size: 11.5px;
-  line-height: 1.55;
+  box-shadow: var(--st-float-shadow);
+  font-size: 12px;
+  line-height: 1.5;
   pointer-events: none;
   transform: translate(-50%, -100%);
   white-space: nowrap;
+}
+
+.settings-usage-tip span {
+  color: var(--st-text-3);
 }
 
 .settings-usage-tip b {
@@ -613,18 +626,7 @@ button.settings-usage-cell {
 }
 
 @media (max-width: 1100px) {
-  .settings-usage .settings-segment {
-  padding: 6px 15px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  line-height: 1;
-}
-
-.settings-usage .settings-segment.is-on {
-  background: var(--st-menu-bg);
-}
-
-.settings-usage-head {
+  .settings-usage-head {
     align-items: flex-start;
     flex-direction: column;
   }

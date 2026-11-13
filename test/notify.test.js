@@ -347,6 +347,12 @@ test("等价（A-3）：notify 归一与 rooms 摘要副本对同一序列结论
     ["重复 settled 只记一次（其间的新终态不翻案）", [start, end("stop"), settled, end("error"), settled], ["turn_done", "none"]],
     ["新活动后可再记一回合", [start, end("error"), settled, start, end("stop"), settled], ["turn_error", "turn_done"]],
     ["aborted 后新活动正常记", [start, end("aborted"), settled, start, end("stop"), settled], ["none", "turn_done"]],
+    // 停止信号（R2-1）：turn_stopped / stopped:true / 助手 aborted 之后，这一轮的余波（再起一个 turn、以 error 收尾）不翻案
+    ["turn_stopped 后余波 turn 以 error 收尾 → 两边都不记", [start, { type: "turn_stopped" }, { type: "turn_start" }, end("error"), settled], ["none"]],
+    ["收尾事件带 stopped:true → 两边都不记", [start, end("toolUse"), { ...end("error"), stopped: true }, { ...settled, stopped: true }], ["none"]],
+    ["旧扩展：aborted 后的余波 error 也不翻案", [start, end("aborted"), { type: "turn_start" }, end("error"), settled], ["none"]],
+    ["停止后新一轮运行照常记", [start, { type: "turn_stopped" }, settled, start, end("stop"), settled], ["none", "turn_done"]],
+    ["before_agent_start 也算新一轮", [start, { type: "turn_stopped" }, settled, { type: "before_agent_start" }, start, end("error"), settled], ["none", "turn_error"]],
   ];
   for (const [name, events, expected] of sequences) {
     const { notifier, calls } = makeNotifier();

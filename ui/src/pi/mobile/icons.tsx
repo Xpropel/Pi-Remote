@@ -110,6 +110,35 @@ export function IconArchive(props: IconProps) {
   )
 }
 
+export function IconUnarchive(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3.5" y="4.5" width="17" height="4" rx="1.2" />
+      <path d="M5 8.5V19a1.5 1.5 0 0 0 1.5 1.5h2.5M19 8.5V19a1.5 1.5 0 0 1-1.5 1.5H15" />
+      <path d="m9.5 14.5 2.5-2.5 2.5 2.5M12 12v8.5" />
+    </Svg>
+  )
+}
+
+export function IconInbox(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M21 12.5h-5.2l-1.6 2.6H9.8l-1.6-2.6H3" />
+      <path d="M5.6 5.6 3 12.5V18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5.5l-2.6-6.9A2 2 0 0 0 16.5 4.3h-9a2 2 0 0 0-1.9 1.3z" />
+    </Svg>
+  )
+}
+
+export function IconMore(props: IconProps) {
+  return (
+    <Svg {...props} fill="currentColor">
+      <circle cx="5.5" cy="12" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="18.5" cy="12" r="1" />
+    </Svg>
+  )
+}
+
 export function IconClose(props: IconProps) {
   return (
     <Svg {...props}>

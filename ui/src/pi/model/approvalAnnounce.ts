@@ -2,7 +2,7 @@
  * "等你回答"审批卡的读屏播报（design §4.7 实时区域；PLAN 4.5）。纯函数，Node 单测直接测（test/pi-p4-b.test.mjs）。
  *
  * 规则：
- * - 卡出现时播报一次"pi 在等你回答：<标题>，<问题>"（polite）；剩余时间不逐秒播报。
+ * - 卡出现时播报一次"pi 在等你回答：<标题>，<问题>"（polite；工具审批卡是"pi 在等你批准：…"）；剩余时间不逐秒播报。
  * - 剩 10 秒时再播报一次"还剩 10 秒"（秒数向上取整：时钟一秒一跳，第一次跳进 10 秒内时可能是 9.6 秒）。
  * - 卡出现时就已经不到 10 秒：两句并成一次播报，不再单独报"还剩 N 秒"。
  * - 换了一张卡（dialogId 变了）：重新播报，10 秒提醒也重新算。
@@ -32,6 +32,8 @@ export interface ApprovalAnnounceInput {
   question: string
   /** 剩余毫秒；没有超时（只显示"已等 …"）时为 null */
   remainingMs: number | null
+  /** 工具审批卡（dialogIsApproval）：说"等你批准"；提问 / 弹窗说"等你回答" */
+  approval?: boolean
 }
 
 /** 卡头之后读的那句：标题和问题用"，"连起来；都没有时为空串 */
@@ -47,7 +49,8 @@ export function approvalAnnounceStep(prev: ApprovalAnnounceState, input: Approva
   if (!input.active) return prev
   const { dialogId, question, remainingMs } = input
   if (prev.dialogId !== dialogId) {
-    const head = question ? `pi 在等你回答：${question}` : "pi 在等你回答"
+    const waiting = input.approval ? "pi 在等你批准" : "pi 在等你回答"
+    const head = question ? `${waiting}：${question}` : waiting
     if (inWarnWindow(remainingMs)) return { dialogId, text: `${head}。还剩 ${secondsLeft(remainingMs)} 秒`, warned: true }
     return { dialogId, text: head, warned: false }
   }

@@ -1,7 +1,7 @@
 // Pi-Remote 设置页 v2 · 第 5 轮 A11Y 回归（纯 Node，无浏览器）：
 //   1. 桌面 / 手机设置根是 dialog（role / aria-modal / 可访问名）+ 焦点管理接线（进入 / 循环 / Esc / 还原）；
 //   2. select / 滑杆的 :focus-visible 焦点环用中性 token、特异性压过 pi-theme、手机 select 同样；
-//   3. 六皮肤次级文字 ≥4.5、关闭/开启开关与滑杆非文字 ≥3（token 层直接复算）；
+//   3. 浅 / 深两套次级文字 ≥4.5、关闭/开启开关与滑杆非文字 ≥3（token 层直接复算）；
 //   4. radiogroup 支持 ArrowLeft/Right（循环、跳过 disabled），Space 走原生。
 //
 // token 复算用与 CSS 相同的 hex / rgba / color-mix / var() 解析；不是浏览器像素验收
@@ -107,7 +107,7 @@ function contrast(a, b) {
 /* ------------------------------------------------------------------ */
 
 const TOKENS = stripComments(read("ui/src/pi/settings/tokens.css"))
-const STYLES = ["cursor", "claude", "codex"]
+const STYLES = ["cursor"]
 const THEMES = ["light", "dark"]
 
 function blockOf(source, selectorStart) {
@@ -264,10 +264,10 @@ test("A11Y-02 select / 滑杆有高特异性可见焦点环（中性色、2px、
 })
 
 /* ------------------------------------------------------------------ */
-/* 3. 对比度（六皮肤 token 复算）                                       */
+/* 3. 对比度（浅 / 深两套 token 复算）                                  */
 /* ------------------------------------------------------------------ */
 
-test("A11Y-03 六皮肤次级文字：text-3 / text-4 对卡底与页面 ≥4.5，层级保持", () => {
+test("A11Y-03 浅 / 深次级文字：text-3 / text-4 对卡底与页面 ≥4.5，层级保持", () => {
   for (const style of STYLES) {
     for (const theme of THEMES) {
       const key = `${style}-${theme}`
@@ -301,7 +301,7 @@ test("A11Y-03 徽标文字 ≥4.5（桥接 / 设计预留，含自身底色合�
   }
 })
 
-test("A11Y-04 六皮肤开关：关闭态轨道 / 白 thumb ≥3；深色开启态 thumb/轨道 ≥3", () => {
+test("A11Y-04 浅 / 深开关：关闭态轨道 / 白 thumb ≥3；深色开启态 thumb/轨道 ≥3", () => {
   for (const style of STYLES) {
     for (const theme of THEMES) {
       const key = `${style}-${theme}`
@@ -332,7 +332,7 @@ test("A11Y-04 手机开关开启态 thumb / 中性轨道 ≥3", () => {
   assert.match(mobileCss, /\.sm-switch\.is-on \.sm-switch-thumb \{[^}]*background: var\(--st-switch-knob-on\)/, "手机开启态 thumb 未用开启态圆点色")
 })
 
-test("A11Y-04 六皮肤滑杆强调 / 卡底 ≥3；Claude 浅色单独加深", () => {
+test("A11Y-04 浅 / 深滑杆强调 / 卡底 ≥3", () => {
   for (const style of STYLES) {
     for (const theme of THEMES) {
       const key = `${style}-${theme}`
@@ -341,8 +341,6 @@ test("A11Y-04 六皮肤滑杆强调 / 卡底 ≥3；Claude 浅色单独加深", 
       assert.ok(ratio >= 3, `${key} 滑杆强调/卡底 ${ratio.toFixed(2)}:1`)
     }
   }
-  const claudeLight = paletteOf("claude-light")
-  assert.ok(contrast(claudeLight.sliderAccent, claudeLight.card) >= 3.3, "Claude 浅色滑杆没有足够余量")
 })
 
 test("A11Y-02 焦点环 token 中性且对卡底 ≥3", () => {
@@ -400,9 +398,4 @@ test("A11Y-04 开关轨道用 .settings-root 作用域压过 .settings-root butt
   assert.match(settingsCss, /linear-gradient\([\s\S]*?var\(--st-slider-accent\)/, "滑杆强调段未用加深后的 token")
   assert.match(settingsCss, /\.settings-badge--bridge \{[\s\S]*?color:\s*var\(--st-badge-bridge-fg\)/, "桥接徽标未用加深文字 token")
   assert.match(settingsCss, /\.settings-badge--reserved \{[\s\S]*?color:\s*var\(--st-text-3\)/, "设计预留徽标未用更深文字 token")
-  assert.match(
-    settingsCss,
-    /\[data-pi-settings\]\[data-pi-settings-style="claude"\] \.settings-slider \{[\s\S]*?linear-gradient/,
-    "Claude reset 打穿的滑杆轨道未补回",
-  )
 })

@@ -4,26 +4,24 @@
  * P9 C（spec §5.5）：目录的「允许」口径从 Device.projects 扩到 folderAllowed（白名单 + 浏览根目录），
  * 另加 deviceScopeLabel（「在这台 Mac 上」）与 homeShort（`~/` 显示）。
  */
-import { cwdInProjects, folderAllowed, pickDefaultDevice, roomDeviceId, type Device, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
+import { cwdInProjects, folderAllowed, pathKeyOf, pickDefaultDevice, roomDeviceId, samePath, underRoots, type Device, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
 
-/** Comparison key for folder exclusion sets: separators and trailing
- *  slashes do not count, case-insensitive (same rule as the folder browser). */
-export function folderKeyOf(value: string): string {
-  return String(value || "")
-    .replace(/\\/g, "/")
-    .replace(/\/+$/, "")
-    .toLowerCase()
+/** Comparison key for folder exclusion sets: the shared device-path rule
+ *  (pathKeyOf). Without a platform it is the loose legacy rule. */
+export function folderKeyOf(value: string, platform?: string | null): string {
+  return pathKeyOf(value, platform)
 }
 
-function excludedKeysOf(exclude?: ReadonlySet<string>): ReadonlySet<string> | null {
+function excludedKeysOf(exclude?: ReadonlySet<string>, platform?: string | null): ReadonlySet<string> | null {
   if (!exclude || exclude.size === 0) return null
-  return new Set([...exclude].map(folderKeyOf))
+  return new Set([...exclude].map((path) => folderKeyOf(path, platform)))
 }
 
 /**
  * 预选：已选中的设备在线就用它，否则 pickDefaultDevice（最近有活动的在线设备）。
  * 目录 = 这台设备最近用过、且没有在线运行会话的目录（同目录已有在线房间时 attach 回 already_running，不另起；联动测试 10）；
- * 最近用过的目录都有运行会话（或没有最近目录）时退回原规则：最近会话的目录（在允许的目录里），没有就是第一个允许的目录
+ * 最近用过的目录都有运行会话（或没有最近目录）时，取白名单里第一个没有运行会话的项目目录；
+ * 白名单也都在运行时退回原规则：最近会话的目录（在允许的目录里），没有就是第一个允许的目录
  * （P9 C：没有白名单目录时退回第一个浏览根目录，也就是设备用户的家目录）。
  * `exclude` (F3): folders proven missing on the device (see
  * folderExistence.ts) are never preselected -- the allow-list check alone
@@ -42,16 +40,22 @@ export function newSessionDefaultsOf(
   const deviceId = selected?.online ? selected.id : (pickDefaultDevice([...input.devices], [...input.rooms]) ?? selected?.id ?? input.devices[0]?.id ?? null)
   const device = input.devices.find((d) => d.id === deviceId)
   if (!device) return { deviceId, folder: null }
-  const excluded = excludedKeysOf(exclude)
-  const kept = (cwd: string | undefined): cwd is string => !!cwd && !(excluded && excluded.has(folderKeyOf(cwd)))
+  const excluded = excludedKeysOf(exclude, device.platform)
+  const kept = (cwd: string | undefined): cwd is string => !!cwd && !(excluded && excluded.has(folderKeyOf(cwd, device.platform)))
   const recent = recentFoldersOf(input.sessionsByDevice[device.id] ?? [], device, Infinity, exclude)
-  const idle = recent.find((cwd) => !hasRunningRoom(input.rooms, device.id, cwd))
-  return { deviceId, folder: idle ?? recent[0] ?? device.projects.find(kept) ?? device.browseRoots?.find(kept) ?? null }
+  const idle = (cwd: string) => !hasRunningRoom(input.rooms, device.id, cwd, device.platform)
+  const pick = recent.find(idle) ?? device.projects.find((cwd) => kept(cwd) && idle(cwd))
+  return { deviceId, folder: pick ?? recent[0] ?? device.projects.find(kept) ?? device.browseRoots?.find(kept) ?? null }
 }
 
-/** 这台设备在这个目录上有没有在线房间（attach 的 findOnline 同一口径：同目录在线 = already_running） */
-export function hasRunningRoom(rooms: readonly Pick<RoomInfo, "online" | "deviceId" | "cwd">[], deviceId: string, cwd: string): boolean {
-  return rooms.some((room) => room.online && !!room.cwd && roomDeviceId(room) === deviceId && cwdInProjects([room.cwd], cwd))
+/** 这台设备在这个目录上的在线房间（attach 的 findOnline 同一口径：同目录在线 = already_running）；没有为 null。
+ *  platform = 这台设备的平台；不给时按最宽松的旧规则比（两种斜杠等价、不分大小写） */
+export function runningRoomOf<R extends Pick<RoomInfo, "online" | "deviceId" | "cwd">>(rooms: readonly R[], deviceId: string, cwd: string, platform?: string | null): R | null {
+  return rooms.find((room) => room.online && !!room.cwd && roomDeviceId(room) === deviceId && samePath(room.cwd, cwd, platform)) ?? null
+}
+
+export function hasRunningRoom(rooms: readonly Pick<RoomInfo, "online" | "deviceId" | "cwd">[], deviceId: string, cwd: string, platform?: string | null): boolean {
+  return runningRoomOf(rooms, deviceId, cwd, platform) !== null
 }
 
 /**
@@ -64,15 +68,16 @@ function allowedByScope(scope: FolderScope, cwd: string): boolean {
   return Array.isArray(scope) ? cwdInProjects(scope, cwd) : folderAllowed(scope, cwd)
 }
 
-/** "最近"：这台设备会话的目录，按 updatedAt 倒序去重，只留这台设备能用的目录（folderAllowed）；
+/** "最近"：这台设备会话的目录，按 updatedAt 倒序去重（同一目录的不同写法如 D:/x 与 D:\x 只留最新的一条），只留这台设备能用的目录（folderAllowed）；
  *  `exclude`（F3）里已证不存在的目录同样剔除。 */
 export function recentFoldersOf(sessions: readonly Pick<SessionEntry, "cwd" | "updatedAt">[], scope: FolderScope, limit = 5, exclude?: ReadonlySet<string>): string[] {
-  const excluded = excludedKeysOf(exclude)
+  const platform = Array.isArray(scope) ? null : scope.platform
+  const excluded = excludedKeysOf(exclude, platform)
   const sorted = [...sessions].filter((s) => !!s.cwd).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
   const out: string[] = []
   for (const s of sorted) {
-    if (out.includes(s.cwd) || !allowedByScope(scope, s.cwd)) continue
-    if (excluded && excluded.has(folderKeyOf(s.cwd))) continue
+    if (out.some((cwd) => samePath(cwd, s.cwd, platform)) || !allowedByScope(scope, s.cwd)) continue
+    if (excluded && excluded.has(folderKeyOf(s.cwd, platform))) continue
     out.push(s.cwd)
     if (out.length >= limit) break
   }
@@ -94,8 +99,8 @@ export function folderForDevice(
   exclude?: ReadonlySet<string>,
 ): string | null {
   if (!device) return null
-  const excluded = excludedKeysOf(exclude)
-  const kept = (cwd: string | undefined): cwd is string => !!cwd && !(excluded && excluded.has(folderKeyOf(cwd)))
+  const excluded = excludedKeysOf(exclude, device.platform)
+  const kept = (cwd: string | undefined): cwd is string => !!cwd && !(excluded && excluded.has(folderKeyOf(cwd, device.platform)))
   if (folder && kept(folder) && folderAllowed(device, folder)) return folder
   return device.projects.find(kept) ?? device.browseRoots?.find(kept) ?? null
 }
@@ -140,18 +145,14 @@ function displayPath(value: string): string {
  * 显示用（spec §5.5）：路径在某个浏览根目录里时，把根目录前缀写成 `~/`（根目录默认就是设备用户的家目录）。
  * 根目录外的路径原样返回。只用于显示，不要拿结果去发命令。
  */
-export function homeShort(path: string, roots: readonly string[] | null | undefined): string {
+export function homeShort(path: string, roots: readonly string[] | null | undefined, platform?: string | null): string {
   const want = displayPath(path)
   if (!want) return ""
-  const wantKey = want.toLowerCase()
   let best = ""
   for (const root of roots || []) {
     const base = displayPath(root)
     if (!base || base === "/") continue
-    const key = base.toLowerCase()
-    if (wantKey === key || wantKey.startsWith(key + "/")) {
-      if (key.length > best.length) best = base
-    }
+    if (underRoots([root], path, platform) && base.length > best.length) best = base
   }
   if (!best) return want
   const rest = want.slice(best.length).replace(/^\/+/, "")

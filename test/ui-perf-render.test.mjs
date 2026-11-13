@@ -1,6 +1,6 @@
-// UI·perf 中-1（主界面消息级 memo + 容器派生缓存）/ 高-1（Claude 变体对话流的 300 条渲染窗）回归。
+// UI·perf 中-1（主界面消息级 memo + 容器派生缓存）/ 300 条渲染窗的窗口数学 回归。
 // memo 的运行时行为要真浏览器（见 开发工具（未随公开仓提供）），这里锁两件事：① memo 的**前提**（未变条目保持引用、集合按身份缓存）；
-// ② 源码契约（ClaudeThread 的窗口接线、PiTranscript 的 memo、TranscriptContainer 的派生缓存）。
+// ② 源码契约（PiTranscript 的 memo、TranscriptContainer 的派生缓存）。
 import test, { describe } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -54,7 +54,7 @@ describe("中-1：源码契约（消息级 memo + 容器派生缓存）", () => 
   const container = code(read("ui/src/pi/containers/TranscriptContainer.tsx"))
 
   test("ItemView 是 memo 组件（默认浅比较 = 全 prop 按引用比较）", () => {
-    assert.match(transcript, /const ItemView = memo\(function ItemView\(\{ item, variant, density, open, fold, foldLong, subagentSlot, replyMeta, showRetry, onOpenImage \}: ItemViewProps\)/)
+    assert.match(transcript, /const ItemView = memo\(function ItemView\(\{ item, variant, density, open, fold, foldLong, subagentSlot, replyMeta, thinkingSince, showRetry, onOpenImage \}: ItemViewProps\)/)
     assert.match(transcript, /\}\)\n\nfunction isLiveTail/)
   })
 
@@ -80,37 +80,8 @@ describe("中-1：源码契约（消息级 memo + 容器派生缓存）", () => 
   })
 })
 
-describe("高-1：Claude 对话流的 300 条渲染窗（与主界面同口径）", () => {
-  const thread = code(read("ui/src/pi/variants/claude/thread/ClaudeThread.tsx"))
-  const parts = code(read("ui/src/pi/variants/claude/thread/ClaudeProseParts.tsx"))
-
-  test("窗口常量与文案复用主界面的 transcriptWindow（不另起一套数字）", () => {
-    assert.match(thread, /import \{ PI_TRANSCRIPT_WINDOW, transcriptWindowOf \} from "@\/pi\/model\/transcriptWindow"/)
-    assert.match(thread, /const \[limit, setLimit\] = useState\(PI_TRANSCRIPT_WINDOW\)/)
-    assert.match(thread, /const win = useMemo\(\(\) => transcriptWindowOf\(visible, limit\), \[visible, limit\]\)/)
-    assert.match(parts, /import \{ showEarlierText \} from "@\/pi\/model\/transcriptWindow"/)
-  })
-
-  test("整表渲染改成窗口渲染：不再 map 全量 visible，只见 win.visible", () => {
-    assert.match(thread, /\{win\.visible\.map\(\(item\) => \{/)
-    assert.doesNotMatch(thread, /\{visible\.map\(\(item\) => \{/)
-  })
-
-  test("「显示更早的 N 条」：仍有更早的条目时出这一行，点一次多挂一页并还原滚动位置", () => {
-    assert.match(thread, /\{win\.hidden > 0 \? <ClaudeShowEarlier hidden=\{win\.hidden\} nextPage=\{win\.nextPage\} onShow=\{showEarlier\} \/> : null\}/)
-    assert.match(thread, /restoreRef\.current = el \? el\.scrollHeight - el\.scrollTop : null/)
-    assert.match(thread, /setLimit\(\(l\) => l \+ PI_TRANSCRIPT_WINDOW\)/)
-    assert.match(thread, /el\.scrollTop = el\.scrollHeight - restoreRef\.current/)
-    assert.match(parts, /export function ClaudeShowEarlier\(\{ hidden, nextPage, onShow \}/)
-    assert.match(parts, /\{showEarlierText\(nextPage\)\}/)
-  })
-
-  test("换会话把窗收回 300（渲染期间就收，不会先挂上旧会话的整段历史）", () => {
-    assert.match(thread, /const \[shownRoom, setShownRoom\] = useState\(roomId\)/)
-    assert.match(thread, /if \(roomId !== shownRoom\) \{\s*\n\s*setShownRoom\(roomId\)\s*\n\s*setLimit\(PI_TRANSCRIPT_WINDOW\)/)
-  })
-
-  test("窗口数学就是主界面那一套：1 万条 → 挂 300 条、窗外 9700、文案一致", () => {
+describe("300 条渲染窗：主界面 transcriptWindow 的窗口数学", () => {
+  test("1 万条 → 挂 300 条、窗外 9700、文案一致", () => {
     const items = Array.from({ length: 10_000 }, (_, i) => ({ key: `k${i}` }))
     const win = transcriptWindowOf(items, PI_TRANSCRIPT_WINDOW)
     assert.equal(win.visible.length, 300)
@@ -120,15 +91,5 @@ describe("高-1：Claude 对话流的 300 条渲染窗（与主界面同口径�
     const page = transcriptWindowOf(items, PI_TRANSCRIPT_WINDOW * 2)
     assert.equal(page.visible.length, 600)
     assert.equal(page.hidden, 9400)
-  })
-
-  test("改动留在 thread/：不新增对 shell / sidebar / composer / 面板 / cursor 组件的依赖", () => {
-    const imports = [...thread.matchAll(/from "([^"]+)"/g)].map((m) => m[1])
-    const forbidden = ["../shell/", "../sidebar/", "../composer/", "../pages/", "../panels/", "../chrome/", "../overlays/", "../phone/", "@/components/"]
-    for (const spec of imports) {
-      assert.ok(!forbidden.some((prefix) => spec.startsWith(prefix)), `ClaudeThread 不该 import：${spec}`)
-    }
-    // 主界面那套窗口纯函数是白名单里的 model（与 transcriptView 同层）
-    assert.ok(imports.includes("@/pi/model/transcriptWindow"))
   })
 })

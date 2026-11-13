@@ -1,10 +1,10 @@
 /**
- * P11 统一左侧边栏（桌面）共享契约 —— **三套 UI 唯一侧栏组件 × 六套 token**。
+ * P11 unified left sidebar (desktop) shared contract — the single sidebar component, cursor style only (light/dark token sets).
  *
  * 边界：本文件只含类型/常量/逐字文案（无 React 组件、无 DOM/localStorage 副作用），node --test 可直载。
  * 组件与样式：UnifiedSidebar.tsx + SidebarSections/…（claude-dev，P11.3）；本文件由 arch 冻结，API 只增不改。
- * 数据流：宿主（三种变体）→ useSidebarModel（dev 数据适配）→ UnifiedSidebar(data/actions/slots)；
- *       视觉只由 `data.style × theme` 选 `--sb-*` 六套 token（tokens.css），组件不写变体私有样式。
+ * Data flow: host -> useSidebarModel (dev data adapter) -> UnifiedSidebar(data/actions/slots);
+ *       visuals come only from `data.style x theme` selecting the `--sb-*` tokens (tokens.css).
  * 设计源：统一左侧边栏设计规格（数值唯一出处）。
  *
  * Surface：P11-SIDE-01..14（实现挂 data-p11-surface）；验证/截图按 data-p11-surface + data-pi-sidebar-style。
@@ -12,11 +12,11 @@
 import type { ReactNode } from "react"
 import type { RoomEncReason } from "../../relay/devices.ts"
 
-/** 三套视觉风格；与 PiUiVariant 一一对应（drift 由 test/pi-p11-framework 断言）。 */
-export const PI_SIDEBAR_STYLES = ["cursor", "claude", "codex"] as const
+/** The one visual style left; mirrors PiUiVariant one-to-one (drift asserted by test/pi-p11-framework). */
+export const PI_SIDEBAR_STYLES = ["cursor"] as const
 export type PiSidebarStyle = (typeof PI_SIDEBAR_STYLES)[number]
 
-/** 明暗；六套 = 3 风格 × dark/light。 */
+/** Themes: 2 sets = 1 style × dark/light. */
 export const PI_SIDEBAR_THEMES = ["dark", "light"] as const
 export type PiSidebarTheme = (typeof PI_SIDEBAR_THEMES)[number]
 
@@ -211,7 +211,7 @@ export interface PiSidebarSearchState {
 
 /** 侧栏全部输入（宿主只传数据/动作/slots；视觉由 style×theme 决定）。 */
 export interface PiSidebarData {
-  /** 视觉风格 = 宿主 UI（cursor|claude|codex） */
+  /** Visual style = host UI (always "cursor"). */
   style: PiSidebarStyle
   /** 明暗跟随宿主主题（PiRoot 的 data-pi-theme） */
   theme: PiSidebarTheme

@@ -3,7 +3,7 @@
  *
  * 设计源：设置页 v2 设计规格/
  * - 桌面 11 页（本文件 SETTINGS_PAGE_IDS 是唯一顺序）；
- * - 一套组件 × 六套皮肤（Cursor / Claude / Codex × 深 / 浅），只换颜色令牌；
+ * - 一套组件 × 浅 / 深两套颜色令牌（Cursor 风格）；
  * - 页面状态四种：● existing / ○ local / ◐ bridge / ◌ reserved。
  *
  * 边界：页面不得自己写 storage 或拼颜色。偏好经 SettingsActions 写本机存储
@@ -94,12 +94,8 @@ export function settingsPageIdOf(value: unknown): SettingsPageId {
 }
 
 /* ------------------------------------------------------------------ */
-/* 皮肤 / 主题                                                         */
+/* 主题                                                                */
 /* ------------------------------------------------------------------ */
-
-/** 与 PI_SIDEBAR_STYLES 一一对应；换肤只换 tokens.css 的颜色块。 */
-export const SETTINGS_STYLES = ["cursor", "claude", "codex"] as const
-export type SettingsStyle = (typeof SETTINGS_STYLES)[number]
 
 /** 实际渲染的明暗（"跟随系统" 在 SettingsPage 外解析成其中之一）。 */
 export const SETTINGS_THEMES = ["dark", "light"] as const
@@ -107,10 +103,6 @@ export type SettingsTheme = (typeof SETTINGS_THEMES)[number]
 
 /** 外观页可选明暗；system 只是偏好值，渲染前必须解析。 */
 export type SettingsThemePref = SettingsTheme | "system"
-
-export function settingsStyleOf(value: unknown): SettingsStyle {
-  return typeof value === "string" && (SETTINGS_STYLES as readonly string[]).includes(value) ? (value as SettingsStyle) : "cursor"
-}
 
 export function settingsThemeOf(value: unknown): SettingsTheme | null {
   return typeof value === "string" && (SETTINGS_THEMES as readonly string[]).includes(value) ? (value as SettingsTheme) : null
@@ -301,7 +293,6 @@ export interface SettingsPrefs {
   dictationShortcut: string
 
   /* 外观 */
-  appearanceStyle: SettingsStyle
   appearanceTheme: SettingsThemePref
   accent: SettingsAccent
   fontSize: SettingsFontSize
@@ -378,7 +369,6 @@ export interface SettingsActions extends SettingsPrefsActions {
 /** 页面通过 useSettings() 拿到的全部上下文。 */
 export interface SettingsContextValue {
   p: PiContainerProps
-  style: SettingsStyle
   theme: SettingsTheme
   page: SettingsPageId
   setPage: (page: SettingsPageId) => void

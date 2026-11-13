@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react"
-import type { PiSidebarGroup, PiSidebarSession } from "../sidebar/types.ts"
-import { IconChevronDown, IconFolder, IconMonitor, IconSend } from "./icons"
+import { PI_SIDEBAR_COPY, type PiSidebarGroup, type PiSidebarSession } from "../sidebar/types.ts"
+import { MOBILE_GROUP_TONE_LABEL, mobileGroupToneOf } from "./groupTone.ts"
+import { IconArchive, IconChevronDown, IconChevronRight, IconFolder, IconInbox, IconMonitor, IconPin, IconSend } from "./icons"
 import { LongPressCard } from "./LongPressCard"
 import { MobileTopBar } from "./MobileTopBar"
 import { SwipeRow } from "./SwipeRow"
@@ -9,13 +10,15 @@ import type { PiMobileNavProps } from "./types.ts"
 /**
  * P11-MOB-04/05/06/07 列表式首页（默认）：54 顶栏 + 设备切换条 48 + 新会话 46 + 分组/会话行 60 两行
  * + 左滑 148 + 长按卡 + 底部安全段 30。数据/动作全部来自 arch PiSidebarData/Actions。
+ * 待答行（有待处理时）在分组上方；归档入口（本机有归档时）在分组下方，点开就地换成归档视图。
  */
-export function MobileListHome({ mode, data, actions, onOpenSession }: PiMobileNavProps) {
+export function MobileListHome({ mode, data, actions, onOpenSession, onRowMenu, archiveView = false, archivedCount = 0 }: PiMobileNavProps) {
   const [deviceMenu, setDeviceMenu] = useState(false)
   const [preview, setPreview] = useState<PiSidebarSession | null>(null)
   const activeDevice = data.devices.find((device) => device.id === data.selectedDeviceId) ?? data.devices.find((device) => device.current) ?? data.devices[0]
   const groups = useMemo(() => data.groups.filter((group) => group.kind !== "archive"), [data.groups])
   const visibleCount = useMemo(() => groups.reduce((count, group) => count + group.count, 0), [groups])
+  const inboxCount = data.inboxCount ?? 0
   const toggleDeviceMenu = (open: boolean) => {
     setDeviceMenu(open)
     actions.toggleDeviceMenu?.(open)
@@ -71,14 +74,52 @@ export function MobileListHome({ mode, data, actions, onOpenSession }: PiMobileN
           {data.newSessionLabel ?? "新会话"}
         </button>
         <div className="pm-home-scroll">
-          {!data.groups.length ? <p className="pm-home-note">{visibleCount === 0 ? "还没有会话" : "正在载入会话…"}</p> : null}
+          {archiveView ? (
+            <div className="pm-section-head">
+              <span className="pm-section-title">已归档</span>
+              <button type="button" className="pm-section-action" onClick={() => actions.openArchiveView?.()}>
+                返回
+              </button>
+            </div>
+          ) : inboxCount > 0 && actions.openInbox ? (
+            <button type="button" className="pm-nav-row" aria-label={`待答，${inboxCount} 项待处理`} onClick={() => actions.openInbox?.()}>
+              <IconInbox size={17} />
+              <span className="pm-nav-row-label">待答</span>
+              <span className="pm-nav-badge" aria-hidden>
+                {inboxCount > 99 ? "99+" : inboxCount}
+              </span>
+              <IconChevronRight size={15} className="pm-nav-row-chevron" />
+            </button>
+          ) : null}
+          {archiveView && groups.length === 0 ? (
+            <div className="pm-empty">
+              <p className="pm-empty-title">{PI_SIDEBAR_COPY.archiveEmpty}</p>
+              <p className="pm-empty-hint">{PI_SIDEBAR_COPY.archiveHint}</p>
+            </div>
+          ) : null}
+          {!archiveView && !data.groups.length ? <p className="pm-home-note">{visibleCount === 0 ? "还没有会话" : "正在载入会话…"}</p> : null}
           {groups.map((group) => (
             <ListGroup key={group.id} group={group} actions={actions} onOpen={onOpenSession} onLongPress={setPreview} />
           ))}
+          {!archiveView && archivedCount > 0 && actions.openArchiveView ? (
+            <button type="button" className="pm-nav-row pm-nav-row-quiet" title={PI_SIDEBAR_COPY.archiveTitle} onClick={() => actions.openArchiveView?.()}>
+              <IconArchive size={17} />
+              <span className="pm-nav-row-label">归档</span>
+              <span className="pm-nav-row-meta">{archivedCount}</span>
+              <IconChevronRight size={15} className="pm-nav-row-chevron" />
+            </button>
+          ) : null}
         </div>
-        <div className="pm-safe-bottom" aria-hidden />
       </div>
-      {preview ? <LongPressCard session={preview} onPin={actions.togglePin} onArchive={actions.toggleArchive} onClose={() => setPreview(null)} /> : null}
+      {preview ? (
+        <LongPressCard
+          session={preview}
+          onPin={actions.togglePin}
+          onArchive={actions.toggleArchive}
+          onMore={onRowMenu ? () => onRowMenu(preview) : undefined}
+          onClose={() => setPreview(null)}
+        />
+      ) : null}
     </div>
   )
 }
@@ -94,13 +135,23 @@ function ListGroup({
   onOpen: (sessionKey: string) => void
   onLongPress: (session: PiSidebarSession) => void
 }) {
-  const collapsed = group.collapsed
+  const pinned = group.kind === "pinned"
+  const collapsed = !pinned && group.collapsed
+  const tone = collapsed ? mobileGroupToneOf(group) : "idle"
   return (
-    <section className="pm-group" data-pi-mobile-surface="P11-MOB-07">
-      <button type="button" className="pm-group-head pm-group-toggle" aria-expanded={!collapsed} onClick={() => actions.toggleGroup(group.id)}>
-        <IconFolder size={16} open={!collapsed} />
-        <span className="pm-group-name">{group.label}</span>
-      </button>
+    <section className="pm-group" data-pi-mobile-surface="P11-MOB-07" data-kind={group.kind}>
+      {pinned ? (
+        <div className="pm-group-head pm-group-static">
+          <IconPin size={16} />
+          <span className="pm-group-name">{group.label}</span>
+        </div>
+      ) : (
+        <button type="button" className="pm-group-head pm-group-toggle" aria-expanded={!collapsed} title={group.cwd || undefined} onClick={() => actions.toggleGroup(group.id)}>
+          <IconFolder size={16} open={!collapsed} />
+          <span className="pm-group-name">{group.label}</span>
+          {tone !== "idle" ? <span className="pm-group-tone" data-tone={tone} role="img" aria-label={MOBILE_GROUP_TONE_LABEL[tone]} /> : null}
+        </button>
+      )}
       {!collapsed
         ? group.sessions.map((session) => (
             <SwipeRow

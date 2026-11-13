@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react"
-import { MenuItem, MenuSurface, TextSelector } from "@/components/kit"
+import { MENU_ROW_HL_HOVER, MenuItem, MenuSurface, TextSelector } from "@/components/kit"
 import { PiSpinner } from "@/components/pi/shared/PiSpinner"
-import { GitBranch } from "@/components/kit/icons"
+import { Check, GitBranch } from "@/components/kit/icons"
 import { PiContextRing, PiCopyField } from "@/components/pi/shared"
 import { usePiMenuSurface, usePiStatic, type PiOverlayControl } from "@/components/pi/shared/layers"
 import { cn } from "@/lib/utils"
 import { turnEndAnnouncement } from "@/pi/model/composerInput"
 import { DELIVERY_LABEL } from "./options"
 import { PiCMenu } from "./PiCMenu"
-import { C_ERROR, C_SECONDARY, menuRowH, rowText, TOUCH_44_DOWN, type CVariant } from "./styles"
+import { C_ERROR, C_SECONDARY, menuRowH, ROW_FOCUS, rowText, TOUCH_44_DOWN, type CVariant } from "./styles"
 
 /** 框下状态行的数据（design §6.4 PiStatusRowData，跨区契约：只许加可选字段） */
 export interface PiStatusRowData {
@@ -255,13 +255,15 @@ export function PiDeliveryOptions({
             aria-checked={v === value}
             onClick={() => onValueChange?.(v)}
             className={cn(
-              "flex w-full items-center justify-between rounded-[var(--cw-menu-item-radius,6px)] px-3 text-left text-(--cw-text) hover:bg-(--cw-row-hover)",
+              "flex w-full items-center justify-between rounded-[var(--cw-menu-item-radius,6px)] px-3 text-left text-(--cw-text)",
+              MENU_ROW_HL_HOVER,
+              ROW_FOCUS,
               menuRowH(variant),
               t.main,
             )}
           >
             {DELIVERY_LABEL[v]}
-            {v === value && <span className={cn(t.sub, C_SECONDARY)}>当前</span>}
+            {v === value && <Check aria-hidden strokeWidth={1.75} className="size-[18px] shrink-0 text-(--cw-text)" />}
           </button>
         ))}
       </div>

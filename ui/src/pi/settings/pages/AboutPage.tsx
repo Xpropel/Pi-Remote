@@ -9,7 +9,8 @@
  *   网络 / CSP / 404 都显示明确状态，不假装最新。读取失败时保留可重试的入口，不标「设计预留」。
  */
 import { useEffect, useState } from "react"
-import { ChevronRight, Terminal } from "lucide-react"
+import { ChevronRight } from "lucide-react"
+import { PiMark } from "@/components/pi/shared"
 import { normalizeHostDiag, type HostDiag } from "@/pi/model/hostDiag"
 import { serverDisplayName } from "@/pi/model/serverName"
 import { CLIENT_VERSION } from "@/relay/protocol"
@@ -272,7 +273,7 @@ export function AboutPage() {
 
       <div className="settings-about-ident">
         <span className="settings-about-tile" aria-hidden="true">
-          <Terminal size={27} strokeWidth={1.9} />
+          <PiMark size={52} />
         </span>
         <span>
           <span className="settings-about-appname">Pi-Remote</span>

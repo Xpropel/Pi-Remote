@@ -4,7 +4,7 @@ import { usePiDockLayout } from "@/components/pi/shared/frame"
 import { usePiStatic } from "@/components/pi/shared/layers"
 import type { PiDialogCard } from "@/components/pi/shared/types"
 import { useNow } from "@/pi/hooks/useNow"
-import { approvalEndedOf, approvalReceiptOf, type PiLocalAnswer } from "@/pi/model/approvalReceipt"
+import { approvalEndedOf, approvalReceiptOf, endedReceiptView, type PiLocalAnswer } from "@/pi/model/approvalReceipt"
 import { dialogCardState, PI_DIALOG_RECEIPT_MS, type PiDialogReceiptView } from "@/pi/model/dialogCard"
 import type { PiContainerProps } from "./types"
 
@@ -25,8 +25,9 @@ const STAGE_CARD_MAX = 264
  * - 一次一张卡（relay.dialogs 的第一张，先开的先答）；dialogCardState 六态 + 只读观察态（answerable !== true，M-06）。
  * - 应答（PromptWaiting 的口径）：sendDialogAnswer 的结果 ok → 等关闭帧（选项保持禁用）；gone → 已在别处回答；error → 卡内红字 + 重试
  *   （relay 自己也会弹"答案发送失败"通知）。
- * - 卡关掉以后（dialog_close）的回执：pi/model/approvalReceipt.ts（拒绝 / 超时 / 别处回答；本页答的直接消失），8 秒后或下一张卡出现时消失。
- * - 没有对话框、只有旧式 ui_prompt 信号时：一行"电脑上有一个确认框在等待"（F07）。
+ * - 卡关掉以后（dialog_close）的回执：pi/model/approvalReceipt.ts（拒绝 / 超时 / 回合已停止 / 别处回答；本页答的直接消失），8 秒后或下一张卡出现时消失。
+ *   回合停止和别处回答的关闭帧看起来一样，靠随后到的停止收尾消息分开（endedReceiptView，最多等 1 秒再写"已在其他设备回答"）。
+ * - 没有对话框、只有旧式 ui_prompt 信号时：一行"电脑上有一个弹窗在等你回答"（F07）。
  * 跨线契约（R2/p5-lanes.md §2）：c 的 ComposerContainer 把它放进 PiComposerDock 的 approval 槽；没有卡时什么都不画。
  * 有可答卡（blocksComposer）时 act.setBlockedBy("approval")，卡结束（已答、超时、别处回答）或卸掉立刻 null；观察态不写。
  */
@@ -113,8 +114,9 @@ export function ApprovalContainer(props: PiContainerProps) {
       />
     )
   }
-  if (ended) {
-    return <PiApprovalCard key={ended.dialog.dialogId} dialog={ended.dialog} now={now} variant={variant} state={ended.receipt.status} note={ended.note} />
+  const endedView = ended ? endedReceiptView(ended.receipt, ended.dialog, relay.transcript.items, now) : null
+  if (ended && endedView) {
+    return <PiApprovalCard key={ended.dialog.dialogId} dialog={ended.dialog} now={now} variant={variant} state={endedView.status} note={ended.note} />
   }
   if (relay.uiPrompt) return <PiPromptSignal startedAt={relay.uiPrompt.startedAt} now={now} />
   return null

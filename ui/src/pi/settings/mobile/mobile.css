@@ -2,12 +2,10 @@
  * 手机端设置 · 样式（独立系统）。
  *
  * 全部规则作用域在 [data-pi-settings-mobile] 下；颜色只消费 tokens.css 的 --st-*，
- * 六套皮肤（Cursor / Claude / Codex × 深 / 浅）由根属性自动命中，组件与布局不变。
- * Claude 的衬线只给顶栏标题与分组标题（--st-font-display）。
+ * 浅 / 深两套由根属性自动命中，组件与布局不变。
  *
- * 唯一颜色例外（设计册「变体与手机端」）：使用活动的「今天格描边 / 单日峰值」在
- * Cursor 与 Claude 四套固定陶土色，在 Codex 两套改走 Codex 蓝。这里用 --sm-usage-clay
- * 收口，不在组件里散写。
+ * 唯一颜色例外（设计册「变体与手机端」）：使用活动的「今天格描边 / 单日峰值」固定陶土色。
+ * 这里用 --sm-usage-clay 收口，不在组件里散写。
  */
 
 [data-pi-settings-mobile] {
@@ -21,23 +19,16 @@
 
   position: fixed;
   inset: 0;
-  z-index: 35;
+  z-index: var(--cw-pi-z-popover);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   color: var(--st-text-1);
   font-family: var(--st-font-sans);
   font-size: 15px;
-  background-color: var(--st-menu-bg);
-  background-image:
-    radial-gradient(120% 55% at 50% -10%, var(--st-accent-soft), transparent 62%),
-    linear-gradient(var(--st-page-bg), var(--st-page-bg));
+  background: var(--st-page-bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-}
-
-[data-pi-settings-mobile][data-pi-settings-style="codex"] {
-  --sm-usage-clay: #6cb0ee;
 }
 
 [data-pi-settings-mobile] *,
@@ -96,7 +87,7 @@
   gap: 6px;
   min-height: calc(var(--sm-topbar-h) + env(safe-area-inset-top, 0px));
   padding: env(safe-area-inset-top, 0px) 12px 0 6px;
-  border-bottom: 1px solid var(--st-border);
+  border-bottom: 1px solid var(--st-divider);
   background: var(--st-rail-bg);
   -webkit-backdrop-filter: var(--st-backdrop);
   backdrop-filter: var(--st-backdrop);
@@ -198,13 +189,13 @@
 
 [data-pi-settings-mobile] .sm-card {
   overflow: hidden;
-  border: 1px solid var(--st-menu-border);
+  border: 1px solid var(--st-card-border);
   border-radius: var(--st-radius-card);
   background: var(--st-card-bg);
 }
 
 [data-pi-settings-mobile] .sm-card > * + * {
-  border-top: 1px solid var(--st-border);
+  border-top: 1px solid var(--st-divider);
 }
 
 [data-pi-settings-mobile] .sm-group-footnote,
@@ -217,6 +208,126 @@
 
 [data-pi-settings-mobile] .sm-note + .sm-note {
   margin-top: 6px;
+}
+
+/* 写桥结果 / 只读原因 / 读取中 / 待重启：图标 + 文字，底色是状态色的一层薄雾（与桌面同口径）。 */
+[data-pi-settings-mobile] .sm-note[data-settings-write-feedback] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--st-radius-card);
+  background: var(--st-notice-bg);
+  color: var(--st-text-2);
+  font-size: 13px;
+}
+
+[data-pi-settings-mobile] .sm-note-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--st-text-3);
+}
+
+[data-pi-settings-mobile] .sm-note-body {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-pi-settings-mobile] .sm-note-detail {
+  color: var(--st-text-3);
+}
+
+[data-pi-settings-mobile] .sm-note-details {
+  margin-top: 2px;
+}
+
+/* 「说明」视觉是一行小字，命中区补到 44（触控口径）。 */
+[data-pi-settings-mobile] .sm-note-details > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--sm-touch);
+  margin-block: -10px;
+  color: var(--st-text-3);
+  cursor: pointer;
+}
+
+[data-pi-settings-mobile] .sm-note-details > span {
+  display: block;
+  margin-top: 2px;
+  color: var(--st-text-3);
+}
+
+[data-pi-settings-mobile] .sm-note[data-settings-write-feedback="ok"] {
+  background: var(--st-notice-ok-bg);
+}
+
+[data-pi-settings-mobile] .sm-note[data-settings-write-feedback="ok"] .sm-note-icon {
+  color: var(--st-online);
+}
+
+[data-pi-settings-mobile] .sm-note[data-settings-write-feedback="warn"] {
+  background: var(--st-notice-warn-bg);
+}
+
+[data-pi-settings-mobile] .sm-note[data-settings-write-feedback="warn"] .sm-note-icon {
+  color: var(--st-wait);
+}
+
+[data-pi-settings-mobile] .sm-note[data-settings-write-feedback="bad"] {
+  background: var(--st-notice-bad-bg);
+}
+
+[data-pi-settings-mobile] .sm-note[data-settings-write-feedback="bad"] .sm-note-icon {
+  color: var(--st-error);
+}
+
+/* ---------------- 轻提示（act.notify） ---------------- */
+
+[data-pi-settings-mobile] .sm-toast-region {
+  position: absolute;
+  right: 0;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  left: 0;
+  z-index: var(--cw-pi-z-raised);
+  display: flex;
+  justify-content: center;
+  padding: 0 calc(var(--sm-pad-x) + env(safe-area-inset-right, 0px)) 0 calc(var(--sm-pad-x) + env(safe-area-inset-left, 0px));
+  pointer-events: none;
+}
+
+[data-pi-settings-mobile] .sm-toast {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--st-menu-border);
+  border-radius: 12px;
+  background: var(--st-raised-bg);
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  line-height: 1.45;
+  box-shadow: var(--st-float-shadow);
+  animation: pi-overlay-in var(--pi-motion-in) var(--pi-ease-out) both;
+}
+
+[data-pi-settings-mobile] .sm-toast[data-leaving] {
+  animation: pi-fade-out var(--pi-motion-out) var(--pi-ease-out) both;
+}
+
+[data-pi-settings-mobile] .sm-toast-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--st-online);
+}
+
+[data-pi-settings-mobile] .sm-toast[data-tone="warn"] .sm-toast-icon {
+  color: var(--st-wait);
+}
+
+[data-pi-settings-mobile] .sm-toast[data-tone="bad"] .sm-toast-icon {
+  color: var(--st-error);
 }
 
 [data-pi-settings-mobile] .sm-banner {
@@ -287,8 +398,13 @@
   max-width: 64%;
 }
 
-[data-pi-settings-mobile] .sm-row[data-settings-inert="true"] .sm-row-control {
-  opacity: 0.72;
+[data-pi-settings-mobile] .sm-row[data-settings-inert="true"] .sm-row-title-text,
+[data-pi-settings-mobile] .sm-field[data-settings-inert="true"] .sm-row-title-text {
+  color: var(--st-text-2);
+}
+
+[data-pi-settings-mobile] .sm-row--action:disabled .sm-chevron {
+  color: var(--st-disabled-ring);
 }
 
 [data-pi-settings-mobile] .sm-row-leading {
@@ -390,12 +506,27 @@
 
 [data-pi-settings-mobile] .sm-switch.is-on .sm-switch-thumb {
   transform: translateX(19px);
-  /* A11Y-04: the ON thumb (--st-switch-knob-on) keeps >=3:1 against the ON track in every skin. */
+  /* A11Y-04: the ON thumb (--st-switch-knob-on) keeps >=3:1 against the ON track in both themes. */
   background: var(--st-switch-knob-on);
 }
 
+/* 禁用不靠整体透明度：轨道 / 圆钮各换一档专用色，开 / 关仍一眼可辨。 */
 [data-pi-settings-mobile] .sm-switch:disabled .sm-switch-track {
-  opacity: 0.92;
+  background: var(--st-switch-off-disabled);
+  box-shadow: none;
+}
+
+[data-pi-settings-mobile] .sm-switch.is-on:disabled .sm-switch-track {
+  background: var(--st-switch-on-disabled);
+}
+
+[data-pi-settings-mobile] .sm-switch:disabled .sm-switch-thumb {
+  background: var(--st-switch-knob-disabled);
+  box-shadow: none;
+}
+
+[data-pi-settings-mobile] .sm-switch.is-on:disabled .sm-switch-thumb {
+  background: color-mix(in srgb, var(--st-switch-knob-on) 85%, var(--st-card-bg));
 }
 
 /* ---------------- 分段控件 ---------------- */
@@ -431,10 +562,22 @@
   white-space: nowrap;
 }
 
+/* 选中格抬起一层：内阴影画在 padding 边内，和透明边框裁出的视觉内胆贴合。 */
 [data-pi-settings-mobile] .sm-segment.is-on {
-  background: var(--st-selected-bg);
+  background: var(--st-raised-bg);
+  box-shadow: inset 0 0 0 1px var(--st-card-border);
   color: var(--st-text-1);
   font-weight: 600;
+}
+
+[data-pi-settings-mobile] .sm-segment:disabled {
+  color: var(--st-disabled-fg);
+}
+
+[data-pi-settings-mobile] .sm-segment.is-on:disabled {
+  background: var(--st-selected-bg);
+  box-shadow: none;
+  color: var(--st-text-3);
 }
 
 [data-pi-settings-mobile] .sm-segmented--compact .sm-segment {
@@ -498,7 +641,7 @@
 }
 
 [data-pi-settings-mobile] .sm-option + .sm-option {
-  border-top: 1px solid var(--st-border);
+  border-top: 1px solid var(--st-divider);
 }
 
 [data-pi-settings-mobile] .sm-option:active:not(:disabled) {
@@ -527,7 +670,7 @@
 
 [data-pi-settings-mobile] .sm-option-check {
   flex: none;
-  color: var(--st-accent);
+  color: var(--st-text-1);
 }
 
 [data-pi-settings-mobile] .sm-option-radio {
@@ -537,23 +680,46 @@
   justify-content: center;
   width: 20px;
   height: 20px;
-  border: 1.5px solid var(--st-text-4);
+  border: 1.5px solid var(--st-radio-ring);
   border-radius: 50%;
 }
 
 [data-pi-settings-mobile] .sm-option.is-on .sm-option-radio {
-  border-color: var(--st-accent);
+  border-color: var(--st-switch-on);
+  background: var(--st-switch-on);
 }
 
 [data-pi-settings-mobile] .sm-option-radio > span {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: transparent;
 }
 
 [data-pi-settings-mobile] .sm-option.is-on .sm-option-radio > span {
-  background: var(--st-accent);
+  background: var(--st-switch-knob-on);
+}
+
+/* 只读 / 不可选：文字降一档仍可读，标记换成禁用色，不叠透明度。 */
+[data-pi-settings-mobile] .sm-option:disabled .sm-option-title {
+  color: var(--st-text-2);
+}
+
+[data-pi-settings-mobile] .sm-option:disabled .sm-option-description {
+  color: var(--st-text-4);
+}
+
+[data-pi-settings-mobile] .sm-option:disabled .sm-option-check {
+  color: var(--st-text-3);
+}
+
+[data-pi-settings-mobile] .sm-option:disabled .sm-option-radio {
+  border-color: var(--st-disabled-ring);
+}
+
+[data-pi-settings-mobile] .sm-option.is-on:disabled .sm-option-radio {
+  border-color: var(--st-disabled-fill);
+  background: var(--st-disabled-fill);
 }
 
 /* ---------------- 下拉 ---------------- */
@@ -935,30 +1101,45 @@
 }
 
 [data-pi-settings-mobile] .sm-device-default {
-  color: var(--st-text-4);
-  font-size: 14px;
+  padding: 0 4px;
+  color: var(--st-text-3);
+  font-size: 13.5px;
 }
 
 [data-pi-settings-mobile] .sm-device-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 14px;
-  margin-top: 2px;
+  gap: 0 8px;
+  margin-top: 4px;
 }
 
+/* 视觉是 32 高的描边小按钮，命中区用透明上下边框补到 44（触控口径）。 */
 [data-pi-settings-mobile] .sm-device-action {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   min-height: var(--sm-touch);
-  color: var(--st-text-2);
-  font-size: 14px;
+  padding: 0 12px;
+  border: 6px solid transparent;
+  border-inline-width: 0;
+  border-radius: 14px;
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1px var(--st-control-border);
+  background-color: var(--st-control-bg);
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+[data-pi-settings-mobile] .sm-device-action:active:not(:disabled) {
+  background-color: var(--st-control-hover-bg);
 }
 
 [data-pi-settings-mobile] .sm-device-action:disabled {
-  color: var(--st-text-3);
-  opacity: 0.55;
+  box-shadow: inset 0 0 0 1px var(--st-disabled-ring);
+  background-color: transparent;
+  color: var(--st-disabled-fg);
 }
 
 [data-pi-settings-mobile] .sm-device.is-focus {
@@ -1035,7 +1216,7 @@
 }
 
 [data-pi-settings-mobile] .sm-identity-block + .sm-identity-block {
-  border-top: 1px solid var(--st-border);
+  border-top: 1px solid var(--st-divider);
 }
 
 [data-pi-settings-mobile] .sm-identity-title {
@@ -1136,7 +1317,7 @@
 [data-pi-settings-mobile] .sm-identity-input {
   min-height: var(--sm-touch);
   padding: 0 10px;
-  border: 1px solid var(--st-border);
+  border: 1px solid var(--st-control-border);
   border-radius: 10px;
   background: var(--st-field-bg);
   color: var(--st-text-1);
@@ -1181,7 +1362,7 @@
 }
 
 [data-pi-settings-mobile] .sm-provider .sm-row {
-  border-top: 1px solid var(--st-border);
+  border-top: 1px solid var(--st-divider);
 }
 
 /* ---------------- 首页 ---------------- */
@@ -1196,97 +1377,6 @@
 }
 
 /* ---------------- 外观 ---------------- */
-
-[data-pi-settings-mobile] .sm-style-cards {
-  display: flex;
-  gap: 10px;
-}
-
-[data-pi-settings-mobile] .sm-style-card {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  padding: 9px 9px 10px;
-  border: 1px solid var(--st-menu-border);
-  border-radius: var(--st-radius-card);
-  background: var(--st-card-bg);
-}
-
-[data-pi-settings-mobile] .sm-style-card.is-on {
-  border-color: color-mix(in srgb, var(--st-accent) 55%, transparent);
-  background: var(--st-accent-soft);
-}
-
-[data-pi-settings-mobile] .sm-style-preview {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  height: 40px;
-  margin-bottom: 8px;
-  padding: 8px;
-  overflow: hidden;
-  border-radius: 8px;
-  background: var(--st-tile-bg);
-}
-
-[data-pi-settings-mobile] .sm-style-bar {
-  display: block;
-  height: 5px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--st-text-1) 28%, transparent);
-}
-
-[data-pi-settings-mobile] .sm-style-bar--long {
-  width: 68%;
-}
-
-[data-pi-settings-mobile] .sm-style-bar--short {
-  width: 46%;
-}
-
-[data-pi-settings-mobile] .sm-style-dot {
-  position: absolute;
-  top: 9px;
-  right: 9px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--sm-style-accent);
-}
-
-[data-pi-settings-mobile] .sm-style-name {
-  display: block;
-  color: var(--st-text-1);
-  font-size: 13.5px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-[data-pi-settings-mobile] .sm-style-sub {
-  display: block;
-  margin-top: 1px;
-  overflow: hidden;
-  color: var(--st-text-4);
-  font-size: 10.5px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-[data-pi-settings-mobile] .sm-style-check {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 21px;
-  height: 21px;
-  border-radius: 50%;
-  background: var(--st-accent);
-  color: var(--st-menu-bg);
-}
 
 [data-pi-settings-mobile] .sm-accent-row {
   padding: 12px 14px;
@@ -1340,7 +1430,7 @@
 
 [data-pi-settings-mobile] .sm-accent-dot.is-on {
   box-shadow:
-    0 0 0 2px var(--st-menu-bg),
+    0 0 0 2px var(--st-card-bg),
     0 0 0 4px var(--sm-dot);
 }
 
@@ -1350,7 +1440,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
-  border-top: 1px solid var(--st-border);
+  border-top: 1px solid var(--st-divider);
 }
 
 [data-pi-settings-mobile] .sm-preview-label {
@@ -1386,14 +1476,14 @@
   gap: 13px;
   min-height: 84px;
   padding: 12px 14px;
-  border: 1px solid var(--st-menu-border);
+  border: 1px solid var(--st-card-border);
   border-radius: var(--st-radius-card);
   background: var(--st-card-bg);
 }
 
 [data-pi-settings-mobile] .sm-nav-card.is-on {
-  border-color: color-mix(in srgb, var(--st-accent) 55%, transparent);
-  background: var(--st-accent-soft);
+  border-color: var(--st-selected-ring);
+  box-shadow: inset 0 0 0 1px var(--st-selected-ring);
 }
 
 [data-pi-settings-mobile] .sm-nav-preview {
@@ -1501,8 +1591,8 @@
   width: 21px;
   height: 21px;
   border-radius: 50%;
-  background: var(--st-accent);
-  color: var(--st-menu-bg);
+  background: var(--st-switch-on);
+  color: var(--st-switch-knob-on);
 }
 
 /* ---------------- 关于 ---------------- */
@@ -1515,19 +1605,15 @@
   padding: 14px;
 }
 
+[data-pi-settings-mobile] .sm-card.sm-identity > * + * {
+  border-top: 0;
+}
+
 [data-pi-settings-mobile] .sm-identity-logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
+  display: inline-flex;
   flex: none;
   border-radius: 12px;
-  background: var(--st-accent-soft);
-  color: var(--st-accent);
-  font-family: var(--st-font-mono);
-  font-size: 16px;
-  font-weight: 600;
+  box-shadow: var(--st-raised-shadow);
 }
 
 [data-pi-settings-mobile] .sm-identity-copy {
@@ -1553,11 +1639,25 @@
   align-items: center;
   min-height: var(--sm-touch);
   padding: 0 12px;
-  border-radius: 8px;
-  background: var(--st-tile-bg);
+  border: 6px solid transparent;
+  border-inline-width: 0;
+  border-radius: 14px;
+  background-clip: padding-box;
+  background-color: var(--st-control-bg);
+  box-shadow: inset 0 0 0 1px var(--st-control-border);
   color: var(--st-text-1);
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 500;
+}
+
+[data-pi-settings-mobile] .sm-clear-button:active:not(:disabled) {
+  background-color: var(--st-control-hover-bg);
+}
+
+[data-pi-settings-mobile] .sm-clear-button:disabled {
+  box-shadow: inset 0 0 0 1px var(--st-disabled-ring);
+  background-color: transparent;
+  color: var(--st-disabled-fg);
 }
 
 [data-pi-settings-mobile] .sm-license {
@@ -1584,8 +1684,9 @@
   display: inline-flex;
   align-items: center;
   min-height: var(--sm-touch);
-  color: var(--st-accent);
+  color: var(--st-text-1);
   font-size: 13px;
+  font-weight: 500;
 }
 
 /* ---------------- 空态 / 危险动作 ---------------- */
@@ -1684,5 +1785,5 @@
 }
 
 [data-pi-settings-mobile] .sm-field-control .sm-options .sm-option + .sm-option {
-  border-top: 1px solid var(--st-border);
+  border-top: 1px solid var(--st-divider);
 }

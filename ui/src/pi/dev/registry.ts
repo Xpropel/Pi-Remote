@@ -1,6 +1,5 @@
 import type { ComponentType } from "react"
 import type { PiTheme, PiLayout, PiStageSize } from "@/components/pi/shared/viewport"
-import type { PiUiVariant } from "@/pi/variants/types"
 
 /**
  * 开发画廊的屏幕注册（实施计划 P2.4、D6、D7）。照 replica 的 src/app/registry/pi.ts（类型、glob）和 piScreens.ts（校验、排序）
@@ -41,12 +40,6 @@ export interface PiScreenMeta {
 export interface PiScreenProps {
   viewport: PiLayout
   theme: PiTheme
-  /**
-   * 画廊 ?ui= 参数（PI-UI-REFS 架构线；缺省 "cursor"）。
-   * 屏幕自己的 PiRoot 可以转交给 PiRoot 的 ui 参数，让 data-pi-ui 根标记与静态 CSS 作用域对得上；
-   * 不传也不影响现有 cursor 屏幕（它们不读这个字段）。
-   */
-  ui?: PiUiVariant
 }
 
 export interface PiScreenModule {

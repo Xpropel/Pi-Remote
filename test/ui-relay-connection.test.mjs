@@ -77,7 +77,7 @@ test("名册读取被拒要立刻失败：ack/error 分发把拒绝原因交给 
   const helper = relay.slice(helperAt, relay.indexOf("}", relay.indexOf("waiter.reject", helperAt)) + 1)
   assert.match(helper, /viewerListWaitersRef\.current\.delete\(id\)/, "失败时先摘掉等待者")
   assert.match(helper, /clearTimeout\(waiter\.timer\)/, "失败时清掉超时定时器")
-  assert.match(helper, /waiter\.reject\(new Error\(reason\)\)/, "失败时以真实原因 reject")
+  assert.match(helper, /waiter\.reject\(viewerListRefusal\(reason, code\)\)/, "失败时以真实原因 reject，relay 带的错误码一并保留")
 
   // The ack branch: a failed ack the command channel does not claim (the
   // roster request bypasses the channel) fails the waiter with the ack text.
@@ -85,13 +85,14 @@ test("名册读取被拒要立刻失败：ack/error 分发把拒绝原因交给 
   assert.ok(ackAt > 0, "ack 分发必须还在")
   const ackBranch = relay.slice(ackAt, relay.indexOf('if (type === "command_accepted")', ackAt))
   assert.match(ackBranch, /failViewerListWaiter\(ackId,/, "ack 分发必须把名册等待者按 id 立刻失败掉")
+  assert.match(ackBranch, /failViewerListWaiter\(ackId,[^\n]*, msg\.code\)/, "ack 带的错误码（admin_required）交给等待者")
   assert.match(ackBranch, /msg\.ok === false/, "只有失败 ack 才算拒绝（成功名册走 viewer_list 帧）")
 
   // The error branch: an id-bearing error frame fails the waiter the same way.
   const errAt = relay.indexOf('if (type === "error") {')
   assert.ok(errAt > 0, "error 分发必须还在")
   const errBranch = relay.slice(errAt, relay.indexOf('if (type === "usage_state")', errAt))
-  assert.match(errBranch, /failViewerListWaiter\(qid, message\)/, "error 分发必须把名册等待者按 id 立刻失败掉")
+  assert.match(errBranch, /failViewerListWaiter\(qid, message, code\)/, "error 分发必须把名册等待者按 id 立刻失败掉（带错误码）")
 })
 
 test("重连退避：socket onopen 不再清零，鉴权成功分支才重置", () => {

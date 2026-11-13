@@ -278,8 +278,8 @@ export function shouldPersistDraft(current: string, base: string): boolean {
 }
 
 /* ── 新建会话页草稿（UI 低危：切皮肤丢草稿） ────────────────────────────────
- * 三套界面的新建页（cursor NewSessionContainer / claude ClaudeNewSession / codex CodexNewSession）
- * 共用这一份纯内存草稿：切换界面变体时旧页卸载、新页挂载，未发送的第一条消息不再丢。
+ * 新建页（cursor NewSessionContainer）用这一份纯内存草稿：页面卸载、新页挂载时，
+ * 未发送的第一条消息不再丢。
  * 与上面按房间落盘的会话草稿分开：新建页还没有房间，不能按 roomKey 存，也不写 localStorage
  * （刷新即清是既有行为）；组件用 useSyncExternalStore 订阅。 */
 

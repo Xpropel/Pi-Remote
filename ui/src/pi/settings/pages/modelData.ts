@@ -250,6 +250,20 @@ export function providerRowsOf(
   })
 }
 
+/** 未配置密钥的供应商少于这个数时不折叠（折叠只为压住 pi 内置目录的几十个空供应商）。 */
+export const MODEL_PROVIDER_FOLD_MIN = 4
+
+/**
+ * 供应商卡的默认展示：unconfigured 判为未配置的收进一行「另有 N 个」，其余照常列出。
+ * 一个可展示的都没有、或未配置的不多时不折叠，原样返回。
+ */
+export function providerFoldOf<T>(providers: readonly T[], unconfigured: (provider: T) => boolean): { primary: T[]; folded: T[] } {
+  const primary = providers.filter((provider) => !unconfigured(provider))
+  const folded = providers.filter(unconfigured)
+  if (primary.length === 0 || folded.length < MODEL_PROVIDER_FOLD_MIN) return { primary: [...providers], folded: [] }
+  return { primary, folded }
+}
+
 export interface DefaultModelGroup {
   label: string
   options: { value: string; label: string }[]

@@ -21,7 +21,7 @@ export const piScreen: PiScreenMeta = {
     "P9 C：设备有浏览根目录（新 attach）→「打开文件夹…」可用；旧 attach「需要更新」、没开浏览「没有开启文件夹浏览」、设备离线「设备未连接」三种置灰原因",
   ],
   notes:
-    "C06 D22。先选目录、写第一条，发送时才启动 pi（待用户确认 12）。选择器 = 文字 + ∨ 不画框（empty-state-composer）；建议 pill 用 ch4/SuggestionPills（一黑两描边，文案来自现有空会话建议）。输入框空 → 黑圆钮是浅灰 send-muted（hunt-og-render#9 口径）。深色整套推断。P9 C：文件夹选择器的两级菜单见 c/new-session-picker，浏览器见开发屏 _folder/folder-browser。",
+    "C06 D22。先选目录、写第一条，发送时才启动 pi（待用户确认 12）。选择器 = 文字 + ∨ 不画框（empty-state-composer）；建议 pill 用 ch4/SuggestionPills（三个统一描边，文案来自现有空会话建议）。输入框空 → 黑圆钮是浅灰 send-muted（hunt-og-render#9 口径）。深色整套推断。P9 C：文件夹选择器的两级菜单见 c/new-session-picker，浏览器见开发屏 _folder/folder-browser。",
 }
 
 function Composer({ variant }: { variant: "desktop" | "phone" }) {

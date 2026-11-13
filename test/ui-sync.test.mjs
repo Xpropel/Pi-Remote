@@ -762,17 +762,8 @@ test("惰性会话标题：无现成标题且首条消息不可读时回落目�
   }
   const lazy = lazyRoomFromRow(row)
   assert.equal(lazy.label, "work")
-  assert.equal(lazy.name, "work")
-})
-
-test("guard: Claude 壳标题回落不得露原始会话/房间 id（A2）", () => {
-  const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8")
-  const sidebar = read("../ui/src/pi/variants/claude/sidebar/ClaudeUnifiedSidebar.tsx")
-  assert.ok(!sidebar.includes("|| room.id"), "Claude sidebar room title must not fall back to the raw room id")
-  assert.ok(!sidebar.includes("|| session.id"), "Claude sidebar entry title must not fall back to the raw session id")
-  assert.ok(sidebar.includes("sidebarSessionsOf("), "Claude sidebar rows come from the shared merge")
-  const view = read("../ui/src/pi/variants/claude/model/view.ts")
-  assert.ok(!view.includes("|| relay.roomId"), "sessionHeadOf must not fall back to the raw room id")
+  assert.equal(lazy.name, null, "目录名是推出来的标题，不冒充会话名")
+  assert.equal(mergeDeviceSessions(dev(true), [lazy], [])[0].title, "work")
 })
 
 test("惰性发送状态机：点选不发送，房间上线只提交一次，切走/失败清队列", () => {
@@ -2017,6 +2008,26 @@ test("完成信号接线：busy true→false 才发，错误可辨识，失焦/�
   assert.match(badge, /new MutationObserver\(apply\)/, "usePageTitle 后续改标题时角标不丢，也不叠加")
   assert.match(badge, /signal\.seq === consumedRef\.current/, "每条完成信号只消费一次，重新失焦不弹旧角标")
   assert.doesNotMatch(badge, /new Notification|Notification\.requestPermission|<audio|AudioContext/, "只做本地角标，不做系统通知/声音")
+})
+
+test("R4 手动停止不报「回合出错」：停止后的余波 turn（stopReason=error、请求被中断）不发完成/出错信号", () => {
+  const relay = readFileSync(new URL("../ui/src/relay/useRelay.ts", import.meta.url), "utf8")
+  const between = (from, to) => relay.slice(relay.indexOf(from), relay.indexOf(to, relay.indexOf(from)))
+  // 停止：打标记，直到下一次 agent_start（新一轮运行）或换房/离线才清
+  const abort = between("const abort = useCallback(async () => {", "await commandSendRef.current(\"abort\")")
+  assert.match(abort, /stopRequestedRef\.current = true/)
+  assert.match(relay, /if \(event\.type === "agent_start"\) \{[\s\S]{0,160}stopRequestedRef\.current = false/, "新一轮运行才解锁")
+  assert.match(between("const resetTurn = useCallback(", "const finishTurn = useCallback("), /stopRequestedRef\.current = false/)
+  // finishTurn：标记在就只锁不发——turn_start 重新武装后的「请求被中断」终版消息也不发
+  const finish = between("const finishTurn = useCallback(", "setTurnEnd({ seq: turnSeqRef.current")
+  assert.match(finish, /turnEmittedRef\.current = true\s+\/\/[^\n]*\n\s+if \(stopRequestedRef\.current\) return\s+const error =/)
+  // 流内 error 事件：停止 / reason=aborted 不弹红条，也不记回合错误；error 字段可能是整条消息对象
+  const streamError = between('if (assistantMessageEvent.type === "error"', 'case "message_end":')
+  assert.match(streamError, /!stopRequestedRef\.current && assistantMessageEvent\.reason !== "aborted"/)
+  assert.match(streamError, /typeof failure === "string" \? failure : isRecord\(failure\) && typeof failure\.errorMessage === "string"/)
+  // aborted 终版消息也带 errorMessage：不算出错
+  assert.match(relay, /return item\.stopReason !== "aborted" && \(item\.stopReason === "error" \|\| !!item\.errorMessage\)/)
+  assert.match(relay, /return message\.stopReason !== "aborted" && \(message\.stopReason === "error" \|\| !!message\.errorMessage\)/)
 })
 
 // ---------------------------------------------------------------------------

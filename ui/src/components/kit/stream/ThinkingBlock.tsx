@@ -11,7 +11,7 @@ export interface ThinkingBlockProps extends Omit<ComponentPropsWithoutRef<"div">
    * live：思考中，标题 "Thinking" 浅灰 + ∨（#28 展开态）。
    */
   status?: "done" | "live"
-  /** done 态标题后半段："for 1s"、"briefly" */
+  /** 标题后半段：done 态 "for 1s"、"briefly"；live 态 = 已经想了多久 */
   duration?: ReactNode
   /** 覆盖标题动词（默认 done = "Thought"，live = "Thinking"） */
   label?: ReactNode
@@ -50,7 +50,16 @@ export function ThinkingBlock({
 }: ThinkingBlockProps) {
   const live = status === "live"
   const header = live ? (
-    <span className="text-(--cw-text-3)">{label ?? "Thinking"}</span>
+    <>
+      <span className="text-(--cw-text-3)">{label ?? "Thinking"}</span>
+      {/* live 态的时长 = 已经想了多久（Pi 的"思考中 3 秒"） */}
+      {duration != null && (
+        <>
+          {" "}
+          <span className="text-(--cw-text-3)">{duration}</span>
+        </>
+      )}
+    </>
   ) : (
     <>
       <span className="text-(--cw-text-2)">{label ?? "Thought"}</span>
@@ -92,16 +101,20 @@ export function ThinkingBlock({
           size={ICON.sizeSm}
           strokeWidth={ICON.stroke}
           className={cn(
-            "shrink-0 text-(--cw-text-3) transition-transform",
+            "shrink-0 text-(--cw-text-3) transition-transform group-hover:text-(--cw-text-2)",
             live || collapsedChevron ? "group-data-[state=closed]:-rotate-90" : "group-data-[state=closed]:hidden",
           )}
         />
       </Collapsible.Trigger>
-      <Collapsible.Content>
-        {phase != null && (
-          <div className="mt-(--cw-space-1-5) font-(--cw-weight-semibold) text-(--cw-thinking-phase)">{phase}</div>
+      {/* 展开的正文缩进一档、左边一条细竖线、字小一号（与 Pi 工具行展开的明细同一个样子） */}
+      <Collapsible.Content
+        data-slot="thinking-body"
+        className="mt-(--cw-space-1) ml-1 border-l border-(--cw-divider) pl-3 text-(length:--cw-text-md) leading-(--cw-leading-base)"
+      >
+        {phase != null && <div className="font-(--cw-weight-semibold) text-(--cw-thinking-phase)">{phase}</div>}
+        {children != null && (
+          <div className={cn("text-(--cw-thinking-body)", phase != null && "mt-(--cw-space-1)")}>{children}</div>
         )}
-        {children != null && <div className="mt-(--cw-space-1-5) text-(--cw-thinking-body)">{children}</div>}
       </Collapsible.Content>
     </Collapsible.Root>
   )

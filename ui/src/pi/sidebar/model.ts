@@ -126,11 +126,30 @@ export interface PiSidebarGroupsInput extends PiSidebarPinArchiveOverlay {
   groups: readonly PiSidebarGroup[]
   /** 归档视图（朴素行「归档」打开时为 true：展示 archives，不展示 pins 特殊处理） */
   archiveView?: boolean
+  /**
+   * 本机存的工作区开合（true 收起 / false 展开 / 没有 = 用户没手动开合过）。给了才做待处理自动展开；
+   * 这时开合要按界面上的折叠态翻（toggleFolder 的 collapsedNow），否则自动展开的组第一下点了没反应。
+   */
+  folders?: Readonly<Record<string, boolean>>
+}
+
+/** 待处理 = 等你回答 / 出错：没手动开合过的工作区组里有这种会话就自动展开 */
+export function sidebarSessionNeedsYou(session: Pick<PiSidebarSession, "status">): boolean {
+  return session.status.tone === "waiting" || session.status.tone === "error"
+}
+
+/**
+ * 工作区组是否折叠：手动开合过（stored 有值）按存的来；没开合过默认折叠，有待处理会话时展开。
+ * 当前会话所在组的自动展开由 revealFolder 记成 false，同样算开合过。
+ */
+export function sidebarFolderCollapsedOf(stored: boolean | undefined, needsYou: boolean): boolean {
+  return stored ?? !needsYou
 }
 
 /**
  * 把 pin/archive 叠加到基础组：
  * - 非归档视图：archived 行隐藏；pinned 行从原组移出，按 pins 顺序进入置顶组（P11-SIDE-13），置顶组在朴素行下、工作区上；
+ *   给了 folders 时，没手动开合过的工作区组按留下的行做待处理自动展开（置顶区里的待处理行已经看得见，不算）；
  * - 归档视图：只保留 archived 行（组内为空则整组隐藏）。
  * 组 count 始终 = 当前可见行数。
  */
@@ -155,7 +174,11 @@ export function sidebarGroupsWithOverlay(input: PiSidebarGroupsInput): PiSidebar
       else sessions.push({ ...session, pinned: false })
     }
     if (archiveView && sessions.length === 0) continue
-    groups.push({ ...group, sessions, count: sessions.length })
+    const collapsed =
+      group.collapsed && !archiveView && input.folders && group.kind === "workspace"
+        ? sidebarFolderCollapsedOf(input.folders[group.id], sessions.some(sidebarSessionNeedsYou))
+        : group.collapsed
+    groups.push({ ...group, collapsed, sessions, count: sessions.length })
   }
   if (archiveView) return groups
   pinnedSessions.sort((a, b) => {

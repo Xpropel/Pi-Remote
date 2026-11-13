@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { PiBlockedBy } from "@/pi/model/composerButton"
 import { DEFAULT_PI_PREFS, LEGACY_STYLE_KEY, migratePiPrefs, PI_PREFS_KEY, setPiPref, storedThemeOf, type PiPrefs, type PiThemePref } from "@/pi/model/prefs"
-import type { PiUiVariant } from "@/pi/variants/types"
 
 /*
  * 新界面的本机界面状态（plan §7.0、P5.3；取代 shell/shellStore.ts，后者 P7 删）。
@@ -86,11 +85,6 @@ export interface PiUiActions {
   toggleExpanded(groupKey: string): void
   /** 改偏好；改分组时一并清空 expanded（setPiPref 的 clearExpanded） */
   setPref<K extends Exclude<keyof PiPrefs, "v">>(key: K, value: PiPrefs[K]): void
-  /**
-   * 换界面变体（PI-UI-REFS 架构线，等价于 setPref("ui", variant)）。只换展示树：
-   * relay / 房间 / 草稿都在 PiApp 的 useRelay 那一份里，切换不重连、不丢状态（brief §架构契约 3）。
-   */
-  setUiVariant(variant: PiUiVariant): void
   setBlockedBy(blockedBy: PiBlockedBy): void
 }
 
@@ -218,7 +212,7 @@ export function usePiUiState(options: { seed?: PiUiSeed; persist?: boolean } = {
       openSettings: () => patch(() => ({ view: "settings", pane: null })),
       openInbox: () => patch(() => ({ view: "inbox", pane: null })),
       setView: (view) => patch(() => ({ view })),
-      // P13：共享侧栏（cursor / claude / codex / 手机）的折叠读 prefs.sidebarCollapsed；
+      // P13：共享侧栏（桌面 / 手机）的折叠读 prefs.sidebarCollapsed；
       // 旧 ui.sidebar 继续保留（#/play 舞台用），两边一起翻，⌘B 才真的看得见效果。
       toggleSidebar: () =>
         patch((cur) => ({
@@ -244,8 +238,6 @@ export function usePiUiState(options: { seed?: PiUiSeed; persist?: boolean } = {
           const { prefs, clearExpanded } = setPiPref(cur.prefs, key, value)
           return clearExpanded ? { prefs, expanded: [] } : { prefs }
         }),
-      setUiVariant: (variant) =>
-        patch((cur) => (cur.prefs.ui === variant ? {} : { prefs: setPiPref(cur.prefs, "ui", variant).prefs })),
       setBlockedBy: (blockedBy) => setUi((cur) => (cur.blockedBy === blockedBy ? cur : { ...cur, blockedBy })),
     }
   }, [])

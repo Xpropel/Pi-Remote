@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from "react"
+import { IconMore } from "./icons"
 import { MobileDrawerNav } from "./MobileDrawerNav"
 import { MobileListHome } from "./MobileListHome"
 import { MobileSearchPage } from "./MobileSearchPage"
@@ -10,9 +11,28 @@ import type { PiMobileNavProps } from "./types.ts"
  * - 根元素同时挂 data-pi-sidebar / data-pi-mobile / data-pi-sidebar-style / data-pi-theme，--sb-* token 命中；
  * - list 模式：page=list → 列表式首页；page=session → 顶栏（返回列表）+ children 会话页；
  * - drawer 模式：page=session → 顶栏（侧栏钮）+ children 会话页 + 抽屉；左缘右滑唤出、选中自动关；
- * - 搜索由 shell 托管（data.search.open；列表式顶栏搜索）；不直接碰 relay。
+ * - 会话页顶栏的标题 / 设备 / 待处理计数 / 会话信息 / 会话菜单由宿主映射当前会话后传入；
+ * - 搜索由 shell 托管（data.search.open，两种模式都换成全屏搜索页；入口：列表首页顶栏、抽屉头）；不直接碰 relay。
  */
-export function MobileNavShell({ mode, data, actions, page, onOpenSession, onBackToList, drawerOpen, onDrawerOpenChange, children }: PiMobileNavProps & { children?: ReactNode }) {
+export function MobileNavShell({
+  mode,
+  data,
+  actions,
+  page,
+  onOpenSession,
+  onBackToList,
+  drawerOpen,
+  onDrawerOpenChange,
+  sessionTitle,
+  sessionSubtitle,
+  sessionAttentionCount,
+  onSessionInfo,
+  onSessionMenu,
+  onRowMenu,
+  archiveView,
+  archivedCount,
+  children,
+}: PiMobileNavProps & { children?: ReactNode }) {
   const [innerDrawer, setInnerDrawer] = useState(false)
   const open = drawerOpen ?? innerDrawer
   const setOpen = (next: boolean) => {
@@ -29,8 +49,7 @@ export function MobileNavShell({ mode, data, actions, page, onOpenSession, onBac
     "data-pi-mobile-mode": mode,
     "data-pi-mobile-surface": "P11-MOB-12",
   } as const
-  const searchOpen = mode === "list" && data.search.open
-  if (searchOpen) {
+  if (data.search.open) {
     return (
       <div {...rootProps}>
         <MobileSearchPage mode={mode} data={data} actions={actions} page={page} onOpenSession={onOpenSession} onBackToList={onBackToList} />
@@ -40,7 +59,17 @@ export function MobileNavShell({ mode, data, actions, page, onOpenSession, onBac
   if (page === "list") {
     return (
       <div {...rootProps}>
-        <MobileListHome mode={mode} data={data} actions={actions} page={page} onOpenSession={onOpenSession} onBackToList={onBackToList} />
+        <MobileListHome
+          mode={mode}
+          data={data}
+          actions={actions}
+          page={page}
+          onOpenSession={onOpenSession}
+          onBackToList={onBackToList}
+          onRowMenu={onRowMenu}
+          archiveView={archiveView}
+          archivedCount={archivedCount}
+        />
       </div>
     )
   }
@@ -59,11 +88,20 @@ export function MobileNavShell({ mode, data, actions, page, onOpenSession, onBac
       }}
     >
       <MobileTopBar
-        variant={mode === "drawer" ? "chat" : "chat"}
-        title={data.serverName}
+        variant="chat"
+        title={sessionTitle || data.serverName}
+        subtitle={sessionTitle ? sessionSubtitle : undefined}
+        attentionCount={sessionAttentionCount}
+        onTitleClick={onSessionInfo}
         onOpenDrawer={mode === "drawer" ? () => setOpen(true) : undefined}
         onBack={mode === "list" ? onBackToList : undefined}
-        actions={null}
+        actions={
+          onSessionMenu ? (
+            <button type="button" className="pm-icon-btn" aria-label="会话菜单" aria-haspopup="dialog" data-pi-session-more="" onClick={onSessionMenu}>
+              <IconMore size={20} />
+            </button>
+          ) : null
+        }
       />
       <div className="pm-session-host">{children ?? null}</div>
       {mode === "drawer" ? (
@@ -74,8 +112,14 @@ export function MobileNavShell({ mode, data, actions, page, onOpenSession, onBac
           page={page}
           open={open}
           onClose={() => setOpen(false)}
+          onSearch={() => {
+            setOpen(false)
+            actions.openSearch()
+          }}
           onOpenSession={onOpenSession}
           onBackToList={onBackToList}
+          onRowMenu={onRowMenu}
+          archiveView={archiveView}
         />
       ) : null}
     </div>

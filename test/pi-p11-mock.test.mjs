@@ -41,13 +41,13 @@ const ROOT = path.resolve(HERE, "..")
 const params = (query = "") => p11PreviewParamsOf(new URLSearchParams(query))
 const base = () => p11SidebarDataOf(params("skin=cursor&theme=dark&scenario=base-expanded"))
 
-test("场景表与六套 gallery 预设", () => {
+test("场景表与两套 gallery 预设", () => {
   assert.ok(P11_DESKTOP_SCENARIOS.length >= 12)
   assert.ok(P11_MOBILE_SCENARIOS.length >= 8)
   assert.equal(new Set(P11_DESKTOP_SCENARIOS.map((scenario) => scenario.id)).size, P11_DESKTOP_SCENARIOS.length)
   assert.equal(new Set(P11_MOBILE_SCENARIOS.map((scenario) => scenario.id)).size, P11_MOBILE_SCENARIOS.length)
-  assert.equal(PI_SIDEBAR_GALLERY_PRESETS.length, 6)
-  assert.deepEqual(PI_SIDEBAR_GALLERY_PRESETS.map((preset) => preset.id), ["cursor-dark", "cursor-light", "claude-dark", "claude-light", "codex-dark", "codex-light"])
+  assert.equal(PI_SIDEBAR_GALLERY_PRESETS.length, 2)
+  assert.deepEqual(PI_SIDEBAR_GALLERY_PRESETS.map((preset) => preset.id), ["cursor-dark", "cursor-light"])
   for (const preset of PI_SIDEBAR_GALLERY_PRESETS) {
     const data = p11SidebarDataOf(params("scenario=base"), { style: preset.style, theme: preset.theme })
     assert.equal(data.style, preset.style)

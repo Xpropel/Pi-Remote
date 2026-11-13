@@ -31,7 +31,8 @@ export function fileKindOf(path: string): FileKind {
   if (name.endsWith(".json")) return "json"
   if (name.endsWith(".html") || name.endsWith(".htm")) return "html"
   if (name.endsWith(".tsx") || name.endsWith(".jsx")) return "tsx"
-  if (/\.(ts|mts|cts|js|mjs|cjs)$/.test(name)) return "ts"
+  if (/\.(ts|mts|cts)$/.test(name)) return "ts"
+  if (/\.(js|mjs|cjs)$/.test(name)) return "js"
   if (/\.(txt|md|log|csv)$/.test(name)) return "txt"
   return "file"
 }

@@ -37,6 +37,17 @@ export const TOUCH_44_SELECTOR =
 export const TOUCH_44_DOWN =
   "relative after:absolute after:top-0 after:left-1/2 after:h-11 after:min-w-11 after:w-[calc(100%+16px)] after:-translate-x-1/2 after:content-['']"
 
+/** 没字可发的灰圆发送钮：悬停 / 按下不变底色、不出手型（点了也不会发，不该像能点） */
+export const SEND_MUTED_STILL = "cursor-default hover:bg-(--cw-plus-btn-bg) active:bg-(--cw-plus-btn-bg)"
+
+/**
+ * 弹窗 / sheet 列表行的键盘焦点：全局焦点环（pi-theme.css，外扩 2）在滚动区里会被裁掉、还压到上下两行，
+ * 这里收进行内，并铺上和悬停同一层底。ROW_FOCUS_WITHIN 给焦点落在行内控件（复选框）上的整行。
+ */
+export const ROW_FOCUS =
+  "focus-visible:outline-offset-[-2px]! focus-visible:bg-[color:var(--cw-pi-menu-hl,color-mix(in_srgb,var(--cw-text)_7%,transparent))]"
+export const ROW_FOCUS_WITHIN = "has-[:focus-visible]:bg-[color:var(--cw-pi-menu-hl,color-mix(in_srgb,var(--cw-text)_7%,transparent))]"
+
 /** 手机输入框固定 16px（防 iOS 聚焦放大，§4.2 第 8 条）；桌面 14 */
 export function inputText(variant: CVariant): string {
   return variant === "phone" ? "text-[16px] leading-[22px]" : "text-(length:--cw-text-base) leading-(--cw-leading-base)"

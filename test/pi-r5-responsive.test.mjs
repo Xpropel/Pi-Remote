@@ -32,8 +32,8 @@ test("headless 产品根 dvh 兜底：不支持 dvh 时用 100vh（键盘态不�
 test("gallery 对图舞台：固定尺寸路由统一套 PiDevStageFrame；窗口=舞台尺寸时无外框（截图不变）", () => {
   const stage = read("ui/src/pi/dev/PiStage.tsx")
   assert.match(stage, /import \{ PiDevStageFrame \} from "\.\/StageFrame"/)
-  for (const kind of ["case \"pi\"", "case \"play\"", "case \"p4\"", "case \"live\""]) assert.ok(stage.includes(kind), kind)
-  assert.equal(stage.split("<PiDevStageFrame").length - 1 >= 4, true, "pi/play/p4/live 都要套外框")
+  for (const kind of ["case \"pi\"", "case \"play\"", "case \"live\""]) assert.ok(stage.includes(kind), kind)
+  assert.equal(stage.split("<PiDevStageFrame").length - 1 >= 3, true, "pi/play/live 都要套外框")
   assert.match(stage, /data-pi-stage-note/)
   const frame = read("ui/src/pi/dev/StageFrame.tsx")
   assert.match(frame, /非产品响应式/)

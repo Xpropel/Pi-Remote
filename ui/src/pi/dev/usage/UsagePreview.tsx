@@ -5,7 +5,7 @@
  * - `fixture=design|realistic|short|empty|longtail`（数据源；A 组对图用 design，B–F 用 realistic）
  * - `usage=normal|short|empty|error|unavailable|loading`（页面数据态；`normal/short/empty` 映射对应快照；
  *   `error/unavailable/loading` 待 UI 的 `previewState` prop 合入后接，当前先渲染真实 hook 的降级/加载态）
- * - `theme=light|dark`、`host=claude|codex|cursor`（宿主标记）、`vp=1440x900|420x844`
+ * - `theme=light|dark`、`vp=1440x900|420x844`
  * - `metric=tokens|messages|sessions`、`view=daily|weekly|cumulative`（页面内部 useState，这里挂载后按文案点选）
  * - `overrides=0`：强制不传 displayOverrides（验证生产路径与对图路径的差异；默认 design 传）
  *
@@ -20,7 +20,6 @@ import { useEffect, useMemo, type CSSProperties } from "react"
 import { UsageActivityPage, formatTokenCount, type UsageActivityPageProps } from "@/pi/usage"
 import { PI_UI_USAGE_FIXTURES, PI_UI_USAGE_FIXTURE_IDS, piUiUsageFixtureMeta, type PiUiUsageFixtureId } from "./index.ts"
 
-export type UsagePreviewHost = "claude" | "codex" | "cursor"
 export type UsagePreviewMode = "normal" | "short" | "empty" | "error" | "unavailable" | "loading"
 export type UsagePreviewReason = "no_data" | "device_offline" | "unsupported" | "timeout" | "stale"
 export type UsagePreviewMetric = "tokens" | "messages" | "sessions"
@@ -30,7 +29,6 @@ export interface UsagePreviewParams {
   fixture: PiUiUsageFixtureId
   mode: UsagePreviewMode
   theme: "light" | "dark"
-  host: UsagePreviewHost
   metric: UsagePreviewMetric
   view: UsagePreviewView
   vp: string
@@ -56,7 +54,6 @@ const MODE_ALIASES: Record<string, UsagePreviewMode> = {
   unavailable: "unavailable",
   loading: "loading",
 }
-const HOSTS = ["claude", "codex", "cursor"] as const
 const REASONS = ["no_data", "device_offline", "unsupported", "timeout", "stale"] as const
 const METRICS = ["tokens", "messages", "sessions"] as const
 const VIEWS = ["daily", "weekly", "cumulative"] as const
@@ -67,12 +64,11 @@ export function usagePreviewParamsOf(params: URLSearchParams): UsagePreviewParam
   const fallbackFixture: PiUiUsageFixtureId = mode === "short" ? "short" : mode === "empty" ? "empty" : "design"
   const fixture = FIXTURE_ALIASES[fixtureRaw] ?? fallbackFixture
   const theme = params.get("theme") === "light" ? "light" : "dark"
-  const host = (HOSTS as readonly string[]).includes(params.get("host") ?? "") ? (params.get("host") as UsagePreviewHost) : "claude"
   const metric = (METRICS as readonly string[]).includes(params.get("metric") ?? "") ? (params.get("metric") as UsagePreviewMetric) : "tokens"
   const view = (VIEWS as readonly string[]).includes(params.get("view") ?? "") ? (params.get("view") as UsagePreviewView) : "daily"
   const vp = /^\d{3,4}x\d{3,4}$/.test(params.get("vp") ?? "") ? (params.get("vp") as string) : "1440x900"
   const reason = (REASONS as readonly string[]).includes(params.get("reason") ?? "") ? (params.get("reason") as UsagePreviewReason) : "unsupported"
-  return { fixture, mode, theme, host, metric, view, vp, overrides: params.get("overrides") !== "0", reason }
+  return { fixture, mode, theme, metric, view, vp, overrides: params.get("overrides") !== "0", reason }
 }
 
 /** design fixture 的对图覆盖（presentation 补全，见文件头）；其他 fixture 一律 undefined */
@@ -166,7 +162,6 @@ export function UsagePreview({ params, fill = true }: UsagePreviewProps) {
     <div
       className="pi-usage-preview"
       data-pi-usage="preview"
-      data-pi-usage-host={params.host}
       data-pi-usage-fixture={params.fixture}
       data-pi-usage-mode={params.mode}
       data-pi-usage-metric={params.metric}

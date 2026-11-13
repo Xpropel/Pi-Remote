@@ -26,9 +26,9 @@ export function NotificationsPage() {
   return (
     <MobilePageBody page="notifications">
       <MobileGroup label="提醒时机">
-        <MobileRow title="等待你确认时" description="会话停下来等你拍板时提醒">
+        <MobileRow title="等你回答时" description="会话停下来等你回答或批准时提醒">
           <MobileSwitch
-            label="等待你确认时提醒"
+            label="等你回答时提醒"
             checked={prefs.notifyWaiting}
             onChange={(checked) => act.setPref("notifyWaiting", checked)}
           />

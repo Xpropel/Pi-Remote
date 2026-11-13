@@ -15,7 +15,7 @@ const { attachCommon, keepalive } = require("./conn");
 const { PAIR_CODES_MAX, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, pairSourceBlocked, notePairFailure, requestSource, b64buf, authPayload, p256PubKey, verifyP256, cleanViewerPubKeys, adminPayload } = require("./pairing");
 const { ackTrackerOf, isAckFp } = require("./acktrack");
 const { commandTimeoutMs, MESSAGE_COMMANDS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, pruneDedupe, dedupeKeyOf } = require("./commands");
-const { MAX_DEVICE_NAME, UNREGISTERED_DEVICE, normPath, cwdAllowed, underRoots, boundAccount } = require("./devices");
+const { MAX_DEVICE_NAME, UNREGISTERED_DEVICE, normPath, canonicalCwd, cwdAllowed, underRoots, boundAccount } = require("./devices");
 const { replaySessionArchives } = require("./sessionArchive");
 const { purgeSessions } = require("./purge");
 const { resendFallbackBody, queryKey, sendCachedAssistant, sendCachedAutoRetry, sendCachedUiPrompt, sendCachedDialogs, sendCachedExtStatus, sendCachedCompaction, sendCachedTools, sendCachedToolEnds, sendCachedTaskList, sendCachedAgentState, sendCachedRemoteQueue, pushDialogGate, clearRoomTurnEnd, broadcastRoomAttention, devicesViewFor, snapshotBodyWithFinalFrames } = require("./rooms");
@@ -982,7 +982,8 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
                   // device library list can decrypt it; plaintext rows are
                   // served exactly as before.
                   firstMessage: listedSession.firstMessage ? listedSession.firstMessage : (listedSession.firstMessageEnc || null),
-                  cwd: listedSession.cwd || "",
+                  // 索引里旧行可能还是 D:/x（旧扩展写的）：下发时按设备平台统一写法，不改落盘数据
+                  cwd: canonicalCwd(listedSession.cwd || "", row.platform),
                   messageCount: listedSession.messageCount || 0,
                   sizeBytes: listedSession.sizeBytes || 0,
                   updatedAt: listedSession.updatedAt || 0,
@@ -1048,7 +1049,9 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
             // room_attention{null}（单用户多设备：一端看过即全端已读）。在 subscribed
             // 之前落，让随后到的 room_list 快照与本帧口径一致（都已清）。
             if (clearRoomTurnEnd(room)) broadcastRoomAttention(rooms, room, config);
-            send(socket, { type: "subscribed", room: room.id, online: room.online, busy: room.busy }, config);
+            const subscribedFrame = { type: "subscribed", room: room.id, online: room.online, busy: room.busy };
+            if (room.online && room.turnStopped) subscribedFrame.turnStopped = true;
+            send(socket, subscribedFrame, config);
             // 断线重连：带 since={rev,seq} 且存储世代未变 → 只送 seq 之后的增量；否则全量
             const since = frame.since && typeof frame.since === "object" ? { rev: String(frame.since.rev || ""), seq: Number(frame.since.seq) } : null;
             // 正文默认不落盘：在线房间内存里没有快照时，请扩展重推，3s 兜底空快照

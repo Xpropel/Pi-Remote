@@ -2,7 +2,7 @@
  * P9 C（spec §5.5）：按设备选文件夹的纯函数——浏览器的状态形状、面包屑、已知文件夹（白名单 + 最近）、搜索过滤、
  * 能不能浏览与不能时的原因、list_dirs 的错误码文案。node --test 直接加载（相对导入带 .ts 扩展名）。
  */
-import { DIR_LIST_MAX, baseName, underRoots, type Device, type DirEntry, type SessionEntry } from "../../relay/devices.ts"
+import { DIR_LIST_MAX, baseName, pathKeyOf, underRoots, type Device, type DirEntry, type SessionEntry } from "../../relay/devices.ts"
 import { paletteMatches } from "./composerInput.ts"
 import { recentFoldersOf } from "./newSession.ts"
 
@@ -31,16 +31,11 @@ export function emptyFolderBrowserState(patch: Partial<FolderBrowserState> = {})
   return { path: "", root: "", parent: null, entries: [], truncated: false, loading: false, error: null, showHidden: false, ...patch }
 }
 
-/** 显示用路径：反斜杠统一成 /，去掉末尾斜杠（不改大小写）。只用于显示/比较，不拿去发命令 */
+/** 显示用路径：反斜杠统一成 /，去掉末尾斜杠（不改大小写）。只用于显示，比较走 pathKeyOf，不拿去发命令 */
 function displayPath(value: string): string {
   return String(value || "")
     .replace(/\\/g, "/")
     .replace(/\/+$/, "")
-}
-
-/** 去重口径：分隔符与末尾斜杠不计，大小写不分（同一台设备的目录不会只在大小写上不同） */
-function folderKey(value: string): string {
-  return displayPath(value).toLowerCase()
 }
 
 /** 面包屑：从浏览根目录到当前目录，每一段都带完整路径，供点击跳转 */
@@ -53,16 +48,14 @@ export interface FolderCrumb {
  * 生成面包屑（spec §5.5）：第一段是 `~`（浏览根目录，默认是设备用户的家目录），后面每段是目录名。
  * 路径不在根目录下时只给根目录一段（正常不会发生：list_dirs 回的 root 一定是它的祖先）。
  */
-export function breadcrumbOf(path: string, root: string): FolderCrumb[] {
+export function breadcrumbOf(path: string, root: string, platform?: string | null): FolderCrumb[] {
   const want = displayPath(path)
   const base = displayPath(root)
   if (!want) return []
   if (!base) return [{ label: baseName(want) || want, path: want }]
-  const wantKey = want.toLowerCase()
-  const baseKey = base.toLowerCase()
-  if (wantKey !== baseKey && !wantKey.startsWith(baseKey + "/")) return [{ label: "~", path: base }]
+  if (!underRoots([root], path, platform)) return [{ label: "~", path: base }]
   const crumbs: FolderCrumb[] = [{ label: "~", path: base }]
-  if (wantKey === baseKey) return crumbs
+  if (pathKeyOf(path, platform) === pathKeyOf(root, platform)) return crumbs
   const parts = want.slice(base.length + 1).split("/").filter(Boolean)
   let current = base
   for (const part of parts) {
@@ -82,11 +75,11 @@ export function knownFoldersOf(
   exclude?: ReadonlySet<string>,
 ): string[] {
   // F3: folders proven missing on the device are not offered in the picker.
-  const excluded = exclude && exclude.size ? new Set([...exclude].map((path) => folderKey(path))) : null
+  const excluded = exclude && exclude.size ? new Set([...exclude].map((path) => pathKeyOf(path, device.platform))) : null
   const out: string[] = []
   const seen = new Set<string>()
   const push = (path: string) => {
-    const key = folderKey(path)
+    const key = pathKeyOf(path, device.platform)
     if (!key || seen.has(key)) return
     if (excluded && excluded.has(key)) return
     seen.add(key)

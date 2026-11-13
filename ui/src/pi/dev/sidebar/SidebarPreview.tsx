@@ -3,8 +3,8 @@
  * 数据来自 ./fixtures.ts（PiSidebarData + 纯 reducer actions），组件为共享 UnifiedSidebar。
  *
  * URL 参数（search/hash 均可）：
- * - `view=board`（默认，六套合板）| `single`（单套，可交互）
- * - `skin=cursor|claude|codex`、`theme=dark|light`
+ * - `view=board`（默认，浅 / 深合板）| `single`（单套，可交互）
+ * - `theme=dark|light`
  * - `scenario=base|states-all|devices-3|long-titles|widths|pin-archive|empty|busy-many|menu|search|hover|folders|identity-long`
  * - `width=220|272|360`、`collapsed=1`、`deviceMenuOpen=1`、`searchOpen=1`、`hoverRow=<index>`（初始悬停行，dev 预览用 DOM 事件模拟）
  */
@@ -53,18 +53,18 @@ export function SidebarPreviewSingle({ params }: { params: P11PreviewParams }) {
   )
 }
 
-/** 六套合板（D1 默认态）：每套独立固定数据，不交互 */
+/** 浅 / 深合板（D1 默认态）：每套独立固定数据，不交互 */
 export function SidebarPreviewBoard({ params }: { params: P11PreviewParams }) {
   const panels = useMemo(
     () =>
-      PI_SIDEBAR_GALLERY_PRESETS.map((preset) => ({
+      PI_SIDEBAR_GALLERY_PRESETS.filter((preset) => preset.style === "cursor").map((preset) => ({
         preset,
         data: p11SidebarDataOf(params, { style: preset.style, theme: preset.theme }),
       })),
     [params],
   )
   return (
-    <div className="p11-board" data-p11-preview="sidebar-board" style={{ display: "grid", gridTemplateColumns: "repeat(3, 272px)", gap: 22, padding: 22, background: "#101012" }}>
+    <div className="p11-board" data-p11-preview="sidebar-board" style={{ display: "grid", gridTemplateColumns: "repeat(2, 272px)", gap: 22, padding: 22, background: "#101012" }}>
       {panels.map(({ preset, data }) => (
         <section key={preset.id} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <p style={{ margin: 0, color: "#8f8b82", font: "11px/16px -apple-system, sans-serif" }}>{preset.label}</p>

@@ -29,6 +29,7 @@ import {
   MODEL_THINKING_LEVELS_COPY,
   defaultModelGroupsOf,
   modelSettingsOf,
+  providerFoldOf,
   providerModelOverflowOf,
   providerRowsOf,
   tokenCountLabel,
@@ -60,6 +61,7 @@ import {
   SettingsStatusDot,
   SettingsSwitch,
 } from "../ui"
+import "./model.css"
 
 /** 模型名 / 数值用等宽（设计稿 .mono：12.5px、字距 -0.01em）。 */
 const MONO: CSSProperties = { fontFamily: "var(--st-font-mono)", fontSize: 12.5, letterSpacing: "-0.01em" }
@@ -106,12 +108,9 @@ function providerKeyText(provider: ProviderRow): string {
 
 function ProviderTitle({ provider }: { provider: ProviderRow }) {
   return (
-    <span
-      style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}
-      data-settings-provider={provider.id}
-    >
-      <span style={{ fontSize: 14, fontWeight: 600 }}>{provider.name}</span>
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--st-text-3)" }}>
+    <span className="settings-model-provider" data-settings-provider={provider.id}>
+      <span className="settings-model-provider-name">{provider.name}</span>
+      <span className="settings-model-provider-state">
         <SettingsStatusDot tone={providerStateTone(provider)} />
         {providerStateText(provider)}
       </span>
@@ -169,6 +168,19 @@ export function ModelPage() {
     () => providerRowsOf(providersQuery.data, modelsData, settingsView.modelThinkingLevels),
     [providersQuery.data, modelsData, settingsView.modelThinkingLevels],
   )
+  // 登录状态还没读回来时，一个可用模型都没有的也先收起，免得页面先拉长几十屏再缩回。
+  const providerFold = useMemo(
+    () =>
+      providerFoldOf(
+        providers,
+        (provider) =>
+          provider.state === "disconnected" ||
+          (provider.state === "unknown" && provider.models.length > 0 && provider.models.every((model) => !model.enabled)),
+      ),
+    [providers],
+  )
+  const [providersExpanded, setProvidersExpanded] = useState(false)
+  const visibleProviders = providersExpanded ? [...providerFold.primary, ...providerFold.folded] : providerFold.primary
   const newSessionMode: ModelNewSessionMode = MODEL_NEW_SESSION_DEFAULT
 
   // 写侧：值优先用本次保存成功的 applied（不回读旧 get_settings）。
@@ -271,7 +283,7 @@ export function ModelPage() {
             <span className="settings-value">—</span>
           </SettingsRow>
         ) : (
-          providers.map((provider) => {
+          visibleProviders.map((provider) => {
             const shown = provider.models.slice(0, MODEL_PROVIDER_MODEL_LIMIT)
             const overflow = providerModelOverflowOf(provider)
             return (
@@ -311,7 +323,7 @@ export function ModelPage() {
                     inert via disabled. */}
                 <SettingsRow
                   title={
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <span className="settings-model-add">
                       <Plus size={13} strokeWidth={2} aria-hidden="true" />
                       添加模型
                     </span>
@@ -324,34 +336,38 @@ export function ModelPage() {
             )
           })
         )}
+        {providerFold.folded.length > 0 ? (
+          <SettingsActionRow
+            title={providersExpanded ? "收起未配置的供应商" : `另有 ${providerFold.folded.length} 个未配置的供应商`}
+            description={providersExpanded ? undefined : "pi 内置目录里暂无可用模型的供应商；配置密钥后会排到上面"}
+            value={providersExpanded ? "收起" : "展开"}
+            onClick={() => setProvidersExpanded((open) => !open)}
+          />
+        ) : null}
       </SettingsGroup>
 
       {/* 添加供应商 / 刷新模型目录：设计稿里各占一张独立卡 */}
-      <div style={{ marginTop: 10 }}>
-        <SettingsGroup first>
-          <SettingsActionRow
-            title={
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                <Plus size={13} strokeWidth={1.8} aria-hidden="true" />
-                添加供应商
-              </span>
-            }
-            description="填入名称、接口地址与 API 密钥；支持 OpenAI 兼容端点"
-            status="bridge"
-          />
-        </SettingsGroup>
-      </div>
-      <div style={{ marginTop: 10 }}>
-        <SettingsGroup first>
-          <SettingsActionRow
-            title="刷新模型目录"
-            description={modelsHint}
-            disabled={!refreshReady || modelsLoading}
-            value={modelsLoading ? "正在读取…" : undefined}
-            onClick={() => modelsQuery.reload()}
-          />
-        </SettingsGroup>
-      </div>
+      <SettingsGroup>
+        <SettingsActionRow
+          title={
+            <span className="settings-model-add">
+              <Plus size={13} strokeWidth={1.8} aria-hidden="true" />
+              添加供应商
+            </span>
+          }
+          description="填入名称、接口地址与 API 密钥；支持 OpenAI 兼容端点"
+          status="bridge"
+        />
+      </SettingsGroup>
+      <SettingsGroup>
+        <SettingsActionRow
+          title="刷新模型目录"
+          description={modelsHint}
+          disabled={!refreshReady || modelsLoading}
+          value={modelsLoading ? "正在读取…" : undefined}
+          onClick={() => modelsQuery.reload()}
+        />
+      </SettingsGroup>
 
       {/* 组 3：上下文压缩（写 compaction.*） */}
       <SettingsGroup label="上下文压缩">

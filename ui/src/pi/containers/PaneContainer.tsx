@@ -9,19 +9,23 @@ import { PiTerminalPane, PiTerminalToolbar, type PiTerminalActions } from "@/com
 import { PiCenteredState, PiPhonePage, PiTopBar } from "@/components/pi/shared"
 import { piBaseName } from "@/components/pi/shared/format"
 import type { PiFileResult } from "@/components/pi/shared/types"
-import { sortTerminalItems, visibleTerminalItems } from "@/chat/capsules/terminalModel"
+import { terminalSessionItems, type TerminalItem } from "@/chat/capsules/terminalModel"
+import { splitExitTrailer } from "@/components/pi/conversation/tools"
 import { useNow } from "@/pi/hooks/useNow"
 import { changesViewOf, type PiPaneDiffRow } from "@/pi/model/changesView"
 import { fileErrorTextOf, filePayloadOf, type PiFilePayload } from "@/pi/model/filePayload"
 import type { Item } from "@/relay/transcript"
+import { sessionLoaded } from "./cShared"
 import type { PiContainerProps } from "./types"
 
 /**
  * 右 pane / 手机推入页（plan §7.2 changes-pane / terminal-pane / file-pane，P5.4 b 线）：视图在 ui.pane（act.setPane），文件路径在 ui.file。
  * - 改动：pi/model/changesView.ts（changesOfSession 的口径，先读 patch，G5）；版头"根据本会话的编辑记录，不是 git 状态"；
  *   按行号断档画"N 行未改动"折叠条；同一文件第 2 次起有"第 N 次编辑"分隔条；patch 被截断时写明。没有成功编辑的文件整行不出现。
- * - 终端：terminalItems（terminalModel.ts 的保留期：成功 30 秒、失败 60 秒后移出；按开始时间排）；输出只在这里展开，不设 live region。
+ * - 终端：本会话跑过的命令（terminalModel.ts 的 terminalSessionItems：对话里的命令卡按先后，有实时条目的用实时条目，
+ *   页面重开后保留期外的也从命令卡重建）；输出只在这里展开，不设 live region。
  *   工具行：行号开关、复制全部输出、跳到最新。
+ * - 没载入的会话（只点选了本机记录）：本机记录只有对话文字、没有工具调用，改动 / 终端的空态写"载入后才有"，不说"没改过 / 没跑过"。
  * - 文件：relay.getFile（G10：回包字段对照过扩展的 readFileInRoot，见 model/filePayload.ts；缺什么不显示什么）。
  *   加载中 / 失败（"读取失败 · 重试"）/ 文本 / 图片；截断写"只显示前 5 MB"（扩展的真实上限）；下载在浏览器本地生成。
  * 桌面放在外壳 pane 槽（PiPaneTabs + 视图，× 调 act.setPane(null)）；手机是整页（PiPhonePage + subHeader 放工具行，M-10；‹ 回对话页）。
@@ -32,6 +36,7 @@ export function PaneContainer(props: PiContainerProps) {
   const view: PiPaneKind = ui.pane ?? "changes"
   const now = useNow(1000)
   const items: Item[] = relay.roomId ? relay.transcript.items : EMPTY_ITEMS
+  const unloaded = !sessionLoaded(relay)
 
   const changes = useMemo(() => changesViewOf(items), [items])
   const files = useMemo<PiChangedFile[]>(
@@ -40,7 +45,12 @@ export function PaneContainer(props: PiContainerProps) {
   )
   const total = { added: changes?.added ?? 0, removed: changes?.removed ?? 0 }
 
-  const terminals = useMemo(() => sortTerminalItems(visibleTerminalItems(relay.terminalItems, now)), [relay.terminalItems, now])
+  // 终端视图 = 本会话跑过的命令：对话里的命令卡按先后，有实时条目的用实时条目（不按保留期移出，那是 tray「终端 N」的口径）
+  const busy = relay.busy
+  const terminals = useMemo(
+    () => terminalSessionItems(items, relay.terminalItems, busy).map(withExitTrailer),
+    [items, relay.terminalItems, busy],
+  )
   const [lineNumbers, setLineNumbers] = useState<boolean | null>(null)
   const numbers = lineNumbers ?? !phone
   const terminalActions = useMemo<PiTerminalActions>(
@@ -57,9 +67,9 @@ export function PaneContainer(props: PiContainerProps) {
   let body: ReactNode
   let subHeader: ReactNode = undefined
   if (view === "changes") {
-    body = <PiChangesPane files={files} total={total} variant={variant} />
+    body = <PiChangesPane files={files} total={total} variant={variant} unloaded={unloaded} />
   } else if (view === "terminal") {
-    body = <PiTerminalPane items={terminals} now={now} variant={variant} toolbar={!phone} lineNumbers={numbers} actions={terminalActions} />
+    body = <PiTerminalPane items={terminals} now={now} variant={variant} toolbar={!phone} lineNumbers={numbers} actions={terminalActions} unloaded={unloaded} />
     if (phone && terminals.length > 0) subHeader = <PiTerminalToolbar items={terminals} variant="phone" lineNumbers={numbers} actions={terminalActions} />
   } else if (!ui.file) {
     // 手动打开（B09）：顶部"打开文件…"输入行，回车 = act.openFile（之后同从流里点文件名）
@@ -152,12 +162,23 @@ function fileKindOfPath(path: string): FileKind {
   if (p.endsWith(".json")) return "json"
   if (p.endsWith(".html")) return "html"
   if (p.endsWith(".tsx") || p.endsWith(".jsx")) return "tsx"
-  if (/\.(ts|mts|cts|js|mjs|cjs)$/.test(p)) return "ts"
+  if (/\.(ts|mts|cts)$/.test(p)) return "ts"
+  if (/\.(js|mjs|cjs)$/.test(p)) return "js"
   if (/\.(txt|md|log|csv)$/.test(p)) return "txt"
   return "file"
 }
 
-/** 复制输出：本会话（保留期内）每条命令 + 输出，空行隔开 */
+/**
+ * 退出码同流里的终端卡：数据没给时从 pi 写在输出最后一行的"Command exited with code N"取（tools.ts 的 splitExitTrailer），
+ * 卡头写"失败 · 退出 N"，这行不算命令的输出
+ */
+function withExitTrailer(item: TerminalItem): TerminalItem {
+  if (item.state === "running") return item
+  const split = splitExitTrailer(item.output, item.exitCode)
+  return split.output === item.output ? item : { ...item, output: split.output ?? "", exitCode: split.exitCode }
+}
+
+/** 复制输出：本会话每条命令 + 输出，空行隔开 */
 function terminalsText(items: readonly { command: string; output: string; stderr?: string }[]): string {
   return items.map((t) => [`$ ${t.command}`, t.output, t.stderr].filter((s) => s && s.trim()).join("\n")).join("\n\n")
 }

@@ -9,7 +9,7 @@
  *
  * The keyframes animate the standalone `translate` / `scale` properties rather
  * than `transform`, so they compose with a transform the surface already owns
- * (e.g. .claude-menu[data-align="center"] keeps its translateX(-50%), and Radix
+ * (e.g. a centered menu keeps its translateX(-50%), and Radix
  * popper positioning is never overridden).
  *
  * Reduced motion: the rails in pi-theme.css set `animation: none !important`

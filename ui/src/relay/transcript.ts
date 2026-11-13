@@ -995,7 +995,7 @@ function blocksFromContent(content: unknown, pending: Record<string, ToolPatch>)
       blocks.push({
         kind: "tool",
         id,
-        name: (typeof raw.name === "string" && raw.name) || saved?.name || "tool",
+        name: (typeof raw.name === "string" && raw.name) || saved?.name || "",
         argsText: saved?.argsText || "",
         input,
         outputText: saved?.outputText || "",
@@ -1168,7 +1168,7 @@ function patchTool(d: Draft, id: string, patch: ToolPatch): void {
         {
           kind: "tool",
           id: "",
-          name: patch.name || "tool",
+          name: patch.name || "",
           argsText: patch.argsText || "",
           input: patch.input,
           outputText: patch.outputText || "",
@@ -1188,8 +1188,10 @@ function patchTool(d: Draft, id: string, patch: ToolPatch): void {
     })
     return
   }
-  // 存一份：在飞的助手消息定稿时 blocks 会从 message.content 重建，工具状态要从这里补回
-  d.pendingTools = { ...d.pendingTools, [id]: { ...d.pendingTools[id], ...patch } }
+  // 存一份：在飞的助手消息定稿时 blocks 会从 message.content 重建，工具状态要从这里补回。
+  // 工具名到了才写：空名（模型开始调用时还没报名字）不能盖掉已知的名字
+  const known = d.pendingTools[id]
+  d.pendingTools = { ...d.pendingTools, [id]: { ...known, ...patch, name: patch.name || known?.name || "" } }
   // 工具卡几乎总在最后一两条助手消息里：从尾部找，找到即停
   for (let k = items.length - 1; k >= 0; k -= 1) {
     const item = items[k]
@@ -1228,7 +1230,7 @@ function patchTool(d: Draft, id: string, patch: ToolPatch): void {
       {
         kind: "tool",
         id,
-        name: saved.name || "tool",
+        name: saved.name || "",
         argsText: saved.argsText || "",
         input: saved.input,
         outputText: saved.outputText || "",
@@ -1303,7 +1305,7 @@ function applyLiveEvent(d: Draft, event: AssistantEvent): boolean {
     blocks[idx] = {
       kind: "tool",
       id,
-      name: event.toolName || saved?.name || "tool",
+      name: event.toolName || saved?.name || "",
       argsText: saved?.argsText || "",
       input: saved?.input,
       outputText: saved?.outputText || "",

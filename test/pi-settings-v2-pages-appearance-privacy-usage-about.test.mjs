@@ -1,6 +1,6 @@
 // Pi-Remote 设置页 v2 · 第二阶段四页（外观 / 数据与隐私 / 使用活动 / 关于）契约测试。
 // 守卫：文案与状态口径、纯本地持久化、◐◌ 不可写、使用活动真实数据链路与口径、导出数据白名单、
-//       缓存清理不碰 token/设置/outbox、六皮肤强调色与 880 宽列。
+//       缓存清理不碰 token/设置/outbox、五点强调色与 880 宽列。
 import test from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -21,33 +21,30 @@ const ABOUT = read("ui/src/pi/settings/pages/AboutPage.tsx")
 const APPEARANCE_CSS = read("ui/src/pi/settings/pages/appearance.css")
 const USAGE_CSS = read("ui/src/pi/settings/pages/usage.css")
 
-test("外观：三卡 / 明暗 / 五点强调色 / 字号 / 密度 / 动效 / 列宽 / 字体 都即时写本机设置", () => {
+test("外观：明暗 / 五点强调色 / 字号 / 密度 / 动效 / 界面字体 都即时写本机设置", () => {
   for (const text of [
-    "界面风格", "Cursor", "Claude", "Codex", "中性玻璃 · 紫", "暖纸衬线 · 陶土", "冷灰阶梯 · 蓝",
     "明暗", "深色", "浅色", "跟随系统", "强调色", "用于运行状态点与少量强调",
     "字号", "预览", "会话标题与正文的显示大小", "界面密度",
-    "减少动态效果", "关掉界面里的过渡与淡入动画", "内容列宽", "会话内容的居中列最大宽度",
-    "界面字体", "等宽字体", "用于代码与终端内容", "切换立即应用到整个界面。",
+    "减少动态效果", "关掉界面里的过渡与淡入动画",
+    "界面字体", "切换立即应用到整个界面，只保存在这个浏览器里。",
   ]) {
     assert.ok(APPEARANCE.includes(text), `外观页缺文案：${text}`)
   }
-  for (const key of ["appearanceStyle", "appearanceTheme", "accent", "fontSize", "density", "reducedMotion", "contentWidth", "uiFont", "monoFont"]) {
+  for (const key of ["appearanceTheme", "accent", "fontSize", "density", "reducedMotion", "uiFont"]) {
     assert.match(APPEARANCE, new RegExp(`(setPref|mergePrefs)\\([^\\n]*${key}`), `外观页未持久化 ${key}`)
   }
-  assert.match(APPEARANCE, /p\.act\.setUiVariant\(next\)/, "界面风格必须立即切宿主皮肤")
+  assert.doesNotMatch(stripComments(APPEARANCE), /界面风格|appearanceStyle|setUiVariant|Claude|Codex/, "界面风格选择已移除")
   assert.match(APPEARANCE, /p\.act\.setPref\("theme", next\)/, "明暗必须立即切宿主主题")
-  assert.match(APPEARANCE, /SETTINGS_CONTENT_WIDTH_MIN/, "列宽必须用共享范围")
+  assert.doesNotMatch(stripComments(APPEARANCE), /contentWidth|monoFont|内容列宽|等宽字体/, "列宽 / 等宽字体做不到全局生效，不在外观页提供")
   assert.match(APPEARANCE, /SETTINGS_DENSITY_LABELS/, "密度文案必须用共享定稿")
   assert.match(APPEARANCE, /SettingsColorDots/, "强调色必须用共享色点组件")
   assert.match(APPEARANCE, /data-settings-page="appearance"/)
   assert.doesNotMatch(stripComments(APPEARANCE), /pi_remote_pi_prefs|pi_remote_pi_settings_v2/, "页面不得自己读写存储键")
 
-  // 六皮肤强调色：三套身份色 + 选中态走 --st-accent，不写死当前皮肤。
+  // 五点强调色：色样是设计册固定的身份色，只属于色样本身。
   for (const color of ["#6d4bc4", "#2b7fd4", "#d97757", "#3fb970", "#6e6e76"]) {
     assert.ok(APPEARANCE_CSS.includes(color), `外观页强调色缺少 ${color}`)
   }
-  assert.match(APPEARANCE_CSS, /background:\s*var\(--st-accent\)/, "选中徽标必须跟当前皮肤强调色")
-  assert.match(APPEARANCE_CSS, /settings-appearance-mini\[data-preview-style="codex"\]/, "三张预览卡按设计稿固定皮肤")
 })
 
 test("数据与隐私：隐私模式本机可写，◐ 不可写，○ 即时，● 导出接真实命令", () => {
@@ -91,7 +88,6 @@ test("使用活动：真实 usage hook、52 周热力、880 宽列、无费用�
   assert.match(USAGE, /分天按设备本地时区/)
   assert.match(USAGE, /中转侧的镜像副本不重复计/)
   assert.match(USAGE_CSS, /--su-highlight:\s*#d97757/)
-  assert.match(USAGE_CSS, /data-pi-settings-style="codex"[\s\S]*?--su-highlight:\s*var\(--st-accent\)/, "Codex 两套高亮改走强调色")
   assert.match(USAGE_CSS, /color-mix\(in srgb, var\(--st-accent\)/, "热力 / 柱图跟强调色")
 })
 

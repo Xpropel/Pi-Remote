@@ -1,18 +1,15 @@
-import { Suspense, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react"
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react"
 import { PiRoot } from "@/components/pi/shared"
 import { PiLayerProvider, PiStaticProvider } from "@/components/pi/shared/layers"
 import { piLayoutOf } from "@/components/pi/shared/viewport"
 import { noticeStore } from "@/chat/composer/noticeStore"
 import { useNoticeSnapshot } from "@/chat/composer/useNotices"
-import { installPiUiExtensionMock, parsePiUiMockCaps, uninstallPiUiExtensionMock } from "@/pi/extensions/mock"
 import { PiAppBody } from "@/pi/containers/PiAppBody"
 import type { PiVariant } from "@/pi/containers/types"
 import { PiSettingsHost } from "@/pi/hooks/PiSettingsHost"
 import { usePiDevice } from "@/pi/hooks/usePiDevice"
 import { PiNowProvider } from "@/pi/hooks/useNow"
 import { usePiUiState, type PiUiSeed } from "@/pi/hooks/usePiUiState"
-import { PiVariantLoading, piVariantDefOf, type VariantAppProps } from "@/pi/variants"
-import { isPiUiVariant, piUiVariantOf, type PiUiVariant } from "@/pi/variants/types"
 import "@/pi/styles/privacy.css"
 import { ErrorBoundary } from "./ErrorBoundary"
 import { makeFakeRelay } from "./fakeRelay"
@@ -40,11 +37,6 @@ import { stageVars, useReady, useStageHtml } from "./stage"
  * P6（p6-base）：vp=device 是设备模式——不画固定尺寸的舞台，PiRoot 走产品模式（和 PiApp 同一个 usePiDevice：1024 断点、
  * useMobileViewport 的键盘、env() 安全区、100dvh），总是可交互；给 R2/tools/ui-device.mjs 在 Chrome 设备模拟里量（平板 820×1180 等）。
  * data-pi-live="device"，不参加对图。
- * P1 架构线（PI-UI-REFS）：&ui=cursor|claude|codex 按变体渲染（缺省 cursor = 下面的原树）。
- *   - cursor：PiRoot + PiAppBody，和 P1 之前完全一样；
- *   - claude / codex：variants/index.ts 的 React.lazy 入口（骨架由 P1 提供，P2 两条线替换），舞台写 data-pi-ui，
- *     界面状态用 usePiUiState 的 seed（persist: false，不写存储）把 prefs.ui 预置成该变体。
- * 这是 P2 / 验证线给两套设计出整屏对图的入口：#/live/<fixture>?vp=1440x900&theme=light&ui=claude。
  */
 
 const FIXTURES = import.meta.glob<PiLiveFixture>("./fixtures/live/*.ts", { eager: true, import: "default" })
@@ -54,9 +46,9 @@ const BY_ID = new Map(Object.values(FIXTURES).map((fx) => [fx.id, fx]))
 /** 外壳的起始状态 + 三条线各自的（同 id 时线的覆盖外壳的；每层先 ui 再叠当前视口的） */
 
 /** dev-only：`?mobileNav=drawer|list` 预置起始偏好（gallery seed persist:false，localStorage 不生效），仅预览层。 */
-function liveSeedWithDevPrefs(id: string, variant: PiVariant, ui: PiUiVariant): PiUiSeed {
-  const seed = liveSeedOf(id, variant, ui)
-  // gallery 常见形态是 `?caps=all#/live/…?mobileNav=…`：search 与 hash query 都要读，hash 覆盖 search
+function liveSeedWithDevPrefs(id: string, variant: PiVariant): PiUiSeed {
+  const seed = liveSeedOf(id, variant)
+  // search 与 hash query 都要读，hash 覆盖 search
   const params = new URLSearchParams(window.location.search)
   const hashQuery = window.location.hash.includes("?") ? window.location.hash.slice(window.location.hash.indexOf("?") + 1) : ""
   for (const [key, value] of new URLSearchParams(hashQuery)) params.set(key, value)
@@ -66,26 +58,26 @@ function liveSeedWithDevPrefs(id: string, variant: PiVariant, ui: PiUiVariant): 
 }
 
 /**
- * dev-only：`&notify=done|error|waiting` 给假 relay 注入一条真实形状的通知信号。
+ * dev-only：`&notify=done|error|waiting|waiting-stop` 给假 relay 注入一条真实形状的通知信号。
  * done / error = 当前房间的一条 turnEnd；waiting = 挂载 600ms 后新开一个 ui_prompt，
- * 让宿主走「等待条目新增」的动态路径（不是预先存在的等待）。
+ * 让宿主走「等待条目新增」的动态路径（不是预先存在的等待）；waiting-stop 再过 3 秒把它关掉（像停止回合），
+ * 看等待提醒按 scope 撤回、不停满 8 秒。
  * 只给可交互态用（静态对图不跑通知副作用）；验证设置 v2 的通知开关时用它代替真实回合。
  */
-function liveDevNotificationKind(interactive: boolean): "done" | "error" | "waiting" | null {
+function liveDevNotificationKind(interactive: boolean): "done" | "error" | "waiting" | "waiting-stop" | null {
   if (!interactive) return null
   const params = new URLSearchParams(window.location.search)
   const hashQuery = window.location.hash.includes("?") ? window.location.hash.slice(window.location.hash.indexOf("?") + 1) : ""
   for (const [key, value] of new URLSearchParams(hashQuery)) params.set(key, value)
   const kind = params.get("notify")
-  return kind === "done" || kind === "error" || kind === "waiting" ? kind : null
+  return kind === "done" || kind === "error" || kind === "waiting" || kind === "waiting-stop" ? kind : null
 }
 
-function liveSeedOf(id: string, variant: PiVariant, ui: PiUiVariant): PiUiSeed {
+function liveSeedOf(id: string, variant: PiVariant): PiUiSeed {
   const layers: (PiLiveSeed | undefined)[] = [LIVE_SEEDS[id], LIVE_SEEDS_A[id], LIVE_SEEDS_B[id], LIVE_SEEDS_C[id]]
   const seed: PiUiSeed = {}
   for (const layer of layers) Object.assign(seed, layer?.ui, layer?.[variant])
-  // PI-UI-REFS：?ui= 选中的变体写进起始偏好 prefs.ui（这个 usePiUiState 是 persist: false，不读不写存储）
-  return { ...seed, prefs: { ...seed.prefs, ui } }
+  return seed
 }
 
 /**
@@ -94,14 +86,19 @@ function liveSeedOf(id: string, variant: PiVariant, ui: PiUiVariant): PiUiSeed {
  */
 function useLiveRelay(fixture: PiLiveFixture | undefined, variant: PiVariant, interactive: boolean) {
   const notify = liveDevNotificationKind(interactive)
+  const waits = notify === "waiting" || notify === "waiting-stop"
   // waiting 走「挂载后新开弹窗」的动态路径，避免把预置等待误当成新事件。
   const [waitingEvent, setWaitingEvent] = useState(false)
   useEffect(() => {
     setWaitingEvent(false)
-    if (notify !== "waiting") return
-    const timer = window.setTimeout(() => setWaitingEvent(true), 600)
-    return () => window.clearTimeout(timer)
-  }, [notify, fixture?.id])
+    if (!waits) return
+    const open = window.setTimeout(() => setWaitingEvent(true), 600)
+    const stop = notify === "waiting-stop" ? window.setTimeout(() => setWaitingEvent(false), 3600) : undefined
+    return () => {
+      window.clearTimeout(open)
+      window.clearTimeout(stop)
+    }
+  }, [waits, notify, fixture?.id])
   const noticeState = useNoticeSnapshot()
   const fake = useMemo(() => {
     if (!fixture) return null
@@ -112,11 +109,11 @@ function useLiveRelay(fixture: PiLiveFixture | undefined, variant: PiVariant, in
         ? { turnEnd: { seq: 1, at: fixture.now, roomId: derived.roomId ?? fixture.relay.roomId ?? "", error: notify === "error" } }
         : {}
     const waiting =
-      notify === "waiting" && waitingEvent
+      waits && waitingEvent
         ? { uiPrompt: { kind: "confirm", title: "等你确认（画廊受控事件）", startedAt: fixture.now } }
         : {}
     return makeFakeRelay({ ...derived, ...turnEnd, ...waiting })
-  }, [fixture, variant, notify, waitingEvent])
+  }, [fixture, variant, notify, waits, waitingEvent])
   // 可交互时的草稿（null = 还没打过字，用 fixture 的）；静态对图不碰它
   const [draft, setDraft] = useState<string | null>(null)
   const [devicePick, setDevicePick] = useState<string | null>(null)
@@ -124,14 +121,19 @@ function useLiveRelay(fixture: PiLiveFixture | undefined, variant: PiVariant, in
   const selectDevice = useCallback((id: string) => {
     setDevicePick(id)
   }, [])
+  // 与 useRelay 返回的通知栈接口一一对应，缺一个画廊就和产品行为不一样（例如等待提醒撤不回）
   const noticeOverrides = interactive
     ? {
         notices: noticeState.visible,
         noticeQueue: noticeState.queue.length,
         pushNotice: noticeStore.push,
         dismissNotice: noticeStore.dismiss,
+        dismissTopNotice: noticeStore.dismissTop,
         pauseNotice: noticeStore.pause,
         resumeNotice: noticeStore.resume,
+        runNoticeAction: noticeStore.runAction,
+        clearNotices: noticeStore.clear,
+        retractNoticeScope: noticeStore.retract,
       }
     : null
   return useMemo(() => {
@@ -147,12 +149,11 @@ function useLiveRelay(fixture: PiLiveFixture | undefined, variant: PiVariant, in
   }, [fixture, fake, interactive, draft, variant, devicePick, selectDevice, noticeOverrides])
 }
 
-function LiveMissing({ id, ui }: { id: string; ui?: string | null }) {
+function LiveMissing({ id }: { id: string }) {
   return (
     <div data-pi-missing="" className="p-8 text-(--cw-text-2)">
       <p className="mt-0 font-semibold">
-        #/live/{id}：没有这个 fixture，或参数不对（vp = {PI_VIEWPORTS.join(" | ")} | device；theme = {PI_THEMES.join(" | ")}
-        {ui != null ? `；ui = ${ui} 不是 cursor / claude / codex` : ""}）。可用：
+        #/live/{id}：没有这个 fixture，或参数不对（vp = {PI_VIEWPORTS.join(" | ")} | device；theme = {PI_THEMES.join(" | ")}）。可用：
         {[...BY_ID.keys()].sort().join("、")}
       </p>
       <a className="text-(--cw-link) underline" href="#/pi">
@@ -162,53 +163,24 @@ function LiveMissing({ id, ui }: { id: string; ui?: string | null }) {
   )
 }
 
-/**
- * live 路由的 mock 注入（P4.2，与 #/p4 同口径）：hash 内 `&caps=all|csv|none`。
- * 生产入口不 import 本文件；卸载时清掉 mock 避免路由间泄漏。
- */
-export function useLiveCaps(caps: string | null | undefined): void {
-  useEffect(() => {
-    const raw = caps?.trim()
-    // 无 API 参数：保留 dev 入口的 auto-install（query ?caps= / localStorage flag），不要清掉
-    if (!raw) return
-    if (raw === "none" || raw === "off") {
-      uninstallPiUiExtensionMock()
-      return () => {
-        uninstallPiUiExtensionMock()
-      }
-    }
-    const parsed = parsePiUiMockCaps(raw)
-    if (parsed && parsed.length) installPiUiExtensionMock({ caps: parsed, mode: "simulated", source: "url" })
-    else uninstallPiUiExtensionMock()
-    return () => {
-      uninstallPiUiExtensionMock()
-    }
-  }, [caps])
+export function LiveRoute(props: { id: string; vp: string | null; theme: string | null; interactive?: boolean }) {
+  return props.vp === "device" ? <LiveDeviceRoute id={props.id} theme={props.theme} /> : <LiveStageRoute {...props} />
 }
 
-export function LiveRoute(props: { id: string; vp: string | null; theme: string | null; ui?: string | null; interactive?: boolean; caps?: string | null }) {
-  return props.vp === "device" ? <LiveDeviceRoute id={props.id} theme={props.theme} ui={props.ui ?? null} caps={props.caps ?? null} /> : <LiveStageRoute {...props} ui={props.ui ?? null} caps={props.caps ?? null} />
-}
-
-function LiveStageRoute({ id, vp, theme, ui, interactive = false, caps = null }: { id: string; vp: string | null; theme: string | null; ui: string | null; interactive?: boolean; caps?: string | null }) {
-  useLiveCaps(caps)
+function LiveStageRoute({ id, vp, theme, interactive = false }: { id: string; vp: string | null; theme: string | null; interactive?: boolean }) {
   const fixture = BY_ID.get(id)
   const viewport = (vp ?? "1440x900") as PiStageSize
   const layout = piLayoutOf(viewport)
   const th = (theme ?? "light") as PiTheme
-  const uiVariant: PiUiVariant = piUiVariantOf(ui)
-  const ok = !!fixture && (PI_VIEWPORTS as string[]).includes(viewport) && (PI_THEMES as string[]).includes(th) && (ui == null || isPiUiVariant(ui))
+  const ok = !!fixture && (PI_VIEWPORTS as string[]).includes(viewport) && (PI_THEMES as string[]).includes(th)
   const variant: PiVariant = layout
   const keyboard = ok && !!findPiScreen(id)?.meta.keyboard && variant === "phone"
   const relay = useLiveRelay(fixture, variant, interactive)
-  const [uiState, act] = usePiUiState({ seed: liveSeedWithDevPrefs(id, variant, uiVariant), persist: false })
+  const [uiState, act] = usePiUiState({ seed: liveSeedWithDevPrefs(id, variant), persist: false })
   const ready = useReady()
   useStageHtml(ok, viewport, th, keyboard)
-  if (!ok || !fixture || !relay) return <LiveMissing id={id} ui={ui} />
+  if (!ok || !fixture || !relay) return <LiveMissing id={id} />
   const size = PI_STAGE[viewport]
-  const variantDef = piVariantDefOf(uiVariant)
-  const Variant = variantDef.Component
-  const variantApp: VariantAppProps = { relay, ui: uiState, act, keyboardOpen: keyboard, theme: th, layout: variant }
   const body = (
     <PiNowProvider now={fixture.now}>
       <PiAppBody relay={relay} ui={uiState} act={act} variant={variant} keyboardOpen={keyboard} theme={th} />
@@ -226,9 +198,7 @@ function LiveStageRoute({ id, vp, theme, ui, interactive = false, caps = null }:
     >
       <div
         data-pi-stage={id}
-        data-pi-ui={uiVariant}
         data-pi-live={interactive ? "interactive" : ""}
-        data-p4-caps={caps ?? "none"}
         data-pi-layout={layout}
         data-pi-theme={th}
         data-pi-keyboard={keyboard ? "" : undefined}
@@ -247,17 +217,9 @@ function LiveStageRoute({ id, vp, theme, ui, interactive = false, caps = null }:
         }
       >
         <ErrorBoundary where={`live:${id}`}>
-          {uiVariant === "cursor" ? (
-            <PiRoot viewport={layout} theme={th} keyboard={keyboard}>
-              {interactive ? <PiLayerProvider>{body}</PiLayerProvider> : <PiStaticProvider>{body}</PiStaticProvider>}
-            </PiRoot>
-          ) : (
-            <Suspense fallback={<PiVariantLoading variant={uiVariant} />}>
-              <PiNowProvider now={fixture.now}>
-                <Variant {...variantApp} />
-              </PiNowProvider>
-            </Suspense>
-          )}
+          <PiRoot viewport={layout} theme={th} keyboard={keyboard}>
+            {interactive ? <PiLayerProvider>{body}</PiLayerProvider> : <PiStaticProvider>{body}</PiStaticProvider>}
+          </PiRoot>
         </ErrorBoundary>
         {keyboard ? <KeyboardPlaceholder viewport={viewport} theme={th} /> : null}
       </div>
@@ -269,36 +231,21 @@ function LiveStageRoute({ id, vp, theme, ui, interactive = false, caps = null }:
  * 设备模式（vp=device，P6）：外层只是一个不占位的标记盒（data-pi-stage / data-pi-ready 照旧，ui-device 的就绪选择器不用改）；
  * 不设 contain、不挂舞台变量，PiRoot（产品模式，fixed）直接铺满窗口。桌面 / 手机随窗口宽度切换（≥ 1024 桌面）。
  */
-function LiveDeviceRoute({ id, theme, ui, caps = null }: { id: string; theme: string | null; ui: string | null; caps?: string | null }) {
-  useLiveCaps(caps)
+function LiveDeviceRoute({ id, theme }: { id: string; theme: string | null }) {
   const fixture = BY_ID.get(id)
   const th = (theme ?? "light") as PiTheme
-  const uiVariant: PiUiVariant = piUiVariantOf(ui)
-  const ok = !!fixture && (PI_THEMES as string[]).includes(th) && (ui == null || isPiUiVariant(ui))
+  const ok = !!fixture && (PI_THEMES as string[]).includes(th)
   const device = usePiDevice()
   const variant: PiVariant = device.desktop ? "desktop" : "phone"
   const relay = useLiveRelay(fixture, variant, true)
-  const [uiState, act] = usePiUiState({ seed: liveSeedWithDevPrefs(id, variant, uiVariant), persist: false })
+  const [uiState, act] = usePiUiState({ seed: liveSeedWithDevPrefs(id, variant), persist: false })
   const ready = useReady()
-  if (!ok || !fixture || !relay) return <LiveMissing id={id} ui={ui} />
-  const variantDef = piVariantDefOf(uiVariant)
-  const Variant = variantDef.Component
-  const variantApp: VariantAppProps = {
-    relay,
-    ui: uiState,
-    act,
-    keyboardOpen: device.frame.keyboard,
-    theme: th,
-    layout: variant,
-    device: device.frame,
-  }
+  if (!ok || !fixture || !relay) return <LiveMissing id={id} />
   return (
     <PiSettingsHost relay={relay} ui={uiState} act={act} keyboardOpen={device.frame.keyboard}>
       <div
         data-pi-stage={id}
-        data-pi-ui={uiVariant}
         data-pi-live="device"
-        data-p4-caps={caps ?? "none"}
         data-pi-device-mode=""
         data-pi-layout={device.viewport}
         data-pi-theme={th}
@@ -306,21 +253,13 @@ function LiveDeviceRoute({ id, theme, ui, caps = null }: { id: string; theme: st
         data-frame-ready={ready ? "" : undefined}
       >
         <ErrorBoundary where={`live:${id}`}>
-          {uiVariant === "cursor" ? (
-            <PiRoot viewport={device.viewport} theme={th} device={device.frame}>
-              <PiLayerProvider>
-                <PiNowProvider now={fixture.now}>
-                  <PiAppBody relay={relay} ui={uiState} act={act} variant={variant} keyboardOpen={device.frame.keyboard} theme={th} />
-                </PiNowProvider>
-              </PiLayerProvider>
-            </PiRoot>
-          ) : (
-            <Suspense fallback={<PiVariantLoading variant={uiVariant} />}>
+          <PiRoot viewport={device.viewport} theme={th} device={device.frame}>
+            <PiLayerProvider>
               <PiNowProvider now={fixture.now}>
-                <Variant {...variantApp} />
+                <PiAppBody relay={relay} ui={uiState} act={act} variant={variant} keyboardOpen={device.frame.keyboard} theme={th} />
               </PiNowProvider>
-            </Suspense>
-          )}
+            </PiLayerProvider>
+          </PiRoot>
         </ErrorBoundary>
       </div>
     </PiSettingsHost>

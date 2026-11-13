@@ -1,6 +1,6 @@
-// UI 低危 1–13（变体 / 容器 / relay 草稿、outbox、注意力线）的最小回归：
-// 1) 被删会话信号过期不再误弹新建页；2) 加载/报错屏深色不再整屏刷白；3) 错误边界随皮肤复位；
-// 4) Claude/Codex 配对入口看服务端能力；5) Codex 状态色独立 token；6) 切皮肤保留新建页草稿；
+// UI 低危 1–13（容器 / relay 草稿、outbox、注意力线）的最小回归：
+// 1) 被删会话信号过期不再误弹新建页；2) 报错屏深色不再整屏刷白；6) 新建页草稿走共享 store；
+// （3–5 只针对已移除的 Claude / Codex 皮肤，随皮肤一并删除）
 // 7) 重同步定时器带房间标记；8) 草稿跨标签页同步（P12 已修，这里只钉接线）；9) outbox 回放认领分自他；
 // 10) 只增登记表封顶（含缓慢泄漏的 terminalHistoryIds）；11) 重复 message_start 去重；
 // 12) 主 effect 卸载清定时器；13) queue-sync 不再每帧全表扫转录。
@@ -26,15 +26,6 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8")
-
-function ruleBody(css, selector) {
-  const at = css.indexOf(selector)
-  assert.ok(at >= 0, `缺选择器 ${selector}`)
-  const open = css.indexOf("{", at)
-  const close = css.indexOf("}", open)
-  assert.ok(open >= 0 && close > open, `选择器 ${selector} 没有规则体`)
-  return css.slice(open + 1, close)
-}
 
 /* ------------------------------------------------------------------ 1. 被删会话信号 */
 
@@ -71,11 +62,11 @@ describe("1) 被删会话信号：过期信号只记账、不误弹新建页", (
 
 /* ------------------------------------------------------------------ 2. 加载 / 报错屏主题 */
 
-describe("2) 变体加载 / 报错屏：深色模式不再整屏浅色", () => {
+describe("2) 报错屏：深色模式不再整屏浅色", () => {
   const doc = (theme) => ({ documentElement: { getAttribute: (name) => (name === "data-pi-theme" ? theme : null) } })
   const storage = (value) => ({ getItem: (key) => (key === "pi_remote_pi_prefs" ? value : null) })
 
-  test("优先读 <html data-pi-theme>（切皮肤空窗期也拿得到旧主题）", () => {
+  test("优先读 <html data-pi-theme>（根卸载空窗期也拿得到旧主题）", () => {
     assert.equal(variantFallbackTheme(doc("dark"), null, false), "dark")
     assert.equal(variantFallbackTheme(doc("light"), storage(JSON.stringify({ v: 1, theme: "dark" })), true), "light")
   })
@@ -86,11 +77,7 @@ describe("2) 变体加载 / 报错屏：深色模式不再整屏浅色", () => {
     const legacy = { getItem: (key) => (key === "pi-remote.theme" ? "dark" : null) }
     assert.equal(variantFallbackTheme(doc(null), legacy, false), "dark", "旧主题键仍可迁移")
   })
-  test("加载屏 / 错误屏自己的根带 data-pi-root + data-pi-theme（共享深色 token 落到本地）", () => {
-    const loading = read("ui/src/pi/variants/index.ts")
-    assert.match(loading, /"data-pi-root": ""/)
-    assert.match(loading, /"data-pi-theme": resolved/)
-    assert.match(loading, /variantFallbackTheme\(\)/)
+  test("错误屏自己的根带 data-pi-root + data-pi-theme（共享深色 token 落到本地）", () => {
     const boundary = read("ui/src/pi/PiVariantBoundary.tsx")
     assert.match(boundary, /data-pi-root=""/)
     assert.match(boundary, /data-pi-theme=\{theme\}/)
@@ -98,77 +85,9 @@ describe("2) 变体加载 / 报错屏：深色模式不再整屏浅色", () => {
   })
 })
 
-describe("3) 变体错误边界：换皮肤自动复位", () => {
-  test("state 记住 failed 属于哪个变体；props.variant 变化立即清错误态", () => {
-    const src = read("ui/src/pi/PiVariantBoundary.tsx")
-    assert.match(src, /variant: PiUiVariant/)
-    assert.match(src, /state: PiVariantBoundaryState = \{ failed: false, message: "", variant: this\.props\.variant \}/)
-    assert.match(src, /static getDerivedStateFromProps\(/)
-    assert.match(src, /if \(props\.variant === state\.variant\) return null/)
-    assert.match(src, /return \{ failed: false, message: "", variant: props\.variant \}/)
-  })
-})
+/* ------------------------------------------------------------------ 6. 新建页草稿 */
 
-/* ------------------------------------------------------------------ 4. 配对入口 */
-
-describe("4) Claude / Codex 配对按钮看服务端能力", () => {
-  test("ClaudeBoot：no-devices 用 view.pairing、all-offline 用 relay.canManageDevices", () => {
-    const src = read("ui/src/pi/variants/claude/pages/ClaudeBoot.tsx")
-    assert.match(src, /const canPair = !!relay\.canManageDevices/)
-    assert.match(src, /view\.pairing \? \(/)
-    assert.match(src, /canPair \? \(/)
-  })
-  test("CodexBoot：无 device.token 不画配对按钮", () => {
-    const src = read("ui/src/pi/variants/codex/pages/CodexBoot.tsx")
-    assert.match(src, /const canPair = !!relay\.canManageDevices/)
-    assert.match(src, /\) : canPair \? \(/)
-  })
-})
-
-/* ------------------------------------------------------------------ 5. Codex 状态色 */
-
-describe("5) Codex 状态色用独立 token，不借用 diff", () => {
-  const tokens = read("ui/src/pi/variants/codex/styles/tokens.css")
-  const css = read("ui/src/pi/variants/codex/styles/codex.css")
-
-  test("浅 / 深两套都定义了状态 token", () => {
-    for (const name of ["--codex-status-ok", "--codex-status-ok-bg", "--codex-status-warn", "--codex-status-warn-bg", "--codex-status-bad"]) {
-      assert.equal((tokens.match(new RegExp(`${name}:`, "g")) ?? []).length, 2, `${name} 应有浅 / 深两份`)
-    }
-  })
-  test("工具 / 设备 / 检查 / 能力等状态规则不再引用 --codex-diff-*", () => {
-    const selectors = [
-      '.cx-set-dot[data-online]',
-      '.cx-tool-exit[data-ok]',
-      '.cx-tool-status[data-tone="ok"]',
-      '.cx-tool-status[data-tone="fail"]',
-      '.cx-terminal-output[data-failed]',
-      '.cx-statusline-dot[data-tone="ok"]',
-      '.cx-badge[data-tone="ok"]',
-      '.cx-badge[data-tone="warn"]',
-      '.cx-pr-icon[data-state="open"]',
-      '.cx-pr-check[data-status="ok"]',
-      '.cx-ext-status[data-status="available"]',
-    ]
-    for (const selector of selectors) {
-      let from = 0
-      for (;;) {
-        const at = css.indexOf(selector, from)
-        if (at < 0) break
-        const body = ruleBody(css.slice(at), selector)
-        assert.doesNotMatch(body, /--codex-diff-/, `${selector} 仍借用 diff token：${body.trim()}`)
-        from = at + selector.length
-      }
-    }
-  })
-  test("diff 自身仍用 diff token（语义没被抹平）", () => {
-    assert.match(ruleBody(css, '.cx-diff-row[data-kind="add"]'), /--codex-diff-add-bg/)
-  })
-})
-
-/* ------------------------------------------------------------------ 6. 新建页草稿跨皮肤 */
-
-describe("6) 切皮肤保留新建页未发送草稿", () => {
+describe("6) 新建页未发送草稿走共享 store", () => {
   test("共享 store：读 / 写 / 订阅 / 函数式更新 / 同值不通知", () => {
     setNewSessionDraft("")
     let hits = 0
@@ -187,8 +106,8 @@ describe("6) 切皮肤保留新建页未发送草稿", () => {
     setNewSessionDraft("")
     assert.equal(hits, 2, "取消订阅后不再通知")
   })
-  test("三套新建页都从 @/relay/drafts 读同一份草稿", () => {
-    for (const file of ["ui/src/pi/containers/NewSessionContainer.tsx", "ui/src/pi/variants/claude/pages/ClaudeNewSession.tsx", "ui/src/pi/variants/codex/pages/CodexNewSession.tsx"]) {
+  test("新建页从 @/relay/drafts 读共享草稿", () => {
+    for (const file of ["ui/src/pi/containers/NewSessionContainer.tsx"]) {
       const src = read(file)
       assert.match(src, /from "@\/relay\/drafts"/, `${file} 要 import 共享草稿 store`)
       assert.match(src, /useSyncExternalStore\(subscribeNewSessionDraft, newSessionDraftOf, newSessionDraftOf\)/, `${file} 要用共享快照`)
@@ -281,7 +200,8 @@ describe("10) 只增登记表封顶（其中 terminalHistoryIds 是缓慢泄漏�
     assert.match(src, /while \(set\.size > max\)/)
   })
   test("resolvedArmingAt 在启动取消 / 超时时一并清理（不再只增）", () => {
-    assert.match(src, /const at = pendingWatchRef\.current\[deviceId\]\?\.at \?\? armingRef\.current\[deviceId\]\?\.at\s*\n\s*if \(at !== undefined\) resolvedArmingAt\.current\.delete\(at\)/)
+    // 例外只有名册成功结案（keepResolved）且回执还没到：标记留给回执认领，见 pi-s3-cards 第六轮
+    assert.match(src, /const at = pendingWatchRef\.current\[deviceId\]\?\.at \?\? armingRef\.current\[deviceId\]\?\.at\s*\n\s*if \(at !== undefined && !\(keepResolved && armingRef\.current\[deviceId\]\?\.at === at\)\) resolvedArmingAt\.current\.delete\(at\)/)
     assert.match(src, /resolvedArmingAt\.current\.delete\(pending\.at\)/)
   })
   test("purgedSessions 不封顶的理由写在源码（B1 过滤要求页面生命周期内完整）", () => {

@@ -12,6 +12,7 @@ import { useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent,
 import {
   Activity,
   Bell,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Cpu,
@@ -486,7 +487,7 @@ export function SettingsSelect<T extends string>({
             </optgroup>
           ))}
         </select>
-        <ChevronRight size={14} strokeWidth={2} aria-hidden="true" className="settings-select-chevron" />
+        <ChevronDown size={14} strokeWidth={2} aria-hidden="true" className="settings-select-chevron" />
       </span>
     </SettingsRow>
   )

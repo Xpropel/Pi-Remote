@@ -29,7 +29,7 @@ import { COPY } from "@/relay/devices"
 import { rememberSettingsPage } from "@/pi/settings/SettingsPage"
 import type { Item } from "@/relay/transcript"
 import { openPiDialog, PI_UI_IDS, type PiContainerProps, type PiSessionExtras } from "./types"
-import { C_IDS, commandErrorText, useLegacyStyle } from "./cShared"
+import { commandErrorText, openQueueEdit, useLegacyStyle } from "./cShared"
 import { sharedSendNowLock } from "@/components/pi/composer/queueGuard"
 
 /**
@@ -77,6 +77,7 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
     setClock({ room: roomId, items: liveItems, clock: observeThinking(base, liveItems, now) })
   }
   const observed = clock.room === roomId ? clock.clock.done : EMPTY_THINKING_CLOCK.done
+  const thinkingSince = clock.room === roomId ? clock.clock.open : EMPTY_THINKING_CLOCK.open
   // 本页 outbox 里还没送出去的消息接在流尾（P5.6，§1.12：用户卡下灰字"等重连后发送"；回放后由同 cid 的气泡接手）
   const outbox = relay.outbox
   const outboxItems = useMemo(() => outboxItemsOf(outbox, liveItems), [outbox, liveItems])
@@ -176,7 +177,8 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
       // F4: queued-bubble actions. Send-now shares the queue panel's lock
       // and honors the same "send-now behavior" preference; cancel drops
       // the bubble via the relay's queue-drop path; edit opens the queue
-      // panel, whose editor owns full-text fetch and conflict handling.
+      // panel straight into editing this entry (openQueueEdit), whose editor
+      // owns full-text fetch and conflict handling.
       queueSendNow: (item: PiUserItem) => {
         const id = item.queueId
         if (!id || !sharedSendNowLock.begin(id)) return
@@ -192,10 +194,7 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
         if (!item.queueId) return
         void queueCancel(item.queueId).catch((error) => notify(commandErrorText(error, "排队操作失败"), "bad"))
       },
-      queueEdit: () => {
-        if (variant === "phone") act.openSheet({ id: C_IDS.queue })
-        else act.openMenu({ id: C_IDS.queue })
-      },
+      queueEdit: (item) => item.queueId && openQueueEdit(act, variant, item.queueId),
       regenerate: () => openPiDialog({ act, variant }, { id: PI_UI_IDS.regenerate, arg: roomId }),
       copyReply: async (item) => {
         const ok = await piCopyText(turnTextOf(itemsRef.current, item.key))
@@ -271,6 +270,7 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
         running={running}
         subagents={subagents.length > 0 ? subagents : undefined}
         expanded={expanded}
+        thinkingSince={thinkingSince}
         foldLong={!!lazy}
         onStickChange={piTranscriptStick.report}
         onOpenImage={openImage}

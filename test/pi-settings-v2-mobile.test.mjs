@@ -1,6 +1,6 @@
 // Pi-Remote 手机端设置 · 独立系统契约测试（纯 Node，无浏览器）。
 // 守卫：13 页 IA / 首页 12 入口 / 单列触控与安全区 / 26 周热力图 / 交互页默认列表与 mobileNav 接线 /
-//       外观五组（无内容列宽与字体）/ ○ 本机项持久化 / ◐◌ 只读与设计预留标注 / 六皮肤同源 token /
+//       外观四组（无界面风格、内容列宽与字体）/ ○ 本机项持久化 / ◐◌ 只读与设计预留标注 / 浅深同源 token /
 //       桌面外壳未被手机端改动。
 import test from "node:test"
 import assert from "node:assert/strict"
@@ -134,6 +134,9 @@ test("26 周日历：26 列 × 7 行、周日开头、含今天与未来格", ()
 })
 
 test("主机清单解析：供应商 / MCP / 命令（仅手动调用）/ get_settings 宽容读取", () => {
+  assert.equal(model.authSourceLabelOf("models_json_key"), "models.json")
+  assert.equal(model.authSourceLabelOf("environment"), "环境变量")
+  assert.equal(model.authSourceLabelOf("api_key"), "api_key", "没见过的来源原样显示，不编")
   assert.deepEqual(model.providersOf({ providers: [{ id: "stepfun", displayName: "StepFun", configured: true, models: 2, authSource: "api_key" }] }), [
     { id: "stepfun", name: "StepFun", connected: true, configured: true, models: 2, authSource: "api_key" },
   ])
@@ -200,14 +203,13 @@ test("13 页均有导出与外壳挂载；首页 → 内容页 / 内容页 → �
   assert.match(shell, /initialPage/)
   assert.match(shell, /onPageChange/)
   assert.match(shell, /data-pi-settings-mobile=""/)
-  assert.match(shell, /data-pi-settings-style=\{activeStyle\}/)
+  assert.match(shell, /data-pi-settings-style="cursor"/)
   assert.match(shell, /data-pi-theme=\{activeTheme\}/)
   assert.match(shell, /data-pi-settings-page=\{activePage\}/)
   assert.match(shell, /aria-modal="true"/)
   assert.match(shell, /Escape/)
   assert.match(shell, /settings-mobile/)
   assert.match(shell, /useSettingsLocalState/)
-  assert.match(shell, /settingsStyleOf\(p\.ui\.prefs\.ui\)/)
 })
 
 test("交互页：默认列表式、接 ui.prefs.mobileNav、即时写宿主偏好、文案逐字", () => {
@@ -222,26 +224,23 @@ test("交互页：默认列表式、接 ui.prefs.mobileNav、即时写宿主偏�
   assert.match(interactionPage, /role="radiogroup"/)
 })
 
-test("外观：五组、去掉内容列宽与字体、六皮肤 / 字号 / 密度 / 动态效果即时持久化", () => {
+test("外观：四组、去掉界面风格 / 内容列宽 / 字体 / 密度，明暗 / 字号 / 动态效果即时持久化", () => {
   const groups = appearancePage.match(/<MobileGroup/g) ?? []
-  assert.equal(groups.length, 5, "手机外观只保留五组")
-  assert.equal((appearancePage.match(/<MobileGroup label="界面风格"/g) ?? []).length, 1)
+  assert.equal(groups.length, 4, "手机外观只保留四组")
+  assert.doesNotMatch(appearanceCode, /界面风格|appearanceStyle|setUiVariant|IDENTITY_ACCENT|onPreviewStyle/, "界面风格选择已移除")
   assert.equal((appearancePage.match(/<MobileGroup label="明暗"/g) ?? []).length, 1)
   assert.equal((appearancePage.match(/<MobileGroup label="强调色"/g) ?? []).length, 1)
   assert.equal((appearancePage.match(/<MobileGroup label="字号"/g) ?? []).length, 1)
-  assert.equal((appearancePage.match(/<MobileGroup label="界面密度"/g) ?? []).length, 1)
+  assert.equal((appearancePage.match(/<MobileGroup label="动态效果"/g) ?? []).length, 1)
   assert.doesNotMatch(appearanceCode, /内容列宽|界面字体|等宽字体|uiFont|monoFont|contentWidth/)
-  for (const key of ["fontSize", "density", "reducedMotion"]) {
+  for (const key of ["fontSize", "reducedMotion"]) {
     assert.ok(appearancePage.includes(`setPref("${key}"`), `外观缺 ${key} 的即时写入`)
   }
   assert.match(appearancePage, /setPref\("appearanceTheme"/)
-  assert.match(appearancePage, /mergePrefs\(\{ appearanceStyle: next, accent: IDENTITY_ACCENT\[next\] \}\)/)
-  assert.match(appearancePage, /p\.act\.setUiVariant\(next\)/, "界面风格立即换宿主皮肤")
   assert.match(appearancePage, /p\.act\.setPref\("theme"/, "明暗立即换宿主主题")
-  assert.ok(appearancePage.includes("IDENTITY_ACCENT"))
+  assert.match(appearancePage, /act\.setPref\("accent", accent\)/, "强调色即时写本机偏好")
   assert.ok(appearancePage.includes("SETTINGS_ACCENTS"))
   assert.ok(appearancePage.includes("ACCENT_SWATCH"))
-  assert.ok(appearancePage.includes("onPreviewStyle"))
   assert.ok(appearancePage.includes("onPreviewTheme"))
 })
 
@@ -337,23 +336,20 @@ test("手机设备 / 关于：延迟、测试连接、默认设备、pi 版本�
   assert.match(mobileAboutPage, /CLIENT_VERSION/)
 })
 
-test("样式作用域 / 六皮肤 token / Claude 衬线范围 / 无旧偏好键与窗口控制", () => {
+test("样式作用域 / 浅深 token / display 字体范围 / 无旧偏好键与窗口控制", () => {
   // 所有规则都在 [data-pi-settings-mobile] 下；正文单列，不出现 260/692 桌面几何。
   assert.doesNotMatch(css, /(^|\n)\.sm-[a-z-]+\s*\{/, "存在未作用域化的 .sm- 规则")
   assert.ok(!css.includes("--st-rail-w"))
   assert.ok(!css.includes("--st-content-w"))
   assert.match(css, /--st-font-display/)
-  assert.equal((css.match(/var\(--st-font-display\)/g) ?? []).length, 2, "衬线只给顶栏标题与分组标题")
+  assert.equal((css.match(/var\(--st-font-display\)/g) ?? []).length, 2, "display 字体只给顶栏标题与分组标题")
   assert.match(css, /--st-font-sans/)
-  // 颜色只用 token；唯一例外是使用活动的陶土两点（Codex 改蓝）。
+  // 颜色只用 token；唯一例外是使用活动的陶土色。
   const colors = css.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) ?? []
-  assert.deepEqual(colors.sort(), ["#6cb0ee", "#d97757"], "mobile.css 只允许设计册两处陶土/Codex 蓝")
-  assert.match(css, /data-pi-settings-style="codex"\]\s*\{\s*--sm-usage-clay:\s*#6cb0ee/)
+  assert.deepEqual(colors, ["#d97757"], "mobile.css 只允许设计册的陶土色")
   assert.match(tokensImported(), /\.\/tokens\.css|\.\.\/tokens\.css/)
-  for (const style of types.MOBILE_SKIN_STYLES) {
-    assert.ok(fs.existsSync(path.join(ROOT, `ui/src/pi/settings/tokens.css`)), "六皮肤 token 同源")
-    assert.ok(css.includes("var(--st-"), `${style} 应消费 --st-*`)
-  }
+  assert.ok(fs.existsSync(path.join(ROOT, `ui/src/pi/settings/tokens.css`)), "浅深 token 与桌面同源")
+  assert.ok(css.includes("var(--st-"), "应消费 --st-*")
   assert.doesNotMatch(mobileText, /pi_remote_pi_prefs|PI_PREFS_KEY/, "手机端设置不得读写旧偏好键")
   assert.doesNotMatch(mobileText, /traffic[-_ ]?light|红绿灯|window-controls?/i)
 })

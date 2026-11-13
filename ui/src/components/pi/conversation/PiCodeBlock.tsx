@@ -1,11 +1,13 @@
 import { Fragment, useEffect, useRef, useState } from "react"
 import { GhostIconButton, SyntaxHighlight } from "@/components/kit"
-import { Check, ChevronDown, Copy } from "@/components/kit/icons"
+import { Check, Copy } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
 import { usePiStatic } from "@/components/pi/shared/layers"
-import { highlightRouteOf, type HighlightLine } from "@/pi/model/highlight"
+import { highlightLabelOf, highlightRouteOf, type HighlightLine } from "@/pi/model/highlight"
 import { useCachedHighlightLines } from "./useCachedHighlightLines"
 import { piCopyText, PI_COPIED_MS } from "./clipboard"
+import { CARD, CARD_DIVIDER, CARD_GAP, CARD_HEAD, CARD_HEAD_H, CARD_PEEK, PiCardFoot, PiCardPeekFade } from "./PiCard"
+import { T_SECONDARY } from "./styles"
 
 export interface PiCodeBlockProps {
   code: string
@@ -20,11 +22,16 @@ export interface PiCodeBlockProps {
   copied?: boolean
   /** P4：静态态（画廊截图）。不传时取 PiStaticProvider；静态态下复制钮不加 44 点击区外扩（见 COPY_HIT_44） */
   static?: boolean
+  /**
+   * 流式中、围栏还没闭合：不走 shiki（异步着色每来一批字都要重来，结果回来前是纯文本，会在纯文本和着色之间闪），
+   * 闭合后再着色；kit 认得的语言照常同步高亮，卡头的语言名照写
+   */
+  streaming?: boolean
   className?: string
 }
 
 const PLAIN_CODE =
-  "block font-(family-name:--cw-font-mono) text-(length:--cw-text-code-block) leading-(--cw-leading-code) whitespace-pre text-(--cw-text)"
+  "block font-(family-name:--cw-font-mono) text-(length:--cw-text-code-block) leading-(--cw-leading-code) whitespace-pre text-[color:var(--cw-pi-stream-fg,var(--cw-text))]"
 
 /**
  * 复制钮视觉 20×20，点击区 44×44（§4.4）：看不见的 ::after 从钮的右上角往左下铺 44×44（不居中外扩：卡是 overflow-hidden，居中会被裁掉 6px）。
@@ -33,11 +40,8 @@ const PLAIN_CODE =
  */
 const COPY_HIT_44 = "after:absolute after:top-0 after:right-0 after:size-11 after:content-['']"
 
-/**
- * 代码的横滚区（O-R3）：右边让出复制钮那一栏（钮 right-1.5 + 20 宽 = 距卡右缘 26），横滚区右缘停在钮左侧 2px，
- * 再留 4px 内距，第一行的长注释、横滚时的每一行都不再钻到钮下面。左、上、下内距不变。
- */
-const CODE_SCROLL = "mr-7 overflow-x-auto py-2 pr-1 pl-3 [scrollbar-width:thin]"
+/** 代码的横滚区（O-R3）：复制钮在卡头里，代码区左右各留 12，第一行的长注释、横滚时的每一行都不会钻到钮下面 */
+const CODE_SCROLL = "overflow-x-auto py-2 px-3 [scrollbar-width:thin]"
 
 /** shiki 的一行记号：颜色是 `var(--cw-syntax-*)`（深浅主题跟着 CSS 变量变），没有颜色的继承容器字色 */
 export function PiHighlightTokens({ line }: { line: HighlightLine }) {
@@ -58,9 +62,10 @@ export function PiHighlightTokens({ line }: { line: HighlightLine }) {
 
 /**
  * 回复里的围栏代码块（D07；compose from kit: SyntaxHighlight, GhostIconButton）。
- * 白底细描边圆角；右上复制钮；超过 12 行底部渐隐 + chevron（推断）。代码不折行，横向滚动（手机也一样，保持原样排版）。
+ * 卡的几何同 diff 卡、终端卡（PiCard）：卡头 = 语言名 + 复制钮；超过 12 行收起，展开箭头在卡底单独一条（推断）。
+ * 代码不折行，横向滚动（手机也一样，保持原样排版）。
  */
-export function PiCodeBlock({ code, lang = "plain", foldAfter = 12, copied: copiedProp, static: staticProp, className }: PiCodeBlockProps) {
+export function PiCodeBlock({ code, lang = "plain", foldAfter = 12, copied: copiedProp, static: staticProp, streaming, className }: PiCodeBlockProps) {
   const isStatic = usePiStatic(staticProp)
   const lines = code.replace(/\n$/, "").split("\n")
   const foldable = lines.length > foldAfter
@@ -68,7 +73,8 @@ export function PiCodeBlock({ code, lang = "plain", foldAfter = 12, copied: copi
   const clipped = foldable && !open
   const route = highlightRouteOf(lang)
   const text = lines.join("\n")
-  const shiki = useCachedHighlightLines(route.via === "shiki" ? text : null, route.via === "shiki" ? route.lang : null)
+  const viaShiki = route.via === "shiki" && !streaming
+  const shiki = useCachedHighlightLines(viaShiki ? text : null, viaShiki ? route.lang : null)
   // 可交互态：复制钮真的写剪贴板（P5.4，P4 交接），成功后 ✓ 停 1.2 秒；静态态只看 copied prop
   const [copiedNow, setCopiedNow] = useState(false)
   const timer = useRef<number | undefined>(undefined)
@@ -84,58 +90,44 @@ export function PiCodeBlock({ code, lang = "plain", foldAfter = 12, copied: copi
           timer.current = window.setTimeout(() => setCopiedNow(false), PI_COPIED_MS)
         })
       }
+  // 卡头的语言名：认得的写显示名（TypeScript、Shell…），认不得的照写围栏原文；没写语言的写"纯文本"（同文件视图），卡头不空着
+  const label = highlightLabelOf(lang) ?? lang
   return (
-    <div
-      data-pi-part="code-block"
-      data-lang={route.via === "plain" ? undefined : route.lang}
-      className={cn(
-        "group/code relative my-(--cw-space-2-5) overflow-hidden rounded-(--cw-radius-card) border border-(--cw-border) bg-(--cw-surface)",
-        className,
-      )}
-    >
-      <div
-        className={CODE_SCROLL}
-        style={clipped ? { maxHeight: `calc(${foldAfter} * var(--cw-leading-code) + 16px)` } : undefined}
-      >
-        {route.via === "kit" ? (
-          <SyntaxHighlight block code={text} lang={route.lang} />
-        ) : shiki ? (
-          <code data-highlight="shiki" className={PLAIN_CODE}>
-            {shiki.map((line, i) => (
-              <Fragment key={i}>
-                {i > 0 && "\n"}
-                <PiHighlightTokens line={line} />
-              </Fragment>
-            ))}
-          </code>
-        ) : (
-          <code className={PLAIN_CODE}>{text}</code>
-        )}
-      </div>
-      <GhostIconButton
-        size="sm"
-        label={copied ? "已复制" : "复制代码"}
-        icon={copied ? <Check /> : <Copy />}
-        onClick={copy}
-        className={cn("absolute top-1.5 right-1.5 bg-(--cw-surface)", !isStatic && COPY_HIT_44, copied && "text-(--cw-blue)")}
-      />
-      {clipped && (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-linear-to-b from-transparent to-(--cw-surface)"
+    <div data-pi-part="code-block" data-lang={route.via === "plain" ? undefined : route.lang} className={cn("group/code", CARD, CARD_GAP, className)}>
+      <div data-pi-part="code-head" className={cn(CARD_HEAD, CARD_DIVIDER, CARD_HEAD_H, "pl-3 in-data-[pi-layout=phone]:h-9")}>
+        <span className={cn("min-w-0 flex-1 truncate text-(length:--cw-text-sm)", T_SECONDARY)}>{label}</span>
+        <GhostIconButton
+          size="sm"
+          label={copied ? "已复制" : "复制代码"}
+          icon={copied ? <Check /> : <Copy />}
+          onClick={copy}
+          className={cn("-mr-0.5", !isStatic && COPY_HIT_44, copied && "text-(--cw-blue)")}
         />
-      )}
-      {foldable && (
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-label={open ? "收起代码" : "展开代码"}
-          onClick={() => setOpen(!open)}
-          // 视觉位置不变（图标距卡底 6），点击区 44×44 向上盖住渐隐区（§4.4；B4）
-          className="absolute bottom-0 left-1/2 z-[1] inline-flex h-11 w-11 -translate-x-1/2 items-end justify-center pb-1.5 text-(--cw-text-2)"
+      </div>
+      <div className="relative">
+        <div
+          className={CODE_SCROLL}
+          style={clipped ? { maxHeight: `calc(8px + ${foldAfter} * var(--cw-leading-code) + ${CARD_PEEK}px)`, overflowY: "hidden" } : undefined}
         >
-          <ChevronDown size={16} strokeWidth={1.5} aria-hidden className={cn(open && "rotate-180")} />
-        </button>
+          {route.via === "kit" ? (
+            <SyntaxHighlight block code={text} lang={route.lang} />
+          ) : shiki ? (
+            <code data-highlight="shiki" className={PLAIN_CODE}>
+              {shiki.map((line, i) => (
+                <Fragment key={i}>
+                  {i > 0 && "\n"}
+                  <PiHighlightTokens line={line} />
+                </Fragment>
+              ))}
+            </code>
+          ) : (
+            <code className={PLAIN_CODE}>{text}</code>
+          )}
+        </div>
+        {clipped && <PiCardPeekFade />}
+      </div>
+      {foldable && (
+        <PiCardFoot open={open} onToggle={() => setOpen(!open)} label={open ? "收起代码" : "展开代码"} />
       )}
     </div>
   )

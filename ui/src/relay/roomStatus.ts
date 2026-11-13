@@ -37,9 +37,8 @@ export type RoomStatusInput = {
 
 /**
  * dialog 等待短语（与 attention.ts 的 dialogWaitingText 同表：select/confirm/
- * input/editor 三档同文案；未知种类在状态行里回落"等你回复"——attention 的
- * detail 默认句是"有弹窗等你处理"，两处面向不同（detail 是说明句、这里是状态短语），
- * 三个具名种类严格同表，未知种类不强求一致）。
+ * input/editor 三档同文案；未知种类回落通用口径"等你回答"——与侧栏行尾、
+ * 通知「有任务等你回答」同一个词；attention 的 detail 默认句是"有弹窗等你回答"）。
  */
 export function dialogStatusPhrase(kind: string): string {
   switch (kind) {
@@ -53,7 +52,7 @@ export function dialogStatusPhrase(kind: string): string {
     case "editor":
       return "等你输入"
     default:
-      return "等你回复"
+      return "等你回答"
   }
 }
 
@@ -108,7 +107,7 @@ export function roomStatusLine(room: RoomStatusInput, now: number): RoomStatusLi
     return { text: withTime(dialogStatusPhrase(earliest.kind), earliest.startedAt, now), tone: "waiting" }
   }
   if (room.waitingPrompt) {
-    return { text: withTime("等你处理", room.waitingPrompt.at, now), tone: "waiting" }
+    return { text: withTime("等你回答", room.waitingPrompt.at, now), tone: "waiting" }
   }
   if (room.busy) {
     const phrase = roomEventPhrase(room.lastEvent)

@@ -23,6 +23,8 @@ export interface PiChangesPaneProps {
   variant: "desktop" | "phone"
   /** 展开的文件（默认第一个） */
   openPaths?: readonly string[]
+  /** 会话还没载入（只点选了本机记录）：本机记录不带编辑记录，列表空着不等于没改过文件 */
+  unloaded?: boolean
   className?: string
 }
 
@@ -52,15 +54,17 @@ const UNMODIFIED_SECONDARY = "[&_[data-slot=unmodified-lines-bar]]:text-(--cw-te
  * Cursor diffs view 的同一语法（规则 7）：三级统计 → 文件行 → 单列 unified diff（一列行号）+ 未改动折叠条。
  * 数据来自本会话的 edit / write 记录，不是 git 状态；所以没有勾选框、撤销、Commit & Push（§8）。
  */
-export function PiChangesPane({ files, total, variant, openPaths, className }: PiChangesPaneProps) {
+export function PiChangesPane({ files, total, variant, openPaths, unloaded, className }: PiChangesPaneProps) {
   const phone = variant === "phone"
   const open = new Set(openPaths ?? (files[0] ? [files[0].path] : []))
   if (files.length === 0) {
-    // 没有改动（design changes-pane states）：本会话还没有成功的 edit / write
+    // 没有改动（design changes-pane states）：本会话还没有成功的 edit / write；没载入的会话还看不到编辑记录
     return (
-      <div data-pi-part="changes-pane" data-empty="" className={cn("flex min-h-0 flex-1 flex-col items-center justify-center px-6", className)}>
-        <div className="text-(length:--cw-text-md) text-(--cw-text-2)">这个会话还没有编辑文件</div>
-        <div className={cn("mt-1 text-(length:--cw-text-sm) leading-(--cw-leading-sm)", T_SECONDARY)}>改动视图根据本会话的编辑记录，不是 git 状态</div>
+      <div data-pi-part="changes-pane" data-empty={unloaded ? "unloaded" : ""} className={cn("flex min-h-0 flex-1 flex-col items-center justify-center px-6", className)}>
+        <div className="text-(length:--cw-text-md) text-(--cw-text-2)">{unloaded ? "会话还没载入" : "这个会话还没有编辑文件"}</div>
+        <div className={cn("mt-1 text-(length:--cw-text-sm) leading-(--cw-leading-sm)", T_SECONDARY)}>
+          {unloaded ? "发第一条消息载入后，这里会列出本会话的编辑记录" : "改动视图根据本会话的编辑记录，不是 git 状态"}
+        </div>
       </div>
     )
   }

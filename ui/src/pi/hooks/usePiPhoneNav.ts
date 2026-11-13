@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react"
+import { setPageTitleStandIn } from "@/chat/hooks"
 import type { PiAppProps } from "@/pi/containers/types"
 import { usePiMotion } from "@/pi/hooks/useReducedMotion"
 import {
@@ -17,6 +18,7 @@ import {
   samePhoneRoute,
   type PiPhoneBase,
   type PiPhoneBoot,
+  type PiPhoneLayer,
   type PiPhonePageKey,
 } from "@/pi/model/phoneRoute"
 import { openSessionRow, sidebarSessionsOf } from "@/pi/model/sidebarSource"
@@ -28,8 +30,9 @@ import { useMobileNavigation } from "@/mobile/useMobileNavigation"
  * - 列表页 ↔ 对话页：useMobileNavigation（pushState / popstate、弹层哨兵、350ms 转场锁；mobile/*.ts 原样复用）。
  *   界面（usePiUiState 的 phonePage、relay.roomId）变了 → openConversation / goIndex；用户按系统返回 / 前进 → 改 phonePage。
  *   两边谁先变由这里的路由镜像（routeRef：popstate 时按 location.search 重读）判断，对应规则是 model/phoneRoute.ts 的纯函数。
- * - 推入页（新会话、设置、终端 / 改动 / 文件）、命令面板、sheet 各算一层弹层（overlayCount）；系统返回关最上面一层（closeTopOverlay：
- *   sheet → 命令面板 → 推入页）。推入页被界面关上时回到进来前的那一页（新会话 / 设置的 ‹ 调的是 act.openSession），新会话起好了就进它的对话页。
+ * - 搜索页、推入页（新会话、设置、终端 / 改动 / 文件）、命令面板、sheet 各算一层弹层（overlayCount）；系统返回关最上面一层（closeTopOverlay：
+ *   sheet → 命令面板 → 推入页 → 搜索页）。推入页被界面关上时回到进来前的那一页（新会话 / 设置的 ‹ 调的是 act.openSession），新会话起好了就进它的对话页。
+ *   搜索页不换页（列表式、抽屉式都盖在当前页上），从结果进会话时等它的哨兵退掉再压对话项。
  * - 深链 ?device=&session=：找回真实房间（openSessionRow：别的设备先 selectDevice，未载入的只本地选择）；
  *   房间、当前会话、会话清单 5 秒没变化还没找到 → "会话不可用"（同旧手机壳 MobileApp）。
  * - 240ms 转场（usePiMotion().pageTransitionMs，减少动效时 0）：新的一页用 Web Animations 滑进来（关键帧照旧手机壳）；
@@ -47,6 +50,7 @@ export const PHONE_UNAVAILABLE_MS = 5000
 const UA_TRANSITION_WINDOW_MS = 400
 
 type Target = { sessionId: string; deviceId?: string }
+type NavLayer = PiPhoneLayer | "search"
 type NavHistoryState = { __piMobile?: "index" | "conversation"; __piMobileLayer?: boolean } | null
 
 const historyState = (): NavHistoryState => (window.history.state ?? null) as NavHistoryState
@@ -62,15 +66,15 @@ export interface PiPhoneNav {
   opening: { sessionId: string; unavailable: boolean } | null
   /** "正在打开会话" / "会话不可用"页上的 ‹ 和"返回会话列表" */
   back: () => void
-  /** 页面后面那个隐藏的标记（转场动画放在它前一个兄弟 = 页面根节点上） */
+  /** 页面后面那个隐藏的标记（转场动画放在它前面的页面根节点上，跳过中间的通知出口） */
   anchorRef: RefObject<HTMLSpanElement | null>
 }
 
 export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot): PiPhoneNav {
   const roomId = relay.roomId
   const deviceId = relay.rooms.find((r) => r.id === roomId)?.deviceId ?? relay.lazySession?.deviceId ?? relay.selectedDeviceId ?? undefined
-  /** 推入页开着：它下面那一页、开时的会话 */
-  const [push, setPush] = useState<{ base: PiPhoneBase; room: string } | null>(null)
+  /** 推入页开着：它下面那一页、开时的会话、哪一页、开时那个会话输入框里的草稿 */
+  const [push, setPush] = useState<{ base: PiPhoneBase; room: string; page: PiPhonePageKey; draft: string } | null>(null)
   /** 推入页是系统返回关的（closeTopOverlay 已经回到下面那一页） */
   const [pushByBack, setPushByBack] = useState(false)
   const [opening, setOpening] = useState<Target | null>(null)
@@ -79,16 +83,25 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
   const [tick, setTick] = useState(0)
   const rerun = useCallback(() => setTick((t) => t + 1), [])
 
-  const raw = phonePageOf({ boot, view: ui.view, pane: ui.pane, phonePage: ui.phonePage, search: ui.search, roomId, opening: opening != null })
-  const closed = push && !isPhonePushPage(raw) && !pushByBack ? phonePushClosed({ base: push.base, roomAtOpen: push.room, roomId, phonePage: ui.phonePage }) : null
+  // 搜索页是弹层（下面 layers 的 search），不是换页：抽屉式在对话页上开搜索不退回列表、不动历史
+  const raw = phonePageOf({ boot, view: ui.view, pane: ui.pane, phonePage: ui.phonePage, search: null, roomId, opening: opening != null })
+  const pushClose = push && !isPhonePushPage(raw) && !pushByBack ? phonePushClosed({ base: push.base, roomAtOpen: push.room, roomId, phonePage: ui.phonePage }) : null
+  // 新会话撞上同目录已在运行的会话、而它正是进来前的当前会话：房间没换，但新会话页把草稿放进了它的输入框
+  // （NewSessionContainer 的 existing；‹ 不动草稿）→ 也进它的对话页：草稿在那里的输入框里，「已切换到它」的通知卡也在那里
+  const closed =
+    pushClose?.kind === "list" && push?.page === "new" && roomId && relay.draft !== push.draft
+      ? ({ kind: "forward", sessionId: roomId } as const)
+      : pushClose
   const closedKind = closed?.kind ?? null
   const closedSession = closed?.kind === "forward" ? closed.sessionId : null
   const page: PiPhonePageKey = closedKind === "list" ? "list" : raw
-  const layers = phoneLayersOf({ page, paletteOpen: ui.paletteOpen, sheet: ui.sheet != null })
+  const overlays = phoneLayersOf({ page, paletteOpen: ui.paletteOpen, sheet: ui.sheet != null })
+  // 搜索页整屏盖住列表 / 对话页，是最底下一层：系统返回先关上面的，最后关它
+  const layers: NavLayer[] = ui.search != null ? ["search", ...overlays] : overlays
 
-  const latest = useRef({ layers, page, base: null as PiPhoneBase | null })
+  const latest = useRef({ layers, page, base: null as PiPhoneBase | null, draft: relay.draft })
   useLayoutEffect(() => {
-    latest.current = { layers, page, base: push?.base ?? null }
+    latest.current = { layers, page, base: push?.base ?? null, draft: relay.draft }
   })
   const closeTopOverlay = useCallback(() => {
     const s = latest.current
@@ -102,7 +115,7 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
         act.setView("session")
         act.setPhonePage(s.base ?? "list")
       }
-    }
+    } else if (top === "search") act.setSearch(null)
   }, [act])
   const { openConversation, goIndex } = useMobileNavigation({ overlayCount: layers.length, closeTopOverlay })
 
@@ -140,6 +153,20 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
     },
     [openConversation],
   )
+  /** 刚关掉的弹层哨兵还在：useMobileNavigation 正要 history.back() 把它退掉，等那次 popstate 再压对话项（没等到就到时直接压） */
+  const pushAfterSentinel = useCallback(
+    (to: Target) => {
+      waitOpenRef.current = to
+      later(() => {
+        if (waitOpenRef.current !== to) return
+        waitOpenRef.current = null
+        pushConversation(to)
+        rerun()
+      }, POP_WAIT_MS)
+    },
+    [later, pushConversation, rerun],
+  )
+  const layerCountRef = useRef(0)
 
   const show = useCallback(
     (to: Target) => {
@@ -156,6 +183,8 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
 
   useEffect(() => {
     const onPop = (event: PopStateEvent) => {
+      // 还没对上（正在退刷新留下的弹层哨兵）：那几次 popstate 不算用户返回
+      if (!startedRef.current) return
       const next = parseMobileRoute(window.location.search)
       const changed = !samePhoneRoute(next, routeRef.current)
       routeRef.current = next
@@ -178,8 +207,27 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
   }, [pushConversation, rerun])
 
   // 第一次渲染：URL 和界面对上（布局 effect，赶在 useMobileNavigation 的首次挂载 effect 读 location 之前改写当前历史项）
+  const drainRef = useRef<"draining" | "done" | null>(null)
   useLayoutEffect(() => {
-    if (startedRef.current) return
+    if (startedRef.current || drainRef.current === "draining") return
+    // 刷新前开着的弹层没了、它的哨兵（同 URL）还在栈顶：先一条条退掉再对，不然系统返回要白按（刷新后退回 pushState 的项仍是同一文档，只来 popstate）
+    if (drainRef.current === null && historyState()?.__piMobileLayer && layers.length === 0) {
+      drainRef.current = "draining"
+      const finish = () => {
+        if (drainRef.current !== "draining") return
+        window.removeEventListener("popstate", onDrainPop)
+        drainRef.current = "done"
+        rerun()
+      }
+      const onDrainPop = () => {
+        if (historyState()?.__piMobileLayer) window.history.back()
+        else finish()
+      }
+      window.addEventListener("popstate", onDrainPop)
+      window.history.back()
+      later(finish, POP_WAIT_MS)
+      return
+    }
     startedRef.current = true
     const route = parseMobileRoute(window.location.search)
     const base = isPhonePushPage(page) ? phoneBaseOf({ boot, phonePage: ui.phonePage, roomId }) : (page as PiPhoneBase)
@@ -194,19 +242,21 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
       } else show(targetOf(init))
     }
     seenRef.current = { page, roomId }
-    // 只在第一次渲染跑
+    // 只在第一次渲染跑（退哨兵时等到退完那次 rerun）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [tick])
 
   // 每次提交：推入页的开关、系统返回 / 前进、界面换页 → 历史
   useLayoutEffect(() => {
     if (!startedRef.current) return
+    const layerClosed = layerCountRef.current > layers.length
+    layerCountRef.current = layers.length
     if (opening && roomId === opening.sessionId) {
       setOpening(null)
       setUnavailable(false)
     }
     if (isPhonePushPage(page)) {
-      if (!push) setPush({ base: lastBaseRef.current ?? phoneBaseOf({ boot, phonePage: ui.phonePage, roomId }), room: roomId })
+      if (!push) setPush({ base: lastBaseRef.current ?? phoneBaseOf({ boot, phonePage: ui.phonePage, roomId }), room: roomId, page, draft: latest.current.draft })
       seenRef.current = { page, roomId }
       return
     }
@@ -215,16 +265,8 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
       if (closedKind === "list") act.setPhonePage("list")
       else if (closedKind === "forward" && closedSession) {
         const to: Target = deviceId ? { sessionId: closedSession, deviceId } : { sessionId: closedSession }
-        if (historyState()?.__piMobileLayer) {
-          // 哨兵还在：useMobileNavigation 正要 history.back() 把它退掉，等那次 popstate 再压对话项
-          waitOpenRef.current = to
-          later(() => {
-            if (waitOpenRef.current !== to) return
-            waitOpenRef.current = null
-            pushConversation(to)
-            rerun()
-          }, POP_WAIT_MS)
-        } else pushConversation(to)
+        if (historyState()?.__piMobileLayer) pushAfterSentinel(to)
+        else pushConversation(to)
       }
       setPush(null)
       setPushByBack(false)
@@ -259,8 +301,11 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
         later(rerun, wait + 20)
         return
       }
-      if (step.kind === "push") pushConversation(targetOf(step))
-      else {
+      if (step.kind === "push") {
+        // 从搜索结果（或命令面板）进会话：这一帧弹层刚关、哨兵还在，同上等它退掉，不然对话项压在哨兵上、留一条空的列表项
+        if (layerClosed && layers.length === 0 && historyState()?.__piMobileLayer) pushAfterSentinel(targetOf(step))
+        else pushConversation(targetOf(step))
+      } else {
         waitBackRef.current = true
         goIndex()
         lockUntilRef.current = Date.now() + ROUTE_LOCK_MS
@@ -273,7 +318,7 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
       }
     }
     seenRef.current = { page, roomId }
-  }, [tick, page, roomId, deviceId, boot, ui.phonePage, push, closedKind, closedSession, opening, act, show, later, rerun, pushConversation, goIndex])
+  }, [tick, page, roomId, deviceId, boot, ui.phonePage, push, closedKind, closedSession, opening, layers.length, act, show, later, rerun, pushConversation, pushAfterSentinel, goIndex])
 
   // 深链 / 前进：找回真实房间（同旧手机壳 MobileApp；跨设备的会话行用 sidebarSessionsOf + openSessionRow）
   const triedRef = useRef("")
@@ -306,6 +351,11 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
     return () => window.clearTimeout(id)
   }, [opening, roomId, rooms, sessionsLoading])
 
+  // 标签页标题：这时画的不是 relay 里还开着的上一个会话，标题也不写它
+  const titleStandIn = opening ? (unavailable ? "会话不可用" : "正在打开会话…") : null
+  useEffect(() => setPageTitleStandIn(titleStandIn), [titleStandIn])
+  useEffect(() => () => setPageTitleStandIn(null), [])
+
   const back = useCallback(() => {
     setOpening(null)
     setUnavailable(false)
@@ -324,7 +374,9 @@ export function usePiPhoneNav({ relay, ui, act }: PiAppProps, boot: PiPhoneBoot)
     if (!direction || pageTransitionMs <= 0) return
     const pop = popAtRef.current
     if (pop?.ua && performance.now() - pop.at < UA_TRANSITION_WINDOW_MS) return
-    const el = anchorRef.current?.previousElementSibling
+    // 页面和标记之间可能隔着通知出口（PhoneApp 的 [data-pi-notice-slot]），跳过它找页面根
+    let el = anchorRef.current?.previousElementSibling ?? null
+    while (el?.hasAttribute("data-pi-notice-slot")) el = el.previousElementSibling
     if (!(el instanceof HTMLElement) || typeof el.animate !== "function") return
     animRef.current?.cancel()
     animRef.current = el.animate(phonePageFrames(direction), { duration: pageTransitionMs, easing: PHONE_PAGE_EASING })

@@ -9,14 +9,12 @@
  */
 import type { PiUiVariant } from "../variants/types.ts"
 import type { PiApprovalGateTier, PiPrefs } from "./prefs.ts"
-import { PI_APPROVAL_GATE_TIERS } from "./prefs.ts"
-import type { SwitchSyncView } from "./switchSync.ts"
 
 export type { PiApprovalGateTier }
 
 /** 与 components/pi/composer 的 CPrefs 同形 */
 export type PiSettingsPrefs = {
-  /** 界面变体（PI-UI-REFS 架构线）：设置页「外观 › 界面」三张卡片 */
+  /** 界面：只剩 Cursor 一套，恒为 "cursor"（字段留着与 CPrefs 同形；改它不写任何存储） */
   ui: PiUiVariant
   theme: "system" | "light" | "dark"
   fontSize: "small" | "standard" | "large"
@@ -50,7 +48,7 @@ export const PI_FONT_SIZE_DEFAULT = "standard" as const
 
 export function settingsPrefsOf(prefs: PiPrefs, legacy: PiLegacyStylePrefs, sendMode: string | null | undefined): PiSettingsPrefs {
   return {
-    ui: prefs.ui,
+    ui: "cursor",
     theme: prefs.theme,
     fontSize: PI_FONT_SIZE_DEFAULT,
     density: prefs.density,
@@ -66,26 +64,6 @@ export function settingsPrefsOf(prefs: PiPrefs, legacy: PiLegacyStylePrefs, send
   }
 }
 
-/**
- * Overlay the device-reported switch values onto a settings-prefs
- * object, for surfaces that cannot read the legacy key (the Claude
- * variant reads prefs only, by its independence rule). Only device
- * mode carries device truth; pending / legacy views leave the prefs
- * untouched. Fields the view does not carry (null) keep the prefs
- * value, and an unrecognized tier is ignored rather than displayed.
- */
-export function settingsPrefsWithDeviceSwitches(prefs: PiSettingsPrefs, view: SwitchSyncView | null | undefined): PiSettingsPrefs {
-  if (!view || view.mode !== "device") return prefs
-  const out = { ...prefs }
-  if (view.dialogRemoteAnswer !== null) out.dialogRemote = view.dialogRemoteAnswer
-  if (view.askUserEnabled !== null) out.askUser = view.askUserEnabled
-  if (view.approvalGateEnabled !== null) out.approvalGate = view.approvalGateEnabled
-  if (view.approvalGateTier !== null && (PI_APPROVAL_GATE_TIERS as readonly string[]).includes(view.approvalGateTier)) {
-    out.approvalGateTier = view.approvalGateTier as PiApprovalGateTier
-  }
-  return out
-}
-
 export type PiSettingsWrite =
   | { kind: "pref"; key: Exclude<keyof PiPrefs, "v">; value: PiPrefs[Exclude<keyof PiPrefs, "v">] }
   | { kind: "legacy"; patch: PiLegacyStylePrefs }
@@ -94,7 +72,6 @@ export type PiSettingsWrite =
 /** 一次改动要写到哪里（同一项可能要写两处）；字号没有落点，返回空 */
 export function settingsWritesOf(patch: Partial<PiSettingsPrefs>): PiSettingsWrite[] {
   const out: PiSettingsWrite[] = []
-  if (patch.ui) out.push({ kind: "pref", key: "ui", value: patch.ui })
   if (patch.theme) out.push({ kind: "pref", key: "theme", value: patch.theme })
   if (patch.density) out.push({ kind: "pref", key: "density", value: patch.density })
   if (patch.grouping) out.push({ kind: "pref", key: "grouping", value: patch.grouping })

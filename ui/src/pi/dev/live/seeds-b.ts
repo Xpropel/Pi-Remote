@@ -12,4 +12,7 @@ import type { PiLiveSeed } from "./seeds"
 export const LIVE_SEEDS_B: Record<string, PiLiveSeed> = {
   "file-pane": { ui: { file: VIEWPORT_PATH } },
   "task-panel": { desktop: { menu: { id: PI_UI_IDS.tasks } }, phone: { sheet: { id: PI_UI_IDS.tasks } } },
+  // S3：终端视图的空态 / 过了保留期仍照列
+  "s3-terminal-ended": { ui: { pane: "terminal" } },
+  "s3-terminal-held": { ui: { pane: "terminal" } },
 }

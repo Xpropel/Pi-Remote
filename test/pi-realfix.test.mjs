@@ -85,11 +85,12 @@ describe("O-R2 / O-R3 / O-R5 正文层与改动 pane", () => {
     assert.match(cells, /const TABLE_CELL_MIN = "min-w-\[7em\]"/)
     assert.match(src, /const TABLE_WRAP = "my-\(--cw-space-2-5\) overflow-x-auto"/)
   })
-  test("O-R3：代码块的横滚区右边让出复制钮那一栏", () => {
+  test("O-R3：代码块的复制钮在卡头里，不再浮在代码上；横滚区左右等距", () => {
     const src = read("components/pi/conversation/PiCodeBlock.tsx")
-    assert.match(src, /const CODE_SCROLL = "mr-7 overflow-x-auto py-2 pr-1 pl-3/)
+    assert.match(src, /const CODE_SCROLL = "overflow-x-auto py-2 px-3/)
     assert.match(src, /className=\{CODE_SCROLL\}/)
-    assert.match(src, /absolute top-1\.5 right-1\.5/)
+    assert.match(src, /data-pi-part="code-head"/)
+    assert.doesNotMatch(src, /absolute top-1\.5 right-1\.5/)
   })
   test("O-R5：改动 pane 的「N 行未改动」折叠条不画把手、没有 hover 加深；「第 N 次编辑」分隔条照旧", () => {
     const src = read("pi/containers/PaneContainer.tsx")
@@ -104,7 +105,7 @@ describe("F-R6 正文搜索按房间寻址（P8 8.1b 起扩成选中设备的各
     const src = read("relay/useRelay.ts")
     const at = src.indexOf("const searchSessionBodies = useCallback(")
     const fn = src.slice(at, src.indexOf("const sessionNameForPath", at))
-    assert.match(fn, /bodySearchTargetsOf\(deviceId, authedRef\.current \? roomsRef\.current : \[\], roomRef\.current\)/)
+    assert.match(fn, /bodySearchTargetsOf\(deviceId, authedRef\.current \? roomsRef\.current : \[\], roomRef\.current, platform\)/)
     assert.match(fn, /channel\.command\(target\.roomId, "search_session_bodies", \{ query \}/)
     assert.ok(fn.indexOf('runDeviceCommand(deviceId, "search_session_bodies"') < fn.indexOf("channel.command(target.roomId"), "没有房间目标时先走按设备的退路")
     assert.match(fn, /if \(!roomTargets\.length\) return runDeviceCommand\(deviceId, "search_session_bodies", \{ query \}\)/, "按设备是退路")

@@ -16,6 +16,7 @@ const sendKey = await import("../ui/src/pi/headless/composerSendKey.ts")
 const settings = await import("../ui/src/pi/settings/model.ts")
 const host = await import("../ui/src/pi/model/settingsHost.ts")
 const sound = await import("../ui/src/chat/composer/soundDecision.ts")
+const core = await import("../ui/src/chat/noticeCore.ts")
 
 const key = (patch = {}) => ({
   key: "Enter",
@@ -95,11 +96,6 @@ test("insertComposerNewline：光标 / 选区 / 越界都插在正确位置", ()
 const COMPOSERS = [
   "ui/src/components/pi/composer/PiFollowUpComposer.tsx",
   "ui/src/components/pi/composer/PiEmptyComposer.tsx",
-  "ui/src/pi/variants/claude/composer/ClaudeComposer.tsx",
-  "ui/src/pi/variants/codex/composer/CodexComposer.tsx",
-  "ui/src/pi/variants/claude/pages/ClaudeNewSession.tsx",
-  "ui/src/pi/variants/codex/pages/CodexNewSession.tsx",
-  "ui/src/pi/variants/codex/panels/CodexSideChat.tsx",
 ]
 
 test("每个发送入口都 import 并使用 useComposerEnter，不再各自硬编码 Enter 发送", () => {
@@ -189,10 +185,74 @@ test("等待提醒：只在 key 集合新增时触发；首次快照 / 同集合
   assert.deepEqual(host.freshWaitingKeys(["a", "b"], ["b", "c"]), ["c"], "一个关了、另一个开了仍算新事件")
   assert.deepEqual(host.freshWaitingKeys(["a"], []), [])
   const gate = gateOf({ notifyWaiting: true, notifyOnlyWhenAway: false, notifySound: true })
-  assert.equal(host.notificationNoticeOf(gate, "waiting", false)?.title, "有任务等你确认")
+  assert.equal(host.notificationNoticeOf(gate, "waiting", false)?.title, "有任务等你回答")
   assert.equal(host.notificationSoundVisible(gate, "waiting", false), true)
   assert.equal(host.notificationBadgeVisible(gate, "waiting", false), true)
   assert.equal(host.notificationNoticeOf(gateOf({ notifyWaiting: false }), "waiting", true), null)
+})
+
+test("R4 等待提醒基线：首份真实数据到达前不建账；已挂着的（含当前会话实时卡晚到）不补发；重连重建", () => {
+  const step = (ledger, ready, waitingKeys, knownKeys = []) => host.waitingNoticeStep(ledger, { ready, waitingKeys, knownKeys })
+  // 数据到达前：空集合不能被记成基线
+  let r = step(null, false, [])
+  assert.equal(r.ledger, null)
+  assert.deepEqual(r.fresh, [])
+  // auth_result 到：别房 B 已在等；当前房 A 的等待只在账本里（实时卡还没到）
+  r = step(r.ledger, true, ["dialog:B:1"], ["dialog:A:7", "dialog:B:1"])
+  assert.deepEqual(r.fresh, [], "打开页面时已挂着的不补发")
+  // 当前房快照到：实时卡 dialog:A:7 出现，仍是旧的
+  r = step(r.ledger, true, ["dialog:A:7", "dialog:B:1"], ["dialog:A:7", "dialog:B:1"])
+  assert.deepEqual(r.fresh, [], "当前会话实时卡晚一步到也不补发")
+  // 真正新开的才提醒
+  r = step(r.ledger, true, ["dialog:A:7", "dialog:B:1", "dialog:C:2"], ["dialog:A:7", "dialog:B:1", "dialog:C:2"])
+  assert.deepEqual(r.fresh, ["dialog:C:2"])
+  // A:7 答完消失后，同 id 再开算新的
+  r = step(r.ledger, true, ["dialog:B:1", "dialog:C:2"], ["dialog:B:1", "dialog:C:2"])
+  assert.deepEqual(r.fresh, [])
+  r = step(r.ledger, true, ["dialog:A:7", "dialog:B:1", "dialog:C:2"], ["dialog:A:7", "dialog:B:1", "dialog:C:2"])
+  assert.deepEqual(r.fresh, ["dialog:A:7"], "基线 key 消失后不再挡新事件")
+  // 断线：账本清掉；重连后已挂着的不补发
+  r = step(r.ledger, false, [], ["dialog:A:7", "dialog:B:1", "dialog:C:2"])
+  assert.equal(r.ledger, null)
+  r = step(r.ledger, true, ["dialog:B:1"], ["dialog:A:7", "dialog:B:1", "dialog:C:2"])
+  r = step(r.ledger, true, ["dialog:A:7", "dialog:B:1", "dialog:C:2"], ["dialog:A:7", "dialog:B:1", "dialog:C:2"])
+  assert.deepEqual(r.fresh, [], "重连后旧等待随快照回来不补发")
+})
+
+test("R4 提醒口径：等待统一「等你回答」；同类合并、回合结果新顶旧", () => {
+  const gate = gateOf({ notifyWaiting: true, notifyComplete: true, notifyError: true, notifyOnlyWhenAway: false })
+  const waiting = host.notificationNoticeOf(gate, "waiting", false)
+  const done = host.notificationNoticeOf(gate, "done", false)
+  const error = host.notificationNoticeOf(gate, "error", false)
+  assert.equal(waiting.title, "有任务等你回答")
+  assert.equal(waiting.title.includes("确认"), false, "不再写「等你确认」")
+  assert.equal(waiting.dedupeKey, "notify:waiting")
+  assert.equal(waiting.scope, host.WAITING_NOTICE_SCOPE)
+  assert.equal(done.scope, host.TURN_END_NOTICE_SCOPE)
+  assert.equal(error.scope, host.TURN_END_NOTICE_SCOPE)
+  assert.notEqual(done.dedupeKey, error.dedupeKey)
+  // 进通知栈：同类连发合并 ×n，完成 / 出错互相顶替，不排成「+1」
+  let state = core.emptyNotices()
+  state = core.pushNotice(state, waiting, 0)
+  state = core.pushNotice(state, waiting, 10)
+  assert.equal(state.visible.length + state.queue.length, 1)
+  assert.equal(state.visible[0].count, 2)
+  state = core.pushNotice(core.emptyNotices(), error, 0)
+  state = core.pushNotice(state, done, 10)
+  assert.deepEqual(state.visible.map((item) => item.title), ["任务完成"])
+  assert.deepEqual(state.queue, [], "旧的回合结果被新结果顶掉")
+  // 通用等待口径全局只有「等你回答」：侧栏 / 收件箱 / 状态行 / 状态点 / 通知（具体种类的等你选择 / 输入 / 确认另说）
+  for (const rel of [
+    "ui/src/pi/model/settingsHost.ts",
+    "ui/src/pi/model/inboxView.ts",
+    "ui/src/pi/containers/InboxContainer.tsx",
+    "ui/src/relay/attention.ts",
+    "ui/src/relay/roomStatus.ts",
+    "ui/src/relay/presence.ts",
+  ]) {
+    const src = read(rel)
+    assert.doesNotMatch(src, /"有任务等你确认"|"等你答"|"等你处理"|"有弹窗等你处理"|"等你回复"|`等你处理：/, rel)
+  }
 })
 
 test("等待提示音有独立音色，且与 done / error 不同", () => {
@@ -208,13 +268,17 @@ test("通知接线：宿主消费 waiting keys；hook 在新增时发应用内�
   const hook = read("ui/src/pi/hooks/useCompletionNotice.ts")
   const gallery = read("ui/src/pi/dev/LiveRoute.tsx")
   assert.match(hostSrc, /const attention = useAttentionState\(relay\)/)
-  assert.match(hostSrc, /useWaitingNotice\(relay, \{ gate, enabled: notifications, waitingKeys: attention\.waitingKeys \}\)/)
+  assert.match(
+    hostSrc,
+    /useWaitingNotice\(relay, \{\s*gate,\s*enabled: notifications,\s*waitingKeys: attention\.waitingKeys,\s*knownKeys: attention\.knownWaitingKeys,\s*ready: relay\.authed,\s*\}\)/,
+  )
+  assert.match(hostSrc, /knownWaitingKeys: waitingKeysOf\(attentionItemsOf\(\{ \.\.\.snapshot, currentRoomId: "", dialogs: \[\], uiPrompt: null \}\)\)/)
   assert.match(hook, /export function useWaitingNotice/)
-  assert.match(hook, /freshWaitingKeys\(seenRef\.current, waitingKeys\)/)
+  assert.match(hook, /waitingNoticeStep\(ledgerRef\.current, \{ ready, waitingKeys, knownKeys \}\)/)
   assert.match(hook, /notificationNoticeOf\(gate, "waiting", away\)/)
   assert.match(hook, /playCompletionSound\("waiting", \{ enabled: gate\.sound, requireAway: gate\.onlyWhenAway \}\)/)
   assert.match(hook, /notificationSoundVisible\(gate, "waiting", away\)/)
-  assert.match(hook, /if \(!enabled \|\| fresh\.length === 0\) return/)
+  assert.match(hook, /if \(!enabled \|\| step\.fresh\.length === 0\) return/)
   // gallery 的受控真实事件：done / error = turnEnd；waiting = 挂载后新开 ui_prompt。
   assert.match(gallery, /kind === "done" \|\| kind === "error" \|\| kind === "waiting"/)
   assert.match(gallery, /uiPrompt: \{ kind: "confirm", title: "等你确认（画廊受控事件）"/)

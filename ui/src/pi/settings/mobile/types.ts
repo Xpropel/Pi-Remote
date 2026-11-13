@@ -10,7 +10,7 @@
  *
  * 边界：本文件只被 settings/mobile/** 与 node --test 直载；不 import React / relay。
  */
-import { SETTINGS_PAGE_IDS, SETTINGS_PAGE_META, type SettingsPageId, type SettingsStyle } from "../types.ts"
+import { SETTINGS_PAGE_IDS, SETTINGS_PAGE_META, type SettingsPageId } from "../types.ts"
 import { PI_MOBILE_NAV_DEFAULT, PI_MOBILE_NAV_MODES, type PiMobileNavMode } from "../../mobile/types.ts"
 
 /* ------------------------------------------------------------------ */
@@ -112,6 +112,3 @@ export const MOBILE_SETTINGS_COPY = {
 
 export const MOBILE_NAV_DEFAULT: PiMobileNavMode = PI_MOBILE_NAV_DEFAULT
 export const MOBILE_NAV_MODES = PI_MOBILE_NAV_MODES
-
-/** 手机端六皮肤与桌面同源：只换颜色令牌，结构不动。 */
-export const MOBILE_SKIN_STYLES: readonly SettingsStyle[] = ["cursor", "claude", "codex"]

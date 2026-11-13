@@ -1,6 +1,6 @@
 /** 设备名册 / 会话清单的纯逻辑（不依赖 React）。契约见 DOC/50 与 DOC/40。 */
 // test/*.test.mjs 用 node 直接跑 .ts 源文件，相对导入必须带扩展名
-import { cleanSessionTitleText } from "./titleText.ts"
+import { sessionTitleOf } from "./titleText.ts"
 
 export const UNREGISTERED_DEVICE_ID = "未登记设备"
 
@@ -86,6 +86,11 @@ export class RelayError extends Error {
   }
 }
 
+/** 观看端名册读取被拒：relay 带了错误码就保留成 RelayError（设置页先按码判断「仅管理员可见」），没带码才只剩文案。 */
+export function viewerListRefusal(reason: string, code?: unknown): Error {
+  return typeof code === "string" && code ? new RelayError(code, reason) : new Error(reason)
+}
+
 /** room.dialogs（P9 A）房间等待摘要里的一条未决 dialog：只带聚合所需字段，不带 options/message/prefill 正文。 */
 export type RoomWaiting = {
   dialogId: string
@@ -164,6 +169,7 @@ export function encBadgeLabelOf(enc: boolean | undefined, encReason: RoomEncReas
 
 export type RoomInfo = {
   id: string
+  /** 扩展注册的房间标签。旧扩展在会话未命名时填的是设备标签（PI_REMOTE_LABEL），所以不作标题素材（见 sessionTitleOf） */
   label: string | null
   /** 会话自定义名（session_info.name），没有就是 null */
   name?: string | null
@@ -208,6 +214,16 @@ export type RoomInfo = {
   viewers: number
   /** 房间最近活动时间（relay 内存态）。同 cwd 多房间时据此挑最新的；旧 relay 不下发时为 0 */
   lastActivity: number
+  /**
+   * 最近一次有意义的 pi 事件时刻（回合/消息/工具/压缩/弹窗）；与 lastActivity 不同，
+   * 不随观看、命令、注册、断线刷新。0 = relay 启动后还没见过事件；缺失 = 旧 relay。
+   * 时间列与状态行都经 roomActivityAt 取它。
+   */
+  eventAt?: number
+  /** 最近一轮是用户停止的（新 relay 只在成立时带）：重连/后到的端不把它补报成完成或出错 */
+  turnStopped?: boolean
+  /** 扩展注册时报的 pi 版本（旧扩展 / 旧 relay 不带） */
+  piVersion?: string
   /**
    * Room creation time (ms epoch), immutable for the life of the room
    * record. Display only: it disambiguates same-titled live rows in the
@@ -464,43 +480,57 @@ function sessionGate(input: GateInput): { canSend: boolean; placeholder: string 
   return { canSend: true, placeholder: COPY.composerDefault }
 }
 
-/** 新建会话只能用名册里的 projects，不能随便写一条路径。 */
-export function cwdInProjects(projects: string[] | undefined, cwd: string): boolean {
-  const want = normPath(cwd)
-  if (!want) return false
-  return (projects || []).some((item) => normPath(item) === want)
-}
-
 /** 像 relay/devices.js 的 POSIX_PLATFORMS：这些平台区分大小写（其中 macOS 不区分）。 */
 const POSIX_PLATFORMS = new Set(["macos", "linux", "freebsd", "openbsd", "netbsd", "sunos", "aix", "android"])
+/** relay 归一之前的 Node 平台叫法（旧数据里还有） */
+const PLATFORM_ALIASES: Record<string, string> = { darwin: "macos", mac: "macos", osx: "macos", win32: "windows", win: "windows" }
 
-/** 按设备平台规范化路径（和 relay/devices.js 的 normPath 同一套规则）：Windows 反斜杠当分隔符、不分大小写；
- *  macOS（APFS 默认）不分大小写；Linux 等区分；平台未知（旧设备）沿用最宽松的旧规则。只用于比较，不用于显示。 */
-function devicePathKey(path: string, platform?: string | null): string {
-  const p = (platform || "").trim().toLowerCase()
+/** 网页里路径比较的唯一口径，和 relay/devices.js 的 normPath 同一套规则：Windows 与平台未知（旧设备）两种斜杠等价、不分大小写；
+ *  macOS（APFS 默认）不分大小写；Linux 等区分大小写，反斜杠是普通字符。去掉末尾斜杠，根目录留 "/"。只用于比较，不用于显示。 */
+export function pathKeyOf(path: string | null | undefined, platform?: string | null): string {
+  const raw = (platform || "").trim().toLowerCase()
+  const p = PLATFORM_ALIASES[raw] ?? raw
   const posix = POSIX_PLATFORMS.has(p)
   let s = String(path || "")
   if (!posix) s = s.replace(/\\/g, "/")
+  const rooted = s.startsWith("/")
   s = s.replace(/\/+$/, "")
+  if (!s && rooted) s = "/"
   return !posix || p === "macos" ? s.toLowerCase() : s
+}
+
+/** 两个路径是不是同一个（pathKeyOf 口径）；空路径和谁都不相等 */
+export function samePath(a: string | null | undefined, b: string | null | undefined, platform?: string | null): boolean {
+  const key = pathKeyOf(a, platform)
+  return key !== "" && key === pathKeyOf(b, platform)
+}
+
+/** 新建会话只能用名册里的 projects，不能随便写一条路径。 */
+export function cwdInProjects(projects: readonly string[] | undefined, cwd: string, platform?: string | null): boolean {
+  return (projects || []).some((item) => samePath(item, cwd, platform))
 }
 
 /** 路径在不在某个浏览根目录下：相等，或者「根目录 + 分隔符」开头（大小写、分隔符按平台）。
  *  和 relay/viewer.js 的 underRoots 同口径——前缀后面必须紧跟分隔符，`/Users/user2` 不算在 `/Users/user` 下。 */
 export function underRoots(roots: readonly string[] | null | undefined, cwd: string, platform?: string | null): boolean {
-  const want = devicePathKey(cwd, platform)
+  const want = pathKeyOf(cwd, platform)
   if (!want) return false
   for (const root of roots || []) {
-    const base = devicePathKey(root, platform)
+    const base = pathKeyOf(root, platform)
     if (!base) continue
-    if (want === base || want.startsWith(base + "/")) return true
+    if (want === base || want.startsWith(base.endsWith("/") ? base : base + "/")) return true
   }
   return false
 }
 
 /** P9 C §5.5：这个文件夹能不能选——在设备的 projects 白名单里，或者在它的浏览根目录下。规则和 relay 一致。 */
 export function folderAllowed(device: Pick<Device, "projects" | "browseRoots" | "platform">, cwd: string): boolean {
-  return cwdInProjects(device.projects, cwd) || underRoots(device.browseRoots, cwd, device.platform)
+  return cwdInProjects(device.projects, cwd, device.platform) || underRoots(device.browseRoots, cwd, device.platform)
+}
+
+/** 名册里这台设备的平台，给 pathKeyOf / samePath 用；找不到为 undefined（按平台未知的宽松规则比） */
+export function devicePlatformOf(devices: readonly Pick<Device, "id" | "platform">[], deviceId: string | null | undefined): string | undefined {
+  return deviceId ? devices.find((device) => device.id === deviceId)?.platform : undefined
 }
 
 /** list_dirs 回包上限（protocol/v4.json 的 limits.dirListMax）：attach 只取前 500 个，网页再按同一上限兜一次 */
@@ -638,19 +668,18 @@ export function parseSessionList(raw: unknown): SessionEntry[] {
  *  父行不在清单时要看清单完不完整（C-3）：清单被截断（listTruncated，relay 只取最近
  *  200/帧批次截断）时父行可能只是没被带上，只许呈中性态"源会话不在当前清单"，
  *  不许假报已删除；清单完整时不在才真是已删除。 */
-function withSessionLineage(rows: ListedSession[], sessions: SessionEntry[], listTruncated = false): ListedSession[] {
+function withSessionLineage(rows: ListedSession[], sessions: SessionEntry[], listTruncated = false, platform?: string | null): ListedSession[] {
   const parentPathById = new Map(sessions.map((session) => [session.id, session.parentSession ?? null]))
   if (![...parentPathById.values()].some(Boolean)) return rows
   const byPath = new Map<string, SessionEntry>()
-  for (const session of sessions) if (session.path) byPath.set(normPath(session.path), session)
+  for (const session of sessions) if (session.path) byPath.set(pathKeyOf(session.path, platform), session)
   return rows.map((row) => {
     const parentPath = parentPathById.get(row.id)
     if (!parentPath) return row
-    const parent = byPath.get(normPath(parentPath))
+    const parent = byPath.get(pathKeyOf(parentPath, platform))
     if (!parent) return { ...row, parentLabel: listTruncated ? "源会话不在当前清单" : "源会话已删除" }
     if (parent.deleted || parent.id === row.id) return { ...row, parentLabel: "源会话已删除" }
-    const parentTitle = parent.name || parent.firstMessage || (parent.cwd ? baseName(parent.cwd) : parent.id.slice(0, 8))
-    return { ...row, parentLabel: `源自 ${parentTitle}` }
+    return { ...row, parentLabel: `源自 ${sessionTitleOf(parent)}` }
   })
 }
 
@@ -738,7 +767,7 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
   const unclaimedOnlineByCwd = new Map<string, RoomInfo[]>()
   for (const room of mine) {
     if (!room.online || byId.has(room.id) || paired.has(room.id)) continue
-    const key = normPath(room.cwd || "")
+    const key = pathKeyOf(room.cwd, device.platform)
     const list = unclaimedOnlineByCwd.get(key) || []
     list.push(room)
     unclaimedOnlineByCwd.set(key, list)
@@ -746,7 +775,7 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
   const activeByCwd = new Map<string, SessionEntry[]>()
   for (const session of sessions) {
     if (!session.active || session.deleted || pairedEntryIds.has(session.id) || roomIds.has(session.id)) continue
-    const key = normPath(session.cwd || "")
+    const key = pathKeyOf(session.cwd, device.platform)
     const list = activeByCwd.get(key) || []
     list.push(session)
     activeByCwd.set(key, list)
@@ -769,7 +798,7 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
     const live = extras.filter((room) => room.online).map((room) => roomRow(room, false, entryForRoom(room)))
     const idle = extras.filter((room) => !room.online).map((room) => roomRow(room, false, entryForRoom(room)))
     fromIndex.sort((a, b) => b.updatedAt - a.updatedAt)
-    return withSessionLineage(disambiguateLiveRowTitles(uniqueRows([...live, ...fromIndex, ...idle]), liveRoomIds), sessions, listTruncated)
+    return withSessionLineage(disambiguateLiveRowTitles(uniqueRows([...live, ...fromIndex, ...idle]), liveRoomIds, device.platform), sessions, listTruncated, device.platform)
   }
   const roomById = new Map(mine.map((room) => [room.id, room]))
   const active = mine.filter((room) => room.online).map((room) => roomRow(room, true, entryForRoom(room)))
@@ -787,7 +816,7 @@ export function mergeDeviceSessions(device: Device, rooms: RoomInfo[], sessions:
   // 设备在线、但还没进索引的离线房间（刚关掉、清单还没推上来）：留在列表末尾可回看，不能直接丢
   const indexed = new Set(sessions.map((session) => session.id))
   const idle = mine.filter((room) => !room.online && !indexed.has(room.id) && !paired.has(room.id)).map((room) => roomRow(room, false, entryForRoom(room)))
-  return withSessionLineage(disambiguateLiveRowTitles(uniqueRows([...active, ...indexedActive, ...rest, ...idle]), liveRoomIds), sessions, listTruncated)
+  return withSessionLineage(disambiguateLiveRowTitles(uniqueRows([...active, ...indexedActive, ...rest, ...idle]), liveRoomIds, device.platform), sessions, listTruncated, device.platform)
 }
 
 /** Session id embedded in a session file name ("<timestamp>_<id>.jsonl"),
@@ -847,21 +876,22 @@ export function attributeSessionsAcrossDevices<T extends ListedSession & { devic
   })
 }
 
-export function groupListedSessions(rows: ListedSession[]): { cwd: string; items: ListedSession[] }[] {
-  const groups = new Map<string, ListedSession[]>()
+export function groupListedSessions(rows: ListedSession[], platform?: string | null): { cwd: string; items: ListedSession[] }[] {
+  const groups = new Map<string, { cwd: string; items: ListedSession[] }>()
   for (const row of rows) {
-    const key = row.cwd || ""
-    const list = groups.get(key) || []
-    list.push(row)
-    groups.set(key, list)
+    const key = pathKeyOf(row.cwd, platform)
+    const group = groups.get(key)
+    if (group) group.items.push(row)
+    else groups.set(key, { cwd: row.cwd || "", items: [row] })
   }
-  return [...groups.entries()].map(([cwd, items]) => ({ cwd, items }))
+  return [...groups.values()]
 }
 
 export function findStartedRoom(
   watch: { kind: "cwd" | "session"; key: string; seen: Set<string> },
   deviceId: string,
   rooms: RoomInfo[],
+  platform?: string | null,
 ): RoomInfo | null {
   if (watch.kind === "session") {
     return (
@@ -872,9 +902,8 @@ export function findStartedRoom(
       }) || null
     )
   }
-  const cwd = normPath(watch.key)
   const matches = rooms.filter(
-    (room) => room.online && roomDeviceId(room) === deviceId && normPath(room.cwd || "") === cwd && !watch.seen.has(room.id),
+    (room) => room.online && roomDeviceId(room) === deviceId && samePath(room.cwd, watch.key, platform) && !watch.seen.has(room.id),
   )
   // 同 cwd 同时起两个会话时挑**最近活动**的那个（和 relay 的 onlineRoomByCwd 一致）。
   // 旧 relay 不下发 lastActivity（全 0）时退化成"列表最后一个"，与旧行为相同。
@@ -971,6 +1000,9 @@ function parseRoom(raw: unknown): RoomInfo {
     busy: rec.busy === true,
     viewers: typeof rec.viewers === "number" ? rec.viewers : 0,
     lastActivity: typeof rec.lastActivity === "number" ? rec.lastActivity : 0,
+    ...(typeof rec.eventAt === "number" && Number.isFinite(rec.eventAt) && rec.eventAt >= 0 ? { eventAt: rec.eventAt } : {}),
+    ...(rec.turnStopped === true ? { turnStopped: true } : {}),
+    ...(typeof rec.piVersion === "string" && rec.piVersion.trim() ? { piVersion: rec.piVersion.trim().slice(0, 64) } : {}),
     ...(typeof rec.createdAt === "number" && Number.isFinite(rec.createdAt) && rec.createdAt > 0 ? { createdAt: rec.createdAt } : {}),
     accountId: typeof rec.accountId === "string" ? rec.accountId : undefined,
     deviceId: typeof rec.deviceId === "string" && rec.deviceId ? rec.deviceId : undefined,
@@ -1118,7 +1150,7 @@ function parseSession(raw: unknown): SessionEntry | null {
 function sessionRow(session: SessionEntry, openable: boolean): ListedSession {
   return {
     id: session.id,
-    title: session.name || cleanSessionTitleText(session.firstMessage) || (session.cwd ? baseName(session.cwd) : session.id.slice(0, 8)),
+    title: sessionTitleOf(session),
     firstMessage: session.firstMessage || undefined,
     path: session.path || undefined,
     cwd: session.cwd,
@@ -1132,29 +1164,21 @@ function sessionRow(session: SessionEntry, openable: boolean): ListedSession {
 }
 
 function roomRow(room: RoomInfo, openable: boolean, session?: SessionEntry | null): ListedSession {
-  const folder = room.cwd ? baseName(room.cwd) : ""
-  const customLabel = !!room.label && room.label !== folder && room.label !== room.id
   return {
     id: room.id,
-    title:
-      (customLabel ? room.label : null) ||
-      session?.name ||
-      // 首条消息作标题要过清洗规则（设计 D §2.1）；清洗后为空顺延下一档
-      cleanSessionTitleText(session?.firstMessage) ||
-      room.name ||
-      cleanSessionTitleText(room.firstMessage) ||
-      room.label ||
-      (room.cwd ? folder : room.id.slice(0, 8)),
+    // 房间在前：room.name 随名册广播刷新，比清单条目新
+    title: sessionTitleOf(room, session),
     firstMessage: session?.firstMessage || room.firstMessage || undefined,
     path: session?.path || undefined,
     cwd: room.cwd || "",
     online: openable && room.online,
     busy: room.busy,
     viewers: room.viewers,
-    // P5 G3：房间行的条数 / 时间回落到清单里同 id 的会话（会话文件）和房间的 lastActivity，取较新的那个；
-    // 都没有时仍是 0（行尾不显示时间，§1.9）。以前固定写 0，在线会话的行尾没有时间、菜单副标题缺条数
+    // P5 G3：房间行的条数 / 时间回落到清单里同 id 的会话（会话文件）和房间的活动时刻，取较新的那个；
+    // 都没有时仍是 0（行尾不显示时间，§1.9）。以前固定写 0，在线会话的行尾没有时间、菜单副标题缺条数。
+    // relay 见过事件（eventAt > 0）时就是它：会话文件时间会被改名/重启写盘带新，与状态行对不上
     messageCount: session?.messageCount ?? 0,
-    updatedAt: Math.max(session?.updatedAt || 0, room.lastActivity || 0),
+    updatedAt: room.eventAt ? room.eventAt : Math.max(session?.updatedAt || 0, roomActivityAt(room)),
     openable,
     // Only present when the relay stated the room's encryption flag, so
     // rows built from old relays keep their exact previous shape.
@@ -1166,10 +1190,30 @@ function roomRow(room: RoomInfo, openable: boolean, session?: SessionEntry | nul
   }
 }
 
-/** Local wall-clock "HH:MM" (24h) for a ms-epoch timestamp. */
-function startTimeLabelOf(ms: number): string {
+/**
+ * 房间「最近有意义的事件」时刻：侧栏 / 手机列表的时间列与状态行同源。
+ * 新 relay 带 eventAt（不随观看、命令、注册、断线刷新）就只认它；旧 relay 没有才回落 lastActivity。
+ */
+export function roomActivityAt(room: Pick<RoomInfo, "eventAt" | "lastActivity">): number {
+  return room.eventAt !== undefined ? room.eventAt : room.lastActivity || 0
+}
+
+/** Local wall-clock "HH:MM" (24h), or "HH:MM:SS" with seconds, for a ms-epoch timestamp. */
+function startTimeLabelOf(ms: number, seconds = false): string {
   const date = new Date(ms)
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
+  const minute = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
+  return seconds ? `${minute}:${String(date.getSeconds()).padStart(2, "0")}` : minute
+}
+
+/** 同一秒开始的同名会话的短码：取 id 末尾的字母数字（UUIDv7 一类的 id 前段按时间排序，同秒几乎一样），4 位起加长到互不相同。 */
+function shortCodesOf(ids: readonly string[]): string[] {
+  const tails = ids.map((id) => id.replace(/[^0-9a-z]/gi, "").toLowerCase())
+  const longest = Math.max(0, ...tails.map((tail) => tail.length))
+  for (let size = 4; size < longest; size += 1) {
+    const codes = tails.map((tail) => tail.slice(-size))
+    if (new Set(codes).size === codes.length) return codes
+  }
+  return tails
 }
 
 /**
@@ -1181,28 +1225,42 @@ function startTimeLabelOf(ms: number): string {
  * brand-new live rows have neither, so group the live rows of this
  * device by (cwd, title) and, where a group has more than one row,
  * suffix each title with the room's start time ("· HH:MM", from the
- * immutable createdAt). Rows created in the same minute additionally
- * get a short id suffix. Only rows backed by an online room that
- * carried createdAt take part; every other row keeps its exact title.
+ * immutable createdAt). Rows created in the same minute get the start
+ * second instead ("· HH:MM:SS"); rows created in the same second also
+ * get a short code from the id tail. Only rows backed by an online room
+ * that carried createdAt take part; every other row keeps its exact title.
  */
-function disambiguateLiveRowTitles(rows: ListedSession[], liveRoomIds: ReadonlySet<string>): ListedSession[] {
+function disambiguateLiveRowTitles(rows: ListedSession[], liveRoomIds: ReadonlySet<string>, platform?: string | null): ListedSession[] {
   const groups = new Map<string, ListedSession[]>()
   for (const row of rows) {
     if (row.createdAt === undefined || !liveRoomIds.has(row.id)) continue
-    const key = `${normPath(row.cwd)}${row.title}`
+    const key = `${pathKeyOf(row.cwd, platform)}${row.title}`
     const list = groups.get(key)
     if (list) list.push(row)
     else groups.set(key, [row])
   }
   const suffixById = new Map<string, string>()
+  const countsOf = (labels: readonly string[]) => {
+    const counts = new Map<string, number>()
+    for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1)
+    return counts
+  }
   for (const list of groups.values()) {
     if (list.length < 2) continue
-    const stamps = list.map((row) => startTimeLabelOf(row.createdAt as number))
-    const stampCounts = new Map<string, number>()
-    for (const stamp of stamps) stampCounts.set(stamp, (stampCounts.get(stamp) ?? 0) + 1)
+    const minutes = list.map((row) => startTimeLabelOf(row.createdAt as number))
+    const seconds = list.map((row) => startTimeLabelOf(row.createdAt as number, true))
+    const minuteCounts = countsOf(minutes)
+    const codeById = new Map<string, string>()
+    for (const [second, count] of countsOf(seconds)) {
+      if (count < 2) continue
+      const same = list.filter((_, index) => seconds[index] === second)
+      const codes = shortCodesOf(same.map((row) => row.id))
+      same.forEach((row, index) => codeById.set(row.id, codes[index]))
+    }
     list.forEach((row, index) => {
-      const stamp = stamps[index]
-      suffixById.set(row.id, (stampCounts.get(stamp) as number) > 1 ? ` · ${stamp} · ${row.id.slice(0, 8)}` : ` · ${stamp}`)
+      const code = codeById.get(row.id)
+      if ((minuteCounts.get(minutes[index]) as number) < 2) suffixById.set(row.id, ` · ${minutes[index]}`)
+      else suffixById.set(row.id, code ? ` · ${seconds[index]} · ${code}` : ` · ${seconds[index]}`)
     })
   }
   if (!suffixById.size) return rows
@@ -1210,10 +1268,6 @@ function disambiguateLiveRowTitles(rows: ListedSession[], liveRoomIds: ReadonlyS
     const suffix = suffixById.get(row.id)
     return suffix ? { ...row, title: `${row.title}${suffix}` } : row
   })
-}
-
-function normPath(value: string): string {
-  return value.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

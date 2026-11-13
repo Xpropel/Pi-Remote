@@ -149,10 +149,9 @@ function paletteHitsOf(search: BodySearch, titleMatched: readonly { id: string; 
 
 /**
  * Assemble the sidebar overlay's body block from a body-search state.
- * Shared by every shell's sidebar container so the block (group header
- * device, hit rows, honest status line) cannot drift between shells --
- * the Claude/Codex containers shipped without it in the first A-3 round
- * precisely because each container assembled its search data by hand.
+ * Shared by every sidebar container so the block (group header device,
+ * hit rows, honest status line) cannot drift between surfaces -- containers
+ * that assembled their search data by hand shipped without it before.
  * `titleMatched` is the caller's own title-match exclusion list (the
  * sessions its local results already show), as { id, path } pairs.
  */

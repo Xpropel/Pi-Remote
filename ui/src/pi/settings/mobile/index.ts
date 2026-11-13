@@ -3,10 +3,10 @@
  *
  * 宿主（手机外壳 / 设置容器）只挂 <MobileSettingsPage p={p} />，例如：
  *   if (ui.view === "settings") return <MobileSettingsPage p={p} />;
- * 需要固定皮肤时传 style / theme；需要深链时传 page / onPageChange。
+ * 需要固定明暗时传 theme；需要深链时传 page / onPageChange。
  * 首页返回默认调用 p.act.openSession()，回到原会话（不新建）。
  *
- * 本阶段按任务边界只新增 mobile/**，没有改 PhoneApp / SettingsContainer / 桌面 SettingsPage；
+ * 本阶段按任务边界只新增 mobile/**，没有改 PhoneApp / 桌面 SettingsPage；
  * 宿主接线由 Lead 在手机设置路由处完成。
  */
 import "./mobile.css"

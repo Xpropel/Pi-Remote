@@ -1,6 +1,6 @@
 // Regression: opening a listed session left behind by a superseded device
 // registration threw `TypeError: Cannot read properties of null (reading
-// 'deviceId')` once per click in the Claude desktop sidebar.
+// 'deviceId')` once per click in the (since removed) Claude desktop sidebar.
 //
 // Root cause, two layers:
 //  1. ClaudeUnifiedSidebar's selectSession action handed the bare session
@@ -113,13 +113,6 @@ test("stale session: same-device listed row does not switch devices", () => {
 })
 
 /* ------------------------------------------------------- source guards -- */
-
-test("guard: Claude desktop sidebar resolves the row before opening it", () => {
-  const src = read("ui/src/pi/variants/claude/sidebar/ClaudeUnifiedSidebar.tsx")
-  assert.ok(!src.includes("selectListedSession?.(id as never)"), "bare id must never reach selectListedSession")
-  assert.ok(src.includes("sidebarRowForKey("), "selectSession must resolve the merged row")
-  assert.ok(src.includes("openSessionRow(relay, row"), "selectSession must open through the shared row path")
-})
 
 test("guard: selectListedSession never dereferences the lazy selection after a ?. comparison", () => {
   const src = read("ui/src/relay/useRelay.ts")

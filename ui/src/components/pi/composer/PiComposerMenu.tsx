@@ -1,6 +1,6 @@
 import { useId, type ComponentProps, type KeyboardEvent, type ReactNode } from "react"
 import { DropdownMenu } from "radix-ui"
-import { FileTypeIcon, MenuLabel, MenuSeparator, MenuSurface, type FileKind } from "@/components/kit"
+import { FileTypeIcon, MENU_DIVIDER_BORDER, MENU_ROW_HL, MENU_ROW_HL_DATA, MENU_ROW_HL_HOVER, MenuLabel, MenuSeparator, MenuSurface, type FileKind } from "@/components/kit"
 import { ChartColumn, FileText, Image as ImageIcon, SquareSlash } from "@/components/kit/icons"
 import { usePiMenuSurface } from "@/components/pi/shared/layers"
 import { cn } from "@/lib/utils"
@@ -51,7 +51,8 @@ export function PiComposerMenu({ variant, header, footer, maxHeight, className, 
           aria-hidden={listbox || undefined}
           data-slot="pi-composer-menu-header"
           className={cn(
-            "flex shrink-0 items-center border-b border-solid border-(--cw-divider-soft) px-3",
+            "flex shrink-0 items-center border-b border-solid px-3",
+            MENU_DIVIDER_BORDER,
             phone ? "h-10 text-[13px]" : "h-8 text-(length:--cw-text-sm)",
             C_SECONDARY,
           )}
@@ -72,7 +73,8 @@ export function PiComposerMenu({ variant, header, footer, maxHeight, className, 
           aria-hidden={listbox || undefined}
           data-slot="pi-composer-menu-footer"
           className={cn(
-            "flex shrink-0 items-center border-t border-solid border-(--cw-divider-soft) px-3",
+            "flex shrink-0 items-center border-t border-solid px-3",
+            MENU_DIVIDER_BORDER,
             phone ? "min-h-10 py-2 text-[13px]" : "min-h-8 py-1.5 text-(length:--cw-text-sm)",
             C_SECONDARY,
           )}
@@ -115,7 +117,7 @@ export function PiMenuRow({ variant, icon, name, desc, twoLine, trailing, highli
         phone ? "px-3" : "px-2",
         menuRowH(variant),
         twoLine && (phone ? "min-h-[52px] py-1.5" : "min-h-11 py-1"),
-        highlighted ? "bg-(--cw-row-hover)" : "hover:bg-(--cw-row-hover) data-[highlighted]:bg-(--cw-row-hover)",
+        highlighted ? MENU_ROW_HL : !disabled && cn(MENU_ROW_HL_HOVER, MENU_ROW_HL_DATA),
         disabled && "text-(--cw-text-4)",
         className,
       )}
@@ -124,7 +126,8 @@ export function PiMenuRow({ variant, icon, name, desc, twoLine, trailing, highli
       {icon != null && (
         <span
           className={cn(
-            "flex shrink-0 items-center justify-center text-(--cw-icon-fg) [&>svg]:stroke-[1.5]",
+            "flex shrink-0 items-center justify-center [&>svg]:stroke-[1.5]",
+            disabled ? "text-(--cw-text-4)" : "text-(--cw-icon-fg)",
             phone ? "size-5 [&>svg]:size-[18px]" : "size-4 [&>svg]:size-(--cw-icon-size)",
             twoLine && "self-start mt-0.5",
           )}
@@ -453,7 +456,7 @@ export function PiAttachMenu({ variant, commandsDisabled, bare, onPick, classNam
     return (
       <div data-slot="pi-attach-menu" data-cw-id="pi-attach-menu" role="menu" aria-label="添加" className={cn("flex flex-col", className)}>
         {body}
-        <div className={cn("mt-1 border-t border-solid border-(--cw-divider-soft) px-3 pt-3 pb-1", rowText(variant).sub, C_SECONDARY)}>
+        <div className={cn("mt-1 border-t border-solid px-3 pt-3 pb-1", MENU_DIVIDER_BORDER, rowText(variant).sub, C_SECONDARY)}>
           {footer}
         </div>
       </div>

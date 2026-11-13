@@ -1,119 +1,112 @@
 /**
  * 设置 › 关于 · 页面级样式。
- * 身份块、信息面板、动作行只消费 --st-*。
+ * 身份块、信息面板、动作行只消费 --st-*；面板的行高、分隔线、悬停与共享卡片保持一致。
  */
 
 .settings-about-ident {
   display: flex;
   align-items: center;
-  gap: 15px;
-  margin-top: 24px;
+  gap: 14px;
+  margin-top: 20px;
 }
 
 .settings-about-tile {
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
+  display: inline-flex;
   flex: none;
-  border: 1px solid var(--st-menu-border);
   border-radius: 14px;
-  background: linear-gradient(155deg, var(--st-menu-bg) 0%, var(--st-tile-bg) 100%);
-  box-shadow:
-    0 2px 8px color-mix(in srgb, var(--st-text-1) 7%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--st-switch-knob) 90%, transparent);
-  color: var(--st-text-2);
+  box-shadow: var(--st-raised-shadow);
 }
 
 .settings-about-appname {
   display: block;
   color: var(--st-text-1);
-  font-size: 16.5px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  line-height: 1.3;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.35;
 }
 
 .settings-about-appsub {
   display: block;
-  margin-top: 3px;
+  margin-top: 2px;
   color: var(--st-text-4);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .settings-about-panel {
-  margin-top: 24px;
+  margin-top: 20px;
   overflow: hidden;
-  border: 1px solid var(--st-menu-border);
-  border-radius: 12px;
+  border: 1px solid var(--st-card-border);
+  border-radius: var(--st-radius-card);
   background: var(--st-card-bg);
   box-shadow: var(--st-card-shadow);
 }
 
-.settings-about-panel--info {
-  margin-top: 24px;
+.settings-about .settings-group-label {
+  margin: 28px 2px 8px;
 }
 
-.settings-about .settings-group-label {
-  margin: 22px 0 10px;
+.settings-about .settings-group-label + .settings-about-panel {
+  margin-top: 0;
 }
 
 .settings-about .settings-about-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   width: 100%;
-  min-height: 42px;
-  padding: 0 15px;
-  color: var(--st-text-3);
+  min-height: 44px;
+  padding: 0 16px;
+  color: var(--st-text-1);
   font-size: 13px;
   line-height: 1.4;
 }
 
 .settings-about-row + .settings-about-row {
-  border-top: 1px solid var(--st-border);
+  border-top: 1px solid var(--st-divider);
 }
 
 .settings-about-key {
   flex: none;
-  color: var(--st-text-3);
+  color: var(--st-text-1);
+  font-weight: 500;
 }
 
 .settings-about-value {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   margin-left: auto;
-  color: var(--st-text-2);
-  font-size: 13px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
   line-height: 1.4;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
-.settings-about-row[data-settings-status="bridge"] .settings-about-value,
-.settings-about-row[data-settings-status="reserved"] .settings-about-value {
+.settings-about .settings-about-row--action {
+  border-radius: 0;
+  transition: background-color 120ms ease;
+}
+
+.settings-about .settings-about-row--action:hover:not(:disabled) {
+  background: var(--st-row-hover-bg);
+}
+
+.settings-about .settings-about-row--action:disabled .settings-about-kd {
   color: var(--st-text-3);
 }
 
-.settings-about-row--action {
-  border-radius: 0;
-}
-
-.settings-about-row--action:hover:not(:disabled) {
-  background: var(--st-hover-bg);
-}
-
-.settings-about-row--action:disabled {
-  cursor: default;
-  opacity: 0.62;
+/* 面板裁掉了圆角外的内容，整行按钮的焦点环收进行内（压过 pi-theme 的外环规则）。 */
+[data-pi-settings][data-pi-settings-style][data-pi-theme] .settings-about-row--action:focus-visible {
+  outline-offset: -2px;
 }
 
 .settings-about .settings-about-row--desc {
   min-height: 0;
   align-items: center;
-  padding: 9px 15px;
+  padding: 10px 16px;
 }
 
 .settings-about-text {
@@ -128,24 +121,24 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  color: var(--st-text-2);
+  color: var(--st-text-1);
   font-size: 13px;
-  font-weight: 550;
-  line-height: 1.35;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .settings-about-rd {
   display: block;
-  margin-top: 1px;
+  margin-top: 2px;
   color: var(--st-text-4);
-  font-size: 11.5px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .settings-about-row-end {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   flex: none;
   margin-left: auto;
 }
@@ -161,45 +154,53 @@
 }
 
 .settings-about .settings-about-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
+  height: 28px;
   margin-left: 12px;
-  padding: 6px 11px;
-  border: 1px solid var(--st-menu-border);
-  border-radius: 8px;
-  background: var(--st-field-bg);
-  color: var(--st-text-2);
-  font-size: 12px;
-  line-height: 1;
-}
-
-.settings-about-button:hover:not(:disabled) {
-  background: var(--st-hover-bg);
+  padding: 0 12px;
+  border: 1px solid var(--st-control-border);
+  border-radius: var(--st-radius-control);
+  background: var(--st-control-bg);
   color: var(--st-text-1);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
-.settings-about-button:disabled {
-  opacity: 0.55;
+.settings-about .settings-about-button:hover:not(:disabled) {
+  border-color: var(--st-control-border-hover);
+  background: var(--st-control-hover-bg);
+}
+
+.settings-about .settings-about-button:disabled {
+  border-color: var(--st-disabled-ring);
+  background: transparent;
+  color: var(--st-disabled-fg);
 }
 
 .settings-about-licenses {
   margin-top: 12px;
   padding: 14px 16px;
-  border: 1px solid var(--st-menu-border);
-  border-radius: 12px;
+  border: 1px solid var(--st-card-border);
+  border-radius: var(--st-radius-card);
   background: var(--st-card-bg);
 }
 
 .settings-about-licenses-title {
   margin: 0;
   color: var(--st-text-1);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .settings-about-licenses-note {
   margin: 4px 0 0;
   color: var(--st-text-4);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -214,20 +215,20 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  padding: 5px 0;
-  border-top: 1px solid var(--st-border);
-  color: var(--st-text-3);
-  font-size: 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--st-divider);
+  color: var(--st-text-2);
+  font-size: 12.5px;
 }
 
 .settings-about-licenses-list li span:last-child {
   color: var(--st-text-4);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .settings-about-footnote {
-  margin: 18px 0 0;
+  margin: 16px 2px 0;
   color: var(--st-text-4);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
 }

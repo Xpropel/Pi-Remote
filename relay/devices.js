@@ -40,6 +40,21 @@ function normPath(rawPath, platform = "") {
   return !posix || platform === "macos" ? normalized.toLowerCase() : normalized;
 }
 
+/**
+ * 会话 cwd 的统一写法（房间注册、清单入库、会话列表下发时用；比较仍走 normPath）。
+ * Windows 路径（盘符或 UNC 开头，设备平台不是 POSIX）：统一反斜杠、盘符大写、去尾部分隔符，盘根留 "D:\"；
+ * 其余（macOS / Linux）只去尾部 "/"，根目录留 "/"，反斜杠不动。只改写法、不解析目录；非字符串原样返回。
+ */
+function canonicalCwd(rawPath, platform = "") {
+  if (typeof rawPath !== "string" || !rawPath) return rawPath;
+  const posix = POSIX_PLATFORMS.has(normalizePlatform(platform));
+  if (!posix && /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(rawPath)) {
+    const windows = rawPath.replace(/\//g, "\\").replace(/^[a-z]:/, (drive) => drive.toUpperCase()).replace(/\\+$/, "");
+    return /^[A-Z]:$/.test(windows) ? windows + "\\" : windows;
+  }
+  return rawPath.replace(/\/+$/, "") || "/";
+}
+
 /** cwd 必须与某个 project 精确相等（末尾斜杠不计，大小写按平台）。子目录不算，避免和本机 attach、网页各用一套规则。 */
 function cwdAllowed(projects, cwd, platform = "") {
   const normalizedCwd = normPath(cwd, platform);
@@ -264,4 +279,4 @@ function buildDeviceList(index, devices, rooms, accountId = DEFAULT_ACCOUNT) {
   return out;
 }
 
-module.exports = { UNREGISTERED_DEVICE, MAX_DEVICE_NAME, normalizePlatform, normPath, cwdAllowed, underRoots, cleanProjects, blankDevice, roomListForDevice, boundAccount, buildDeviceList };
+module.exports = { UNREGISTERED_DEVICE, MAX_DEVICE_NAME, normalizePlatform, normPath, canonicalCwd, cwdAllowed, underRoots, cleanProjects, blankDevice, roomListForDevice, boundAccount, buildDeviceList };

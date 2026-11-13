@@ -153,10 +153,10 @@ test("D（U1 残留）：同 cwd 两个未命名 live 会话按房间 createdAt 
   const two = titles([room("room-a", at(9, 30)), room("room-b", at(14, 5))])
   assert.equal(two.get("room-a"), "proj · 09:30")
   assert.equal(two.get("room-b"), "proj · 14:05")
-  // 同一分钟建房：再加 id 短后缀兜底
+  // 同一分钟建房：后缀精确到秒（主控定：不再直接显示 8 位会话编号）
   const sameMinute = titles([room("room-a", at(9, 30)), room("room-c", at(9, 30) + 30_000)])
-  assert.equal(sameMinute.get("room-a"), "proj · 09:30 · room-a")
-  assert.equal(sameMinute.get("room-c"), "proj · 09:30 · room-c")
+  assert.equal(sameMinute.get("room-a"), "proj · 09:30:00")
+  assert.equal(sameMinute.get("room-c"), "proj · 09:30:30")
   // 只有一间：不加后缀
   assert.equal(titles([room("room-a", at(9, 30))]).get("room-a"), "proj")
   // 旧 relay 不带 createdAt：标题原样（不猜起始时刻）

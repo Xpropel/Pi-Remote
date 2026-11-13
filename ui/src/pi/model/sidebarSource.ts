@@ -6,7 +6,7 @@
  *   排序口径同 relay/attention.ts（等你回答 → 出错 → 设备未连接 → 完成未读，同级按时刻、再按 key）。attention.ts 本身不改。
  */
 import { attentionItemsOf, type AttentionItem, type AttentionKind, type AttentionSnapshot, type AttentionTurnEnd } from "../../relay/attention.ts"
-import { attributeSessionsAcrossDevices, mergeDeviceSessions, UNREGISTERED_DEVICE_ID, type Device, type ListedSession, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
+import { attributeSessionsAcrossDevices, mergeDeviceSessions, roomActivityAt, UNREGISTERED_DEVICE_ID, type Device, type ListedSession, type RoomInfo, type SessionEntry } from "../../relay/devices.ts"
 import { roomStatusLine, type RoomStatusLine } from "../../relay/roomStatus.ts"
 import { sortShellDevices } from "../../shell/deviceStripModel.ts"
 
@@ -116,21 +116,40 @@ export type PiSidebarData = {
   attention: AttentionItem[]
 }
 
+/**
+ * 注意力条目的会话标题改用同一会话的侧栏行标题（attentionItemsOf 只看得到房间；侧栏行还并了清单条目、
+ * 同目录同名的开始时间后缀），两处同一会话永远同名。设备掉线条目的标题是设备名，不动。
+ */
+export function attentionTitledBySessions(items: readonly AttentionItem[], sessions: readonly PiDeviceListedSession[]): AttentionItem[] {
+  if (!items.some((item) => item.kind !== "device-offline" && item.roomId)) return [...items]
+  const rowById = new Map<string, PiDeviceListedSession>()
+  for (const s of sessions) if (!rowById.has(s.id)) rowById.set(s.id, s)
+  return items.map((item) => {
+    if (item.kind === "device-offline" || !item.roomId) return item
+    const row = rowById.get(item.roomId)
+    if (!row || (item.deviceId && row.deviceId !== item.deviceId) || row.title === item.title) return item
+    return { ...item, title: row.title }
+  })
+}
+
 /** 侧栏、搜索、会话菜单、顶栏共用的那一片：设备、所有设备的会话、注意力 */
 export function sidebarDataOf(r: PiSidebarSourceInput): PiSidebarData {
   const devices = sortShellDevices(r.devices)
   const sessions = sidebarSessionsOf(devices, r.rooms, r.sessionsByDevice)
   const attention = attentionWithOfflineDevices(
-    attentionItemsOf({
-      currentRoomId: r.roomId,
-      rooms: r.rooms,
-      dialogs: r.dialogs,
-      uiPrompt: r.uiPrompt,
-      turnEnd: r.turnEnd,
-      roomTurnEnds: r.roomTurnEnds,
-      inbox: r.inbox,
-      selectedDevice: r.selectedDevice,
-    }),
+    attentionTitledBySessions(
+      attentionItemsOf({
+        currentRoomId: r.roomId,
+        rooms: r.rooms,
+        dialogs: r.dialogs,
+        uiPrompt: r.uiPrompt,
+        turnEnd: r.turnEnd,
+        roomTurnEnds: r.roomTurnEnds,
+        inbox: r.inbox,
+        selectedDevice: r.selectedDevice,
+      }),
+      sessions,
+    ),
     devices,
   )
   return { devices, sessions, attention }
@@ -181,7 +200,8 @@ export function sessionStatusLineOf(input: {
       waitingPrompt: room?.waitingPrompt ?? null,
       lastTurnEnd: turnEnd ? { kind: turnEnd.error ? "error" : "done", at: turnEnd.at } : null,
       lastEvent: room?.lastEvent ?? null,
-      lastActivity: room?.lastActivity ?? session?.updatedAt ?? 0,
+      // 与行尾时间列同一个时刻：清单行的 updatedAt 已按 roomActivityAt 合并过；没有清单行才直接取房间
+      lastActivity: session ? session.updatedAt : room ? roomActivityAt(room) : 0,
     },
     now,
   )

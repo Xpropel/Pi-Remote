@@ -189,8 +189,8 @@ describe("源码契约：中-2 接线与中-6 的行内行为", () => {
 
   test("@ 候选只在草稿里真有 @ 时才扫历史（流式期间不再每帧全扫）", () => {
     assert.match(composer, /const poolWanted = isStatic \|\| draft\.includes\("@"\)/)
-    assert.match(composer, /poolWanted \? mergeMentionCandidates\(collectTranscriptFiles\(items\), viewedMentionFiles\(roomId\)\)\.map\(\(f\) => f\.path\) : EMPTY_MENTION_POOL/)
-    assert.match(composer, /\[poolWanted, items, roomId\]/)
+    assert.match(composer, /poolWanted\s*\?\s*mentionPathsIn\(mergeMentionCandidates\(collectTranscriptFiles\(items\), viewedMentionFiles\(roomId\)\)\.map\(\(f\) => f\.path\), sessionCwd, sessionPlatform\)\s*:\s*EMPTY_MENTION_POOL/)
+    assert.match(composer, /\[poolWanted, items, roomId, sessionCwd, sessionPlatform\]/)
     assert.match(composer, /const EMPTY_MENTION_POOL: string\[\] = \[\]/)
   })
 

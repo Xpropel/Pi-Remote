@@ -5,11 +5,14 @@
  *  本文件不对 `title` / `body` 做任何字符串匹配——改文案不得改变行为。
  *
  *  N1 出队顺序 / N2 可见上限（V2：同屏 1 张）/ N3 dedupe 合并 / N4 scope 顶替 /
- *  N5 error 抢占 / N6 队列上限（V2：5 条）/ N7 ttl 从可见起算 / N8 悬停·焦点暂停。
+ *  N5 抢占（新到的 warning/error 优先上屏）/ N6 队列上限（V2：5 条）/ N7 ttl 从可见起算 /
+ *  N8 悬停·焦点·页面隐藏暂停 / N9 回位校验（排队的卡上屏前先确认还有效：离最近一次推送
+ *  超过自己的 ttl（error 2 倍）、或产生它的上下文已撤回，就丢弃，不把旧闻重新摆上来）。
  */
 
 export type NoticeLevel = "info" | "success" | "warning" | "error"
-export type NoticePauseReason = "hover" | "focus"
+/** hidden = 页面在后台：倒计时冻结，用户回来再走（后台推来的提示不会在没人看时过期）。 */
+export type NoticePauseReason = "hover" | "focus" | "hidden"
 
 export type NoticeAction = {
   id: string
@@ -30,6 +33,8 @@ export type NoticeInput = {
   body?: string
   actions?: NoticeAction[]
   scope?: string
+  /** 产生它的上下文（如 `room:<id>`）：撤回这个 key 时，排队中还没轮到的卡一起丢弃（N9）；不参与 N4 顶替。 */
+  context?: string
   dedupeKey?: string
   /** 旧调用点的稳定类别；只用于准入/默认 dedupeKey，不参与文案匹配。 */
   codes?: readonly string[]
@@ -37,6 +42,8 @@ export type NoticeInput = {
   channel?: NoticeChannel
   /** 入栈时刻；仅用于展示/审计，队列先到先出用 order。 */
   createdAt?: number
+  /** 持续状态（如本会话已达保存上限）：不自动消失，只能关闭、被同 scope 顶替或撤回。 */
+  sticky?: boolean
 }
 
 export type NoticeItem = {
@@ -46,15 +53,19 @@ export type NoticeItem = {
   body: string
   actions: NoticeAction[]
   scope: string | null
+  context: string | null
   dedupeKey: string | null
   /** 保留稳定类别，便于队列审计；生命周期仍只看 level/scope/dedupeKey/codes。 */
   codes: string[]
   channel: NoticeChannel
   createdAt: number
+  /** 最近一次推送 / 合并的 reducer 时刻：N9 按它判断内容是否过时（createdAt 可能来自调用方，不参与）。 */
+  pushedAt: number
   /** 单调入栈序号：同级别先到先出，N5 回队首时可显式前移。 */
   order: number
   /** N3 合并计数；首次为 1，界面上 >1 才显示 ×n。 */
   count: number
+  sticky: boolean
   ttlMs: number | null
   remainingMs: number | null
   visibleAt: number | null
@@ -72,6 +83,8 @@ export type NoticeState = {
   queue: NoticeItem[]
   seq: number
   maxVisible: number
+  /** 页面在后台：可见卡（含期间新上屏的）都带 hidden 暂停。 */
+  hidden: boolean
 }
 
 export type NoticeOptions = {
@@ -85,8 +98,9 @@ export const NOTICE_MAX_VISIBLE_MOBILE = 1
 export const NOTICE_QUEUE_LIMIT = 5
 /** 一张通知最多两个操作，保持单卡简洁（V1-5.5.7）。 */
 export const NOTICE_MAX_ACTIONS = 2
-/** warning 带操作按钮时：不按 8s 消失，但 60s 是硬上限。 */
-export const NOTICE_WARNING_ACTION_TTL_MS = 60_000
+/** warning / error 带操作按钮时：不按常规时长消失，但 60s 是硬上限。 */
+export const NOTICE_ACTION_TTL_MS = 60_000
+export const NOTICE_WARNING_ACTION_TTL_MS = NOTICE_ACTION_TTL_MS
 
 /** 这些 codes 是持续状态/进度，不占用通知槽（第 5 章 §2.2/§2.3 M7）。 */
 export const NOTICE_PROGRESS_CODES = [
@@ -118,8 +132,8 @@ export const NOTICE_TTL_MS: Record<NoticeLevel, number | null> = {
   info: 5_000,
   success: 4_000,
   warning: 8_000,
-  // error 永不自动消失，直到用户关闭或被同 scope 的解决通知顶替。
-  error: null,
+  // error 读得久一点，但不常驻：常驻会压住后来的提示、挡住手机菜单。要常驻的持续状态显式传 sticky。
+  error: 12_000,
 }
 
 /** error(0) > warning(1) > info = success(2)。数字越小越先出队。 */
@@ -130,13 +144,28 @@ export function noticeLevelRank(level: NoticeLevel): number {
 }
 
 /**
- * 按类型字段算 ttl：info 5s / success 4s / warning 8s（带 actions 60s 硬上限）/ error 永不。
- * 这里只看 level 与 actions，不读 title/body。
+ * 按类型字段算 ttl：info 5s / success 4s / warning 8s / error 12s；warning/error 带 actions 60s 硬上限；
+ * sticky 不自动消失。这里只看 level / actions / sticky，不读 title/body。
  */
-export function noticeTtlMs(level: NoticeLevel, actions: NoticeAction[] = []): number | null {
-  if (level === "error") return null
-  if (level === "warning" && actions.length > 0) return NOTICE_WARNING_ACTION_TTL_MS
+export function noticeTtlMs(level: NoticeLevel, actions: NoticeAction[] = [], sticky = false): number | null {
+  if (sticky) return null
+  if ((level === "warning" || level === "error") && actions.length > 0) return NOTICE_ACTION_TTL_MS
   return NOTICE_TTL_MS[level]
+}
+
+/**
+ * N9：排队的卡从这一刻起再上屏就是旧闻 = 最近一次推送 + 自己的 ttl（它本该显示完的时候）。
+ * error 多给一个 ttl：被警告打断的错误要能在警告走完后补位（R4）。sticky 是持续状态，不过时（null）。
+ */
+export function noticeStaleAt(item: Pick<NoticeItem, "level" | "actions" | "sticky" | "pushedAt">): number | null {
+  const ttl = noticeTtlMs(item.level, item.actions, item.sticky)
+  if (ttl === null) return null
+  return item.pushedAt + (item.level === "error" ? ttl * 2 : ttl)
+}
+
+function fresh(item: NoticeItem, now: number): boolean {
+  const staleAt = noticeStaleAt(item)
+  return staleAt === null || now < staleAt
 }
 
 export function emptyNotices(options: NoticeOptions = {}): NoticeState {
@@ -146,6 +175,7 @@ export function emptyNotices(options: NoticeOptions = {}): NoticeState {
     queue: [],
     seq: 0,
     maxVisible: Number.isFinite(max) ? Math.max(0, Math.floor(max)) : NOTICE_MAX_VISIBLE,
+    hidden: false,
   }
 }
 
@@ -160,7 +190,8 @@ function copyActions(actions: NoticeAction[] | undefined): NoticeAction[] {
 function createItem(input: NoticeInput, order: number, now: number): NoticeItem {
   const id = text(input.id) || `n${order}`
   const actions = copyActions(input.actions)
-  const ttl = noticeTtlMs(input.level, actions)
+  const sticky = input.sticky === true
+  const ttl = noticeTtlMs(input.level, actions, sticky)
   return {
     id,
     level: input.level,
@@ -168,12 +199,15 @@ function createItem(input: NoticeInput, order: number, now: number): NoticeItem 
     body: input.body ?? "",
     actions,
     scope: text(input.scope) || null,
+    context: text(input.context) || null,
     dedupeKey: noticeDedupeKey(input),
     codes: [...(input.codes ?? [])],
     channel: input.channel ?? "slot",
     createdAt: typeof input.createdAt === "number" ? input.createdAt : now,
+    pushedAt: now,
     order,
     count: 1,
+    sticky,
     ttlMs: ttl,
     remainingMs: ttl,
     visibleAt: null,
@@ -184,9 +218,10 @@ function createItem(input: NoticeInput, order: number, now: number): NoticeItem 
   }
 }
 
-function activate(item: NoticeItem, now: number): NoticeItem {
-  const ttl = noticeTtlMs(item.level, item.actions)
-  return {
+/** 上屏并从全量 ttl 起算；页面在后台时上屏即带 hidden 暂停。 */
+function activate(item: NoticeItem, now: number, hidden = false): NoticeItem {
+  const ttl = noticeTtlMs(item.level, item.actions, item.sticky)
+  const shown: NoticeItem = {
     ...item,
     visibleAt: now,
     activeSince: now,
@@ -196,11 +231,12 @@ function activate(item: NoticeItem, now: number): NoticeItem {
     expiresAt: ttl === null ? null : now + ttl,
     pausedBy: [],
   }
+  return hidden ? pausedItem(shown, "hidden", now) : shown
 }
 
 /** 更新可见卡内容后 N3 重计 ttl：可见段归零；暂停中的卡保留暂停原因。 */
 function restartVisible(item: NoticeItem, now: number): NoticeItem {
-  const ttl = noticeTtlMs(item.level, item.actions)
+  const ttl = noticeTtlMs(item.level, item.actions, item.sticky)
   const paused = item.pausedBy.length > 0
   return {
     ...item,
@@ -215,7 +251,7 @@ function restartVisible(item: NoticeItem, now: number): NoticeItem {
 
 /** 从可见区回到队列：清掉本次可见的计时，但保留合并计数。 */
 function park(item: NoticeItem, order: number = item.order): NoticeItem {
-  const ttl = noticeTtlMs(item.level, item.actions)
+  const ttl = noticeTtlMs(item.level, item.actions, item.sticky)
   return {
     ...item,
     order,
@@ -253,7 +289,7 @@ function pickBest(queue: NoticeItem[]): number {
   return best
 }
 
-/** 有空位就按 N1 出队；被挤回队列的卡再次可见时重新计全量 ttl（N7）。 */
+/** 有空位就按 N1 出队；被挤回队列的卡再次可见时重新计全量 ttl（N7）；已过时的（N9）出队即丢。 */
 function fillVisible(state: NoticeState, now: number): NoticeState {
   if (state.maxVisible <= 0 || state.queue.length === 0) return state
   let visible = [...state.visible]
@@ -262,38 +298,39 @@ function fillVisible(state: NoticeState, now: number): NoticeState {
     const index = pickBest(queue)
     const item = queue[index]
     queue = [...queue.slice(0, index), ...queue.slice(index + 1)]
-    visible = [...visible, activate(item, now)]
+    if (fresh(item, now)) visible = [...visible, activate(item, now, state.hidden)]
   }
   return { ...state, visible, queue }
 }
 
-/** 到期只可能发生在可见区；queued 的 remaining 在 activate 时才重新起算。 */
+/** 到期只可能发生在可见区；queued 的 remaining 在 activate 时才重新起算。队列里过时的（N9）顺手清掉，「+N」不算它们。 */
 function expireVisible(state: NoticeState, now: number): NoticeState {
   const kept = state.visible.filter((item) => item.expiresAt === null || item.expiresAt > now)
-  if (kept.length === state.visible.length) return state
-  return fillVisible({ ...state, visible: kept }, now)
+  const queue = state.queue.filter((item) => fresh(item, now))
+  if (kept.length === state.visible.length && queue.length === state.queue.length) return state
+  return fillVisible({ ...state, visible: kept, queue }, now)
 }
 
 function dropOldest(pool: NoticeItem[]): NoticeItem {
   return pool.reduce((oldest, item) => (item.order < oldest.order ? item : oldest))
 }
 
-/** N6（V2）：队列硬上限 5；超限先丢最旧的 info/success，其次最旧的 warning，最后才丢 error。
+/** 同级里排在最后的一张（order 最大）。 */
+function lastInLine(pool: NoticeItem[]): NoticeItem {
+  return pool.reduce((last, item) => (item.order > last.order ? item : last))
+}
+
+/** N6（V2）：队列硬上限 5；超限先丢最旧的 info/success，其次 warning，最后才丢 error。
  *
- *  error 队列由 enqueueFront 逆序插入（最新在前），所以 order 最大的是最早的一条；
- *  只有队列已经全是 error 时才走到这一步，保证新 error 仍能留在队首可见。
+ *  warning / error 由 enqueueFront 逆序插入（最新在前），所以 order 最大的是最早的一条；
+ *  丢它，保证新到的仍排在队首。
  */
 function capQueue(queue: NoticeItem[]): NoticeItem[] {
   let next = [...queue]
   while (next.length > NOTICE_QUEUE_LIMIT) {
     const soft = next.filter((item) => item.level === "info" || item.level === "success")
     const warnings = next.filter((item) => item.level === "warning")
-    const victim =
-      soft.length > 0
-        ? dropOldest(soft)
-        : warnings.length > 0
-          ? dropOldest(warnings)
-          : next.reduce((oldest, item) => (item.order > oldest.order ? item : oldest))
+    const victim = soft.length > 0 ? dropOldest(soft) : warnings.length > 0 ? lastInLine(warnings) : lastInLine(next)
     next = next.filter((item) => item.id !== victim.id)
   }
   return next
@@ -310,6 +347,7 @@ function findDedupe(state: NoticeState, dedupeKey: string | null): NoticeItem | 
 
 function mergeContent(target: NoticeItem, input: NoticeInput, now: number): NoticeItem {
   const actions = copyActions(input.actions)
+  const sticky = input.sticky === true
   const merged: NoticeItem = {
     ...target,
     level: input.level,
@@ -317,12 +355,15 @@ function mergeContent(target: NoticeItem, input: NoticeInput, now: number): Noti
     body: input.body ?? "",
     actions,
     scope: text(input.scope) || null,
+    context: text(input.context) || null,
     dedupeKey: noticeDedupeKey(input),
     codes: [...(input.codes ?? [])],
     channel: input.channel ?? "slot",
+    pushedAt: now,
     count: target.count + 1,
-    ttlMs: noticeTtlMs(input.level, actions),
-    remainingMs: noticeTtlMs(input.level, actions),
+    sticky,
+    ttlMs: noticeTtlMs(input.level, actions, sticky),
+    remainingMs: noticeTtlMs(input.level, actions, sticky),
   }
   return target.visibleAt === null ? park(merged) : restartVisible(merged, now)
 }
@@ -331,15 +372,19 @@ function elapsedActive(item: NoticeItem, now: number): number {
   return item.activeMs + (item.activeSince === null ? 0 : Math.max(0, now - item.activeSince))
 }
 
+/** 用户正指着 / 聚焦在这张卡上（在读、要按按钮）：不被抢走。 */
+function engaged(item: NoticeItem): boolean {
+  return item.pausedBy.includes("hover") || item.pausedBy.includes("focus")
+}
+
 /**
- * M3 的牺牲者：error 可抢占任意非 error；warning 只抢占 info/success，
- * 不挤 warning/error；info/success 永不抢占（返回 null 就走队列）。同级取最旧。
+ * N5 的牺牲者：新到的 warning/error 抢占任意可见卡（新提示对应用户刚做的事，
+ * 旧卡回队首稍后再看，不会被压在「+1」后面）；info/success 永不抢占；
+ * 用户正在看的卡不抢（返回 null 就走队列）。多张可见时先挤级别低的，同级取最旧。
  */
 function pickVictim(visible: NoticeItem[], incoming: NoticeLevel): NoticeItem | null {
   if (incoming !== "error" && incoming !== "warning") return null
-  const candidates = visible.filter((item) =>
-    incoming === "error" ? item.level !== "error" : item.level === "info" || item.level === "success",
-  )
+  const candidates = visible.filter((item) => !engaged(item))
   if (candidates.length === 0) return null
   return candidates.reduce((victim, item) => {
     const rank = noticeLevelRank(item.level) - noticeLevelRank(victim.level)
@@ -349,9 +394,10 @@ function pickVictim(visible: NoticeItem[], incoming: NoticeLevel): NoticeItem | 
   })
 }
 
-/** 被挤出的卡：info/success 超过 ttl 50% 直接丢弃；warning 一律回队首。 */
+/** 被挤出的卡：已过时的（N9，例如页面在后台时冻结了很久）和展示超过 ttl 50% 的 info/success（已经看过）直接丢弃；其余回队首。 */
 function requeueEvicted(item: NoticeItem, now: number, queue: NoticeItem[]): NoticeItem[] {
-  if (item.level !== "warning") {
+  if (!fresh(item, now)) return queue
+  if (item.level === "info" || item.level === "success") {
     const ttl = item.ttlMs
     if (ttl !== null && elapsedActive(item, now) > ttl * 0.5) return queue
   }
@@ -359,24 +405,21 @@ function requeueEvicted(item: NoticeItem, now: number, queue: NoticeItem[]): Not
 }
 
 /**
- * 入栈落位：有空位直接上屏；否则 error/warning 按 M3 抢占，没有可抢占对象
- * 就进队列（error 走队首，warning/info/success 按级别排序）。
- * info/success 永不抢占；warning 只挤 info/success；error 挤任意非 error。
+ * 入栈落位：有空位直接上屏；否则 warning/error 按 N5 抢占，抢不了（用户正在看）
+ * 就排到同级队首；info/success 永不抢占，按级别排队。
  */
 function placeIncoming(state: NoticeState, item: NoticeItem, now: number): NoticeState {
   if (state.visible.length < state.maxVisible) {
-    return { ...state, visible: [...state.visible, activate(item, now)] }
+    return { ...state, visible: [...state.visible, activate(item, now, state.hidden)] }
   }
   const victim = pickVictim(state.visible, item.level)
   if (!victim) {
-    return {
-      ...state,
-      queue: item.level === "error" ? enqueueFront(state.queue, item) : enqueueSorted(state.queue, item),
-    }
+    const urgent = item.level === "error" || item.level === "warning"
+    return { ...state, queue: urgent ? enqueueFront(state.queue, item) : enqueueSorted(state.queue, item) }
   }
   return {
     ...state,
-    visible: [...state.visible.filter((row) => row.id !== victim.id), activate(item, now)],
+    visible: [...state.visible.filter((row) => row.id !== victim.id), activate(item, now, state.hidden)],
     queue: requeueEvicted(victim, now, state.queue),
   }
 }
@@ -447,13 +490,16 @@ export function dismissTopNotice(state: NoticeState, now: number): NoticeState {
   return dismissNotice(current, current.visible[current.visible.length - 1].id, now)
 }
 
-/** 来源以 scope 主动撤回（如连接恢复撤回中断警告）。 */
+/**
+ * 来源以 scope 主动撤回（如连接恢复撤回中断警告）。同一个 key 也代表上下文结束（如离开会话 `room:<id>`）：
+ * 在那里产生、还排着的卡不会再轮到上屏（N9），一起丢弃；已在屏上的照常走完。
+ */
 export function retractNoticeScope(state: NoticeState, scope: string, now: number): NoticeState {
   const target = text(scope)
   if (!target) return state
   const current = expireVisible(state, now)
   const visible = current.visible.filter((item) => item.scope !== target)
-  const queue = current.queue.filter((item) => item.scope !== target)
+  const queue = current.queue.filter((item) => item.scope !== target && item.context !== target)
   if (visible.length === current.visible.length && queue.length === current.queue.length) return current
   return fillVisible({ ...current, visible, queue }, now)
 }
@@ -537,6 +583,16 @@ export function resumeNotice(
   return changed ? { ...current, visible } : current
 }
 
+/** N8 hidden：页面进后台冻结全部可见卡的倒计时（期间新上屏的也冻结），回到前台按剩余时长继续。 */
+export function setNoticesHidden(state: NoticeState, hidden: boolean, now: number): NoticeState {
+  if (state.hidden === hidden) return state
+  const current = expireVisible(state, now)
+  const visible = current.visible.map((item) =>
+    hidden ? pausedItem(item, "hidden", now) : resumedItem(item, "hidden", now),
+  )
+  return { ...current, visible, hidden }
+}
+
 export type NoticeEvent =
   | { type: "push"; notice: NoticeInput; now: number }
   | { type: "tick"; now: number }
@@ -546,6 +602,7 @@ export type NoticeEvent =
   | { type: "resume"; id: string; reason: NoticePauseReason; now: number }
   | { type: "retract-scope"; scope: string; now: number }
   | { type: "set-max-visible"; maxVisible: number; now: number }
+  | { type: "set-hidden"; hidden: boolean; now: number }
   | { type: "clear" }
 
 /** 单一 reducer 出口；UI 后续用 useReducer 直接接。 */
@@ -567,6 +624,8 @@ export function noticeReducer(state: NoticeState, event: NoticeEvent): NoticeSta
       return retractNoticeScope(state, event.scope, event.now)
     case "set-max-visible":
       return setNoticeMaxVisible(state, event.maxVisible, event.now)
+    case "set-hidden":
+      return setNoticesHidden(state, event.hidden, event.now)
     case "clear":
       return clearNotices(state)
     default:

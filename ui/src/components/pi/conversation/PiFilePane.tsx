@@ -46,7 +46,7 @@ export function PiCodeView({ text, lang, wrap, className }: PiCodeViewProps) {
       data-lang={route.via === "plain" ? undefined : route.lang}
       data-highlight={shikiLines ? "shiki" : undefined}
       className={cn(
-        "font-(family-name:--cw-font-mono) text-(length:--cw-text-code-block) leading-(--cw-leading-code) text-(--cw-text)",
+        "font-(family-name:--cw-font-mono) text-(length:--cw-text-code-block) leading-(--cw-leading-code) text-[color:var(--cw-pi-stream-fg,var(--cw-text))]",
         wrap ? "" : "overflow-x-auto",
         className,
       )}

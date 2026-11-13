@@ -11,7 +11,7 @@ import {
   type DeletedSessionsStorage,
 } from "./deletedSessions"
 import { composerFactsOf } from "./composerFacts"
-import { cleanSessionTitleText } from "./titleText"
+import { sessionTitleOf } from "./titleText"
 import { archiveView, rememberSessionArchive, touchSessionArchive, type ArchiveMessage, type ArchiveSession } from "./sessionArchive"
 import {
   archiveKeysOf,
@@ -38,6 +38,7 @@ import {
   adminTokenReady,
   composerGate,
   deviceErrorText,
+  devicePlatformOf,
   errorCode,
   devicesFromRoomList,
   findStartedRoom,
@@ -54,6 +55,8 @@ import {
   preferredDeviceId,
   roomDeviceId,
   rosterActive,
+  samePath,
+  viewerListRefusal,
   type Device,
   type DirListResult,
   type ListedSession,
@@ -78,7 +81,7 @@ import {
 import { setRemoteImageLoader } from "@/conversation/remoteImage"
 import { ACK_TIMEOUT_MS, createSendLock } from "@/chat/composerMachine"
 import { OFFLINE_SEND_COPY } from "@/chat/composer/composerPlan"
-import { noticeChannel, noticeLevelForTone } from "@/chat/composer/noticeBridge"
+import { autoRetryEndNotice, autoRetryStartNotice, compactionErrorNotice, legacyNoticeInput, NOTICE_LINK_DOWN_SCOPE, noticeChannel } from "@/chat/composer/noticeBridge"
 import { taskListAfterEvent, type TaskListItem } from "@/chat/composer/taskList"
 import { expandMentionText, MAX_PENDING_FILES, type MentionFile } from "@/chat/composer/mention"
 import {
@@ -288,7 +291,7 @@ const OUTBOX_REQUEUE_CODES = new Set(["offline", "room_offline", "device_offline
 
 /** 提示的稳定类别：清提示按 category 判断，不把文案正则当唯一判据（文案会改，错误文本也可能碰巧命中）。 */
 type NoticeCode = "connectivity" | "progress" | "truncated" | "compaction" | "summarization" | "lazy-send"
-type Notice = { text: string; tone: "warn" | "bad"; codes?: NoticeCode[]; scope?: string } | null
+type Notice = { text: string; tone: "warn" | "bad"; codes?: NoticeCode[]; scope?: string; context?: string } | null
 type Queue = { steering: AgentMessage[]; followUp: AgentMessage[] }
 /** 一次助手回合的完成信号：seq 单调递增供 UI 只消费一次；error 区分成功/错误角标。 */
 export type TurnEnd = { seq: number; at: number; roomId: string; error: boolean }
@@ -354,17 +357,7 @@ function wsUrl() {
 }
 
 export function roomTitle(room: RoomInfo | null) {
-  if (!room) return "选择一个会话"
-  // 目录名不是对话名：label 只有和目录末段不同（用户改名）时才优先
-  const folder = room.cwd ? cwdLabel(room.cwd) : ""
-  if (room.label && room.label !== folder && room.label !== room.id) return room.label
-  if (room.name) return room.name
-  // 首条消息作标题要过清洗规则（设计 D §2.1：折叠/去控制字符/80 码点截）；清洗后为空顺延下一档
-  const first = cleanSessionTitleText(room.firstMessage)
-  if (first) return first
-  if (room.label) return room.label
-  if (room.cwd) return cwdLabel(room.cwd)
-  return room.id.slice(0, 8)
+  return room ? sessionTitleOf(room) : "选择一个会话"
 }
 
 export function cwdLabel(cwd: string) {
@@ -415,7 +408,8 @@ export function lastAssistantFailed(items: Transcript["items"]): boolean {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]
     if (item.kind !== "assistant") continue
-    return item.stopReason === "error" || !!item.errorMessage
+    // 中断（aborted）也带 errorMessage，但那是用户停止，不算出错
+    return item.stopReason !== "aborted" && (item.stopReason === "error" || !!item.errorMessage)
   }
   return false
 }
@@ -425,7 +419,17 @@ export function lastAssistantMessageFailed(messages: readonly AgentMessage[]): b
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message?.role !== "assistant") continue
-    return message.stopReason === "error" || !!message.errorMessage
+    return message.stopReason !== "aborted" && (message.stopReason === "error" || !!message.errorMessage)
+  }
+  return false
+}
+
+/** 快照里最后一条助手消息是 aborted：那一轮是被停止的（旧 relay 不带 turnStopped 时的依据）。 */
+export function lastAssistantMessageStopped(messages: readonly AgentMessage[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== "assistant") continue
+    return message.stopReason === "aborted"
   }
   return false
 }
@@ -532,12 +536,12 @@ export function useRelay() {
    *  A refused list_viewers is answered with an ack/error frame carrying the
    *  request id, never with a viewer_list frame, so without this the waiter
    *  would sit out its full timeout and report a misleading "timed out". */
-  const failViewerListWaiter = (id: string, reason: string): boolean => {
+  const failViewerListWaiter = (id: string, reason: string, code?: unknown): boolean => {
     const waiter = viewerListWaitersRef.current.get(id)
     if (!waiter) return false
     viewerListWaitersRef.current.delete(id)
     window.clearTimeout(waiter.timer)
-    waiter.reject(new Error(reason))
+    waiter.reject(viewerListRefusal(reason, code))
     return true
   }
   /** Last pair_lookup result per code, so approvePairLink can compute the
@@ -708,7 +712,8 @@ export function useRelay() {
       if (noticeChannel(next.codes) === "stack") {
         // Forward the scope so room-scoped notices can be retracted when
         // the user leaves that room (see clearRoom / PiAppBody).
-        pushNotice({ level: noticeLevelForTone(next.tone), title: next.text, scope: next.scope })
+        const linkDown = !authedRef.current || wsRef.current?.readyState !== WebSocket.OPEN
+        pushNotice(legacyNoticeInput(next, linkDown))
         return
       }
       setChannelNotice(next)
@@ -1117,6 +1122,7 @@ export function useRelay() {
       title: "本会话已达中继保存上限，新消息不再保存到中继；实时对话不受影响，已保存的历史仍可读。",
       scope: `room:${roomId}`,
       dedupeKey: `file-capped:${roomId}`,
+      sticky: true,
     })
   }
 
@@ -1429,6 +1435,8 @@ export function useRelay() {
   const turnActiveRef = useRef(false)
   const turnEmittedRef = useRef(false)
   const turnErrorRef = useRef(false)
+  /** 用户按了停止：直到下一次 agent_start（新一轮运行）前，都不发完成/出错信号。 */
+  const stopRequestedRef = useRef(false)
   const transcriptRef = useRef(transcript)
   /**
    * 重复到达的 message_start（旧 socket 晚到 / 重复订阅）按 pi 的 timestamp + model 去重：
@@ -1466,6 +1474,7 @@ export function useRelay() {
     turnActiveRef.current = false
     turnEmittedRef.current = true
     turnErrorRef.current = false
+    stopRequestedRef.current = false
   }, [])
   /** busy true→false 的唯一出口：每个回合只发一次，短时间内的重复帧被 turnEmitted 挡住。 */
   const finishTurn = useCallback((failed = false) => {
@@ -1473,6 +1482,8 @@ export function useRelay() {
     if (!turnActiveRef.current && !busyRef.current) return
     turnActiveRef.current = false
     turnEmittedRef.current = true
+    // 停止后 pi 可能再起一个 turn 并立刻以「请求被中断」收尾（stopReason=error）：那是停止的余波，不是出错
+    if (stopRequestedRef.current) return
     const error = failed || turnErrorRef.current || lastAssistantFailed(transcriptRef.current.items)
     turnSeqRef.current += 1
     setTurnEnd({ seq: turnSeqRef.current, at: Date.now(), roomId: roomRef.current, error })
@@ -1691,8 +1702,10 @@ export function useRelay() {
         const state = (await channel.command(roomId, "get_state", {}, "校验超时")) as { sessionFile?: string } | null
         const actual = state && state.sessionFile ? String(state.sessionFile).replace(/\\/g, "/") : ""
         expectedSessionFile.current = null
-        // Windows 盘符大小写可能不同（pi 给 D:\Users\...，列表里是 d:\users\...）：不计大小写
-        if (actual && !sameSessionPath(actual, sessionFile)) {
+        // Windows 盘符大小写可能不同（pi 给 D:\Users\...，列表里是 d:\users\...）：按这台设备的平台比
+        const switchedRoom = roomsRef.current.find((room) => room.id === roomId)
+        const platform = switchedRoom ? devicePlatformOf(devicesRef.current, roomDeviceId(switchedRoom)) : undefined
+        if (actual && !samePath(actual, sessionFile, platform)) {
           setNotice({ text: "切换后的会话与预期不一致，请从左侧列表确认要看哪个。", tone: "warn" })
         }
       } catch {
@@ -1703,14 +1716,6 @@ export function useRelay() {
   )
   const roomsRef = useRef<RoomInfo[]>([])
   const devicesRef = useRef<Device[]>([])
-  /** 会话路径比较：只有 Windows 盘符路径不计大小写（避免把同一路径判成"切换后与预期不一致"）；POSIX 路径区分大小写 */
-  function sameSessionPath(a: string, b: string): boolean {
-    const x = String(a || "").replace(/\\/g, "/");
-    const y = String(b || "").replace(/\\/g, "/");
-    if (!x || !y) return false;
-    const windows = /^[A-Za-z]:\//.test(x) && /^[A-Za-z]:\//.test(y);
-    return windows ? x.toLowerCase() === y.toLowerCase() : x === y;
-  }
   const selectedDeviceRef = useRef<string | null>(null)
   /** 本机读到的会话正文，键是 deviceId + 会话 id。只在这次页面连接里保留。 */
   const archivesRef = useRef(new Map<string, ArchiveSession>())
@@ -1730,7 +1735,7 @@ export function useRelay() {
   const loadSessionsRef = useRef<(deviceId: string) => void>(() => {})
   /** 重连后补拉会话索引的节流：同一台设备 10s 内只拉一次 */
   const lastSessionsAtRef = useRef(0)
-  const clearPendingRef = useRef<(deviceId: string) => void>(() => {})
+  const clearPendingRef = useRef<(deviceId: string, keepResolved?: boolean) => void>(() => {})
   const lazySessionRef = useRef<LazySelection | null>(safeStore.session.get("pi_room") ? null : readStoredLazySelection())
   const lazySendRef = useRef<LazySend | null>(null)
   const lazyTokenSeq = useRef(0)
@@ -1941,6 +1946,12 @@ export function useRelay() {
 
   const handleEvent = useCallback(
     (event: { type?: string; [key: string]: unknown }) => {
+      // 任一端按了停止：新扩展先发 turn_stopped，这一轮的收尾事件再带 stopped:true（旧扩展两样都没有）。
+      // 与本端按停止同一处理：余波里的「请求被中断」不算出错，落定也不报完成
+      if (event.type === "turn_stopped" || event.stopped === true) {
+        stopRequestedRef.current = true
+        turnErrorRef.current = false
+      }
       switch (event.type) {
         case "message_start": {
           const started = (event.message || {}) as AgentMessage
@@ -1961,9 +1972,12 @@ export function useRelay() {
           dispatch({ type: "message-update", event: assistantMessageEvent })
           if (assistantMessageEvent.type === "thinking_start" || assistantMessageEvent.type === "thinking_delta") setActivity("正在思考")
           if (assistantMessageEvent.type === "thinking_end") setActivity("正在输出")
-          if (assistantMessageEvent.type === "error") {
+          // 用户停止 / reason=aborted 不是出错；error 字段实际可能是整条助手消息，取它的 errorMessage
+          if (assistantMessageEvent.type === "error" && !stopRequestedRef.current && assistantMessageEvent.reason !== "aborted") {
             turnErrorRef.current = true
-            setNotice({ text: assistantMessageEvent.error || assistantMessageEvent.reason || "模型流出错", tone: "bad" })
+            const failure: unknown = assistantMessageEvent.error
+            const detail = typeof failure === "string" ? failure : isRecord(failure) && typeof failure.errorMessage === "string" ? failure.errorMessage : ""
+            setNotice({ text: detail || "模型流出错", tone: "bad" })
           }
           break
         }
@@ -1991,7 +2005,7 @@ export function useRelay() {
           dispatch({
             type: "tool",
             id: String(event.toolCallId || ""),
-            patch: { name: String(event.toolName || "tool"), input: isRecord(event.args) ? event.args : undefined, state: "input-streaming" },
+            patch: { name: String(event.toolName || ""), input: isRecord(event.args) ? event.args : undefined, state: "input-streaming" },
           })
           break
         case "tool_execution_update": {
@@ -2025,6 +2039,7 @@ export function useRelay() {
           // Working 完成态到下一回合开始为止；仍有未结束子智能体时跨回合保留。
           if (event.type === "agent_start") {
             setAgentState((current) => (current.some(agentIsActive) ? current : []))
+            stopRequestedRef.current = false
           }
           startTurn()
           setBusy(true)
@@ -2116,15 +2131,11 @@ export function useRelay() {
           setBusy(true)
           setActivity(`${Math.max(1, Math.round(Number(event.delayMs || 0) / 1000))}s 后重试（${event.attempt}/${event.maxAttempts}）`)
           // 带具体错误信息时不标 progress：那是要留给用户看的错误，不能被 settle 当过场提示清掉
-          setNotice(
-            event.errorMessage
-              ? { text: String(event.errorMessage), tone: "warn" }
-              : { text: "正在重试", tone: "warn", codes: ["progress"] },
-          )
+          setNotice(autoRetryStartNotice(event))
           break
         case "auto_retry_end":
           if (!event.success) turnErrorRef.current = true
-          setNotice({ text: event.success ? "重试已成功" : String(event.finalError || "重试失败"), tone: event.success ? "warn" : "bad" })
+          setNotice(autoRetryEndNotice(event))
           setActivity("正在输出")
           break
         case "summarization_retry_scheduled":
@@ -2149,7 +2160,7 @@ export function useRelay() {
           break
         case "compaction_end":
           if (event.aborted) setNotice({ text: "上下文压缩已中止", tone: "warn" })
-          else if (event.errorMessage) setNotice({ text: String(event.errorMessage), tone: "bad" })
+          else if (event.errorMessage) setNotice(compactionErrorNotice(event.errorMessage))
           else {
             setNotice((prev) => clearNoticeCode(prev, "compaction"))
             // 量化保留（R3-3 第 2 项）：事件 result 里的实值才记；没有就保持 null
@@ -2159,9 +2170,11 @@ export function useRelay() {
           }
           setActivity((prev) => (prev === "正在压缩上下文" ? "" : prev))
           break
-        case "session_info_changed":
-          setRooms((list) => list.map((room) => (room.id === roomRef.current ? { ...room, label: (event.name as string) || null } : room)))
+        case "session_info_changed": {
+          const name = typeof event.name === "string" && event.name ? event.name : null
+          setRooms((list) => list.map((room) => (room.id === roomRef.current ? { ...room, label: name, name } : room)))
           break
+        }
         case "thinking_level_select":
         case "thinking_level_changed":
           setThinkingLevel(String(event.level || ""))
@@ -2178,7 +2191,7 @@ export function useRelay() {
           setNotice({ text: "本机切换了会话分支，历史已更新", tone: "warn" })
           break
         case "session_compact_failed":
-          setNotice({ text: String(event.errorMessage || "上下文压缩失败"), tone: "bad" })
+          // 同一次失败还有一帧带同样 errorMessage 的 compaction_end，提示由它出；这里再报会叠成「×2」，中止时还会多报一张「失败」
           break
         case "ui_prompt_start":
         case "ui_prompt_end":
@@ -2301,7 +2314,7 @@ export function useRelay() {
     }
     const found: { deviceId: string; room: RoomInfo }[] = []
     for (const item of watches) {
-      const room = findStartedRoom(item.watch, item.deviceId, list)
+      const room = findStartedRoom(item.watch, item.deviceId, list, devicePlatformOf(devicesRef.current, item.deviceId))
       if (!room) continue
       resolvedArmingAt.current.add(item.watch.at)
       found.push({ deviceId: item.deviceId, room })
@@ -2543,8 +2556,15 @@ export function useRelay() {
       // settle pending sends from them now that the transcript landed.
       applyFinalFrames(msg)
       setBusy(!!msg.busy)
+      // relay 说这一轮是用户停止的；旧 relay 不带时，看快照里最后一条助手消息是不是 aborted
+      // （只在还欠一次完成信号时看，免得旧标记压住之后没见到 agent_start 的下一轮）
+      const owesSignal = !turnEmittedRef.current && (turnActiveRef.current || busyRef.current)
+      if (msg.turnStopped === true || (!msg.busy && owesSignal && lastAssistantMessageStopped(messages))) {
+        stopRequestedRef.current = true
+        turnErrorRef.current = false
+      }
       if (!msg.busy) {
-        // 断线期间这一轮已跑完：用快照里的终版消息判错误，补发一次完成信号
+        // 断线期间这一轮已跑完：用快照里的终版消息判错误，补发一次完成信号（被停止的不发）
         finishTurn(lastAssistantMessageFailed(messages))
         setActivity("")
       } else if (!turnActiveRef.current) {
@@ -2794,6 +2814,8 @@ export function useRelay() {
           // 链路真正可用才把退避归零（socket onopen 不算，见 UI·relay 中-1）
           backoffRef.current = 1000
           setTrying(false)
+          // 断线期间被拒的命令提示（「连接不可用」等）已过时：连上就撤回
+          retractNoticeStack(NOTICE_LINK_DOWN_SCOPE)
           const info = serverInfo(msg)
           serverRef.current = info
           setServer(info)
@@ -3100,7 +3122,8 @@ export function useRelay() {
         applyRoster(list, msg.devices)
         const started = takePendingRooms(list)
         if (started.length) {
-          for (const item of started) clearPendingRef.current(item.deviceId)
+          // 名册里找到了新房间是成功结案：harness_start 回执还没到时，结案标记要留给它（见 clearPending）
+          for (const item of started) clearPendingRef.current(item.deviceId, true)
           // 新 pi 的会话清单要等扩展上报 manifest；稍后补拉一次，远程新建的会话才会进列表
           window.setTimeout(() => {
             const sel = selectedDeviceRef.current
@@ -3121,7 +3144,7 @@ export function useRelay() {
           )
           if (picked && selectedDevice?.online) {
             subscribeRef.current(picked.room.id, true)
-            setNotice({ text: picked.room.label ? `已切换到「${picked.room.label}」` : "已切换到新会话", tone: "warn" })
+            setNotice({ text: `已切换到「${roomTitle(picked.room)}」`, tone: "warn", context: `room:${picked.room.id}` })
             return
           }
           // 已经切走的旧启动：房间照样起来了，但不再自动打开/发送
@@ -3139,6 +3162,10 @@ export function useRelay() {
           setRoomDown(false)
           setNotice(clearConnectivity)
           if (!current.busy) {
+            if (current.turnStopped === true) {
+              stopRequestedRef.current = true
+              turnErrorRef.current = false
+            }
             finishTurn()
             setBusy(false)
             setActivity("")
@@ -3149,7 +3176,7 @@ export function useRelay() {
         // 并在订阅后用 get_state.sessionFile 校验目标；不一致就提示让用户自己选，
         // 而不是静默展示一个错会话的历史。
         const cwd = current?.cwd || previous?.cwd
-        const candidates = list.filter((room) => room.online && !!cwd && room.cwd === cwd && room.id !== roomRef.current)
+        const candidates = list.filter((room) => room.online && !!cwd && samePath(room.cwd, cwd, devicePlatformOf(devicesRef.current, roomDeviceId(room))) && room.id !== roomRef.current)
         // 只有一个候选 = 没有"选错"风险：哪怕它是之前见过的房间（切回旧会话）也直接跟随。
         // knownRoomIds 只在"多个候选"时用于区分谁是真新房——否则切回旧会话永远跟不上，
         // 界面会卡在已离线的旧房间上（房间 id 就是 sessionId，会反复重现）。
@@ -3170,7 +3197,7 @@ export function useRelay() {
           if (expectedSessionFile.current) {
             void checkSwitchedRoom(switched.id, expectedSessionFile.current)
           }
-          setNotice({ text: switched.label ? `已切换到「${switched.label}」` : "已切换到新会话", tone: "warn" })
+          setNotice({ text: `已切换到「${roomTitle(switched)}」`, tone: "warn", context: `room:${switched.id}` })
           return
         }
         if (current) {
@@ -3217,7 +3244,7 @@ export function useRelay() {
           // A refused list_viewers comes back as this failure ack (the relay
           // never acks a successful one -- it sends viewer_list instead):
           // fail the roster waiter with the real reason, not a timeout.
-          failViewerListWaiter(ackId, typeof msg.error === "string" && msg.error ? msg.error : "读取观看端名册被中转服务拒绝")
+          failViewerListWaiter(ackId, typeof msg.error === "string" && msg.error ? msg.error : "读取观看端名册被中转服务拒绝", msg.code)
         }
         return
       }
@@ -3320,7 +3347,7 @@ export function useRelay() {
         if (qid && channel.error(msg)) return
         // A roster read refused with an id-bearing error frame (rather than
         // an ack) fails its waiter the same way: real reason, no timeout.
-        if (qid && failViewerListWaiter(qid, message)) return
+        if (qid && failViewerListWaiter(qid, message, code)) return
         // 订阅的房间已不存在（sessionStorage 里的旧 id）：清空房间并自动挑一个在线的，
         // 否则 roomId 留着但连不上，输入条永久禁用。
         if (msg.code === "no_room") {
@@ -3482,6 +3509,11 @@ export function useRelay() {
         // 订阅时就不在线是确定的状态（选了一个已结束的会话、重连时本机 pi 已经关了），红条直接出
         setRoomDown(!msg.online)
         setBusy(!!msg.busy)
+        // 重连时可能错过了 turn_stopped：relay 说最近一轮是用户停止的，就不补报完成/出错
+        if (msg.turnStopped === true) {
+          stopRequestedRef.current = true
+          turnErrorRef.current = false
+        }
         if (!msg.busy) {
           finishTurn()
           setActivity("")
@@ -3532,6 +3564,10 @@ export function useRelay() {
       }
       if (type === "room_state") {
         setBusy(!!msg.busy)
+        if (msg.turnStopped === true) {
+          stopRequestedRef.current = true
+          turnErrorRef.current = false
+        }
         if (!msg.busy) {
           finishTurn()
           setActivity("")
@@ -4072,10 +4108,12 @@ export function useRelay() {
       })
   }, [sendQuery])
 
-  const clearPending = useCallback((deviceId: string) => {
-    // 启动被取消 / 超时：resolvedArmingAt 里对应的 at 不会再有 room_list 来结案，顺手清掉（只增表，UI 低危）
+  const clearPending = useCallback((deviceId: string, keepResolved = false) => {
+    // 启动被取消 / 超时：resolvedArmingAt 里对应的 at 不会再有 room_list 来结案，顺手清掉（只增表，UI 低危）。
+    // keepResolved = 名册里找到了新房间（成功结案）：harness_start 回执还没到（arming 还在）时标记留给回执认出"已结案"，
+    // 删了回执会判成"启动已取消"，未载入会话的第一条消息就丢了；回执已经回过的没人认领，照样清
     const at = pendingWatchRef.current[deviceId]?.at ?? armingRef.current[deviceId]?.at
-    if (at !== undefined) resolvedArmingAt.current.delete(at)
+    if (at !== undefined && !(keepResolved && armingRef.current[deviceId]?.at === at)) resolvedArmingAt.current.delete(at)
     delete pendingWatchRef.current[deviceId]
     delete armingRef.current[deviceId]
     setCommandInFlight((prev) => {
@@ -4610,6 +4648,7 @@ export function useRelay() {
     turnActiveRef.current = false
     turnEmittedRef.current = true
     turnErrorRef.current = false
+    stopRequestedRef.current = true
     setBusy(false)
     setActivity("")
     try {
@@ -4717,7 +4756,7 @@ export function useRelay() {
     if ((command === "set_session_name" || command === "get_state") && data && typeof data === "object") {
       const name = command === "set_session_name" ? args?.name : (data as { sessionName?: unknown }).sessionName
       if (typeof name === "string" && name) {
-        setRooms((list) => list.map((room) => (room.id === roomRef.current ? { ...room, label: name } : room)))
+        setRooms((list) => list.map((room) => (room.id === roomRef.current ? { ...room, label: name, name } : room)))
       }
     }
     return data
@@ -4962,11 +5001,11 @@ export function useRelay() {
     // 扩展删完文件才合并发增量 manifest（MANIFEST_COALESCE_MS 之后），马上拉清单可能还是旧的：
     // 先在本地去掉这一行（同改名 / 冷 fork 的 upsertSessionRow），再稍后补拉一次和 relay 索引对齐
     const deviceId = roomDeviceId(room)
-    const gone = target.replace(/\\/g, "/")
+    const platform = devicePlatformOf(devicesRef.current, deviceId)
     setSessionsByDevice((prev) => {
       const list = prev[deviceId]
       if (!list) return prev
-      return { ...prev, [deviceId]: list.filter((item) => String(item.path || "").replace(/\\/g, "/") !== gone) }
+      return { ...prev, [deviceId]: list.filter((item) => !samePath(item.path, target, platform)) }
     })
     // relay 会把这个会话的离线房间在名册里留到驱逐（默认 6 小时），不记下的话它会以 pi 的标签回到侧栏
     const rest = withoutDeletedRooms(roomsRef.current, rememberDeletedSession(deletedStorage(), sessionId, Date.now()), roomRef.current || null)
@@ -5045,8 +5084,8 @@ export function useRelay() {
       setSessionsByDevice((prev) => {
         const list = prev[deviceId]
         if (!list) return prev
-        const norm = (value: string) => value.replace(/\\/g, "/")
-        return { ...prev, [deviceId]: list.map((item) => (item.id === changedId || norm(item.path) === norm(target) ? { ...item, name: actual, updatedAt: Date.now() } : item)) }
+        const platform = devicePlatformOf(devicesRef.current, deviceId)
+        return { ...prev, [deviceId]: list.map((item) => (item.id === changedId || samePath(item.path, target, platform) ? { ...item, name: actual, updatedAt: Date.now() } : item)) }
       })
     }
     setRooms((list) => list.map((room) => (room.id === changedId ? { ...room, label: actual, name: actual } : room)))
@@ -5084,7 +5123,8 @@ export function useRelay() {
     async (query: string) => {
       const deviceId = selectedDeviceRef.current
       if (!deviceId) throw new RelayError("no_device", COPY.noDevice)
-      const targets = bodySearchTargetsOf(deviceId, authedRef.current ? roomsRef.current : [], roomRef.current)
+      const platform = devicePlatformOf(devicesRef.current, deviceId)
+      const targets = bodySearchTargetsOf(deviceId, authedRef.current ? roomsRef.current : [], roomRef.current, platform)
       const roomTargets = targets.flatMap((target) => (target.kind === "room" ? [target] : []))
       if (!roomTargets.length) return runDeviceCommand(deviceId, "search_session_bodies", { query })
       const settled = await Promise.allSettled(
@@ -5097,6 +5137,7 @@ export function useRelay() {
             ? { target: roomTargets[i], ok: true, data: result.value }
             : { target: roomTargets[i], ok: false, error: result.reason },
         ),
+        platform,
       )
       if (!merged.ok) throw merged.error
       return merged.page
@@ -5107,8 +5148,8 @@ export function useRelay() {
   const sessionNameForPath = useCallback((target: string): string => {
     const deviceId = selectedDeviceRef.current
     if (!deviceId) return ""
-    const want = String(target || "").replace(/\\/g, "/")
-    const hit = (sessionsByDevice[deviceId] || []).find((item) => String(item.path || "").replace(/\\/g, "/") === want)
+    const platform = devicePlatformOf(devicesRef.current, deviceId)
+    const hit = (sessionsByDevice[deviceId] || []).find((item) => samePath(item.path, target, platform))
     return hit?.name || ""
   }, [sessionsByDevice])
 
@@ -5445,7 +5486,7 @@ export function useRelay() {
         delete next[deviceId]
         return next
       })
-      const existing = findStartedRoom(watch, deviceId, roomsRef.current)
+      const existing = findStartedRoom(watch, deviceId, roomsRef.current, devicePlatformOf(devicesRef.current, deviceId))
       if (existing) {
         delete pendingWatchRef.current[deviceId]
         openStarted(existing.id)

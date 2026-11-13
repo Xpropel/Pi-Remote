@@ -1,5 +1,5 @@
 import { useRef, useState, type ComponentProps, type ReactNode } from "react"
-import { MenuItem, MenuLabel, MenuSearch, MenuSeparator, MenuSurface, Submenu } from "@/components/kit"
+import { MENU_DIVIDER_BG, MENU_DIVIDER_BORDER, MenuItem, MenuLabel, MenuSearch, MenuSeparator, MenuSurface, Submenu } from "@/components/kit"
 import { Check, ChevronLeft, ChevronRight, Folder, FolderOpen, Search } from "@/components/kit/icons"
 import { PiPlatformIcon } from "@/components/pi/shared"
 import { usePiMenuSurface, usePiStatic } from "@/components/pi/shared/layers"
@@ -7,7 +7,8 @@ import { cn } from "@/lib/utils"
 import { filterFolders } from "@/pi/model/folderBrowser"
 import { homeShort } from "@/pi/model/newSession"
 import { usePiMenuClose } from "./menuClose"
-import { C_SECONDARY, type CVariant } from "./styles"
+import { PiSheetSearch } from "./PiSheetSearch"
+import { C_SECONDARY, ROW_FOCUS, type CVariant } from "./styles"
 
 export interface PiFolderPickerProps extends Omit<ComponentProps<"div">, "children" | "onSelect"> {
   variant: CVariant
@@ -48,7 +49,8 @@ function platformScopeName(platform: string): string {
   return "设备"
 }
 
-const PHONE_ROW = "flex min-h-[52px] w-full items-center gap-3 border-b border-solid border-(--cw-divider-soft) px-1 text-left last:border-b-0"
+const PHONE_ROW = cn("flex min-h-[52px] w-full items-center gap-3 border-b border-solid px-1 text-left last:border-b-0", MENU_DIVIDER_BORDER, ROW_FOCUS)
+const PHONE_DIVIDER = cn("my-2 h-px shrink-0", MENU_DIVIDER_BG)
 const GROUP_LABEL = "pt-1 pb-1 text-[13px] leading-[18px]"
 const EMPTY_NOTE = "px-2 py-1.5 text-(length:--cw-text-sm) leading-(--cw-leading-sm)"
 
@@ -256,7 +258,7 @@ export function PiFolderPicker(props: PiFolderPickerProps) {
         )}
         {page === "root" ? (
           <>
-            <div aria-hidden className="my-2 h-px shrink-0 bg-(--cw-divider-soft)" />
+            <div aria-hidden className={PHONE_DIVIDER} />
             <div className={cn(GROUP_LABEL, C_SECONDARY)}>工作区</div>
             <button
               type="button"
@@ -271,7 +273,7 @@ export function PiFolderPicker(props: PiFolderPickerProps) {
           </>
         ) : (
           <>
-            <div aria-hidden className="my-2 h-px shrink-0 bg-(--cw-divider-soft)" />
+            <div aria-hidden className={PHONE_DIVIDER} />
             <button
               type="button"
               data-cw-id="pi-folder-browse"
@@ -322,17 +324,12 @@ function PhoneSearch({ placeholder, ariaLabel, isStatic, value, onValueChange }:
     )
   }
   return (
-    <label className="mb-3 flex h-11 items-center gap-2 rounded-[10px] bg-(--cw-chip-bg) px-3 focus-within:[box-shadow:inset_0_0_0_1px_var(--cw-pi-field-focus-border)]">
-      <Search aria-hidden strokeWidth={1.5} className="size-[18px] shrink-0 text-(--cw-text-4)" />
-      <input
-        type="search"
-        value={value}
-        onChange={(event) => onValueChange(event.currentTarget.value)}
-        placeholder={placeholder}
-        aria-label={ariaLabel}
-        autoComplete="off"
-        className="min-w-0 flex-1 self-stretch border-0 bg-transparent p-0 text-[16px] text-(--cw-text) outline-none placeholder:text-(--cw-text-4)"
-      />
-    </label>
+    <PiSheetSearch
+      className="mb-3"
+      value={value}
+      onChange={(event) => onValueChange(event.currentTarget.value)}
+      placeholder={placeholder}
+      aria-label={ariaLabel}
+    />
   )
 }

@@ -8,7 +8,8 @@
   align-items: center;
   gap: 12px;
   min-height: 64px;
-  padding: 10px 0;
+  padding-block: 12px;
+  transition: background-color 160ms ease;
 }
 
 .settings-device-icon {
@@ -17,7 +18,7 @@
   width: 36px;
   height: 36px;
   flex: none;
-  border-radius: 10px;
+  border-radius: 9px;
   background: var(--st-tile-bg);
   color: var(--st-text-2);
 }
@@ -27,14 +28,18 @@
   flex: 1;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .settings-device-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
   color: var(--st-text-1);
-  font-size: 13.5px;
-  font-weight: 550;
-  line-height: 1.3;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 .settings-device-status {
@@ -73,14 +78,25 @@
 }
 
 .settings-device-default {
-  margin-left: 7px;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--st-accent) 12%, transparent);
   color: var(--st-accent);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 500;
+  line-height: 1;
 }
 
+/* 动作区里的「已设为默认」：只是说明，不像按钮。 */
 .settings-device-default.is-action {
+  height: 26px;
+  padding: 0 4px;
+  background: none;
   color: var(--st-text-4);
+  font-size: 12px;
   cursor: default;
 }
 
@@ -90,39 +106,46 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 6px;
 }
 
-.settings-device-action {
-  color: var(--st-text-3);
-  font-size: 12px;
-  line-height: 1;
-}
-
-.settings-device-action:disabled {
-  color: var(--st-text-4);
-  cursor: default;
-}
-
-.settings-device-action:hover:not(:disabled) {
+/* 设备 / 身份区的动作：紧凑描边按钮（挂在 .settings-root 下才压得过壳的按钮复位）。 */
+.settings-root .settings-device-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--st-control-border);
+  border-radius: var(--st-radius-control);
+  background: var(--st-control-bg);
   color: var(--st-text-1);
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
-.settings-device-action.is-disabled {
-  color: var(--st-text-4);
-  cursor: default;
-  text-decoration: none;
+.settings-root .settings-device-action:hover:not(:disabled) {
+  border-color: var(--st-control-border-hover);
+  background: var(--st-control-hover-bg);
 }
 
-.settings-device-action.is-danger {
+.settings-root .settings-device-action:disabled,
+.settings-root .settings-device-action.is-disabled {
+  border-color: var(--st-disabled-ring);
+  background: transparent;
+  color: var(--st-disabled-fg);
+}
+
+.settings-root .settings-device-action.is-danger {
   color: var(--st-error);
 }
 
-.settings-device-action.is-danger:hover:not(:disabled) {
-  color: var(--st-error);
-  opacity: 0.8;
+.settings-root .settings-device-action.is-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--st-error) 45%, transparent);
+  background: var(--st-notice-bad-bg);
 }
 
 /* 添加设备行要铺满卡片内宽（负 margin 吃掉卡片 16px 内边距）。
@@ -136,18 +159,19 @@
   width: calc(100% + 32px);
   margin: 0 -16px;
   padding: 12px 16px;
-  border-radius: 8px;
+  border-radius: 0;
   text-align: left;
+  transition: background-color 120ms ease;
 }
 
-.settings-device-add:hover {
-  background: var(--st-hover-bg);
+.settings-devices .settings-device-add:hover {
+  background: var(--st-row-hover-bg);
 }
 
 .settings-device-add-desc {
-  color: var(--st-text-3);
+  color: var(--st-text-4);
   font-size: 12px;
-  line-height: 1.35;
+  line-height: 1.45;
 }
 
 .settings-device-chevron {
@@ -157,16 +181,16 @@
 
 .settings-device-empty {
   color: var(--st-text-4);
-  font-size: 11.5px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* Viewer identity section (design A phase 2): inline panels under the device
    card rows -- enable confirmation, backup export/import, revoke confirm.
    Only --st-* tokens are consumed, same as the rest of this page. */
 .settings-identity-panel {
-  border-top: 1px solid var(--st-border);
-  padding: 12px 0 4px;
+  border-top: 1px solid var(--st-divider);
+  padding-block: 12px;
   font-size: 12.5px;
   line-height: 1.55;
   color: var(--st-text-2);
@@ -209,8 +233,19 @@
   font-size: 12px;
 }
 
-.settings-identity-field input {
+.settings-root .settings-identity-field input {
   max-width: 320px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--st-control-border);
+  border-radius: var(--st-radius-control);
+  background: var(--st-control-bg);
+  color: var(--st-text-1);
+  font-size: 12.5px;
+}
+
+.settings-root .settings-identity-field input:focus-visible {
+  border-color: var(--st-field-focus-ring);
 }
 
 .settings-identity-actions {
@@ -244,8 +279,7 @@
 /* Phase 4 T-1: plaintext-room list -- class subheads + compact room rows. */
 
 .settings-device-row.is-focus {
-  border-radius: 10px;
-  background: var(--st-tile-bg);
+  background: var(--st-selected-bg);
 }
 
 .settings-plaintext-intro {

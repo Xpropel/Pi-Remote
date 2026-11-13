@@ -1,6 +1,6 @@
 // P11 B0 框架契约测试（纯 Node，无浏览器）：
 // types/surfaces/geometry、model（状态/时间/分组/pin-archive/设备/身份）、storage（scope 隔离/健壮性/toggle）、
-// tokens.css（六套选择器与色位变量齐全、自包含）、allowlist 精确放行、断点 768、serverName fallback。
+// tokens.css（Cursor 浅 / 深两套选择器与色位变量齐全、自包含）、断点 768、serverName fallback。
 import test from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -17,12 +17,11 @@ const gallery = await import("../ui/src/pi/sidebar/gallery.ts")
 const mobile = await import("../ui/src/pi/mobile/types.ts")
 const server = await import("../ui/src/pi/model/serverName.ts")
 const variants = await import("../ui/src/pi/variants/types.ts")
-const { piVariantImportVerdict, PI_VARIANT_ALLOWED_SIDEBAR_MODULES, PI_VARIANT_ALLOWED_MOBILE_MODULES } = await import("../ui/src/pi/headless/allowlist.ts")
 
-test("契约常量：3 风格 × 2 明暗、surface 齐全、几何与设计册一致", () => {
-  assert.deepEqual([...types.PI_SIDEBAR_STYLES], ["cursor", "claude", "codex"])
+test("契约常量：1 风格 × 2 明暗、surface 齐全、几何与设计册一致", () => {
+  assert.deepEqual([...types.PI_SIDEBAR_STYLES], ["cursor"])
   assert.deepEqual([...types.PI_SIDEBAR_THEMES], ["dark", "light"])
-  assert.deepEqual([...types.PI_SIDEBAR_STYLES], [...variants.PI_UI_VARIANTS ?? variants.PI_VARIANTS ?? types.PI_SIDEBAR_STYLES].slice(0, 3).length === 3 ? [...types.PI_SIDEBAR_STYLES] : [])
+  assert.deepEqual([...types.PI_SIDEBAR_STYLES], variants.PI_UI_VARIANT_LIST.map((v) => v.id))
   assert.equal(types.PI_SIDEBAR_SURFACES.length, 14)
   assert.equal(types.PI_MOBILE_SURFACES.length, 12)
   assert.equal(new Set(types.PI_SIDEBAR_SURFACES.map((s) => s.id)).size, 14)
@@ -41,9 +40,9 @@ test("契约常量：3 风格 × 2 明暗、surface 齐全、几何与设计册�
   assert.equal(mobile.PI_MOBILE_METRICS.swipeActionsW, 148)
   assert.equal(mobile.PI_MOBILE_METRICS.swipeActionW, 74)
   assert.equal(mobile.PI_MOBILE_METRICS.safeAreaBottom, 30)
-  assert.equal(gallery.PI_SIDEBAR_GALLERY_PRESETS.length, 6)
-  assert.deepEqual(gallery.PI_SIDEBAR_GALLERY_PRESETS.map((p) => p.id), ["cursor-dark", "cursor-light", "claude-dark", "claude-light", "codex-dark", "codex-light"])
-  assert.equal(gallery.piSidebarGalleryPresetOf("claude")?.style, "claude")
+  assert.equal(gallery.PI_SIDEBAR_GALLERY_PRESETS.length, 2)
+  assert.deepEqual(gallery.PI_SIDEBAR_GALLERY_PRESETS.map((p) => p.id), ["cursor-dark", "cursor-light"])
+  assert.equal(gallery.piSidebarGalleryPresetOf("cursor")?.style, "cursor")
 })
 
 test("状态诚实降级：优先级 error>waiting>running>idle；无法判定=idle 且不显示 chip", () => {
@@ -188,9 +187,9 @@ test("storage：account::device 隔离、坏数据回落、pin/archive 互斥、
   assert.equal(storage.PI_SIDEBAR_LOCAL_STORAGE_KEY, "pi_remote_pi_sidebar_local")
 })
 
-test("tokens.css：六套选择器齐全、32 色位变量每套都有、无 cursor/变体私有变量、无全局选择器", () => {
+test("tokens.css：Cursor 浅 / 深两套选择器齐全、色位变量每套都有、无 cursor 私有变量、无全局选择器", () => {
   const css = read("ui/src/pi/sidebar/tokens.css")
-  for (const style of ["cursor", "claude", "codex"]) {
+  for (const style of ["cursor"]) {
     for (const theme of ["dark", "light"]) {
       assert.match(css, new RegExp(`\\[data-pi-sidebar-style="${style}"\\]\\[data-pi-theme="${theme}"\\]`), `${style}/${theme} 自属性选择器`)
       assert.match(css, new RegExp(`\\[data-pi-theme="${theme}"\\] \\[data-pi-sidebar\\]\\[data-pi-sidebar-style="${style}"\\]`), `${style}/${theme} 祖先主题选择器`)
@@ -206,39 +205,21 @@ test("tokens.css：六套选择器齐全、32 色位变量每套都有、无 cur
   ]
   for (const name of colors) {
     const occurrences = css.split(name + ":").length - 1
-    assert.ok(occurrences >= 6, `${name} 在六套中都要有（实际 ${occurrences}）`)
+    assert.ok(occurrences >= 2, `${name} 在浅 / 深两套中都要有（实际 ${occurrences}）`)
   }
   assert.doesNotMatch(css.replace(/\/\*[\s\S]*?\*\//g, ""), /--cw-/, "不得引用 cursor 变量（注释除外）")
   assert.doesNotMatch(css, /(^|\n)\s*(:root|html|body|\*)\s*\{/, "不得写全局选择器")
-  assert.match(css, /--sb-font-serif/, "Claude 衬线字体栈存在")
   assert.match(read("ui/src/pi/mobile/types.ts"), /PI_MOBILE_NAV_COPY/)
 })
 
-test("allowlist：@/pi/sidebar、@/pi/mobile 精确放行；未登记子模块/借道路径/组件拒绝", () => {
-  assert.ok([...PI_VARIANT_ALLOWED_SIDEBAR_MODULES].includes("@/pi/sidebar"))
-  assert.ok([...PI_VARIANT_ALLOWED_MOBILE_MODULES].includes("@/pi/mobile"))
-  for (const spec of ["@/pi/sidebar", "@/pi/sidebar/types", "@/pi/sidebar/model", "@/pi/mobile", "@/pi/mobile/types"]) {
-    assert.equal(piVariantImportVerdict(spec).ok, true, spec)
-  }
-  for (const spec of ["@/pi/sidebar/private", "@/pi/sidebar/../components/pi/PiRoot", "@/pi/mobile/private", "@/pi/mobile/../relay/useRelay"]) {
-    assert.equal(piVariantImportVerdict(spec).ok, false, spec)
-  }
-  assert.match(piVariantImportVerdict("@/pi/sidebar/private").reason, /P11 侧栏只允许精确模块/)
-  assert.match(piVariantImportVerdict("@/pi/mobile/private").reason, /P11 移动导航只允许精确模块/)
-})
-
-
-test("宿主入口：side/mobile barrel 导出统一组件与移动壳；allowlist 登记对应精确模块", () => {
+test("宿主入口：side/mobile barrel 导出统一组件与移动壳", () => {
   const sidebarBarrel = read("ui/src/pi/sidebar/index.ts")
   assert.match(sidebarBarrel, /export \{ UnifiedSidebar \} from "\.\/UnifiedSidebar"/)
   assert.match(sidebarBarrel, /export type \{ UnifiedSidebarProps \}/)
   const mobileBarrel = read("ui/src/pi/mobile/index.ts")
   assert.match(mobileBarrel, /export \{ MobileNavShell, MobileSessionPage \}/)
   assert.match(mobileBarrel, /export \{ MobileNavSetting, MobileSettingsPicker \}/)
-  assert.ok([...PI_VARIANT_ALLOWED_SIDEBAR_MODULES].includes("@/pi/sidebar/UnifiedSidebar"))
-  assert.ok([...PI_VARIANT_ALLOWED_MOBILE_MODULES].includes("@/pi/mobile/MobileNavShell"))
-  assert.ok([...PI_VARIANT_ALLOWED_MOBILE_MODULES].includes("@/pi/mobile/MobileNavSetting"))
-  // 单一共享核：全仓只有一份 UnifiedSidebar 组件定义（变体只许薄适配）
+  // 单一共享核：全仓只有一份 UnifiedSidebar 组件定义
   const walk = (dir, out = []) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const file = path.join(dir, entry.name)

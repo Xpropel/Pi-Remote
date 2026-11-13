@@ -49,8 +49,10 @@ import {
   IDENTITY_PHASE_NOTE,
   IDENTITY_UNRECOVERABLE_WARNING,
   IDENTITY_WAITING_ACK_TEXT,
+  VIEWERS_ADMIN_ONLY_TEXT,
   VIEWERS_UNSUPPORTED_TEXT,
   VIEWER_REVOKE_ACK_NOTICE,
+  viewerRosterAdminOnlyOf,
   type AuthorizedViewerRow,
   type IdentityStateView,
 } from "./identityLogic"
@@ -62,6 +64,7 @@ type PanelKind = "none" | "enable" | "export" | "import" | "forget"
 type RosterState =
   | { phase: "loading" }
   | { phase: "unsupported" }
+  | { phase: "admin-only" }
   | { phase: "error"; text: string }
   | { phase: "ready"; rows: AuthorizedViewerRow[] }
 
@@ -109,7 +112,7 @@ export function IdentitySection() {
       const raw = await active.listViewers()
       setRoster({ phase: "ready", rows: authorizedViewerRowsOf(raw) })
     } catch (error) {
-      setRoster({ phase: "error", text: errorTextOf(error) })
+      setRoster(viewerRosterAdminOnlyOf(error) ? { phase: "admin-only" } : { phase: "error", text: errorTextOf(error) })
     }
   }, [])
 
@@ -612,6 +615,11 @@ export function IdentitySection() {
         {roster.phase === "unsupported" ? (
           <div className="settings-row">
             <span className="settings-device-empty">{VIEWERS_UNSUPPORTED_TEXT}</span>
+          </div>
+        ) : null}
+        {roster.phase === "admin-only" ? (
+          <div className="settings-row">
+            <span className="settings-device-empty">{VIEWERS_ADMIN_ONLY_TEXT}</span>
           </div>
         ) : null}
         {roster.phase === "error" ? (

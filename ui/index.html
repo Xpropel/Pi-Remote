@@ -22,23 +22,11 @@
        * 新键里没有合法 theme 时取旧界面的 localStorage["pi-remote.theme"]（只有 light / dark），否则跟随系统——
        * 和 ui/src/pi/model/prefs.ts 的 piThemePrefOf 同一条规则（test/pi-p6-a.test.mjs 两边逐条比）。旧键只读，不再写。
        * 跟随系统时听 matchMedia；别的标签页改了偏好（storage 事件）跟着变。React 起来以后由 pi/hooks/usePiTheme 接手。
-       *
-       * PI-UI-REFS 架构线（Lead 裁决 Q2，2026-10-26）：同一段脚本再按 localStorage["pi_remote_pi_prefs"].ui 预写 <html data-pi-ui>
-       * 和该变体的 S0 底色，避免首帧先闪一下 cursor：
-       *   - 取值规则和 model/prefs.ts 的 migratePiPrefs 一致：cursor / claude / codex 之外（缺失 / 非法 / 存储读不了）一律回退 cursor；
-       *   - 底色取 design-spec §1.2 表 1-A / §2.2 / §7 对照表的 S0：claude #f9f9f7（深色 #0b0b0b）、codex #ececec（深色 #0d0d0d），
-       *     cursor 不写底色（现有 tokens.css 自己管）；
-       *   - React 挂载后由 PiApp 的 effect 设 window.__PI_UI_READY__ 并接管 data-pi-ui（以偏好为准）、清掉这里的临时底色，
-       *     本脚本只在接管前写；数据仍不写存储。
+       * 偏好里旧的 ui 字段（claude / codex）不读：界面只有一套，旧值不影响首帧。
        */
       (function () {
         var KEY = "pi_remote_pi_prefs";
         var LEGACY = "pi-remote.theme";
-        /* 变体 S0 底色（design-spec §1.2 表 1-A / §2.2；七、§7 对照表：Claude S0 #f9f9f7、Codex S0 #ececec） */
-        var UI_BG = {
-          claude: { light: "#f9f9f7", dark: "#0b0b0b" },
-          codex: { light: "#ececec", dark: "#0d0d0d" },
-        };
         var root = document.documentElement;
         var media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 
@@ -67,27 +55,11 @@
           return theme === "system" || theme === "light" || theme === "dark" ? theme : null;
         }
 
-        /** 偏好里的界面变体；缺失 / 非法回退 cursor（同 prefs.ts 的 piUiVariantOf） */
-        function storedUi() {
-          var prefs = storedPrefs();
-          var ui = prefs ? prefs.ui : null;
-          return ui === "cursor" || ui === "claude" || ui === "codex" ? ui : "cursor";
-        }
-
         function pref() {
           var theme = storedTheme();
           if (theme) return theme;
           var legacy = read(LEGACY);
           return legacy === "light" || legacy === "dark" ? legacy : "system";
-        }
-
-        /** 首帧变体标记 + S0 底色；React（PiApp）接管后以偏好为准，这里不再写 */
-        function applyUi(theme) {
-          if (window.__PI_UI_READY__) return;
-          var ui = storedUi();
-          root.setAttribute("data-pi-ui", ui);
-          var bg = UI_BG[ui];
-          root.style.backgroundColor = bg ? bg[theme] : "";
         }
 
         function apply() {
@@ -100,7 +72,6 @@
             var own = metas[i].getAttribute("data-pi-theme-color");
             metas[i].setAttribute("media", p === "system" ? "(prefers-color-scheme: " + own + ")" : own === theme ? "all" : "not all");
           }
-          applyUi(theme);
         }
 
         apply();

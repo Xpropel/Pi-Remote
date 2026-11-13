@@ -72,6 +72,33 @@ export function contentToRows(content: string): DiffLine[] {
   return lines.map((text, i) => ({ kind: "add" as const, n: i + 1, text }))
 }
 
+/** 行级 LCS 的格数上限：超过就不配对（整段删行 + 整段增行），免得一次大替换在每次渲染里建一张大表 */
+const EDIT_LCS_MAX = 250_000
+
+/**
+ * edit 没有 details.patch 时（失败、被停止、参数还在写）：按参数里的 oldText → newText 画出它要改的行。
+ * 不知道改在文件第几行，所以不写行号。
+ */
+export function editsToLines(edits: readonly { oldText: string; newText: string }[]): { rows: DiffLine[]; added: number; removed: number } {
+  const rows: DiffLine[] = []
+  let added = 0
+  let removed = 0
+  for (const edit of edits) {
+    const a = edit.oldText.split("\n")
+    const b = edit.newText.split("\n")
+    const lines: DiffLine[] =
+      a.length * b.length > EDIT_LCS_MAX
+        ? [...a.map((text) => ({ kind: "del" as const, text })), ...b.map((text) => ({ kind: "add" as const, text }))]
+        : patchLines(unifiedPatch("", a, b)).rows
+    for (const line of lines) {
+      rows.push(line.marks ? { kind: line.kind, text: line.text, marks: line.marks } : { kind: line.kind, text: line.text })
+      if (line.kind === "add") added++
+      else if (line.kind === "del") removed++
+    }
+  }
+  return { rows, added, removed }
+}
+
 /**
  * 多个 hunk 拼成一份行表，hunk 之间、第一个 hunk 之前、（给了 totalNew 时）最后一个 hunk 之后插入"N 行未改动"折叠条。
  * 行数全部由 hunk 头和新文件总行数算出，不另填。

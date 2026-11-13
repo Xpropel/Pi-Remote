@@ -58,7 +58,7 @@ export interface PaletteSession {
 
 /** 设置页与显示选项读的偏好（形状照 c 区 mock 的 C_PREFS；产品里来自 pi/model/prefs.ts） */
 export interface CPrefs {
-  /** 界面变体（PI-UI-REFS 架构线）：设置页「外观」里的三张界面卡片，选中即时切换 */
+  /** UI shell (PI-UI-REFS architecture line): narrowed to "cursor", the only shell left. */
   ui: PiUiVariant
   theme: "system" | "light" | "dark"
   fontSize: "small" | "standard" | "large"

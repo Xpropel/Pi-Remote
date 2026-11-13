@@ -18,6 +18,8 @@ export interface PiTerminalPaneProps {
   toolbar?: boolean
   /** 可交互（P5.4）：自带工具行的三个钮 */
   actions?: PiTerminalActions
+  /** 会话还没载入（只点选了本机记录）：本机记录不带工具调用，列表空着不等于没跑过命令 */
+  unloaded?: boolean
   className?: string
 }
 
@@ -84,18 +86,25 @@ export function PiTerminalToolbar({ items, variant, lineNumbers, actions, classN
 /**
  * 终端视图（PiTerminalPane；compose from kit: GhostIconButton；卡片是 PiTerminalCard）。
  * 本会话跑过的命令按先后排，运行中的在最下面、展开并跟随（§1.8：流内卡默认收起，这里是唯一展开输出的地方）。
- * 结束的命令保留 30 秒（失败 60 秒）后移出（states）。整套运行 / 成功 / 失败卡态推断（run-brief ⑦）。
+ * 列哪些由容器定：本会话跑过的命令（页面重开后也从对话里的命令卡重建，不按保留期移出），所以空态只给真没跑过命令的会话；
+ * 没载入的会话没有命令卡可重建，空态写"载入后才有"。
+ * 从命令卡重建的条目没有起止时刻，卡上不写耗时。整套运行 / 成功 / 失败卡态推断（run-brief ⑦）。
  */
-export function PiTerminalPane({ items, now, variant, openIds, lineNumbers, toolbar = true, actions, className }: PiTerminalPaneProps) {
+export function PiTerminalPane({ items, now, variant, openIds, lineNumbers, toolbar = true, actions, unloaded, className }: PiTerminalPaneProps) {
   const phone = variant === "phone"
   const open = new Set(openIds ?? items.filter((t) => t.state === "running").map((t) => t.id))
   const numbers = lineNumbers ?? !phone
   if (items.length === 0) {
-    // 还没运行过命令（design terminal-pane states）；结束的命令过了保留期（成功 30 秒、失败 60 秒）也会移出
     return (
-      <div data-pi-part="terminal-pane" data-empty="" className={cn("flex min-h-0 flex-1 flex-col items-center justify-center px-6", className)}>
-        <div className="text-(length:--cw-text-md) text-(--cw-text-2)">这个会话还没有运行命令</div>
-        <div className={cn("mt-1 text-(length:--cw-text-sm)", T_SECONDARY)}>结束的命令保留 30 秒（失败 60 秒）后移出</div>
+      <div
+        data-pi-part="terminal-pane"
+        data-empty={unloaded ? "unloaded" : ""}
+        className={cn("flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center", className)}
+      >
+        <div className="text-(length:--cw-text-md) text-(--cw-text-2)">{unloaded ? "会话还没载入" : "这个会话还没有运行命令"}</div>
+        <div className={cn("mt-1 text-(length:--cw-text-sm)", T_SECONDARY)}>
+          {unloaded ? "发第一条消息载入后，这里会列出本会话跑过的命令" : "pi 运行命令时，输出会在这里展开"}
+        </div>
       </div>
     )
   }

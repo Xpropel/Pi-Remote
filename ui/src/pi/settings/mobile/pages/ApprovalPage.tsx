@@ -67,7 +67,7 @@ const TOOL_LABEL: Record<string, string> = {
 }
 
 export function ApprovalPage() {
-  const { p } = useSettings()
+  const { p, act } = useSettings()
   const { relay } = p
   const ready = hostCommandsReady(relay)
   const settingsDoc = useSettingsDocument(relay)
@@ -108,12 +108,12 @@ export function ApprovalPage() {
         setSaving(false)
         const confirmed = (data as { tools?: unknown } | null)?.tools
         if (Array.isArray(confirmed)) setPicked(confirmed.filter((item): item is string => typeof item === "string"))
-        relay.notify(next.length ? `当前会话已启用 ${next.length} 个工具` : "当前会话已清空工具")
+        act.notify(next.length ? `当前会话已启用 ${next.length} 个工具` : "当前会话已清空工具")
       },
       (error: unknown) => {
         setSaving(false)
         setPicked(selected)
-        relay.notify(`工具保存失败：${error instanceof Error ? error.message : "未知错误"}`, "bad")
+        act.notify(`工具保存失败：${error instanceof Error ? error.message : "未知错误"}`, "bad")
       },
     )
   }

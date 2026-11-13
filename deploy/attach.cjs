@@ -329,6 +329,15 @@ function realDir(p, platform = HOST_PLATFORM) {
   return resolved;
 }
 
+/**
+ * 拉起 pi 用的目录写法：realDir（反斜杠、去尾分隔符）之外 Windows 盘符大写。
+ * path.win32.resolve 保留输入的小写盘符，pi 会把 d:\x 原样写进会话头、房间 cwd 和会话目录名。
+ */
+function launchDir(p, platform = HOST_PLATFORM) {
+  const resolved = realDir(p, platform);
+  return platform === "win32" ? resolved.replace(/^([a-z]):/, (m, c) => c.toUpperCase() + ":") : resolved;
+}
+
 function isDirSafe(p) {
   try {
     return fs.statSync(p).isDirectory();
@@ -3290,7 +3299,7 @@ class AttachController {
     }
     let resolved;
     try {
-      resolved = realDir(String(targetCwd), this.platform);
+      resolved = launchDir(String(targetCwd), this.platform);
     } catch {
       return { ok: false, code: "spawn_failed", error: "本机启动失败：目录无效" };
     }
@@ -6305,6 +6314,7 @@ module.exports = {
   defaultAttachFile,
   encodeCwdDir,
   normalizeDir,
+  launchDir,
   cwdAllowed,
   parseBrowseRoots,
   insideRoots,

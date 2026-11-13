@@ -1,4 +1,5 @@
 import type { ReactNode } from "react"
+import { MENU_DIVIDER_BORDER } from "@/components/kit"
 import { PiButton, PiDialog, usePiStatic } from "@/components/pi/shared"
 import { cn } from "@/lib/utils"
 import { hostDiagSectionsOf, type HostDiagViewState } from "@/pi/model/hostDiag"
@@ -50,7 +51,7 @@ function DiagBody({ variant, view }: { variant: CVariant; view: Extract<HostDiag
         {s.errors.length ? (
           <ul data-slot="pi-host-diag-errors" className="m-0 flex list-none flex-col p-0">
             {s.errors.map((e) => (
-              <li key={e.key} className={cn("flex min-w-0 flex-col gap-0.5 border-b border-solid border-(--cw-divider-soft) py-2 last:border-b-0", text)}>
+              <li key={e.key} className={cn("flex min-w-0 flex-col gap-0.5 border-b border-solid py-2 last:border-b-0", MENU_DIVIDER_BORDER, text)}>
                 <span className="min-w-0 break-words text-(--cw-text)">
                   {e.code && <code className={cn("mr-2 font-(family-name:--cw-font-mono) text-(length:--cw-text-code)", C_SECONDARY)}>{e.code}</code>}
                   {e.message}

@@ -5,19 +5,24 @@
  *   - 默认设备：连接成功后自动选中（当前无选中 / 当前选中离线；手动选择后本会话不覆盖）；
  *   - 通知：标题前缀 / favicon 角标 / 提示音 / 应用内提醒按 prefs.notifications 与 privacyMode 生效；
  *   - 快捷键：window keydown → prefs.shortcuts → 现有 act / composer / relay 动作；
- *   - 隐私：把 prefs.privacyMode 交给根节点（data-pi-privacy + html 镜像）。
+ *   - 隐私：把 prefs.privacyMode 交给根节点（data-pi-privacy + html 镜像）；
+ *   - 外观：减少动效、强调色 / 字号 / 密度 / 界面字体镜像到 <html>（pi-theme.css 消费）。
  *
  * 产品入口 PiApp 与开发画廊 #/live 共用本组件；静态画廊可关掉 notifications / shortcuts，
  * 避免截图被副作用影响。设置页打开时快捷键一律不抢（页面自己负责录制/校验）。
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import "@fontsource-variable/inter/wght.css"
+import "@fontsource-variable/geist/wght.css"
 import { PiPrivacyProvider, PiSendKeyProvider } from "@/pi/headless"
 import { modelRowsOf, thinkingSegmentsOf } from "@/pi/model/models"
 import { openSessionRow, sidebarSessionsOf } from "@/pi/model/sidebarSource"
 import {
+  appearanceAttrsOf,
   browserShortcutHintOf,
   defaultDevicePickOf,
   notificationAwayOk,
+  PI_APPEARANCE_ATTRS,
   notificationGateOf,
   shortcutBlockedByFocus,
   shortcutBlockedByOverlay,
@@ -30,6 +35,7 @@ import { piPlatformOf } from "@/pi/model/shortcuts"
 import { focusKindOf } from "@/pi/hooks/usePiShortcuts"
 import { useCompletionNotice, useWaitingNotice } from "@/pi/hooks/useCompletionNotice"
 import { usePiSettingsPrefs } from "@/pi/hooks/usePiSettingsPrefs"
+import { toggleSidebarOrDrawer } from "@/pi/hooks/useSidebarDrawer"
 import { sidebarSessionKeyOf } from "@/pi/sidebar/model.ts"
 import { PI_SIDEBAR_COPY } from "@/pi/sidebar/types.ts"
 import { useSidebarLocalState, type SidebarLocalState } from "@/pi/sidebar/useSidebarLocal"
@@ -266,7 +272,7 @@ function runShortcutAction(id: keyof SettingsPrefs["shortcuts"], ctx: ShortcutCo
       act.setPaletteOpen(true)
       return true
     case "toggleSidebar":
-      act.toggleSidebar()
+      toggleSidebarOrDrawer(act.toggleSidebar)
       return true
     case "openSettings":
       act.openSettings()
@@ -390,9 +396,9 @@ function usePageAway(): boolean {
   return away
 }
 
-function useAttentionState(relay: Relay): { waiting: number; waitingKeys: readonly string[] } {
+function useAttentionState(relay: Relay): { waiting: number; waitingKeys: readonly string[]; knownWaitingKeys: readonly string[] } {
   return useMemo(() => {
-    const items = attentionItemsOf({
+    const snapshot = {
       currentRoomId: relay.roomId,
       rooms: relay.rooms,
       dialogs: relay.dialogs,
@@ -401,10 +407,14 @@ function useAttentionState(relay: Relay): { waiting: number; waitingKeys: readon
       roomTurnEnds: relay.roomTurnEnds,
       inbox: relay.inbox,
       selectedDevice: relay.selectedDevice,
-    })
+    }
+    const waitingKeysOf = (items: ReturnType<typeof attentionItemsOf>) => items.filter((item) => item.kind === "waiting").map((item) => item.key)
+    const items = attentionItemsOf(snapshot)
     return {
       waiting: attentionWaitingCountOf(items),
-      waitingKeys: items.filter((item) => item.kind === "waiting").map((item) => item.key),
+      waitingKeys: waitingKeysOf(items),
+      // 等待提醒的基线：不区分当前会话、只看名册 / 账本，当前会话的实时弹窗晚一步到时也认得出是旧的
+      knownWaitingKeys: waitingKeysOf(attentionItemsOf({ ...snapshot, currentRoomId: "", dialogs: [], uiPrompt: null })),
     }
   }, [relay.roomId, relay.rooms, relay.dialogs, relay.uiPrompt, relay.turnEnd, relay.roomTurnEnds, relay.inbox, relay.selectedDevice])
 }
@@ -468,8 +478,15 @@ export function PiSettingsHost({
     onlyWhenAway: gate.onlyWhenAway,
   })
   useCompletionNotice(relay, { gate, enabled: notifications })
-  // 等待确认：新出现的 waiting 条目 → 应用内提醒 + 提示音（仍受开关 / 仅页面外 / 总是提醒约束）。
-  useWaitingNotice(relay, { gate, enabled: notifications, waitingKeys: attention.waitingKeys })
+  // 等你回答：新出现的 waiting 条目 → 应用内提醒 + 提示音（仍受开关 / 仅页面外 / 总是提醒约束）；
+  // 连上并拿到名册 / 账本后才建基线，打开页面时已挂着的不补发。
+  useWaitingNotice(relay, {
+    gate,
+    enabled: notifications,
+    waitingKeys: attention.waitingKeys,
+    knownKeys: attention.knownWaitingKeys,
+    ready: relay.authed,
+  })
 
   // Reduce motion (settings v2 pref -> app root): mirror the pref onto <html> so the
   // pi-theme.css kill switch keyed on [data-pi-reduced-motion="on"] stills the whole app,
@@ -484,6 +501,22 @@ export function PiSettingsHost({
       if (el.getAttribute("data-pi-reduced-motion") === "on") el.removeAttribute("data-pi-reduced-motion")
     }
   }, [prefs.reducedMotion])
+
+  // 外观（强调色 / 字号 / 密度 / 界面字体）同样镜像到 <html>：pi-theme.css 第 5 节按属性改令牌，
+  // portal 到 body 的菜单、侧栏、设置页一起变；默认档不写属性
+  const { accent, fontSize, density, uiFont } = prefs
+  useLayoutEffect(() => {
+    const el = document.documentElement
+    const attrs = appearanceAttrsOf({ accent, fontSize, density, uiFont })
+    for (const name of PI_APPEARANCE_ATTRS) {
+      const value = attrs[name]
+      if (value) el.setAttribute(name, value)
+      else el.removeAttribute(name)
+    }
+    return () => {
+      for (const name of PI_APPEARANCE_ATTRS) el.removeAttribute(name)
+    }
+  }, [accent, fontSize, density, uiFont])
 
   return (
     <PiPrivacyProvider value={gate.privacy}>

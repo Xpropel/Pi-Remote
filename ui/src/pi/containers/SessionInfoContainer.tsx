@@ -4,9 +4,11 @@ import { Ellipsis, PanelRight } from "@/components/kit/icons"
 import { PiSessionInfoCard } from "@/components/pi/shell"
 import { PiButton, PiIconButton, PiMenu, PiSheet, PiTopBar, usePiStatic } from "@/components/pi/shared"
 import { gitBranchOf, gitBranchText, sessionModelLine, type PiGitBranch } from "@/pi/model/sessionInfo"
+import { PI_SHORTCUT_KEYS, piPlatformOf } from "@/pi/model/shortcuts"
 import { otherAttentionCount, sidebarDataOf } from "@/pi/model/sidebarSource"
 import { useNow } from "@/pi/hooks/useNow"
 import { attentionRoomTitle } from "@/relay/attention"
+import { roomActivityAt } from "@/relay/devices"
 import { roomStatusLine } from "@/relay/roomStatus"
 import { A_SESSION_MENU, SessionRowMenu } from "./SessionMenuContainer"
 import { openPiDialog, PI_UI_IDS, type PiContainerProps } from "./types"
@@ -43,8 +45,8 @@ function useGitBranch(p: PiContainerProps, enabled: boolean): PiGitBranch | null
   return ask && got?.room === room ? got.branch : null
 }
 
-/** 当前会话的标题、设备、注意力（顶栏和会话信息共用） */
-function useSessionHead(p: PiContainerProps) {
+/** 当前会话的标题、设备、注意力（顶栏、会话信息、手机会话页顶栏共用） */
+export function useSessionHead(p: PiContainerProps) {
   const { devices, rooms, sessionsByDevice, roomId, dialogs, uiPrompt, turnEnd, roomTurnEnds, selectedDevice } = p.relay
   const data = useMemo(
     () => sidebarDataOf({ devices, rooms, sessionsByDevice, roomId, dialogs, uiPrompt, turnEnd, roomTurnEnds, selectedDevice }),
@@ -74,7 +76,7 @@ function InfoCard({ p, head, branch, variant }: { p: PiContainerProps; head: Ret
           waitingPrompt: room.waitingPrompt ?? null,
           lastTurnEnd: null,
           lastEvent: room.lastEvent ?? null,
-          lastActivity: room.lastActivity,
+          lastActivity: roomActivityAt(room),
         },
         now,
       ).text
@@ -133,6 +135,7 @@ export function SessionInfoContainer(props: PiContainerProps) {
   }
   if (!relay.roomId) return <PiTopBar variant="desktop" showActions={false} />
   const paneOpen = ui.pane != null
+  const paneKeys = PI_SHORTCUT_KEYS["toggle-pane"][piPlatformOf(typeof navigator === "undefined" ? null : navigator)]
   return (
     <PiTopBar
       variant="desktop"
@@ -146,11 +149,13 @@ export function SessionInfoContainer(props: PiContainerProps) {
       actions={
         <>
           {/* 顶栏 …（B04）：当前会话的会话菜单 + "复制工作目录"；静态态只有这颗钮（同默认的"更多"） */}
-          <PiMenu kind="dropdown" side="bottom" align="end" trigger={<GhostIconButton label="更多" icon={<Ellipsis />} />}>
+          <PiMenu kind="dropdown" side="bottom" align="end" trigger={<GhostIconButton label="会话菜单" title="会话菜单" aria-haspopup="menu" icon={<Ellipsis />} />}>
             {head.row ? <SessionRowMenu {...props} rowId={relay.roomId} copyCwd /> : null}
           </PiMenu>
           <GhostIconButton
-            label="打开 / 关闭右侧面板 ⌘."
+            data-pi-pane-toggle=""
+            label="右侧面板"
+            title={`右侧面板 ${paneKeys}`}
             icon={<PanelRight />}
             forced={paneOpen ? "pressed" : undefined}
             onClick={act.togglePane}

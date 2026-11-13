@@ -69,7 +69,8 @@ export function PiLoginCard({ variant, relayHost, state = "empty", value = "", o
         value={live ? value : state === "empty" || state === "error" ? "" : "pi-viewer-token-example"}
         scale={scale}
         className="mt-6"
-        {...(live ? { onValueChange, autoFocus: true, describedBy: error ? errorId : undefined, invalid: !!error } : {})}
+        invalid={!!error}
+        {...(live ? { onValueChange, autoFocus: true, describedBy: error ? errorId : undefined } : {})}
       />
       {error && (
         <p id={errorId} role="alert" className="mt-2 mb-0 text-(length:--cw-text-md) leading-[18px] text-(--cw-pi-error)">

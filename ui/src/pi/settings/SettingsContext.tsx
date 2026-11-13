@@ -1,7 +1,7 @@
 /**
  * 设置页 v2 · 上下文与本机偏好 store。
  *
- * Provider 只负责把宿主输入（p / style / theme / page / setPage / prefs / act）发给页面；
+ * Provider 只负责把宿主输入（p / theme / page / setPage / prefs / act）发给页面；
  * 页面无需自己接 relay、浮层或 localStorage，只调用 useSettings()。
  *
  * 持久化：useSettingsLocalState() 每次 setPref/mergePrefs/resetPrefs 后同步写
@@ -38,10 +38,10 @@ export interface SettingsProviderProps extends SettingsContextValue {
 
 const SettingsContext = createContext<SettingsContextValue | null>(null)
 
-export function SettingsProvider({ p, style, theme, page, setPage, prefs, act, children }: SettingsProviderProps) {
+export function SettingsProvider({ p, theme, page, setPage, prefs, act, children }: SettingsProviderProps) {
   const value = useMemo<SettingsContextValue>(
-    () => ({ p, style, theme, page, setPage, prefs, act }),
-    [p, style, theme, page, setPage, prefs, act],
+    () => ({ p, theme, page, setPage, prefs, act }),
+    [p, theme, page, setPage, prefs, act],
   )
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>
 }

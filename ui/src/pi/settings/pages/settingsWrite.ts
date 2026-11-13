@@ -47,6 +47,8 @@ export const SETTINGS_WRITE_OFFLINE_TEXT = "需设备在线"
 
 export const SETTINGS_WRITE_READ_FAILED_TEXT = "设置读取失败，暂时只读"
 
+export const SETTINGS_WRITE_READING_TEXT = "正在读取设备设置…"
+
 /** UI 可写的 14 个键（与扩展白名单一一对应，供测试静态核对）。 */
 export const SETTINGS_WRITE_KEYS = [
   "steeringMode",
@@ -653,7 +655,7 @@ export function settingsReadOnlyHintOf(input: SettingsReadOnlyHintInput): string
     if (input.failure?.kind === "offline") return SETTINGS_WRITE_OFFLINE_TEXT
     return SETTINGS_WRITE_READ_FAILED_TEXT
   }
-  if (input.phase === "loading") return "正在读取设备设置…"
+  if (input.phase === "loading") return SETTINGS_WRITE_READING_TEXT
   if (!input.ready || input.phase === "idle") return SETTINGS_WRITE_OFFLINE_TEXT
   return null
 }

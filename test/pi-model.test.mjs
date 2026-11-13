@@ -573,13 +573,22 @@ test("migratePiPrefs：空存储给默认值（默认投递插入当前回合、
 
 test("migratePiPrefs：新键逐字段校验（含 grouping），不合法回落默认、多余字段丢掉", () => {
   const p = migratePiPrefs(JSON.stringify({ v: 1, theme: "dark", density: "compact", grouping: "flat", deviceFilter: "d-mbp", delivery: "follow_up", completionSound: true, junk: 1 }))
-  assert.deepEqual(p, { v: 1, ui: "cursor", uiPlatformTab: "all", deviceByPlatform: {}, theme: "dark", density: "compact", grouping: "flat", deviceFilter: "d-mbp", delivery: "follow_up", completionSound: true, dialogRemoteAnswer: false, askUserEnabled: true, approvalGateEnabled: false, approvalGateTier: "high-risk", sidebarWidth: 272, sidebarCollapsed: false, mobileNav: "list", sidebarPersistentSearch: false })
+  assert.deepEqual(p, { v: 1, theme: "dark", density: "compact", grouping: "flat", deviceFilter: "d-mbp", delivery: "follow_up", completionSound: true, dialogRemoteAnswer: false, askUserEnabled: true, approvalGateEnabled: false, approvalGateTier: "high-risk", sidebarWidth: 272, sidebarCollapsed: false, mobileNav: "list", sidebarPersistentSearch: false })
   const bad = migratePiPrefs({ theme: "claude", grouping: "tree", deviceFilter: "", completionSound: "yes", askUserEnabled: "yes", approvalGateTier: "bogus" })
   assert.deepEqual([bad.theme, bad.grouping, bad.deviceFilter, bad.completionSound], ["system", "device", null, false])
   // askUserEnabled falls back to the new default ON (fix wave 2026-10-30);
   // the approval gate still defaults OFF.
   assert.deepEqual([bad.askUserEnabled, bad.approvalGateEnabled, bad.approvalGateTier], [true, false, "high-risk"], "G1/G2 字段同口径校验：坏值回落默认")
   assert.deepEqual(migratePiPrefs("{broken"), DEFAULT_PI_PREFS)
+})
+
+test("migratePiPrefs：旧版存过的界面皮肤 / 平台标签静默丢掉，其余偏好原样保留（版本号不变）", () => {
+  for (const ui of ["claude", "codex", "cursor"]) {
+    const old = { v: 1, ui, uiPlatformTab: "android", deviceByPlatform: { android: "d-pixel" }, theme: "light", grouping: "flat", completionSound: true, mobileNav: "drawer" }
+    const p = migratePiPrefs(JSON.stringify(old))
+    assert.deepEqual(p, { ...DEFAULT_PI_PREFS, theme: "light", grouping: "flat", completionSound: true, mobileNav: "drawer" }, `ui=${ui}`)
+    for (const gone of ["ui", "uiPlatformTab", "deviceByPlatform"]) assert.equal(gone in p, false, `${gone} 不再出现在偏好里`)
+  }
 })
 
 test("migratePiPrefs：从旧 pi_remote_style 只搬两个开关；新键存在时不看旧键", () => {

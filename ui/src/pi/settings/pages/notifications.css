@@ -1,45 +1,52 @@
 /**
  * 设置 › 通知 · 页面级样式（只消费 tokens.css 的 --st-*）。
  * 提醒条件用整行单选（设计稿 .ropt），其余开关行走共享组件。
+ * 单选是 <button>：规则挂在 .settings-root 下，才压得过壳的按钮复位（padding: 0）。
  */
 
-.settings-notify-radio {
-  display: flex;
-  align-items: flex-start;
-  gap: 11px;
-  width: 100%;
-  padding: 11px 0;
-  text-align: left;
-  user-select: none;
+.settings-notify-radios {
+  padding-block: 6px;
 }
 
-.settings-notify-radio + .settings-notify-radio {
-  border-top: 1px solid var(--st-border);
+.settings-root .settings-notify-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 0;
+  text-align: left;
+  user-select: none;
 }
 
 .settings-notify-ring {
   display: grid;
   place-items: center;
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
   flex: none;
   margin-top: 1px;
-  border: 1.5px solid color-mix(in srgb, var(--st-text-1) 28%, transparent);
+  border: 1.5px solid var(--st-radio-ring);
   border-radius: 50%;
   background: var(--st-field-bg);
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
 .settings-notify-ring::after {
-  width: 8.5px;
-  height: 8.5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--st-text-1);
+  background: var(--st-switch-knob-on);
   content: "";
   opacity: 0;
 }
 
-.settings-notify-radio.is-on .settings-notify-ring {
-  border-color: var(--st-text-1);
+.settings-root .settings-notify-radio:hover .settings-notify-ring {
+  border-color: var(--st-field-focus-ring);
+}
+
+.settings-root .settings-notify-radio.is-on .settings-notify-ring {
+  border-color: var(--st-switch-on);
+  background: var(--st-switch-on);
 }
 
 .settings-notify-radio.is-on .settings-notify-ring::after {
@@ -53,12 +60,12 @@
 
 .settings-notify-title {
   display: block;
-  color: var(--st-text-3);
-  font-size: 13.5px;
+  color: var(--st-text-2);
+  font-size: 13px;
   /* Same weight as every other settings radio label (400): selection is
      shown by the ring and the brighter color, never by bolding. */
   font-weight: 400;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .settings-notify-radio.is-on .settings-notify-title {
@@ -68,7 +75,7 @@
 .settings-notify-desc {
   display: block;
   margin-top: 2px;
-  color: var(--st-text-3);
+  color: var(--st-text-4);
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.5;
 }

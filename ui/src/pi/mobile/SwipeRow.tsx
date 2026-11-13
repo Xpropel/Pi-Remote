@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
 import { PI_SIDEBAR_COPY, type PiSidebarSession } from "../sidebar/types.ts"
-import { IconArchive, IconDot, IconPin } from "./icons"
+import { IconArchive, IconDot, IconPin, IconUnarchive } from "./icons"
 
 const SWIPE_WIDTH = 148
 const OPEN = -SWIPE_WIDTH
@@ -30,6 +30,8 @@ export function SwipeRow({
   const clickSuppress = useRef(false)
   const open = offset <= OPEN / 2
   const tone = session.status.tone
+  const pinLabel = session.pinned ? "取消置顶" : "置顶"
+  const archiveLabel = session.archived ? "取消归档" : "归档"
 
   useEffect(() => () => {
     if (longPress.current != null) window.clearTimeout(longPress.current)
@@ -68,7 +70,7 @@ export function SwipeRow({
         <button
           type="button"
           className="pm-swipe-btn pm-swipe-pin"
-          aria-label={`置顶：${session.title}`}
+          aria-label={`${pinLabel}：${session.title}`}
           title={PI_SIDEBAR_COPY.pinTitle}
           tabIndex={open ? 0 : -1}
           onClick={() => {
@@ -77,12 +79,12 @@ export function SwipeRow({
           }}
         >
           <IconPin size={19} />
-          <span>置顶</span>
+          <span>{pinLabel}</span>
         </button>
         <button
           type="button"
           className="pm-swipe-btn pm-swipe-archive"
-          aria-label={`归档：${session.title}`}
+          aria-label={`${archiveLabel}：${session.title}`}
           title={PI_SIDEBAR_COPY.archiveTitle}
           tabIndex={open ? 0 : -1}
           onClick={() => {
@@ -90,12 +92,13 @@ export function SwipeRow({
             onArchive(session.key)
           }}
         >
-          <IconArchive size={19} />
-          <span>归档</span>
+          {session.archived ? <IconUnarchive size={19} /> : <IconArchive size={19} />}
+          <span>{archiveLabel}</span>
         </button>
       </div>
       <div
         className="pm-swipe-row"
+        data-pi-row-key={session.id}
         data-dragging={dragging ? "" : undefined}
         style={{ transform: `translateX(${offset}px)` }}
         onPointerDown={(event) => {

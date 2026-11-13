@@ -1,1 +1,0 @@
-export { CodexPill } from "./primitives"

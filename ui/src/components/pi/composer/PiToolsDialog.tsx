@@ -1,9 +1,9 @@
-import { Checkbox } from "@/components/kit"
+import { Checkbox, MENU_ROW_HL_HOVER } from "@/components/kit"
 import { PiButton, PiDialog, usePiStatic } from "@/components/pi/shared"
 import { cn } from "@/lib/utils"
 import { PiDialogError, PiDialogNote, PiDialogStatus, type PiDialogPhase } from "./PiDialogParts"
 import type { PiFamilyDialogProps } from "./PiRegenerateDialog"
-import { C_SECONDARY, TOUCH_44 } from "./styles"
+import { C_SECONDARY, ROW_FOCUS_WITHIN, TOUCH_44 } from "./styles"
 
 export interface PiToolsDialogProps extends PiFamilyDialogProps {
   /** 全表 + 已启用（dialogsData.toolRowsOf） */
@@ -75,7 +75,7 @@ export function PiToolsDialog({
               return (
                 <label
                   key={row.name}
-                  className={cn("flex min-w-0 items-start gap-3 rounded-[7px] px-2 hover:bg-(--cw-row-hover)", phone ? "min-h-12 py-2.5" : "min-h-8 py-1.5")}
+                  className={cn("flex min-w-0 items-start gap-3 rounded-[var(--cw-menu-item-radius,6px)] px-2", MENU_ROW_HL_HOVER, ROW_FOCUS_WITHIN, phone ? "min-h-12 py-2.5" : "min-h-8 py-1.5")}
                 >
                   <Checkbox
                     variant="menu"

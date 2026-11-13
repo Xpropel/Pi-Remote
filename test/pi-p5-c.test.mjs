@@ -322,10 +322,10 @@ describe("dialogsData：弹窗家族（G03–G18）", () => {
 /* ---------------- 新建会话、设置、显示选项、命令面板 ---------------- */
 
 describe("新建会话：预选设备和目录（M-04）、最近目录、启动说明", () => {
-  test("new-session fixture：预选 MacBook Pro + pi-remote；最近 = pi-remote、notes-app（只留允许的目录）", async () => {
+  test("new-session fixture：预选 MacBook Pro + dotfiles（最近的 pi-remote、notes-app 都有会话在运行，取白名单里空闲的）；最近 = pi-remote、notes-app（只留允许的目录）", async () => {
     const { relay } = await load("new-session")
     const pick = newSessionDefaultsOf({ devices: relay.devices, rooms: relay.rooms, sessionsByDevice: relay.sessionsByDevice, selectedDeviceId: relay.selectedDeviceId })
-    assert.deepEqual(pick, { deviceId: "d-mbp", folder: "/Users/dev/code/pi-remote" })
+    assert.deepEqual(pick, { deviceId: "d-mbp", folder: "/Users/dev/code/dotfiles" })
     const mbp = relay.devices.find((d) => d.id === "d-mbp")
     assert.deepEqual(recentFoldersOf(relay.sessionsByDevice["d-mbp"], mbp.projects), ["/Users/dev/code/pi-remote", "/Users/dev/code/notes-app"])
     assert.deepEqual(sessionCountsOf(relay.sessionsByDevice, relay.devices), { "d-mbp": 13, "d-studio": 3, "d-win": 1 })
@@ -432,7 +432,7 @@ describe("命令面板：命令组、会话组（当前会话排第一 + 最近�
 /* ---------------- 源码契约 ---------------- */
 
 describe("c 线容器的源码契约", () => {
-  const C_CONTAINERS = ["ComposerContainer", "NewSessionContainer", "CommandPaletteContainer", "DialogsContainer", "SettingsContainer", "DisplayOptionsContainer"]
+  const C_CONTAINERS = ["ComposerContainer", "NewSessionContainer", "CommandPaletteContainer", "DialogsContainer", "DisplayOptionsContainer"]
   test("c 线容器不再引用 PiStub；产品源码里没有 pi/dev/、MOCK_ 字样", () => {
     for (const name of C_CONTAINERS) {
       const src = read(`ui/src/pi/containers/${name}.tsx`)
@@ -460,7 +460,6 @@ describe("c 线容器的源码契约", () => {
   })
   test("提示音 / 网页回答确认框的开关同时写旧键（useCompletionSound、dialog_answer_switch 现读旧键）", () => {
     assert.match(code(read("ui/src/pi/containers/cShared.ts")), /saveLegacyStyle\(w\.patch\)/)
-    assert.match(code(read("ui/src/pi/containers/SettingsContainer.tsx")), /playTestSound\("done"\)/)
   })
 })
 
@@ -603,9 +602,13 @@ describe("主机诊断（审查 P5-R1-1；design B07「设置 › 设备 › 某
 
 
   test("接线：设置页设备行开 PI_UI_IDS.hostDiag（arg = 设备 id）；容器按设备发 get_host_diag（runDeviceCommand，不改状态层）；桌面 overlay、手机设置页 sheet 槽都挂了", () => {
-    const settings = code(read("ui/src/pi/containers/SettingsContainer.tsx"))
-    assert.match(settings, /action\.startsWith\("device:"\)\) openPiDialog\(props, \{ id: PI_UI_IDS\.hostDiag, arg: action\.slice\("device:"\.length\) \}\)/)
-    assert.match(settings, /<HostDiagContainer \{\.\.\.props\} \/>/)
+    for (const file of ["ui/src/pi/settings/SettingsPage.tsx", "ui/src/pi/settings/mobile/MobileSettingsPage.tsx"]) {
+      assert.match(code(read(file)), /openHostDiag: \(deviceId\) => openPiDialog\(p, \{ id: PI_UI_IDS\.hostDiag, arg: deviceId \}\)/, file)
+    }
+    for (const file of ["ui/src/pi/settings/pages/DevicesPage.tsx", "ui/src/pi/settings/mobile/pages/DevicesPage.tsx"]) {
+      assert.match(code(read(file)), /act\.openHostDiag\(device\.id\)/, file)
+    }
+    assert.match(code(read("ui/src/pi/containers/SettingsRoute.tsx")), /<HostDiagContainer \{\.\.\.p\} \/>/)
     const container = code(read("ui/src/pi/containers/HostDiagContainer.tsx"))
     assert.match(container, /run\(deviceId, "get_host_diag"\)/)
     assert.match(container, /useHostDiag\(relay\.runDeviceCommand, unavailable \? null : deviceId\)/, "离线 / 没连上时不发命令")

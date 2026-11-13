@@ -2,12 +2,9 @@
  * 新界面的本机偏好与迁移（plan §7.3 settings / quick-settings、design §1.13、§3.5；取代 style/prefs.ts）。纯函数，node --test 直接加载。
  * 读写 localStorage 由 P5 的 hook 做；这里只负责"存的东西 → 合法的偏好"。
  * 偏好是用户设置，不是数据：缺的字段用默认值，这和 §1.9 的"缺数据不填"不冲突。
- * P1 架构线（PI-UI-REFS）：新增 `ui` 变体偏好（cursor / claude / codex，默认 cursor）。字段校验 / 回退规则在
- * pi/variants/types.ts（piUiVariantOf），这里只接线；版本号不升 —— 旧存储里没有 ui 就是默认 cursor，迁移兼容。
+ * 界面只剩 Cursor 风格一套：旧版本存过的 `ui`（cursor / claude / codex）和旧皮肤的平台标签 `uiPlatformTab` / `deviceByPlatform`
+ * 在迁移时按"多余字段"直接丢掉，不报错；版本号不升（升了会把所有人的偏好重置成默认值）。
  */
-import { piUiWorkspacePrefsOf, type PiUiPlatform, type PiUiPlatformTab } from "../extensions/platform-prefs.ts"
-import type { PiUiVariant } from "../variants/types.ts"
-import { DEFAULT_PI_UI_VARIANT, piUiVariantOf } from "../variants/types.ts"
 import type { PiGrouping } from "./sidebarGroups.ts"
 import type { PiDensity } from "./toolWeight.ts"
 import { PI_MOBILE_NAV_DEFAULT, PI_MOBILE_NAV_MODES, type PiMobileNavMode } from "../mobile/types.ts"
@@ -28,12 +25,6 @@ export const PI_APPROVAL_GATE_TIERS: readonly PiApprovalGateTier[] = ["high-risk
 
 export type PiPrefs = {
   v: typeof PI_PREFS_VERSION
-  /** 界面变体（PI-UI-REFS 架构线）：默认"cursor"（现有 Cursor 风格界面）；claude / codex 由 P2 两条线实现 */
-  ui: PiUiVariant
-  /** P4.1（Q1）：设备平台标签（Claude 三标签 → 平台）：默认 "all"；只 claude / codex 两变体消费，cursor 不变 */
-  uiPlatformTab: PiUiPlatformTab
-  /** P4.1（Q1）：每个平台上次选中的设备 id（Q2 平台内细选用）；默认 {} */
-  deviceByPlatform: Partial<Record<PiUiPlatform, string>>
   /** 主题：默认跟随系统（§1.11） */
   theme: PiThemePref
   /** 工具显示密度：默认平衡（§1.5） */
@@ -70,9 +61,6 @@ export type PiPrefs = {
 
 export const DEFAULT_PI_PREFS: PiPrefs = {
   v: PI_PREFS_VERSION,
-  ui: DEFAULT_PI_UI_VARIANT,
-  uiPlatformTab: "all",
-  deviceByPlatform: {},
   theme: "system",
   density: "balanced",
   grouping: "device",
@@ -140,12 +128,8 @@ export function migratePiPrefs(stored: unknown, legacy?: unknown, legacyTheme?: 
   const cur = obj(stored)
   if (cur) {
     const filter = cur.deviceFilter
-    const platform = piUiWorkspacePrefsOf(cur)
     return {
       v: PI_PREFS_VERSION,
-      ui: piUiVariantOf(cur.ui),
-      uiPlatformTab: platform.uiPlatformTab,
-      deviceByPlatform: platform.deviceByPlatform,
       theme: piThemePrefOf(cur, legacyTheme),
       density: pick(cur.density, ["compact", "balanced", "detailed"], DEFAULT_PI_PREFS.density),
       grouping: pick(cur.grouping, ["device", "flat"], DEFAULT_PI_PREFS.grouping),
@@ -165,8 +149,6 @@ export function migratePiPrefs(stored: unknown, legacy?: unknown, legacyTheme?: 
   const old = obj(legacy)
   return {
     ...DEFAULT_PI_PREFS,
-    uiPlatformTab: DEFAULT_PI_PREFS.uiPlatformTab,
-    deviceByPlatform: { ...DEFAULT_PI_PREFS.deviceByPlatform },
     theme: piThemePrefOf(null, legacyTheme),
     completionSound: bool(old?.completionSound, DEFAULT_PI_PREFS.completionSound),
     dialogRemoteAnswer: bool(old?.dialogRemoteAnswer, DEFAULT_PI_PREFS.dialogRemoteAnswer),

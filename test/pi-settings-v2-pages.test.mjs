@@ -130,6 +130,18 @@ test("模型页：供应商卡（登录状态 / 接口地址 / 模型可用 / �
   const noAvailability = modelData.providerRowsOf(null, { models: [{ provider: "stepfun", id: "step-5-preview" }] })
   assert.equal(noAvailability[0].models[0].enabled, true)
   assert.equal(noAvailability[0].state, "unknown")
+
+  // pi 内置目录有几十个未配置密钥的供应商：默认收起，已连接 / 状态未知的照常列出
+  const catalog = ["own", "a", "b", "c", "d", "mystery"].map((id) => ({
+    id,
+    state: id === "own" ? "connected" : id === "mystery" ? "unknown" : "disconnected",
+  }))
+  const unconfigured = (provider) => provider.state === "disconnected"
+  const fold = modelData.providerFoldOf(catalog, unconfigured)
+  assert.deepEqual(fold.primary.map((provider) => provider.id), ["own", "mystery"])
+  assert.deepEqual(fold.folded.map((provider) => provider.id), ["a", "b", "c", "d"])
+  assert.equal(modelData.providerFoldOf(catalog.slice(0, 4), unconfigured).folded.length, 0, "未配置的不多时不折叠")
+  assert.equal(modelData.providerFoldOf(catalog.slice(1, 5), unconfigured).primary.length, 4, "一个已配置的都没有时原样列出")
 })
 
 test("模型页：数值与压缩开关（千分位 / 缺字段回 null）", () => {

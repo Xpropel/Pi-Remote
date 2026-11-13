@@ -1,16 +1,34 @@
 import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from "react"
-import { MenuItem, MenuItemContent, menuItemClass, MenuLabel, MenuSearch, MenuSeparator, MenuSurface, menuShadowClass, menuSurfaceClass } from "@/components/kit"
+import {
+  MENU_DIVIDER_BG,
+  MENU_DIVIDER_BORDER,
+  MENU_ROW_HL,
+  MENU_ROW_HL_HOVER,
+  MenuItem,
+  MenuItemContent,
+  menuItemClass,
+  MenuLabel,
+  MenuSearch,
+  MenuSeparator,
+  MenuSurface,
+  menuShadowClass,
+  menuSurfaceClass,
+} from "@/components/kit"
 import { ModelExplainerCard } from "@/components/kit/menu/ModelExplainerCard"
 import { Switch } from "@/components/kit/controls/Switch"
-import { Check } from "@/components/kit/icons"
+import { Check, ChevronLeft } from "@/components/kit/icons"
 import { usePiMenuSurface, usePiStatic } from "@/components/pi/shared/layers"
+import { PiSpinner } from "@/components/pi/shared/PiSpinner"
 import { cn } from "@/lib/utils"
 import { paletteMatches } from "@/pi/model/composerInput"
 import { explainerSideOf, type ExplainerSide } from "./explainerPlacement"
+import { modelAutoOn } from "./modelAuto"
 import { contextWindowLabel, modelExplainerOf, modelFactsLineOf, modelMenuEntriesOf, modelThinkingOptionsOf, type PiModelMenuEntry, type PiModelRow } from "@/pi/model/models"
 import { usePiMenuClose } from "./menuClose"
+import { PiSheetSearch } from "./PiSheetSearch"
 import type { CModel } from "./types"
 import {
+  C_ERROR,
   C_EXPLAINER_ORANGE,
   C_SECONDARY,
   C_WARNING,
@@ -20,6 +38,8 @@ import {
   SEGMENT_ON,
   SEGMENT_TRACK,
   segmentTrackH,
+  TOUCH_44,
+  TOUCH_44_BOX,
   type CVariant,
 } from "./styles"
 import { useListNav } from "./useListNav"
@@ -97,6 +117,15 @@ export interface PiModelMenuProps extends Omit<ComponentProps<"div">, "children"
   onAutoChange?: (next: boolean) => void
   /** Empty-state action: jump to the settings page model section (redesign section 7) */
   onConfigureModels?: () => void
+  /**
+   * 模型列表还在读 / 读失败（菜单每次打开都重新问设备）：列表空着时显示读取行，不冒充「还没有配置任何模型」。
+   * 不传 = 已就绪
+   */
+  listPhase?: "loading" | "error"
+  /** listPhase = error 时的原因 */
+  listError?: string
+  /** listPhase = error 时的"重试" */
+  onRetry?: () => void
 }
 
 /** Model row id (aria-activedescendant points at it) */
@@ -133,6 +162,13 @@ const MENU_MAX_H = "max-h-(--radix-dropdown-menu-content-available-height)"
 const LIST_SCROLL = "relative min-h-0 max-h-[360px] overflow-y-auto overscroll-contain [scrollbar-width:thin]"
 /** Fixed tail column of a model row (redesign section 3): holds either the current-row check or the Edit affordance */
 const TAIL = "flex w-9 shrink-0 items-center justify-end"
+/** 参数面板的单选行：和菜单行同高、同圆角、同一种悬停底 */
+const PARAM_ROW = cn(
+  "flex min-h-7 w-full items-center rounded-[var(--cw-menu-item-radius,6px)] px-2 text-left text-(length:--cw-text-md) text-(--cw-text)",
+  MENU_ROW_HL_HOVER,
+)
+/** 手机参数页的单选行（44 高、行间细线，和模型列表同一种分隔线） */
+const SHEET_OPTION_ROW = cn("flex min-h-[44px] items-center gap-3 border-b border-solid px-1 py-2 text-left last:border-b-0", MENU_DIVIDER_BORDER)
 
 /**
  * The card's top (relative to the menu card's padding box): the anchored row's center line,
@@ -235,10 +271,10 @@ function ModelTail({ current, showEdit, onEdit, interactive }: { current?: boole
               onEdit?.()
             }}
           >
-            Edit
+            编辑
           </button>
         ) : (
-          <span className="px-1 py-0.5 text-(length:--cw-text-sm) text-(--cw-text-2)">Edit</span>
+          <span className="px-1 py-0.5 text-(length:--cw-text-sm) text-(--cw-text-2)">编辑</span>
         )
       ) : current ? (
         <Check aria-hidden strokeWidth={1.5} className="size-(--cw-icon-size-sm) text-(--cw-icon-fg)" />
@@ -250,12 +286,40 @@ function ModelTail({ current, showEdit, onEdit, interactive }: { current?: boole
 /** Auto row (redesign section 4): label, default-model sublabel, switch */
 function ModelAutoRow({ defaultName, autoOn, onToggle, interactive }: { defaultName: string; autoOn: boolean; onToggle: (next: boolean) => void; interactive: boolean }) {
   return (
-    <div className="flex min-h-7 items-center gap-2 px-2" role="presentation">
-      <span className="text-(length:--cw-text-md) text-(--cw-text)">Auto</span>
-      <span className={cn("truncate text-(length:--cw-text-xs)", C_SECONDARY)}>设备默认 · {defaultName}</span>
-      <span className="ml-auto flex shrink-0 items-center">
+    <div data-slot="pi-model-auto" data-on={autoOn ? "" : undefined} className="flex min-h-8 items-center gap-2 px-2" role="presentation">
+      <span className="shrink-0 text-(length:--cw-text-md) text-(--cw-text)">Auto</span>
+      <span className={cn("min-w-0 truncate text-(length:--cw-text-sm)", C_SECONDARY)}>设备默认 · {defaultName}</span>
+      <span className="ml-auto flex shrink-0 items-center pl-1">
         <Switch size="sm" checked={autoOn} onCheckedChange={interactive ? onToggle : undefined} disabled={!interactive} aria-label="Auto：使用设备默认模型" />
       </span>
+    </div>
+  )
+}
+
+/** 列表组名：Auto 开着时列表置灰（CHANGELOG「列表置灰」），组名顺带说明怎么回到手选 */
+function modelListLabel(autoOn: boolean): string {
+  return autoOn ? "模型 · 关掉 Auto 才能手选" : "模型"
+}
+
+/** 列表还没到（转圈 + 灰字）/ 读失败（红字 + 重试）：占空态的位置 */
+function ModelListStatus({ phase, error, onRetry, phone }: { phase: "loading" | "error"; error?: string; onRetry?: () => void; phone: boolean }) {
+  const box = cn("flex items-center", phone ? "min-h-[52px] px-1 text-[13px] leading-[18px]" : "min-h-7 px-2 text-(length:--cw-text-sm)")
+  if (phase === "loading") {
+    return (
+      <div data-slot="pi-model-status" data-phase="loading" className={cn(box, "gap-2", C_SECONDARY)}>
+        <PiSpinner className="size-3.5" label="正在读取模型" />
+        正在读取模型…
+      </div>
+    )
+  }
+  return (
+    <div data-slot="pi-model-status" data-phase="error" role="alert" className={cn(box, "flex-wrap gap-x-2", C_ERROR)}>
+      <span className="min-w-0">读取模型失败{error ? ` · ${error}` : ""}</span>
+      {onRetry && (
+        <button type="button" onClick={onRetry} className={cn("shrink-0 font-(--cw-weight-medium) underline", phone && TOUCH_44)}>
+          重试
+        </button>
+      )}
     </div>
   )
 }
@@ -294,7 +358,7 @@ function ModelParamsPanel({
   onThinking: (value: string) => void
 }) {
   return (
-    <div data-slot="pi-model-params" role="group" aria-label={`${entry.representative.name} 的参数`} className={cn(menuSurfaceClass, menuShadowClass("popover"), "w-[212px] p-1.5 text-left")}>
+    <div data-slot="pi-model-params" role="group" aria-label={`${entry.representative.name} 的参数`} className={cn(menuSurfaceClass, menuShadowClass("popover"), "w-[212px] text-left")}>
       {entry.hasContextVariants && (
         <>
           <MenuLabel className={C_SECONDARY}>上下文</MenuLabel>
@@ -304,7 +368,7 @@ function ModelParamsPanel({
               type="button"
               role="menuitemradio"
               aria-checked={!!variant.current}
-              className="flex min-h-7 w-full items-center rounded-[6px] px-2 text-(length:--cw-text-md) text-(--cw-text) hover:bg-(--cw-row-hover)"
+              className={PARAM_ROW}
               onClick={() => onContext(variant)}
             >
               {contextWindowLabel(variant.contextWindow ?? 0)}
@@ -323,7 +387,7 @@ function ModelParamsPanel({
               type="button"
               role="menuitemradio"
               aria-checked={isCurrent && option.value === thinking}
-              className="flex min-h-7 w-full items-center rounded-[6px] px-2 text-(length:--cw-text-md) text-(--cw-text) hover:bg-(--cw-row-hover)"
+              className={PARAM_ROW}
               onClick={() => onThinking(option.value)}
             >
               {option.label}
@@ -373,12 +437,15 @@ export function PiModelMenu({
   auto,
   onAutoChange,
   onConfigureModels,
+  listPhase,
+  listError,
+  onRetry,
   className,
   ...rest
 }: PiModelMenuProps) {
   const isStatic = usePiStatic(staticProp)
   const rows = models as PiModelMenuRow[]
-  const common = { variant, models: rows, thinkingLevels, thinking, defaultModel, auto, onAutoChange, onConfigureModels, className, div: rest }
+  const common = { variant, models: rows, thinkingLevels, thinking, defaultModel, auto, onAutoChange, onConfigureModels, listPhase, listError, onRetry, className, div: rest }
   if (variant === "phone" || bare) {
     return <ModelSheetList {...common} interactive={!isStatic} onSelectModel={onSelectModel} onThinkingChange={onThinkingChange} />
   }
@@ -395,6 +462,9 @@ interface ModelMenuPartProps {
   auto?: boolean
   onAutoChange?: (next: boolean) => void
   onConfigureModels?: () => void
+  listPhase?: PiModelMenuProps["listPhase"]
+  listError?: string
+  onRetry?: () => void
   className?: string
   /** Extra div attributes passed by the caller */
   div: Omit<ComponentProps<"div">, "children">
@@ -420,11 +490,11 @@ function ModelMenuStatic({
   const defaultAvailable = defaultKey ? allEntries.some((entry) => entry.variants.some((row) => row.key === defaultKey)) : false
   const defaultName = defaultModel?.name ?? defaultModel?.modelId ?? ""
   const currentIsDefault = defaultKey ? allEntries.some((entry) => entryCurrent(entry) && entry.variants.some((row) => row.key === defaultKey)) : false
-  const autoOn = auto ?? currentIsDefault
+  const showAuto = !!defaultModel && defaultAvailable
+  const autoOn = modelAutoOn({ showAuto, auto, currentIsDefault })
   const activeEntry = hoverKey ? entries.find((entry) => entry.key === hoverKey || entry.variants.some((row) => row.key === hoverKey)) : undefined
   const activeKey = activeEntry?.key ?? entries.find((entry) => entryCurrent(entry))?.key
   const explainerId = `${base}-explainer`
-  const showAuto = !!defaultModel && defaultAvailable
   const surfaceRef = useRef<HTMLDivElement>(null)
   const side = useExplainerSide(surfaceRef, EXPLAINER_GAP)
   return (
@@ -445,18 +515,25 @@ function ModelMenuStatic({
         </>
       )}
       <MenuLabel id={rowId("label")} className={C_SECONDARY}>
-        模型
+        {modelListLabel(autoOn)}
       </MenuLabel>
       {/* R2-C-m2: the model list is a listbox, activedescendant points at the row with aria-selected=true; the current model (check) also uses aria-checked */}
       {entries.length === 0 ? (
         <ModelEmptyState onConfigureModels={onConfigureModels} />
       ) : (
-        <div role="listbox" aria-labelledby={rowId("label")} aria-activedescendant={activeKey ? rowId(activeKey) : undefined} tabIndex={-1} className="flex flex-col">
+        <div
+          role="listbox"
+          aria-labelledby={rowId("label")}
+          aria-activedescendant={activeKey ? rowId(activeKey) : undefined}
+          aria-disabled={autoOn || undefined}
+          tabIndex={-1}
+          className={cn("flex flex-col", autoOn && "opacity-40")}
+        >
           {entries.map((entry) => {
             const row = entry.representative
             const isActive = entry.key === activeKey
-            const card = isActive && explainer != null
-            const showEdit = isActive && entryEditable(entry, thinkingLevels)
+            const card = isActive && explainer != null && !autoOn
+            const showEdit = isActive && !autoOn && entryEditable(entry, thinkingLevels)
             return (
               <div key={entry.key} role="none" className="relative flex shrink-0 flex-col">
                 <MenuItem
@@ -465,7 +542,7 @@ function ModelMenuStatic({
                   aria-selected={isActive}
                   aria-checked={entryCurrent(entry)}
                   aria-describedby={card ? explainerId : undefined}
-                  highlighted={isActive}
+                  highlighted={isActive && !autoOn}
                   className="min-h-7"
                   trailing={<ModelTail current={entryCurrent(entry)} showEdit={showEdit} interactive={false} />}
                 >
@@ -494,6 +571,9 @@ function ModelMenuInteractive({
   auto,
   onAutoChange,
   onConfigureModels,
+  listPhase,
+  listError,
+  onRetry,
   onSelectModel,
   onThinkingChange,
   explainerFor,
@@ -515,8 +595,8 @@ function ModelMenuInteractive({
   const defaultAvailable = defaultKey ? allEntries.some((entry) => entry.variants.some((row) => row.key === defaultKey)) : false
   const defaultName = defaultModel?.name ?? defaultModel?.modelId ?? ""
   const currentIsDefault = defaultKey ? allEntries.some((entry) => entryCurrent(entry) && entry.variants.some((row) => row.key === defaultKey)) : false
-  const autoOn = auto ?? autoInternal ?? currentIsDefault
   const showAuto = !!defaultModel && defaultAvailable
+  const autoOn = modelAutoOn({ showAuto, auto, internal: autoInternal, currentIsDefault })
   const nav = useListNav(
     entries.map(() => !autoOn),
     Math.max(0, entries.findIndex((entry) => entryCurrent(entry))),
@@ -529,8 +609,8 @@ function ModelMenuInteractive({
   const fallbackCard = (entry: PiModelMenuEntry<PiModelMenuRow>): ReactNode => {
     // Facts only (redesign section 2.4): the explainer is built from the row's own
     // fields -- no invented tagline; the cost line comes from the row when present.
-    // The facts line uses modelFactsLineOf, the same wording the Claude shell's
-    // card shows, instead of modelExplainerOf's longer context phrasing.
+    // The facts line uses modelFactsLineOf instead of modelExplainerOf's
+    // longer context phrasing.
     const row = entry.representative as PiModelRow
     const data = modelExplainerOf(row, row.contextWindow ?? null)
     const facts = modelFactsLineOf(row)
@@ -571,11 +651,11 @@ function ModelMenuInteractive({
   // After opening, and after keyboard Up/Down: scroll the active row into the list's visible range (pointer-hovered rows are already visible, so they do not scroll)
   const reveal = useRef(true)
   useLayoutEffect(() => {
-    if (!reveal.current) return
-    reveal.current = false
     const scroller = scrollRef.current
     const row = activeRowId ? document.getElementById(activeRowId)?.parentElement : null
-    if (!scroller || !row) return
+    // 列表还没到时先不消耗这次滚动，等行出来再滚到当前模型
+    if (!reveal.current || !scroller || !row) return
+    reveal.current = false
     if (row.offsetTop < scroller.scrollTop) scroller.scrollTop = row.offsetTop
     else if (row.offsetTop + row.offsetHeight > scroller.scrollTop + scroller.clientHeight) scroller.scrollTop = row.offsetTop + row.offsetHeight - scroller.clientHeight
   }, [activeRowId])
@@ -664,11 +744,15 @@ function ModelMenuInteractive({
         </>
       )}
       {empty ? (
-        <ModelEmptyState onConfigureModels={onConfigureModels} />
+        listPhase ? (
+          <ModelListStatus phase={listPhase} error={listError} onRetry={onRetry} phone={false} />
+        ) : (
+          <ModelEmptyState onConfigureModels={onConfigureModels} />
+        )
       ) : (
         <>
           <MenuLabel id={labelId} className={C_SECONDARY}>
-            模型
+            {modelListLabel(autoOn)}
           </MenuLabel>
           <div ref={scrollRef} data-slot="pi-model-list-scroll" className={cn(LIST_SCROLL, autoOn && "pointer-events-none opacity-40")} onScroll={explainer.place}>
             <div role="listbox" id={listId} aria-labelledby={labelId} className="flex flex-col">
@@ -740,6 +824,9 @@ function ModelSheetList({
   auto,
   onAutoChange,
   onConfigureModels,
+  listPhase,
+  listError,
+  onRetry,
   onSelectModel,
   onThinkingChange,
   className,
@@ -759,8 +846,8 @@ function ModelSheetList({
   const defaultAvailable = defaultKey ? allEntries.some((entry) => entry.variants.some((row) => row.key === defaultKey)) : false
   const defaultName = defaultModel?.name ?? defaultModel?.modelId ?? ""
   const currentIsDefault = defaultKey ? allEntries.some((entry) => entryCurrent(entry) && entry.variants.some((row) => row.key === defaultKey)) : false
-  const autoOn = auto ?? autoInternal ?? currentIsDefault
   const showAuto = !!defaultModel && defaultAvailable
+  const autoOn = modelAutoOn({ showAuto, auto, internal: autoInternal, currentIsDefault })
   const pageEntry = pageKey ? entries.find((entry) => entry.key === pageKey) ?? allEntries.find((entry) => entry.key === pageKey) ?? null : null
   const current = Math.max(0, entries.findIndex((entry) => entryCurrent(entry)))
   const nav = useListNav(
@@ -815,22 +902,27 @@ function ModelSheetList({
     const facts = modelFactsLineOf(row) || row.spec
     return (
       <div data-slot="pi-model-menu" data-cw-id="pi-model-menu" role="group" aria-label="模型参数" className={cn("flex flex-col", className)} {...div}>
-        <div className="flex items-center gap-2 px-1 pb-1">
-          <button type="button" className={cn(t.main, C_SECONDARY)} onClick={() => setPageKey(null)}>
-            ‹ 模型
+        <div className="flex min-h-11 items-center gap-1 pb-1">
+          <button
+            type="button"
+            aria-label="返回模型列表"
+            className={cn("-ml-1.5 inline-flex size-9 shrink-0 items-center justify-center rounded-full text-(--cw-icon-fg)", TOUCH_44_BOX, MENU_ROW_HL_HOVER)}
+            onClick={() => setPageKey(null)}
+          >
+            <ChevronLeft aria-hidden strokeWidth={1.75} className="size-5" />
           </button>
-          <span className={cn(t.main, "font-(--cw-weight-semibold) text-(--cw-text)")}>{row.name}</span>
+          <span className={cn(t.main, "min-w-0 truncate font-(--cw-weight-semibold) text-(--cw-text)")}>{row.name}</span>
         </div>
         {facts && <div className={cn("px-1 pb-2", t.sub, C_SECONDARY)}>{facts}</div>}
         {row.costNote && <div className={cn("px-1 pb-2", t.sub, C_WARNING)}>{row.costNote}</div>}
         {pageEntry.hasContextVariants && (
           <>
-            <div className={cn("px-1 pb-1", t.sub, C_SECONDARY)}>上下文</div>
+            <div className={cn("mt-2 px-1 pb-1", t.sub, C_SECONDARY)}>上下文</div>
             {pageEntry.variants.map((variantRow) => (
               <button
                 key={variantRow.key}
                 type="button"
-                className="flex min-h-[44px] items-center gap-3 border-b border-solid border-(--cw-divider-soft) px-1 py-2 text-left last:border-b-0"
+                className={SHEET_OPTION_ROW}
                 onClick={() => pickContext(pageEntry, variantRow)}
               >
                 <span className={cn(t.main, "flex-1 text-(--cw-text)")}>{contextWindowLabel(variantRow.contextWindow ?? 0)}</span>
@@ -846,7 +938,7 @@ function ModelSheetList({
               <button
                 key={option.value}
                 type="button"
-                className="flex min-h-[44px] items-center gap-3 border-b border-solid border-(--cw-divider-soft) px-1 py-2 text-left last:border-b-0"
+                className={SHEET_OPTION_ROW}
                 onClick={() => pickThinking(pageEntry, option.value)}
               >
                 <span className={cn(t.main, "flex-1 text-(--cw-text)")}>{option.label}</span>
@@ -867,8 +959,7 @@ function ModelSheetList({
   }
   return (
     <div data-slot="pi-model-menu" data-cw-id="pi-model-menu" role="group" aria-label="模型" className={cn("flex flex-col", className)} {...div}>
-      <input
-        type="text"
+      <PiSheetSearch
         placeholder="搜索模型…"
         aria-label="搜索模型"
         value={query}
@@ -876,26 +967,32 @@ function ModelSheetList({
           setQuery(event.currentTarget.value)
           nav.setActive(0)
         }}
-        className="mb-1 h-8 w-full border-0 border-b border-solid border-(--cw-divider-soft) bg-transparent px-1 text-(length:--cw-text-md) text-(--cw-text) outline-none placeholder:text-(--cw-text-4)"
+        className="mb-2"
       />
       {showAuto && (
         <>
-          <div className="flex min-h-[44px] items-center gap-2 px-1" role="presentation">
-            <span className={cn(t.main, "text-(--cw-text)")}>Auto</span>
-            <span className={cn(t.sub, C_SECONDARY)}>设备默认 · {defaultName}</span>
-            <span className="ml-auto flex shrink-0 items-center">
+          <div data-slot="pi-model-auto" data-on={autoOn ? "" : undefined} className="flex min-h-[52px] items-center gap-2 px-1" role="presentation">
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className={cn(t.main, "font-(--cw-weight-medium) text-(--cw-text)")}>Auto</span>
+              <span className={cn("min-w-0 truncate", t.sub, C_SECONDARY)}>设备默认 · {defaultName}</span>
+            </span>
+            <span className="flex shrink-0 items-center">
               <Switch size="sm" checked={autoOn} onCheckedChange={interactive ? toggleAuto : undefined} disabled={!interactive} aria-label="Auto：使用设备默认模型" />
             </span>
           </div>
-          <div className="h-px bg-(--cw-divider-soft)" />
+          <div className={cn("h-px", MENU_DIVIDER_BG)} />
         </>
       )}
-      {allEntries.length === 0 ? (
-        <ModelEmptyState onConfigureModels={onConfigureModels} />
+      {allEntries.length === 0 && listPhase !== "loading" ? (
+        listPhase === "error" ? (
+          <ModelListStatus phase="error" error={listError} onRetry={onRetry} phone />
+        ) : (
+          <ModelEmptyState onConfigureModels={onConfigureModels} />
+        )
       ) : (
         <>
-          <div id={rowId("label")} className={cn("mt-2 px-1 pb-1", t.sub, C_SECONDARY)}>
-            模型
+          <div id={rowId("label")} className={cn("mt-3 px-1 pb-1", t.sub, C_SECONDARY)}>
+            {modelListLabel(autoOn)}
           </div>
           {/* R2-C-m2: the model list is a listbox, activedescendant points at the row with aria-selected=true (screen readers say "selected"); the current model also uses aria-checked */}
           <div
@@ -903,12 +1000,13 @@ function ModelSheetList({
             aria-labelledby={rowId("label")}
             aria-activedescendant={activeId}
             tabIndex={interactive ? 0 : -1}
-            // Interactive: focus goes into the model list itself when the sheet opens (piInitialFocusOf recognises data-pi-autofocus), so Up/Down work right away
+            // Interactive: focus goes into the model list itself when the sheet opens (piInitialFocusOf recognises data-pi-autofocus), so Up/Down work right away.
+            // The list is already here while the models are still loading, so focus never falls back to the search box (no keyboard on open)
             data-pi-autofocus={interactive ? "" : undefined}
             onKeyDown={interactive ? onKeyDown : undefined}
             className={cn("flex flex-col", autoOn && "pointer-events-none opacity-40")}
           >
-            {entries.length === 0 && <ModelEmptyState query={query} />}
+            {allEntries.length === 0 ? <ModelListStatus phase="loading" phone /> : entries.length === 0 && <ModelEmptyState query={query} />}
             {entries.map((entry) => {
               const row = entry.representative
               const isCurrent = entryCurrent(entry)
@@ -922,8 +1020,9 @@ function ModelSheetList({
                   aria-checked={isCurrent}
                   aria-disabled={autoOn || undefined}
                   className={cn(
-                    "flex min-h-[52px] items-center gap-3 border-b border-solid border-(--cw-divider-soft) px-1 py-2 last:border-b-0",
-                    interactive && entry.key === activeKey && "bg-(--cw-row-hover)",
+                    "flex min-h-[52px] items-center gap-3 border-b border-solid px-1 py-2 last:border-b-0",
+                    MENU_DIVIDER_BORDER,
+                    interactive && entry.key === activeKey && MENU_ROW_HL,
                   )}
                   onClick={
                     interactive
@@ -943,17 +1042,17 @@ function ModelSheetList({
                         type="button"
                         data-slot="pi-model-edit"
                         aria-label={`编辑 ${row.name} 的参数`}
-                        className={cn(t.main, "shrink-0 px-2 py-1 text-(--cw-text-2)")}
+                        className={cn(t.main, TOUCH_44, "shrink-0 px-2 py-1 text-(--cw-text-2)")}
                         onClick={(event: MouseEvent<HTMLButtonElement>) => {
                           event.stopPropagation()
                           setPageKey(entry.key)
                         }}
                       >
-                        Edit
+                        编辑
                       </button>
                     ) : (
                       <span data-slot="pi-model-edit" className={cn(t.main, "shrink-0 px-2 py-1 text-(--cw-text-2)")}>
-                        Edit
+                        编辑
                       </span>
                     )
                   ) : isCurrent ? (

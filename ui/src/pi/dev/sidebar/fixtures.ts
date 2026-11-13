@@ -5,7 +5,7 @@
  *   工作区 Pi-Remote / LLM 论文 / 杂项、会话 6 条（运行/等待/出错/空闲/选中）+ 摘要/时间/仓库/路径；
  * - 确定性：固定 `DEV_NOW`，无 Math.random/Date.now/wall clock；relative time 由 fixture 直接给 `timeLabel`；
  * - 只给 `PiSidebarData`（桌面 UnifiedSidebar 与移动 MobileNavShell 共用同一份数据契约），
- *   六套皮肤用 `PI_SIDEBAR_GALLERY_PRESETS`（arch 冻结的 gallery 注入接口）；
+ *   浅 / 深两套用 `PI_SIDEBAR_GALLERY_PRESETS` 里的 cursor 预设（arch 冻结的 gallery 注入接口）；
  * - 纯函数 reducer（pin/archive/group/device/width/collapse/search）供预览交互与单测复用；
  * - 生产代码不 import 本目录（单测扫描约束）。
  */
@@ -189,8 +189,6 @@ export interface P11PreviewParams {
   vp: string
 }
 
-const STYLES: readonly string[] = ["cursor", "claude", "codex"]
-
 function clampWidth(width: number): number {
   if (!Number.isFinite(width)) return SIDEBAR_WIDTH_DEFAULT
   return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)))
@@ -198,8 +196,7 @@ function clampWidth(width: number): number {
 
 /** URL/hash 参数 → 预览参数（非法值回退默认；供 devPreview 与测试共用） */
 export function p11PreviewParamsOf(params: URLSearchParams): P11PreviewParams {
-  const styleRaw = params.get("skin") ?? params.get("style") ?? "cursor"
-  const style = (STYLES.includes(styleRaw) ? styleRaw : "cursor") as PiSidebarStyle
+  const style: PiSidebarStyle = "cursor"
   const theme = params.get("theme") === "light" ? "light" : "dark"
   const scenario = params.get("scenario") ?? (params.get("surface") === "mobile" ? "list-base" : "base")
   const widthRaw = Number(params.get("width") ?? SIDEBAR_WIDTH_DEFAULT)
@@ -456,5 +453,5 @@ export function p11DevActions(setData: (updater: (data: PiSidebarData) => PiSide
   }
 }
 
-/** 六套预设（arch gallery 注入接口） */
+/** 侧栏预设（arch gallery 注入接口；预览只用 cursor 的浅 / 深两套） */
 export { PI_SIDEBAR_GALLERY_PRESETS }

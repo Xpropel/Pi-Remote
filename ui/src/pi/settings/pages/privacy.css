@@ -7,20 +7,10 @@
   color: color-mix(in srgb, var(--st-error) 62%, var(--st-text-1));
 }
 
-.settings-privacy-danger:disabled {
-  opacity: 0.55;
+.settings-root .settings-privacy-danger:disabled .settings-row-title {
+  color: var(--st-text-3);
 }
 
 .settings-privacy-file {
   display: none;
-}
-
-/* 壳按钮复位的 specificity 高于组件单类；只在本页把开关轨道赢回来。 */
-.settings-privacy .settings-switch {
-  border-radius: 999px;
-  background: var(--st-switch-off);
-}
-
-.settings-privacy .settings-switch.is-on {
-  background: var(--st-switch-on);
 }

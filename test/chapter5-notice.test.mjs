@@ -26,9 +26,10 @@ import {
   resumeNotice,
   retractNoticeScope,
   setNoticeMaxVisible,
+  setNoticesHidden,
   tickNotices,
 } from "../ui/src/chat/noticeCore.ts"
-import { noticeChannel, noticeLevelForTone } from "../ui/src/chat/composer/noticeBridge.ts"
+import { legacyNoticeInput, NOTICE_LINK_DOWN_SCOPE, noticeChannel, noticeLevelForTone } from "../ui/src/chat/composer/noticeBridge.ts"
 
 const ids = (rows) => rows.map((row) => row.id)
 
@@ -90,8 +91,8 @@ test("M4 合并：同 dedupeKey 不新增卡、以新文案为准、计数 +1、
 test("M4 合并：排队中的同 key 也合并并保持在队列里", () => {
   let state = emptyNotices()
   state = add(state, "visible", "warning", 0)
-  state = add(state, "q", "warning", 1, { title: "旧", dedupeKey: "outbox.pause" })
-  state = add(state, "q2", "warning", 2, { title: "新", dedupeKey: "outbox.pause" })
+  state = add(state, "q", "info", 1, { title: "旧", dedupeKey: "outbox.pause" })
+  state = add(state, "q2", "info", 2, { title: "新", dedupeKey: "outbox.pause" })
 
   assert.deepEqual(ids(state.visible), ["visible"])
   assert.deepEqual(ids(state.queue), ["q"])
@@ -116,8 +117,8 @@ test("M3 error 抢占：非 error 未展示满 ttl 50% 回队列；超过 50% �
 
   let errors = add(emptyNotices(), "e1", "error", 0)
   errors = add(errors, "e2", "error", 1)
-  assert.deepEqual(ids(errors.visible), ["e1"], "error 不挤 error")
-  assert.deepEqual(ids(errors.queue), ["e2"])
+  assert.deepEqual(ids(errors.visible), ["e2"], "R4：新 error 先上屏")
+  assert.deepEqual(ids(errors.queue), ["e1"], "旧 error 回队首，不丢")
 })
 
 test("M5 scope 顶替：同 scope 新通知顶掉可见/排队项，不同 scope 互不影响", () => {
@@ -128,7 +129,7 @@ test("M5 scope 顶替：同 scope 新通知顶掉可见/排队项，不同 scope
 
   let queued = emptyNotices()
   queued = add(queued, "visible", "warning", 0)
-  queued = add(queued, "old", "warning", 1, { scope: "connection" })
+  queued = add(queued, "old", "info", 1, { scope: "connection" })
   queued = add(queued, "new", "success", 2, { scope: "connection" })
   assert.deepEqual(ids(queued.visible), ["visible"], "不同 scope 的可见卡不受影响")
   assert.deepEqual(ids(queued.queue), ["new"], "排队中的旧 scope 也移除")
@@ -144,12 +145,14 @@ test("M2 队列上限 5：溢出先丢最旧 info/success，其次 warning，最
 
   state = add(state, "warn", "warning", 20)
   assert.equal(state.queue.length, 5)
-  assert.equal(state.queue.some((row) => row.id === "warn"), true, "有 info 时先丢 info")
+  assert.deepEqual(ids(state.visible), ["warn"], "R4：新 warning 先上屏")
+  assert.equal(state.queue[0].id, "visible", "被挤的 warning 回队首；有 info 时先丢 info")
 
   let errors = add(emptyNotices(), "visible-error", "error", 0)
   for (let index = 0; index < 7; index += 1) errors = add(errors, `e${index}`, "error", index + 1)
   assert.equal(errors.queue.length, 5, "队列全为 error 时也守住 5 条上限")
-  assert.deepEqual(ids(errors.queue), ["e6", "e5", "e4", "e3", "e2"], "保留最新的 5 条 error")
+  assert.deepEqual(ids(errors.visible), ["e6"], "最新的 error 在屏上")
+  assert.deepEqual(ids(errors.queue), ["e5", "e4", "e3", "e2", "e1"], "队列保留其后最新的 5 条，最早的丢弃")
 })
 
 test("M3 warning 抢占：只挤 info/success，不挤 warning/error；info/success 永不抢占", () => {
@@ -164,13 +167,13 @@ test("M3 warning 抢占：只挤 info/success，不挤 warning/error；info/succ
 
   let warning = add(emptyNotices(), "w1", "warning", 0)
   warning = add(warning, "w2", "warning", 100)
-  assert.deepEqual(ids(warning.visible), ["w1"], "warning 不抢占 warning")
-  assert.deepEqual(ids(warning.queue), ["w2"])
+  assert.deepEqual(ids(warning.visible), ["w2"], "R4：新 warning 抢占旧 warning")
+  assert.deepEqual(ids(warning.queue), ["w1"])
 
   let error = add(emptyNotices(), "e", "error", 0)
   error = add(error, "w", "warning", 100)
-  assert.deepEqual(ids(error.visible), ["e"], "warning 不抢占 error")
-  assert.deepEqual(ids(error.queue), ["w"])
+  assert.deepEqual(ids(error.visible), ["w"], "R4：新 warning 不被旧 error 压在「+1」后面")
+  assert.deepEqual(ids(error.queue), ["e"])
 
   let noPreempt = add(emptyNotices(), "w", "warning", 0)
   noPreempt = add(noPreempt, "i", "info", 100)
@@ -225,12 +228,14 @@ test("M1/M8 warning actions：最多保留两个操作，带操作时 ttl 60s", 
   assert.equal(state.visible[0].expiresAt, NOTICE_WARNING_ACTION_TTL_MS)
 })
 
-test("M8 ttl：info 5s / success 4s / warning 8s / warning+actions 60s / error 永不", () => {
+test("M8 ttl：info 5s / success 4s / warning 8s / error 12s / 带 actions 60s / sticky 永不", () => {
   assert.equal(noticeTtlMs("info"), 5000)
   assert.equal(noticeTtlMs("success"), 4000)
   assert.equal(noticeTtlMs("warning"), 8000)
   assert.equal(noticeTtlMs("warning", [{ id: "retry", label: "重试" }]), NOTICE_WARNING_ACTION_TTL_MS)
-  assert.equal(noticeTtlMs("error"), null)
+  assert.equal(noticeTtlMs("error"), 12_000)
+  assert.equal(noticeTtlMs("error", [{ id: "retry", label: "重试" }]), NOTICE_WARNING_ACTION_TTL_MS)
+  assert.equal(noticeTtlMs("error", [], true), null)
 
   const action = add(emptyNotices(), "a", "warning", 0, { actions: [{ id: "retry", label: "重试" }] })
   assert.equal(action.visible[0].expiresAt, NOTICE_WARNING_ACTION_TTL_MS)
@@ -238,7 +243,10 @@ test("M8 ttl：info 5s / success 4s / warning 8s / warning+actions 60s / error �
   assert.equal(tickNotices(action, NOTICE_WARNING_ACTION_TTL_MS).visible.length, 0)
 
   const error = add(emptyNotices(), "e", "error", 0)
-  assert.equal(tickNotices(error, 10 ** 9).visible.length, 1)
+  assert.equal(tickNotices(error, 11_999).visible.length, 1)
+  assert.equal(tickNotices(error, 12_000).visible.length, 0, "R4：error 不再常驻")
+  const sticky = add(emptyNotices(), "cap", "error", 0, { sticky: true })
+  assert.equal(tickNotices(sticky, 10 ** 9).visible.length, 1, "sticky 持续状态不自动消失")
 })
 
 test("M8 悬停 / 焦点叠加暂停；全部移出后按剩余时长继续", () => {
@@ -345,6 +353,97 @@ test("useNotices 不再按桌面/移动放大上限：始终 setMaxVisible(1)", 
   assert.match(source, /setMaxVisible\(NOTICE_MAX_VISIBLE\)/)
 })
 
+
+test("R4 优先级：需要处理的新警告不被旧错误压在「+1」后面；旧错误回队首、到期后补位", () => {
+  let state = add(emptyNotices(), "turn-error", "error", 0, { title: "回合出错" })
+  state = add(state, "already-running", "warning", 5_000, { title: "同一目录已有会话，已切换到它" })
+  assert.deepEqual(ids(state.visible), ["already-running"], "新警告立即上屏")
+  assert.deepEqual(ids(state.queue), ["turn-error"], "旧错误不丢，回队首")
+  state = tickNotices(state, 5_000 + 8_000)
+  assert.deepEqual(ids(state.visible), ["turn-error"], "警告到期后旧错误补位")
+  assert.equal(state.visible[0].expiresAt, 13_000 + 12_000, "补位后重新计全量 12s")
+  // info / success 仍然永不抢占
+  const calm = add(add(emptyNotices(), "e", "error", 0), "s", "success", 10)
+  assert.deepEqual(ids(calm.visible), ["e"])
+})
+
+test("R4 用户正指着 / 聚焦的卡不被抢：新卡排到队首，移开后按剩余时长走完再补位", () => {
+  let state = add(emptyNotices(), "reading", "warning", 0)
+  state = pauseNotice(state, "reading", "focus", 1_000)
+  state = add(state, "newer", "error", 2_000)
+  assert.deepEqual(ids(state.visible), ["reading"], "焦点在卡上：不换卡，焦点不丢")
+  assert.deepEqual(ids(state.queue), ["newer"])
+  state = resumeNotice(state, "reading", "focus", 3_000)
+  state = tickNotices(state, 3_000 + 7_000)
+  assert.deepEqual(ids(state.visible), ["newer"])
+})
+
+test("R4 页面隐藏：倒计时冻结（含隐藏期间新上屏的），回到前台按剩余时长继续", () => {
+  let state = add(emptyNotices(), "a", "error", 0)
+  state = setNoticesHidden(state, true, 2_000)
+  assert.equal(state.hidden, true)
+  assert.deepEqual(state.visible[0].pausedBy, ["hidden"])
+  assert.equal(tickNotices(state, 10 ** 7).visible.length, 1, "后台不过期")
+  state = setNoticesHidden(state, false, 100_000)
+  assert.equal(state.visible[0].expiresAt, 100_000 + 10_000, "回来后只剩 10s")
+
+  let hidden = noticeReducer(emptyNotices(), { type: "set-hidden", hidden: true, now: 0 })
+  hidden = noticeReducer(hidden, { type: "push", notice: { id: "done", level: "success", title: "任务完成" }, now: 50 })
+  assert.equal(hidden.visible[0].expiresAt, null, "后台推来的提示上屏即冻结")
+  assert.equal(tickNotices(hidden, 60_000).visible.length, 1)
+  hidden = noticeReducer(hidden, { type: "set-hidden", hidden: false, now: 60_000 })
+  assert.equal(hidden.visible[0].expiresAt, 64_000, "用户回来后才开始走 4s")
+  // hover 与 hidden 叠加：回到前台仍在悬停就继续停
+  let both = add(emptyNotices(), "b", "info", 0)
+  both = pauseNotice(both, "b", "hover", 100)
+  both = setNoticesHidden(both, true, 200)
+  both = setNoticesHidden(both, false, 300)
+  assert.deepEqual(both.visible[0].pausedBy, ["hover"])
+  assert.equal(both.visible[0].expiresAt, null)
+
+  const store = readFileSync(new URL("../ui/src/chat/composer/noticeStore.ts", import.meta.url), "utf8")
+  assert.match(store, /document\.addEventListener\("visibilitychange", syncPageHidden\)/, "store 跟随页面可见性")
+  assert.match(store, /type: "set-hidden", hidden: document\.visibilityState === "hidden"/)
+})
+
+test("R4 旧 setNotice 进栈：同级同文案连发合并 ×n；断线期间归 link-down，同 scope 新顶旧，重连撤回", () => {
+  const offline = legacyNoticeInput({ text: "连接不可用", tone: "bad" }, true)
+  assert.deepEqual(offline, { level: "error", title: "连接不可用", scope: NOTICE_LINK_DOWN_SCOPE, dedupeKey: "legacy:error:连接不可用" })
+  const online = legacyNoticeInput({ text: "连接不可用", tone: "bad" }, false)
+  assert.equal(online.scope, undefined, "在线时不归 link-down")
+  assert.equal(legacyNoticeInput({ text: "x", tone: "warn", scope: "room:r1" }, true).scope, "room:r1", "调用方自带 scope 优先")
+
+  let state = pushNotice(emptyNotices(), offline, 0)
+  state = pushNotice(state, offline, 100)
+  assert.equal(state.visible.length + state.queue.length, 1, "同一提示连发不多占一格")
+  assert.equal(state.visible[0].count, 2)
+  state = pushNotice(state, legacyNoticeInput({ text: "发送失败", tone: "bad" }, true), 200)
+  assert.deepEqual(state.visible.map((item) => item.title), ["发送失败"])
+  assert.equal(state.queue.length, 0, "断线期间的旧提示被新的顶替，不排成「+1」")
+  state = pushNotice(state, legacyNoticeInput({ text: "关于本地的另一条提示", tone: "warn" }, false), 300)
+  state = retractNoticeScope(state, NOTICE_LINK_DOWN_SCOPE, 400)
+  assert.deepEqual(state.visible.map((item) => item.title), ["关于本地的另一条提示"], "重连撤回只收 link-down 的")
+  assert.equal(state.queue.length, 0)
+
+  const relay = readFileSync(new URL("../ui/src/relay/useRelay.ts", import.meta.url), "utf8")
+  assert.match(relay, /const linkDown = !authedRef\.current \|\| wsRef\.current\?\.readyState !== WebSocket\.OPEN/)
+  assert.match(relay, /pushNotice\(legacyNoticeInput\(next, linkDown\)\)/)
+  const authOk = relay.slice(relay.indexOf('if (type === "auth_result")'), relay.indexOf("const info = serverInfo(msg)"))
+  assert.match(authOk, /retractNoticeStack\(NOTICE_LINK_DOWN_SCOPE\)/, "auth_result ok 时撤回")
+})
+
+test("R4 层级：通知槽在 raised 层，菜单（popover）/ sheet / 弹窗都盖在它上面", () => {
+  const shell = readFileSync(new URL("../ui/src/components/pi/shared/PiShell.tsx", import.meta.url), "utf8")
+  const theme = readFileSync(new URL("../ui/src/components/pi/shared/pi-theme.css", import.meta.url), "utf8")
+  const slots = [...shell.matchAll(/data-pi-notice-slot=""\s+className="([^"]+)"/g)].map((match) => match[1])
+  assert.equal(slots.length, 2, "桌面 + 手机两个通知槽")
+  for (const cls of slots) {
+    assert.match(cls, /z-\(--cw-pi-z-raised\)/)
+    assert.doesNotMatch(cls, /z-\(--cw-pi-z-(?:popover|sheet|modal|chrome)\)/)
+  }
+  const z = (name) => Number(theme.match(new RegExp(`--cw-pi-z-${name}: (\\d+);`))?.[1])
+  assert.ok(z("raised") < z("popover") && z("popover") < z("sheet") && z("sheet") < z("modal"))
+})
 
 test("生命周期只由类型字段决定：源码不得对 title/body 做字符串匹配", () => {
   const source = readFileSync(new URL("../ui/src/chat/noticeCore.ts", import.meta.url), "utf8")

@@ -266,7 +266,7 @@ describe("ui/index.html 的首帧脚本（P7 B1 起新界面入口）", () => {
   const SCRIPT = scripts.find((s) => s.includes("pi_remote_pi_prefs"))
 
   /** 在一个最小的假 DOM 里跑首帧脚本 */
-  function run({ stored = null, legacy = null, dark = false, throwing = false, noMatchMedia = false, uiReady = false } = {}) {
+  function run({ stored = null, legacy = null, dark = false, throwing = false, noMatchMedia = false } = {}) {
     const store = new Map()
     if (stored != null) store.set(PI_PREFS_KEY, stored)
     if (legacy != null) store.set(LEGACY_THEME_KEY, legacy)
@@ -282,8 +282,6 @@ describe("ui/index.html 的首帧脚本（P7 B1 起新界面入口）", () => {
     const winListeners = {}
     const mql = { matches: dark, addEventListener: (_type, fn) => mqListeners.push(fn) }
     const window = {
-      /** React 是否已接管（PI-UI-REFS Lead 裁决 Q2）：接管后首帧脚本不再写 data-pi-ui / 临时底色 */
-      __PI_UI_READY__: uiReady,
       localStorage: {
         getItem: (k) => {
           if (throwing) throw new Error("denied")
@@ -349,51 +347,24 @@ describe("ui/index.html 的首帧脚本（P7 B1 起新界面入口）", () => {
     assert.deepEqual(run({ legacy: "light", dark: true }).media(), ["all", "not all"])
   })
 
-  /* PI-UI-REFS（Lead 裁决 Q2，2026-10-26）：首帧按偏好预写 data-pi-ui + 变体 S0 底色，避免先闪 cursor。
-   * 取值规则和 prefs.ts 的 piUiVariantOf 一致；S0 值来自 design-spec §1.2 表 1-A / §2.2 / §7 对照表。 */
-  test("data-pi-ui：按偏好预写 cursor / claude / codex，缺失 / 非法一律回退 cursor，不写存储", () => {
-    assert.equal(run({}).attrs["data-pi-ui"], "cursor")
-    assert.equal(run({ stored: '{"v":1}' }).attrs["data-pi-ui"], "cursor")
-    assert.equal(run({ stored: '{"theme":"dark"}' }).attrs["data-pi-ui"], "cursor")
-    assert.equal(run({ stored: '{"ui":"claude"}' }).attrs["data-pi-ui"], "claude")
-    assert.equal(run({ stored: '{"v":1,"ui":"claude"}' }).attrs["data-pi-ui"], "claude")
-    assert.equal(run({ stored: '{"v":1,"ui":"codex"}' }).attrs["data-pi-ui"], "codex")
-    assert.equal(run({ stored: JSON.stringify('{"ui":"codex"}') }).attrs["data-pi-ui"], "codex", "多层 JSON 字符串按同一套解析规则")
-    for (const bad of ['{"ui":"bogus"}', '{"ui":"CURSOR"}', '{"ui":1}', '{"ui":null}', "not json", "[]"])
-      assert.equal(run({ stored: bad }).attrs["data-pi-ui"], "cursor", bad)
-    assert.equal(run({ throwing: true }).attrs["data-pi-ui"], "cursor")
-    assert.deepEqual(run({ stored: '{"v":1,"ui":"claude"}' }).writes, [], "首帧脚本仍不写存储")
-  })
-
-  test("首帧不闪 cursor：claude / codex 预写 design-spec 的 S0 底色（浅 / 深两档），cursor 不写", () => {
-    assert.equal(run({}).style.backgroundColor, "", "cursor 不写底色（现有 tokens.css 管）")
-    assert.equal(run({ stored: '{"v":1,"ui":"claude"}', dark: false }).style.backgroundColor, "#f9f9f7")
-    assert.equal(run({ stored: '{"v":1,"ui":"claude"}', dark: true }).style.backgroundColor, "#0b0b0b")
-    assert.equal(run({ stored: '{"v":1,"ui":"codex"}', dark: false }).style.backgroundColor, "#ececec")
-    assert.equal(run({ stored: '{"v":1,"ui":"codex"}', dark: true }).style.backgroundColor, "#0d0d0d")
-    // 固定主题按偏好选底色，不按系统色
-    assert.equal(run({ stored: '{"v":1,"ui":"claude","theme":"light"}', dark: true }).style.backgroundColor, "#f9f9f7")
-    assert.equal(run({ stored: '{"v":1,"ui":"codex","theme":"dark"}', dark: false }).style.backgroundColor, "#0d0d0d")
-    // 跟随系统时系统色变了跟着变
-    const codex = run({ stored: '{"v":1,"ui":"codex"}' })
-    assert.equal(codex.style.backgroundColor, "#ececec")
-    codex.system(true)
-    assert.equal(codex.style.backgroundColor, "#0d0d0d")
-    // 别的标签页改了偏好：data-pi-ui 与底色跟着变
-    const page = run({})
-    page.storage(PI_PREFS_KEY, '{"v":1,"ui":"claude"}')
-    assert.equal(page.attrs["data-pi-ui"], "claude")
-    assert.equal(page.style.backgroundColor, "#f9f9f7")
-    page.storage(PI_PREFS_KEY, '{"v":1,"ui":"cursor"}')
-    assert.equal(page.attrs["data-pi-ui"], "cursor")
-    assert.equal(page.style.backgroundColor, "")
-  })
-
-  test("React 接管后（__PI_UI_READY__）首帧脚本不再写 data-pi-ui / 临时底色，以偏好为准", () => {
-    const booted = run({ stored: '{"v":1,"ui":"claude"}', uiReady: true })
-    assert.equal(booted.attrs["data-pi-ui"], undefined)
-    assert.equal(booted.style.backgroundColor, undefined)
-    assert.equal(booted.attrs["data-pi-theme"], "light", "主题仍由首帧脚本先写（React 起来前防闪）")
+  /* 界面只剩 Cursor 一套：老用户偏好里存过的 ui（claude / codex）首帧不读，不预写 data-pi-ui、不写临时底色，主题照常。 */
+  test("老偏好里的 ui（claude / codex）不影响首帧：不写 data-pi-ui / 底色，主题照常，不写存储", () => {
+    for (const stored of ['{"v":1,"ui":"claude"}', '{"v":1,"ui":"codex","theme":"dark"}', '{"v":1,"ui":"claude","theme":"light"}', JSON.stringify('{"ui":"codex"}')]) {
+      for (const dark of [false, true]) {
+        const got = run({ stored, dark })
+        const label = JSON.stringify({ stored, dark })
+        assert.equal(got.attrs["data-pi-ui"], undefined, label)
+        assert.equal(got.style.backgroundColor, undefined, label)
+        assert.equal(got.attrs["data-pi-theme"], resolvePiTheme(piThemePrefOf(stored), dark), label)
+        assert.deepEqual(got.writes, [], label)
+      }
+    }
+    // 别的标签页（旧版本）把偏好写成旧皮肤：只跟着改主题，仍不写 data-pi-ui / 底色
+    const page = run({ dark: false })
+    page.storage(PI_PREFS_KEY, '{"v":1,"ui":"claude","theme":"dark"}')
+    assert.equal(page.attrs["data-pi-theme"], "dark")
+    assert.equal(page.attrs["data-pi-ui"], undefined)
+    assert.equal(page.style.backgroundColor, undefined)
   })
 
   test("跟随系统时听 matchMedia；固定主题时系统色变了不动", () => {

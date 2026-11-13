@@ -117,8 +117,6 @@ describe("P4 交互层契约（源码）", () => {
     // 其余一律换成五档。新增的局部层叠要在这里登记
     const ALLOW = [
       "ui/src/components/pi/composer/PiFollowUpComposer.tsx: after:-z-10",
-      "ui/src/components/pi/conversation/PiCodeBlock.tsx: z-[1]",
-      "ui/src/components/pi/conversation/PiDiffCard.tsx: z-[3]",
       "ui/src/components/pi/conversation/PiProse.tsx: z-[1]",
     ]
     const found = []

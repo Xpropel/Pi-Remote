@@ -1,4 +1,4 @@
-import { useState, type ComponentProps, type ReactNode } from "react"
+import { useState, type ComponentProps, type KeyboardEvent, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { ICON, KitIcon, PanelRight, Plus, type IconComponent } from "@/components/kit/icons"
 import { DiffStat } from "@/components/kit/controls/DiffStat"
@@ -70,6 +70,23 @@ export function PaneTabBar({
     if (selectedId === undefined) setInner(id)
     onSelectedIdChange?.(id)
   }
+  // 整排页签只占一个 Tab 停靠点（选中的那个，没有就第一个）；组内 ← → / Home End 移动并切换
+  const stop = tabs.some((tab) => tab.id === current) ? current : tabs[0]?.id
+  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return
+    const last = tabs.length - 1
+    const to =
+      event.key === "ArrowRight" ? (index === last ? 0 : index + 1)
+      : event.key === "ArrowLeft" ? (index === 0 ? last : index - 1)
+      : event.key === "Home" ? 0
+      : event.key === "End" ? last
+      : -1
+    if (to < 0) return
+    event.preventDefault()
+    const target = event.currentTarget.parentElement?.children[to]
+    if (target instanceof HTMLElement) target.focus()
+    select(tabs[to].id)
+  }
   return (
     <div
       data-slot="pane-tab-bar"
@@ -81,7 +98,7 @@ export function PaneTabBar({
     >
       {leading}
       <div role="tablist" className="flex min-w-0 items-center gap-1">
-        {tabs.map((tab) => {
+        {tabs.map((tab, index) => {
           const selected = tab.id === current
           const iconOnly = tab.label == null && tab.stat == null && tab.suffix == null
           return (
@@ -92,10 +109,12 @@ export function PaneTabBar({
               aria-selected={selected}
               aria-label={iconOnly ? tab.title : undefined}
               title={tab.title}
+              tabIndex={tab.id === stop ? 0 : -1}
               data-slot="pane-tab"
               data-selected={selected ? "" : undefined}
               data-cw-id={tab.cwId}
               onClick={() => select(tab.id)}
+              onKeyDown={(event) => onTabKeyDown(event, index)}
               className={cn(
                 "inline-flex h-6 min-w-0 shrink-0 items-center gap-1.5 rounded-(--cw-radius-button) text-(length:--cw-text-sm) leading-(--cw-leading-sm) whitespace-nowrap text-(--cw-text-2) outline-none select-none",
                 iconOnly ? "w-6 justify-center" : "px-2",

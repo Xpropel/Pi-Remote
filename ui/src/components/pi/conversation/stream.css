@@ -1,0 +1,33 @@
+/*
+ * 运行中的动词 / "思考中"：一道亮带从左往右扫过字面（同 Cursor 运行中的工具行），代替行首 spinner，
+ * 跑完换回普通字色时整行不左右跳。部件只在可交互态给运行中的文字挂 data-pi-shimmer（静态截图不挂）。
+ * 只在没要求减少动效、也不是强制配色时画渐变；否则就是元素原来的字色。
+ * 颜色只取令牌：底 = 元素自己的 currentColor，亮带 = --cw-text。
+ */
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  [data-pi-shimmer] {
+    background-image: linear-gradient(
+      90deg,
+      currentColor 0%,
+      currentColor 40%,
+      var(--cw-text) 50%,
+      currentColor 60%,
+      currentColor 100%
+    );
+    /* 一个周期 = 两倍字宽，横向平铺：同一时刻最多一道亮带，位移正好一个周期，循环无缝 */
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: pi-shimmer 1.6s linear infinite;
+  }
+}
+
+@keyframes pi-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}

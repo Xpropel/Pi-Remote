@@ -169,9 +169,9 @@ export function useSettingsDialogFocus({
     const root = rootRef.current
     if (!root) return
     // 捕获阶段判定「按下时是否真有更高一层浮层」，并让设置在最上层时自己消费 Esc：
-    //   - Codex 的 dialog 在自己的 onKeyDown 里关自己但不 preventDefault，等冒泡到 window 时
+    //   - 有的对话框在自己的 onKeyDown 里关自己但不 preventDefault，等冒泡到 window 时
     //     DOM 已经没了；必须在捕获阶段记账。
-    //   - 手机壳（Claude 的 usePhoneEsc）也会在 window 冒泡层响应 Esc；如果设置不先
+    //   - 外壳也可能在 window 冒泡层响应 Esc；如果设置不先
     //     stopPropagation，就会一次 Esc 连退两层。设置是当前最上层，捕获阶段截住它。
     const onKeyDownCapture = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
@@ -197,7 +197,7 @@ export function useSettingsDialogFocus({
         return
       }
       if (event.key !== "Tab") return
-      // 更高一层浮层自己管焦点（Radix / Claude / Codex 对话框都有自己的陷阱）。
+      // 更高一层浮层自己管焦点（Radix 对话框有自己的陷阱）。
       if (hasOpenNestedOverlay(root)) return
       const focusables = focusableWithin(root)
       if (focusables.length === 0) {

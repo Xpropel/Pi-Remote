@@ -151,7 +151,7 @@ test("switchSyncViewFromEntries: pending/legacy 无设备真值；device 给报�
 /* ---------------- round 2: settings display merge (the item-3 break) ----- */
 
 const { legacyPrefsOf, legacyStyleOf } = await import("../ui/src/pi/model/legacyStyle.ts")
-const { settingsPrefsOf, settingsPrefsWithDeviceSwitches } = await import("../ui/src/pi/model/settingsView.ts")
+const { settingsPrefsOf } = await import("../ui/src/pi/model/settingsView.ts")
 const { DEFAULT_PI_PREFS } = await import("../ui/src/pi/model/prefs.ts")
 
 test("legacyPrefsOf: 六项全给具体值（空存储 = 与 PiPrefs 默认一致）；坏值逐项落默认", () => {
@@ -186,22 +186,6 @@ test("显示断点回归: 采纳只写旧键——设置页必须读 legacyPrefs
   assert.equal(holed.dialogRemote, false, "只有 dialogRemote 因在三项内而幸免")
 })
 
-test("settingsPrefsWithDeviceSwitches: device 模式以报告为准；pending/legacy/空视图不动本地值；非法档位不覆盖", () => {
-  const base = settingsPrefsOf({ ...DEFAULT_PI_PREFS, dialogRemoteAnswer: true, askUserEnabled: true, approvalGateEnabled: true, approvalGateTier: "list" }, {}, "steer")
-  const view = { mode: "device", dialogRemoteAnswer: false, approvalGateEnabled: false, approvalGateTier: "high-risk", askUserEnabled: false }
-  const out = settingsPrefsWithDeviceSwitches(base, view)
-  assert.equal(out.dialogRemote, false)
-  assert.equal(out.askUser, false)
-  assert.equal(out.approvalGate, false)
-  assert.equal(out.approvalGateTier, "high-risk")
-  assert.equal(settingsPrefsWithDeviceSwitches(base, { ...view, mode: "pending" }), base, "pending 不覆盖：本地值不冒充设备真值，也不被清零")
-  assert.equal(settingsPrefsWithDeviceSwitches(base, { ...view, mode: "legacy" }), base)
-  assert.equal(settingsPrefsWithDeviceSwitches(base, null), base)
-  const partial = settingsPrefsWithDeviceSwitches(base, { mode: "device", dialogRemoteAnswer: null, approvalGateEnabled: null, approvalGateTier: "bogus", askUserEnabled: null })
-  assert.equal(partial.approvalGate, true, "视图缺项时保留本地值")
-  assert.equal(partial.approvalGateTier, "list", "非法档位不覆盖")
-})
-
 /* ---------------- round 2: wiring guards --------------------------------- */
 
 import fs from "node:fs"
@@ -215,10 +199,6 @@ test("接线守卫: useSettingsPrefs 喂合并集；useRelay 暴露 switchSyncVi
   const general = readUi("pi/settings/pages/GeneralPage.tsx")
   assert.match(general, /switchSyncView\.mode === "pending" && !!relay\.roomId/, "E4: 通用页同样只在已进房且该房 pending 时禁用")
   assert.match(general, /disabled=\{switchesPending\}/, "通用页三开关 + 档位在 pending 时禁用")
-  const container = readUi("pi/containers/SettingsContainer.tsx")
-  assert.match(container, /switchesPending=\{relay\.switchSyncView\.mode === "pending" && !!relay\.roomId\}/, "E4: 未进房不禁用三开关（只记本地意向）")
-  const claudeLogic = readUi("pi/variants/claude/model/logic.ts")
-  assert.match(claudeLogic, /settingsPrefsWithDeviceSwitches\(base, p\.relay\.switchSyncView\)/, "Claude 壳设置读数以设备报告覆盖 prefs 副本")
 })
 
 /* ---------------- D-1: display state (is device truth reachable?) ------ */
@@ -248,9 +228,6 @@ test("D-1 接线守卫: 设置面按 switchDisplayStateOf 渲染 identity-requir
   assert.match(general, /title="启用观看端身份"/, "通用页对话组带启用动作行")
   assert.match(general, /setPage\("devices"\)/, "启用动作直达设备页（身份区所在页）")
   assert.ok((general.match(/需先启用身份/g) ?? []).length >= 3, "三开关 + 档位在 identity-required 时都不显示本地值")
-  const container = readUi("pi/containers/SettingsContainer.tsx")
-  assert.match(container, /switchesIdentityRequired=\{switchDisplayStateOf\(relay\.switchSyncView, relay\.viewerIdentity\) === "identity-required"\}/, "旧设置容器同样传 identity-required")
-  assert.match(container, /action === "enable-identity"/, "旧设置容器处理启用身份动作")
   const sections = readUi("components/pi/composer/PiSettingsPage.tsx")
   assert.match(sections, /switchesIdentityRequired\?: boolean/, "共享设置节声明 identity-required 输入")
   assert.match(sections, /act\?\.\("enable-identity"\)/, "共享设置节带启用身份动作行")

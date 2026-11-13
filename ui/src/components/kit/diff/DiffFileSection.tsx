@@ -108,7 +108,7 @@ export function DiffFileSection({
         onKeyDown={onKeyDown}
         data-cw-id={subId(rest, "header")}
         className={cn(
-          "cursor-default outline-none focus-visible:bg-(--cw-row-hover)",
+          "cursor-default outline-none focus-visible:bg-[color:var(--cw-pi-menu-hl,var(--cw-row-hover))]",
           open && "border-b border-solid border-(--cw-divider)",
           headerClassName,
         )}

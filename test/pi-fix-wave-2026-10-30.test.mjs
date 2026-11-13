@@ -1,5 +1,5 @@
-// Fix wave 2026-10-30 (web UI defects F1/F3/F4/F5/F7, A3-F2/F3/F4, inbox
-// surface for the Claude/Codex shells). Pure functions are imported from
+// Fix wave 2026-10-30 (web UI defects F1/F3/F4/F5/F7, A3-F2/F3, inbox
+// surface). Pure functions are imported from
 // the .ts sources directly; tsx/css surfaces use static source guards,
 // matching the established test style in this repo.
 import test from "node:test"
@@ -32,8 +32,11 @@ const sessions = [
 test("F3: recentFoldersOf skips folders proven missing (normalized keys)", () => {
   assert.deepEqual(newSession.recentFoldersOf(sessions, device, 5), ["/root/deleted", "/root/live"])
   assert.deepEqual(newSession.recentFoldersOf(sessions, device, 5, new Set(["/root/deleted"])), ["/root/live"])
-  // The exclusion set holds raw paths; matching normalizes slashes/case.
-  assert.deepEqual(newSession.recentFoldersOf(sessions, device, 5, new Set(["/ROOT/Deleted/"])), ["/root/live"])
+  // The exclusion set holds raw paths; matching follows the device platform (pathKeyOf):
+  // trailing slashes never count, Linux is case-sensitive, macOS / Windows are not.
+  assert.deepEqual(newSession.recentFoldersOf(sessions, device, 5, new Set(["/root/deleted/"])), ["/root/live"])
+  assert.deepEqual(newSession.recentFoldersOf(sessions, device, 5, new Set(["/ROOT/Deleted/"])), ["/root/deleted", "/root/live"], "Linux: another case is another folder")
+  assert.deepEqual(newSession.recentFoldersOf(sessions, { ...device, platform: "macos" }, 5, new Set(["/ROOT/Deleted/"])), ["/root/live"])
 })
 
 test("F3: newSessionDefaultsOf never preselects a deleted workspace", () => {
@@ -91,14 +94,8 @@ test("F3: probeFolderExistence -- only fs_not_found proves missing; null is neve
   assert.ok(!folderExistence.missingFoldersOf("dev-probe").has("/p/shy"))
 })
 
-test("F3: the three shells snapshot known rooms so a room switch cannot steal the first prompt", () => {
-  for (const rel of [
-    "ui/src/pi/containers/NewSessionContainer.tsx",
-    "ui/src/pi/variants/claude/pages/ClaudeNewSession.tsx",
-    "ui/src/pi/variants/codex/pages/CodexNewSession.tsx",
-  ]) {
-    assert.match(read(rel), /knownRoomIds/, rel)
-  }
+test("F3: the new-session page snapshots known rooms so a room switch cannot steal the first prompt", () => {
+  assert.match(read("ui/src/pi/containers/NewSessionContainer.tsx"), /knownRoomIds/)
 })
 
 /* ------------------------------------------------------------------ F1 -- */
@@ -118,7 +115,7 @@ test("F4: the queue tray pill carries a tooltip that says what clicking does", (
   assert.match(read("ui/src/components/pi/composer/PiTray.tsx"), /title=\{item\.title\}/)
 })
 
-test("F4: queued bubbles render queue actions in every shell", () => {
+test("F4: queued bubbles render queue actions", () => {
   const parts = read("ui/src/components/pi/conversation/PiTurnParts.tsx")
   assert.match(parts, /排队中/)
   assert.match(parts, /queueSendNow/)
@@ -126,8 +123,6 @@ test("F4: queued bubbles render queue actions in every shell", () => {
   const transcript = read("ui/src/pi/containers/TranscriptContainer.tsx")
   assert.match(transcript, /queued: true/)
   assert.match(transcript, /sharedSendNowLock/)
-  assert.match(read("ui/src/pi/variants/claude/thread/ClaudeThread.tsx"), /排队中/)
-  assert.match(read("ui/src/pi/variants/codex/thread/CodexUserBubble.tsx"), /排队中/)
 })
 
 /* ------------------------------------------------------------------ F5 -- */
@@ -140,7 +135,6 @@ test("F5: no fee display remains on any usage surface", () => {
   assert.doesNotMatch(read("ui/src/components/pi/composer/PiComposerMenu.tsx"), /用量与费用/)
   const infoCard = read("ui/src/components/pi/shell/PiSessionInfoCard.tsx")
   assert.doesNotMatch(infoCard, /"cost"/)
-  assert.doesNotMatch(read("ui/src/pi/variants/claude/overlays/ClaudeSessionInfoCard.tsx"), /tok\}/)
 })
 
 /* ------------------------------------------------------------------ F7 -- */
@@ -208,13 +202,6 @@ test("A3-F3: waiting-for-ACK copy is honest and the devices section re-reads on 
   assert.match(read("ui/src/pi/settings/pages/IdentitySection.tsx"), /identitySignal/)
 })
 
-/* --------------------------------------------------------------- A3-F4 -- */
-
-test("A3-F4: the Codex notice slot is in-flow on phone pages and cannot cover the back button", () => {
-  const css = read("ui/src/pi/variants/codex/styles/codex.css")
-  assert.match(css, /\.cx-phone-page \.cx-notice-slot\s*\{\s*position: static;/)
-})
-
 /* ------------------------------------------------------ inbox (item 10) -- */
 
 const inboxEntry = (over) => ({ key: "k1", accountId: "default", roomId: "r1", deviceId: "d1", kind: "waiting", subkind: "ask", at: 1000, ...over })
@@ -268,16 +255,9 @@ test("identity ready state: re-register and forget actions are offered alongside
   assert.match(section, /data-settings-identity-panel="forget"[\s\S]*?用它加密过的历史将无法再解开[\s\S]*?确认忘记本机身份/)
 })
 
-test("inbox surface: every shell routes the inbox view and feeds the sidebar row", () => {
-  assert.match(read("ui/src/pi/variants/claude/shell/ClaudeDesktopShell.tsx"), /ClaudeInboxPage/)
-  assert.match(read("ui/src/pi/variants/codex/shell/CodexDesktop.tsx"), /CodexInboxPage/)
-  assert.match(read("ui/src/pi/variants/claude/shell/ClaudePhoneShell.tsx"), /ClaudeInboxPage/)
-  assert.match(read("ui/src/pi/variants/codex/shell/CodexPhone.tsx"), /CodexInboxPage/)
-  assert.match(read("ui/src/pi/variants/claude/sidebar/ClaudeUnifiedSidebar.tsx"), /inboxCount/)
-  assert.match(read("ui/src/pi/variants/codex/sidebar/CodexUnifiedSidebar.tsx"), /inboxCount/)
+test("inbox surface: desktop and phone route the inbox view and feed the sidebar row", () => {
+  assert.match(read("ui/src/pi/containers/DesktopApp.tsx"), /<InboxContainer/)
+  assert.match(read("ui/src/pi/containers/PhoneApp.tsx"), /<MobileInboxPage/)
+  assert.match(read("ui/src/pi/containers/CursorUnifiedSidebar.tsx"), /inboxCount/)
   assert.match(read("ui/src/pi/mobile/useMobileSidebarData.ts"), /inboxCount/)
-  // Variant self-containment: the shells must not import the Cursor container.
-  for (const rel of ["ui/src/pi/variants/claude/shell/ClaudeDesktopShell.tsx", "ui/src/pi/variants/codex/shell/CodexDesktop.tsx"]) {
-    assert.doesNotMatch(read(rel), /pi\/containers\/InboxContainer/, rel)
-  }
 })

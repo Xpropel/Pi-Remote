@@ -3,13 +3,20 @@
  * 主题 CSS 没加载时也能看。
  */
 
+/**
+ * 卡里可点的行（终端卡头、卡脚展开条、审批选项）的悬停 / 键盘聚焦底：同菜单行，读 --cw-pi-menu-hl（半透明叠色）。
+ * 浅色与 --cw-row-hover 同为 #EEEEEE；深色卡面 #222224 上 --cw-row-hover 只差 4 级、几乎看不出，叠色约 #313133。
+ */
+export const ROW_HL_HOVER = "hover:bg-[color:var(--cw-pi-menu-hl,var(--cw-row-hover))]"
+export const ROW_HL_FOCUS = "focus-visible:bg-[color:var(--cw-pi-menu-hl,var(--cw-row-hover))]"
+
 /** 需要读的灰字（收据行、行尾状态、说明；design §4.6：比 --cw-text-3 深一档，推断） */
 export const T_SECONDARY = "text-[color:var(--cw-pi-text-secondary,var(--cw-text-3))]"
 
 /** 出错红字（= --cw-red，§1.4） */
 export const T_ERROR = "text-[color:var(--cw-pi-error,var(--cw-red))]"
 
-/** 等你回答（= --cw-blue，§1.4） */
+/** 等你批准 / 等你回答（= --cw-blue，§1.4） */
 export const T_ATTENTION = "text-[color:var(--cw-pi-attention,var(--cw-blue))]"
 
 /** 手机最小点击区：视觉小、点击区 ≥ 44（§4.4）。给 position:relative 的按钮加一圈看不见的扩展区 */

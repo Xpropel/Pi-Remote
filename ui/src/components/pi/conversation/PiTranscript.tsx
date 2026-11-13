@@ -22,23 +22,30 @@ import { isOwnSendAppended, lastKeyOf, newItemsAfter, PI_TRANSCRIPT_WINDOW, show
 import { PiTranscriptActionsContext, usePiTranscriptActions, type PiTranscriptActions } from "./actions"
 import { PiDiffCard } from "./PiDiffCard"
 import { PiProse } from "./PiProse"
-import { PiReceipt, PiRunningLine, PiThinking, PiToolLine, PiTurnError } from "./PiStreamLines"
+import { PiExploreRows, PiReceipt, PiRunningLine, PiThinking, PiToolLine, PiTurnError } from "./PiStreamLines"
 import { PiTerminalCard } from "./PiTerminalCard"
 import { PiImageGrid, PiReplyActions, PiUserTurn } from "./PiTurnParts"
 import { T_SECONDARY, TOUCH_44_TEXT } from "./styles"
 import {
   bashPhrase,
+  diffLineOf,
+  editsOf,
+  exploreRowOf,
   exploreSummary,
   otherDetail,
   readDetail,
+  splitExitTrailer,
   splitThinking,
   stopReasonText,
+  stoppedEnd,
+  streamToolStatus,
   timeoutSeconds,
   toolCommand,
+  toolNameOf,
   toolPath,
-  toolStatus,
   toolWeight,
 } from "./tools"
+import { itemEndOf, lastAssistantOf, retryTurnOf, runningTurnOf, splitTurns, turnDurationOf, turnViewsOf, type Turn } from "./turns"
 import type { PiAssistantItem, PiBlock, PiDensity, PiImagePart, PiItem, PiSubagent, PiToolBlock } from "@/components/pi/shared/types"
 
 /** PiTranscript 的命令（可交互态，ref 拿到）：tray 的"回到底部"钮调 scrollToBottom */
@@ -73,13 +80,15 @@ export interface PiTranscriptProps {
   /* ---- 以下是 b 区加的可选字段（§6.4：只许加可选字段） ---- */
   /** 展开的块：工具块 id、思考块 "<item.key>:<块下标>"、正文折叠块同样写法 */
   expanded?: readonly string[]
+  /** 可交互态：正在想的思考块（"<item.key>:<块下标>"）→ 观测到的开始时刻（ms），标题写已想了几秒；没看到开始的不在里面 */
+  thinkingSince?: ReadonlyMap<string, number>
   /** 初始滚动：默认贴底 */
   scroll?: "bottom" | number
   /** centered = 对话列居中限宽 768；pane = 右 pane 打开时占满、左右 24 */
   layout?: "centered" | "pane"
   /** 长回复折叠（D16）：这些 text 块（"<item.key>:<块下标>"）超过 maxHeight 时收起 */
   folded?: readonly string[]
-  /** 运行行的文字（默认"正在工作"；等审批时写"等你回答"） */
+  /** 运行行的文字（默认"正在工作"；等工具审批时写"等你批准"，等提问 / 弹窗时写"等你回答"） */
   runningLabel?: string
   className?: string
   /* ---- P4（PLAN 4.3；R2/p4-lanes.md §1） ---- */
@@ -100,27 +109,20 @@ export interface PiTranscriptProps {
   foldLong?: boolean
 }
 
-type Turn = { user?: Extract<PiItem, { kind: "user" }>; rest: PiItem[] }
-
-/** 按用户消息切回合：回合用时 = 用户消息时间戳 → 回合里最后一条消息的结束时间（§1.9，缺任一就不显示） */
-function splitTurns(items: readonly PiItem[]): Turn[] {
-  const turns: Turn[] = []
-  for (const item of items) {
-    if (item.kind === "user") turns.push({ user: item, rest: [] })
-    else {
-      if (turns.length === 0) turns.push({ rest: [] })
-      turns[turns.length - 1].rest.push(item)
-    }
-  }
-  return turns
-}
-
-function itemEnd(item: PiItem): number | undefined {
-  if (item.kind === "assistant") {
-    if (item.endedAt != null) return item.endedAt
-    if (item.startedAt != null && item.durationMs != null) return item.startedAt + item.durationMs
-  }
-  return item.timestamp
+/** 重试过的出错回合折成一行，放在重试那一轮的用户卡下面："上次出错，已重试 ›"；点开是当时的过程（出错行不再带「重新回答」） */
+function RetriedAttempts({ attempts, retrying, renderItem }: { attempts: readonly Turn[]; retrying: boolean; renderItem: (item: PiItem) => ReactNode }) {
+  const verb = `${attempts.length > 1 ? `出错 ${attempts.length} 次` : "上次出错"}，${retrying ? "正在重试" : "已重试"}`
+  return (
+    <div data-pi-part="retried-attempts">
+      <PiToolLine verb={verb}>
+        {attempts.map((attempt, i) => (
+          <div key={attempt.user?.key ?? i} data-pi-part="retried-attempt" className={cn(i > 0 && "mt-(--cw-space-3)")}>
+            {attempt.rest.map(renderItem)}
+          </div>
+        ))}
+      </PiToolLine>
+    </div>
+  )
 }
 
 /**
@@ -334,6 +336,7 @@ function TranscriptContent({ src, items, hidden, nextPage, onShowEarlier, onOpen
     now,
     expanded = NO_BLOCK_KEYS,
     folded = NO_BLOCK_KEYS,
+    thinkingSince,
     runningLabel,
     foldLong = false,
   } = src
@@ -343,7 +346,23 @@ function TranscriptContent({ src, items, hidden, nextPage, onShowEarlier, onOpen
   // 否则 ItemView 的 memo 会被这两个 prop 每次打穿（UI·perf 中-1）。
   const open = useMemo(() => new Set(expanded), [expanded])
   const fold = useMemo(() => new Set(folded), [folded])
-  const lastTurn = turns.length - 1
+  const runningTurn = runningTurnOf(turns, running != null)
+  const retryTurn = retryTurnOf(turns, running != null)
+  const renderAttemptItem = (item: PiItem) => (
+    <ItemView
+      key={item.key}
+      item={item}
+      variant={variant}
+      density={density}
+      open={open}
+      fold={fold}
+      foldLong={foldLong}
+      subagentSlot={null}
+      replyMeta={null}
+      showRetry={false}
+      onOpenImage={openImage}
+    />
+  )
   return (
     <>
       {topLine}
@@ -356,22 +375,18 @@ function TranscriptContent({ src, items, hidden, nextPage, onShowEarlier, onOpen
           </PiReceipt>
         </div>
       )}
-      {turns.map((turn, ti) => {
-        const isRunningTurn = ti === lastTurn && running != null
-        const end = turn.rest.reduce<number | undefined>((acc, it) => {
-          const e = itemEnd(it)
-          return e != null && (acc == null || e > acc) ? e : acc
-        }, undefined)
-        const duration =
-          !isRunningTurn && turn.user?.timestamp != null && end != null && turn.rest.some((r) => r.kind === "assistant")
-            ? end - turn.user.timestamp
-            : null
-        const lastAssistant = [...turn.rest].reverse().find((r): r is PiAssistantItem => r.kind === "assistant")
+      {turnViewsOf(turns).map(({ turn, index: ti, attempts }, vi) => {
+        const isRunningTurn = ti === runningTurn
+        // 回合用时的起止口径见 turns.ts 的 turnDurationOf（插进来的排队消息接手时，前一回合算到它注入为止）
+        const duration = isRunningTurn ? null : turnDurationOf(turns, ti)
+        const lastAssistant = lastAssistantOf(turn)
         let subagentsPlaced = !isRunningTurn || !subagents || subagents.length === 0
         return (
-          <div key={turn.user?.key ?? `t${ti}`} data-pi-part="turn">
+          // 回合之间空 24（和用户卡上沿的 16 折叠），比回合内的 6 / 8 明显大一档，一眼分得出一问一答
+          <div key={turn.user?.key ?? `t${ti}`} data-pi-part="turn" className={cn("group/turn", vi > 0 && "mt-(--cw-space-6)")}>
             {turn.user && <PiUserTurn item={turn.user} imageHeight={phone ? 120 : 160} onOpenImage={openImage} />}
             {duration != null && duration > 0 && <PiReceipt>用时 {piDuration(duration, { zero: true })}</PiReceipt>}
+            {attempts.length > 0 && <RetriedAttempts attempts={attempts} retrying={isRunningTurn} renderItem={renderAttemptItem} />}
             {turn.rest.map((item) => {
               let sub: ReactNode = null
               if (!subagentsPlaced && item.kind === "assistant") {
@@ -389,7 +404,8 @@ function TranscriptContent({ src, items, hidden, nextPage, onShowEarlier, onOpen
                   foldLong={foldLong}
                   subagentSlot={sub}
                   replyMeta={!isRunningTurn && item === lastAssistant ? replyMeta(item, now) : null}
-                  showRetry={ti === lastTurn}
+                  thinkingSince={isRunningTurn && item === lastAssistant ? thinkingSince : undefined}
+                  showRetry={ti === retryTurn}
                   onOpenImage={openImage}
                 />
               )
@@ -407,10 +423,11 @@ function TranscriptContent({ src, items, hidden, nextPage, onShowEarlier, onOpen
 
 function replyMeta(item: PiAssistantItem, now: number): string {
   const parts: string[] = []
-  const end = itemEnd(item)
+  const end = itemEndOf(item)
   if (end != null) parts.push(piAgo(end, now))
   if (item.model) parts.push(piModelShort(item.model))
-  if (item.usage?.totalTokens != null) parts.push(`${piTokens(item.usage.totalTokens)} tok`)
+  // 停止生成的回复 pi 记 0 用量（没报上来），写「0 tok」是错的
+  if (item.usage?.totalTokens) parts.push(`${piTokens(item.usage.totalTokens)} tok`)
   return parts.join(" · ")
 }
 
@@ -444,6 +461,8 @@ interface ItemViewProps {
   foldLong: boolean
   subagentSlot: ReactNode
   replyMeta: string | null
+  /** 只给运行中回合的最后一条助手消息（其余条目恒为 undefined，memo 不受影响） */
+  thinkingSince?: ReadonlyMap<string, number>
   showRetry: boolean
   onOpenImage?: PiOpenImage
 }
@@ -456,7 +475,7 @@ interface ItemViewProps {
  * - subagentSlot：只有运行中的那一回合的第一条助手消息是非 null，且它本来就每秒要动（子智能体用时）；
  * - replyMeta：只算给最后一条助手回复，分钟级变化才重渲染它。
  */
-const ItemView = memo(function ItemView({ item, variant, density, open, fold, foldLong, subagentSlot, replyMeta, showRetry, onOpenImage }: ItemViewProps) {
+const ItemView = memo(function ItemView({ item, variant, density, open, fold, foldLong, subagentSlot, replyMeta, thinkingSince, showRetry, onOpenImage }: ItemViewProps) {
   switch (item.kind) {
     case "user":
       return <PiUserTurn item={item} onOpenImage={onOpenImage} />
@@ -514,6 +533,7 @@ const ItemView = memo(function ItemView({ item, variant, density, open, fold, fo
           foldLong={foldLong}
           subagentSlot={subagentSlot}
           replyMeta={replyMeta}
+          thinkingSince={thinkingSince}
           showRetry={showRetry}
           onOpenImage={onOpenImage}
         />
@@ -531,6 +551,20 @@ function isLiveTail(blocks: readonly PiBlock[], index: number, live: boolean | u
   return true
 }
 
+/** 这些结束原因的回复停在半路，最后一块的字可能断在行内代码 / 加粗中间 */
+const CUT_STOPS = new Set(["aborted", "error", "length"])
+
+/** 停在半路的那一块（最后一个有字的正文 / 思考块；最后是工具就没有）；没停在半路时 -1 */
+function cutBlockOf(item: PiAssistantItem): number {
+  if (item.live || !CUT_STOPS.has(item.stopReason ?? "")) return -1
+  for (let k = item.blocks.length - 1; k >= 0; k--) {
+    const b = item.blocks[k]
+    if (b.kind !== "text" && b.kind !== "thinking") return -1
+    if (b.text.trim()) return k
+  }
+  return -1
+}
+
 function AssistantView({
   item,
   variant,
@@ -540,6 +574,7 @@ function AssistantView({
   foldLong,
   subagentSlot,
   replyMeta,
+  thinkingSince,
   showRetry,
   onOpenImage,
 }: Omit<ItemViewProps, "item"> & { item: PiAssistantItem }) {
@@ -547,6 +582,8 @@ function AssistantView({
   const actions = usePiTranscriptActions()
   const out: ReactNode[] = []
   const blocks = item.blocks
+  const cutAt = cutBlockOf(item)
+  const stopped = !item.live && stoppedEnd(item.stopReason, item.errorMessage)
   let placed = subagentSlot == null
   const placeSub = () => {
     if (!placed) {
@@ -570,9 +607,11 @@ function AssistantView({
           key={key}
           status={live ? "live" : "done"}
           duration={!live && b.observedMs != null ? piThinkSeconds(b.observedMs) : undefined}
+          since={live ? thinkingSince?.get(key) : undefined}
           phase={phase}
           body={body}
           open={live || open.has(key)}
+          cut={i === cutAt}
         />,
       )
       placeSub()
@@ -595,6 +634,7 @@ function AssistantView({
             key={key}
             markdown={b.text}
             streaming={isLiveTail(blocks, i, item.live)}
+            cut={i === cutAt}
             fold={fold.has(key) ? { maxHeight } : foldLong ? { maxHeight, auto: true } : undefined}
           />
         ),
@@ -616,34 +656,46 @@ function AssistantView({
         group.push(nb)
         j++
       }
-      const runningNow = group.some((g) => toolStatus(g) === "running")
+      const runningNow = group.some((g) => streamToolStatus(g, stopped) === "running")
       const reads = group.filter((g) => toolWeight(g.name) === "read").length
       const summary = exploreSummary(group.filter((g) => toolWeight(g.name) === "explore"))
       const detail = reads > 0 ? mergeReads(summary, reads) : summary
+      // 收起 = 一行汇总；展开 = 每次调用一行（搜索什么、在哪、几处）。详细密度默认展开
       out.push(
-        <PiToolLine key={key} verb={runningNow ? "正在查看" : "查看了"} detail={detail} running={runningNow} more={!runningNow} />,
+        <PiToolLine
+          key={key}
+          verb={runningNow ? "正在查看" : "查看了"}
+          detail={detail}
+          running={runningNow}
+          open={density === "detailed" || open.has(group[0].id)}
+        >
+          <PiExploreRows rows={group.map((g) => exploreRowOf(g, stopped))} onOpenFile={actions?.openFile} />
+        </PiToolLine>,
       )
       i = j
       continue
     }
-    const status = toolStatus(b)
+    const status = streamToolStatus(b, stopped)
     if (w === "read") {
+      const path = toolPath(b)
+      const openFile = actions?.openFile
       out.push(
         <PiToolLine
           key={key}
           verb={status === "running" ? "正在读取" : "读取"}
           detail={readDetail(b)}
           running={status === "running"}
-          more={density === "detailed"}
-          trailing={status === "failed" ? "失败" : undefined}
-          trailingTone="error"
+          onOpen={openFile && path && status !== "failed" ? () => openFile(path) : undefined}
+          openLabel={`打开 ${path}`}
+          trailing={status === "failed" ? "失败" : status === "aborted" ? "已取消" : undefined}
+          trailingTone={status === "failed" ? "error" : "muted"}
         />,
       )
       // read 读到图片时工具结果带 images（过大的只有占位，D15）
       const images = b.images
       if (images && images.length > 0)
         out.push(
-          <div key={`${key}:img`} className="mx-(--stream-inset) my-(--cw-space-2)">
+          <div key={`${key}:img`} className="mx-(--stream-inset) my-(--cw-space-2-5)">
             <PiImageGrid
               images={images}
               height={phone ? 120 : 160}
@@ -660,19 +712,21 @@ function AssistantView({
           <PiToolLine
             key={key}
             verb={bashPhrase(command)}
-            detail={command}
+            // 命令原文等宽，和终端卡头的命令段同一个样子
+            detail={<span className="font-(family-name:--cw-font-mono) text-(length:--cw-text-code)">{command}</span>}
             trailing={status === "denied" ? "已拒绝" : status === "aborted" ? "已取消" : sec != null ? `超时（${sec} 秒）` : "超时"}
           />,
         )
       } else {
+        const result = splitExitTrailer(b.outputText, b.exitCode)
         out.push(
           <PiTerminalCard
             key={key}
             phrase={bashPhrase(command)}
             command={command}
             status={status}
-            exitCode={b.exitCode}
-            output={b.outputText}
+            exitCode={result.exitCode}
+            output={result.output}
             stderr={b.stderr}
             open={density !== "compact" && (open.has(b.id) || density === "detailed")}
             // 运行中的卡在流里只露最后 4 行（贴底跟随），完整输出在终端视图（§1.8：同一条命令只在一处展开）
@@ -684,26 +738,46 @@ function AssistantView({
       }
     } else if (w === "diff") {
       const path = toolPath(b)
+      const patch = b.details?.patch
       const content = typeof b.input?.content === "string" ? b.input.content : undefined
-      out.push(
-        <PiDiffCard
-          key={key}
-          path={path}
-          patch={b.details?.patch}
-          content={b.details?.patch ? undefined : content}
-          variant={variant}
-          defaultOpen={open.has(b.id)}
-          failed={status === "failed"}
-        />,
-      )
+      const edits = patch || content != null ? undefined : editsOf(b)
+      if (patch || content != null || edits) {
+        out.push(
+          <PiDiffCard
+            key={key}
+            path={path}
+            patch={patch}
+            content={patch ? undefined : content}
+            edits={edits}
+            variant={variant}
+            defaultOpen={open.has(b.id)}
+            failed={status === "failed"}
+            cancelled={status === "aborted"}
+          />,
+        )
+      } else {
+        // 没有可画的改动（停止在参数流里时 pi 把半截参数丢了，存下的 arguments 是 {}）：一行字，不出空的 diff 卡
+        const line = diffLineOf(b, status === "running")
+        out.push(
+          <PiToolLine
+            key={key}
+            verb={line.verb}
+            detail={line.detail}
+            running={status === "running"}
+            trailing={status === "failed" ? "失败" : status === "denied" ? "已拒绝" : status === "aborted" ? "已取消" : undefined}
+            trailingTone={status === "failed" ? "error" : "muted"}
+          />,
+        )
+      }
     } else if (w === "other") {
+      const name = toolNameOf(b)
       out.push(
         <PiToolLine
           key={key}
-          verb={status === "running" ? `正在调用 ${b.name}` : `调用 ${b.name}`}
+          verb={name == null ? "正在调用工具" : status === "running" ? `正在调用 ${name}` : `调用 ${name}`}
           detail={otherDetail(b)}
           running={status === "running"}
-          trailing={status === "failed" ? "失败" : status === "denied" ? "已拒绝" : undefined}
+          trailing={status === "failed" ? "失败" : status === "denied" ? "已拒绝" : status === "aborted" ? "已取消" : undefined}
           trailingTone={status === "failed" ? "error" : "muted"}
         />,
       )
@@ -713,10 +787,12 @@ function AssistantView({
   }
   placeSub()
   const end = stopReasonText(item.stopReason, item.errorMessage)
+  // 回合中途出错、pi 自动重试接着跑的那条不挂「重新回答」：只挂在回合最后一条回复上（replyMeta 只给它）
+  const retry = showRetry && replyMeta != null
   if (end)
     out.push(
       end.error ? (
-        <PiTurnError key="stop" onAction={actions?.regenerate}>
+        <PiTurnError key="stop" detail={end.detail} action={retry ? "重新回答" : null} onAction={retry ? actions?.regenerate : undefined}>
           {end.text}
         </PiTurnError>
       ) : (

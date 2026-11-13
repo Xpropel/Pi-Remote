@@ -68,22 +68,28 @@ test("生产组件不包含 mock 生成器/假数据（mock 仅在 dev 模块）
   assert.equal(await fs.readFile(new URL("../ui/src/pi/dev/usage/mock.ts", import.meta.url), "utf8").then((text) => text.includes("mockUsageSnapshot")), true)
 })
 
+const PRODUCT_USAGE_PAGES = ["../ui/src/pi/settings/pages/UsagePage.tsx", "../ui/src/pi/settings/mobile/pages/UsagePage.tsx"]
+
 test("displayOverrides 仅 dev 对图使用：生产挂载不传（静态断言）", async () => {
   const fs = await import("node:fs/promises")
-  const settings = await fs.readFile(new URL("../ui/src/pi/variants/claude/pages/ClaudeSettingsPage.tsx", import.meta.url), "utf8")
   const preview = await fs.readFile(new URL("../ui/src/pi/dev/usage/UsagePreview.tsx", import.meta.url), "utf8")
-  assert.equal(settings.includes("displayOverrides"), false)
-  assert.equal(settings.includes("designTargets"), false)
+  for (const file of PRODUCT_USAGE_PAGES) {
+    const settings = await fs.readFile(new URL(file, import.meta.url), "utf8")
+    assert.equal(settings.includes("displayOverrides"), false, file)
+    assert.equal(settings.includes("designTargets"), false, file)
+  }
   assert.equal(preview.includes("displayOverrides"), true)
   assert.equal(preview.includes('params.fixture !== "design"'), true)
 })
 
 test("dev 三态 props 仅 devPreview 使用（生产 Settings 不传）", async () => {
   const fs = await import("node:fs/promises")
-  const settings = await fs.readFile(new URL("../ui/src/pi/variants/claude/pages/ClaudeSettingsPage.tsx", import.meta.url), "utf8")
   const preview = await fs.readFile(new URL("../ui/src/pi/dev/usage/UsagePreview.tsx", import.meta.url), "utf8")
-  assert.equal(settings.includes("previewState"), false)
-  assert.equal(settings.includes("previewReason"), false)
+  for (const file of PRODUCT_USAGE_PAGES) {
+    const settings = await fs.readFile(new URL(file, import.meta.url), "utf8")
+    assert.equal(settings.includes("previewState"), false, file)
+    assert.equal(settings.includes("previewReason"), false, file)
+  }
   assert.equal(preview.includes("previewState"), true)
   assert.equal(preview.includes("previewReason"), true)
 })
@@ -103,15 +109,6 @@ test("fixture 统计行只渲染一次（防重复回归）", async () => {
   assert.equal(page.split("pi-usage-fixture-stats").length - 1, 1)
   const css = await fs.readFile(new URL("../ui/src/pi/usage/usage.css", import.meta.url), "utf8")
   assert.equal(css.split(".pi-usage-fixture-stats").length - 1, 1)
-})
-
-
-test("Claude 设置页「使用活动」只挂载一次（防重复渲染 P1 回归）", async () => {
-  const fs = await import("node:fs/promises")
-  const settings = await fs.readFile(new URL("../ui/src/pi/variants/claude/pages/ClaudeSettingsPage.tsx", import.meta.url), "utf8")
-  assert.equal(settings.split("<UsageActivityPage").length - 1, 1)
-  assert.equal(settings.split('section === "usage"').length - 1, 1)
-  assert.equal(settings.includes('data-pi-usage-host="claude"'), true)
 })
 
 

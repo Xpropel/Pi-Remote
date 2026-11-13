@@ -1,7 +1,7 @@
 // A-3: web search could not find body text. The root cause was missing wiring — the
 // extension-side scan (cmdSearchSessionBodies) and the relay room fan-out/merge
 // (relay/bodySearch.ts) always existed, but no live surface called them: the command
-// palettes (pi/claude/codex shells + phone sheet) filtered by title/group only, the
+// palettes (desktop shells + phone sheet) filtered by title/group only, the
 // sidebar search overlay and the phone search page filtered local titles only, and the
 // one surface wired for body search (SearchContainer) was mounted by no live shell.
 // This file pins the fix: paletteBodyHitsOf mapping/dedup, the merge layer's encrypted
@@ -222,19 +222,11 @@ describe("侧栏正文块组装（sidebarBodyBlockOf / bodyHitOf，三壳侧栏�
 })
 
 describe("源码口径：在用界面都接上正文搜索（A-3 的根因是接线缺失）", () => {
-  test("useBodySearch 已登记进变体白名单（claude/codex 壳可 import）", () => {
-    assert.match(read("pi/headless/allowlist.ts"), /"@\/pi\/hooks\/useBodySearch"/)
-  })
-
-  test("命令面板三壳 + 容器都接了 useBodySearch 与正文组", () => {
+  test("命令面板 + 容器都接了 useBodySearch 与正文组", () => {
     assert.match(read("pi/containers/CommandPaletteContainer.tsx"), /useBodySearch/)
     assert.match(read("pi/containers/CommandPaletteContainer.tsx"), /paletteBodyHitsOf/)
     assert.match(read("components/pi/composer/PiCommandPalette.tsx"), /PiPaletteBodySection/)
     assert.match(read("components/pi/composer/PiCommandPalette.tsx"), /bodyHit/)
-    assert.match(read("pi/variants/claude/overlays/ClaudeCommandPalette.tsx"), /useBodySearch/)
-    assert.match(read("pi/variants/claude/overlays/ClaudeCommandPalette.tsx"), /正文匹配/)
-    assert.match(read("pi/variants/codex/overlays/CodexCommandPalette.tsx"), /useBodySearch/)
-    assert.match(read("pi/variants/codex/overlays/CodexCommandPalette.tsx"), /正文匹配/)
   })
 
   test("侧栏搜索浮层与手机搜索页渲染正文组并走 selectBodyHit", () => {
@@ -244,22 +236,5 @@ describe("源码口径：在用界面都接上正文搜索（A-3 的根因是接
     assert.match(read("pi/mobile/MobileSearchPage.tsx"), /selectBodyHit/)
     assert.match(read("pi/containers/CursorUnifiedSidebar.tsx"), /useBodySearch/)
     assert.match(read("pi/containers/PhoneApp.tsx"), /useBodySearch/)
-  })
-
-  test("Claude / Codex 侧栏容器也接了正文搜索（第二轮：默认壳 Claude 的侧栏此前没接）", () => {
-    for (const file of ["pi/variants/claude/sidebar/ClaudeUnifiedSidebar.tsx", "pi/variants/codex/sidebar/CodexUnifiedSidebar.tsx"]) {
-      const src = read(file)
-      assert.match(src, /useBodySearch/, file)
-      assert.match(src, /sidebarBodyBlockOf/, file)
-      assert.match(src, /body: bodyBlock/, file)
-      assert.match(src, /selectBodyHit/, file)
-      assert.match(src, /openBodySearchHit/, file)
-    }
-  })
-
-  test("正文块组装新导出已登记进变体白名单（sidebarBodyBlockOf / bodyHitOf）", () => {
-    const allowlist = read("pi/headless/allowlist.ts")
-    assert.match(allowlist, /"sidebarBodyBlockOf"/)
-    assert.match(allowlist, /"bodyHitOf"/)
   })
 })

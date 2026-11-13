@@ -6,7 +6,7 @@
  *   系统返回从最上面一层关起（sheet → 命令面板 → 推入页）。
  * - 渲染仍以 usePiUiState 的 phonePage / view / pane 为准；这里只算"现在是哪一页""历史该怎么动""界面该怎么跟"。
  */
-import type { MobileRoute } from "../../mobile/model.ts"
+import { mobileRouteUrl, parseMobileRoute, routeSession, type MobileRoute } from "../../mobile/model.ts"
 
 /** 手机上的页面：列表页、对话页，以及推入页（新会话/设置/收件箱/右 pane） */
 export type PiPhonePageKey = "list" | "chat" | "new" | "settings" | "pane" | "inbox"
@@ -102,6 +102,19 @@ export function phoneNavInit(i: { route: MobileRoute; ownConversation: boolean; 
     return { kind: "rewrite", route: phoneRouteOf("chat", i.roomId, i.deviceId), keepState: true }
   }
   return i.route.deviceId ? { kind: "open", sessionId: i.route.sessionId, deviceId: i.route.deviceId } : { kind: "open", sessionId: i.route.sessionId }
+}
+
+/**
+ * 桌面外壳的地址栏（同手机深链 ?device=&session=，usePiAddressSync 用 history.replaceState 写，不新增历史项）。
+ * moved = 房间刚换过：照当前会话写（没有会话 = 列表地址）。没换过（刚挂上、设备 id 才补齐）时只改指着别的会话 / 别的设备的对话地址，
+ * 列表地址不动（手机列表页放大成桌面再缩回来仍回列表）。不用写时返回 null。
+ */
+export function desktopAddressOf(at: { pathname: string; search: string; hash: string }, roomId: string, deviceId: string | null | undefined, moved: boolean): string | null {
+  const now = parseMobileRoute(at.search)
+  if (!moved && (now.screen === "index" || !roomId)) return null
+  const want: MobileRoute = roomId ? phoneRouteOf("chat", roomId, deviceId) : deviceId ? { screen: "index", deviceId } : { screen: "index" }
+  if (now.screen === want.screen && routeSession(now) === routeSession(want) && (now.deviceId ?? "") === (want.deviceId ?? "")) return null
+  return mobileRouteUrl(at.pathname, at.search, at.hash, want)
 }
 
 /** 用户按了系统返回 / 前进（popstate 换了路由）以后界面怎么跟 */

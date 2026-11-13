@@ -2,12 +2,13 @@ import { useLayoutEffect, useRef, useState, type ComponentProps, type ReactEleme
 import { RoundIconButton, TextSelector } from "@/components/kit"
 import { Folder, Laptop, Monitor, Server } from "@/components/kit/icons"
 import { usePiStatic } from "@/components/pi/shared/layers"
+import { PiSpinner } from "@/components/pi/shared/PiSpinner"
 import { useComposerEnter } from "@/pi/headless/useComposerEnter"
 import { cn } from "@/lib/utils"
 import { PiCMenu } from "./PiCMenu"
-import { inputText, TOUCH_44, type CVariant } from "./styles"
+import { inputText, SEND_MUTED_STILL, TOUCH_44, type CVariant } from "./styles"
 
-/** 空状态 composer 里能打开的四个菜单 */
+/** 空状态 composer 里能打开的菜单。"model" 只为旧调用方保留：模型现在只读显示，不再有菜单 */
 export type PiEmptyMenu = "device" | "folder" | "plus" | "model"
 
 export interface PiEmptyComposerProps extends Omit<ComponentProps<"div">, "children"> {
@@ -18,7 +19,10 @@ export interface PiEmptyComposerProps extends Omit<ComponentProps<"div">, "child
   folder?: string | null
   /** 哪个选择器呈打开态（静态态：只认 device / folder，menu 垂在它下面；可交互：受控的打开菜单，配 onOpenChange） */
   open?: PiEmptyMenu | null
+  /** 新会话将用的模型（设备默认模型），只读显示：harness_start 不能指定模型，这里不能切 */
   model: { name: string; thinking: string }
+  /** 模型名下面的一句说明 */
+  modelNote?: string
   draft?: string
   placeholder?: string
   /** 框下内容（建议 pill；或启动中 / 失败的说明） */
@@ -33,13 +37,14 @@ export interface PiEmptyComposerProps extends Omit<ComponentProps<"div">, "child
   onSend?: () => void
   /** 打开 / 关掉某个菜单（不给时自己记） */
   onOpenChange?: (open: PiEmptyMenu | null) => void
-  /** 桌面四个锚定菜单的内容（PiDeviceMenu、PiFolderPicker、PiAttachMenu、PiModelMenu）；手机由容器开 sheet，只回调 onOpenChange */
+  /** 桌面三个锚定菜单的内容（PiDeviceMenu、PiFolderPicker、PiAttachMenu）；手机由容器开 sheet，只回调 onOpenChange */
   deviceMenu?: ReactNode
   folderMenu?: ReactNode
   plusMenu?: ReactNode
-  modelMenu?: ReactNode
   /** 菜单由容器开底部 sheet（默认 = 手机） */
   menusAsSheet?: boolean
+  /** 第一条已发出、正在启动 pi：黑圆钮换成转圈，不能再点 */
+  sending?: boolean
 }
 
 function platformIcon(platform: string) {
@@ -48,14 +53,22 @@ function platformIcon(platform: string) {
   return <Laptop />
 }
 
-export const EMPTY_PLACEHOLDER = "要 pi 做什么？输入 / 用命令，@ 引用文件"
+/** 新会话的第一条只能是文字任务：这里没有斜杠 / @ 菜单（会话起来后的追问框才有），占位不提它们 */
+export const EMPTY_PLACEHOLDER = "要 pi 做什么？"
+
+/** 拿不到设备默认模型的名字时写这个 */
+export const EMPTY_MODEL_FALLBACK = "设备默认模型"
+export const EMPTY_MODEL_NOTE = "开始后可在输入框里切换"
+
+/** 框下沿和往下开的菜单之间的间距（同 follow-up composer 上方浮层的 8） */
+const MENU_GAP = 8
 
 /**
  * 空状态 composer（design §1.6，empty-state-composer、full-window-empty-state#6–#8）：
  * 框上是选择器（文字 + ∨，不画框，段间只有空隙），中间是大输入框（圆角 10、最少 98 高），框内底行 + / 模型 …… 黑圆钮，框下建议 pill。
  * 先选目录、写第一条，发送时才启动 pi（待用户确认 12）。
  * compose from kit: TextSelector, RoundIconButton；参照 kit Composer(empty)（它的圆钮没有 send-muted 态，所以不直接用）。
- * P4 可交互：真输入框（data-cw-id="pi-new-input"，手机 16px、Enter 换行），设备 / 目录 / + / 模型在桌面是锚定菜单（PiCMenu），
+ * P4 可交互：真输入框（data-cw-id="pi-new-input"，手机 16px、Enter 换行），设备 / 目录 / + 在桌面是锚定菜单（PiCMenu），
  * 手机由容器开 sheet；输入框在 data-slot="pi-empty-composer" 里（外壳的 Esc 分层据此认 composer 焦点）。
  */
 export function PiEmptyComposer({
@@ -64,6 +77,7 @@ export function PiEmptyComposer({
   folder,
   open,
   model,
+  modelNote = EMPTY_MODEL_NOTE,
   draft = "",
   placeholder = EMPTY_PLACEHOLDER,
   below,
@@ -75,8 +89,8 @@ export function PiEmptyComposer({
   deviceMenu,
   folderMenu,
   plusMenu,
-  modelMenu,
   menusAsSheet,
+  sending = false,
   className,
   ...rest
 }: PiEmptyComposerProps) {
@@ -88,9 +102,10 @@ export function PiEmptyComposer({
   const [innerOpen, setInnerOpen] = useState<PiEmptyMenu | null>(null)
   const current = isStatic ? (open ?? null) : onOpenChange ? (open ?? null) : innerOpen
   const setOpen = (next: PiEmptyMenu | null) => (onOpenChange ? onOpenChange(next) : setInnerOpen(next))
-  const canSend = folder != null && value.trim().length > 0 && !device?.offline
+  const canSend = folder != null && value.trim().length > 0 && !device?.offline && !sending
   const selectorSize = phone ? "lg" : "md"
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
 
   // 输入区随内容长高（最高 132 / 200，超出框内滚动）
   useLayoutEffect(() => {
@@ -100,6 +115,19 @@ export function PiEmptyComposer({
     el.style.height = `${el.scrollHeight}px`
   }, [isStatic, value])
 
+  // 框内底行的 + 菜单往下开，落在框下沿以下 MENU_GAP，不盖住正在写的字：
+  // Radix 从触发钮量 sideOffset，所以要加上触发钮下沿到框下沿的距离，打开时量
+  const [triggerRise, setTriggerRise] = useState(0)
+  const plusOpen = !isStatic && !sheetMenus && current === "plus"
+  useLayoutEffect(() => {
+    const box = boxRef.current
+    const trigger = plusOpen ? box?.querySelector<HTMLElement>('[data-cw-id="pi-new-plus"]') : null
+    if (!box || !trigger) return
+    const next = Math.max(0, Math.round(box.getBoundingClientRect().bottom - trigger.getBoundingClientRect().bottom))
+    setTriggerRise((prev) => (prev === next ? prev : next))
+  }, [plusOpen, value])
+  const modelLabel = model.thinking ? `${model.name} · ${model.thinking}` : model.name
+
   const menuNode = (which: "device" | "folder") =>
     isStatic && menu != null && open === which ? (
       <div data-slot="pi-empty-selector-menu" className="absolute top-full left-0 z-(--cw-pi-z-popover) mt-1.5">
@@ -107,11 +135,11 @@ export function PiEmptyComposer({
       </div>
     ) : null
   /** 可交互：桌面包一层锚定菜单；手机（sheet）点一下只回调 */
-  const withMenu = (which: PiEmptyMenu, trigger: ReactElement, content: ReactNode, side: "top" | "bottom", align: "start" | "end") =>
+  const withMenu = (which: PiEmptyMenu, trigger: ReactElement, content: ReactNode, side: "top" | "bottom", align: "start" | "end", sideOffset = 6) =>
     isStatic || sheetMenus || content == null ? (
       trigger
     ) : (
-      <PiCMenu trigger={trigger} open={current === which} onOpenChange={(o) => setOpen(o ? which : null)} side={side} align={align} sideOffset={6}>
+      <PiCMenu trigger={trigger} open={current === which} onOpenChange={(o) => setOpen(o ? which : null)} side={side} align={align} sideOffset={sideOffset}>
         {content}
       </PiCMenu>
     )
@@ -172,6 +200,7 @@ export function PiEmptyComposer({
         </span>
       </div>
       <div
+        ref={boxRef}
         data-slot="pi-empty-box"
         className={cn(
           "flex min-w-0 flex-col rounded-(--cw-radius-composer-new) border border-solid border-(--cw-border) bg-(--cw-surface) shadow-(--cw-shadow-composer) focus-within:border-(--cw-pi-field-focus-border)",
@@ -225,33 +254,31 @@ export function PiEmptyComposer({
               onClick={sheetClick("plus", plusMenu)}
             />,
             plusMenu,
-            "top",
+            "bottom",
             "start",
+            triggerRise + MENU_GAP,
           )}
-          {withMenu(
-            "model",
-            <TextSelector
-              data-cw-id="pi-new-model"
-              tone="primary"
-              size={phone ? "lg" : "md"}
-              // P5：模型不支持思考级别时（thinking 为空）只写模型名
-              label={model.thinking ? `${model.name} · ${model.thinking}` : model.name}
-              aria-label={model.thinking ? `模型 ${model.name}，思考级别 ${model.thinking}，切换模型` : `模型 ${model.name}，切换模型`}
-              aria-haspopup={!isStatic && sheetMenus ? "dialog" : "menu"}
-              className={cn("min-w-0", phone && TOUCH_44)}
-              onClick={sheetClick("model", modelMenu)}
-            />,
-            modelMenu,
-            "top",
-            "start",
-          )}
+          {/* 只读：harness_start 不能指定模型，新会话用设备默认模型，会话起来后才能在追问框里切 */}
+          <div data-cw-id="pi-new-model" data-slot="pi-new-model" className="flex min-w-0 flex-col leading-(--cw-leading-tight)">
+            <span className={cn("truncate text-(--cw-text-2)", phone ? "text-(length:--cw-text-base)" : "text-(length:--cw-text-md)")}>
+              <span className="sr-only">新会话使用的模型：</span>
+              {modelLabel}
+            </span>
+            <span className={cn("truncate text-(--cw-text-3)", phone ? "text-(length:--cw-text-sm)" : "text-(length:--cw-text-xs)")}>{modelNote}</span>
+          </div>
           <RoundIconButton
-            variant={canSend ? "send" : "send-muted"}
-            data-cw-id={canSend ? "pi-new-send" : "pi-new-send-muted"}
-            aria-label={canSend ? "发送" : "发送（不可用）"}
+            variant={canSend || sending ? "send" : "send-muted"}
+            data-cw-id={sending ? "pi-new-sending" : canSend ? "pi-new-send" : "pi-new-send-muted"}
+            aria-label={sending ? "正在启动 pi" : canSend ? "发送" : "发送（不可用）"}
             aria-disabled={!canSend || undefined}
             size={phone ? 40 : "md"}
-            className={cn("ml-auto", phone && "relative after:absolute after:inset-[-4px] after:content-[''] [&>svg]:size-[18px]")}
+            icon={sending ? <PiSpinner size={phone ? 16 : 12} strokeWidth={phone ? 2 : 1.75} label="正在启动 pi" className="text-(--cw-primary-fg)" /> : undefined}
+            className={cn(
+              "ml-auto",
+              !canSend && !sending && SEND_MUTED_STILL,
+              sending && "cursor-default hover:bg-(--cw-primary)",
+              phone && "relative after:absolute after:inset-[-4px] after:content-[''] [&>svg]:size-[18px]",
+            )}
             {...(isStatic
               ? {}
               : {

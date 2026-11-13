@@ -20,6 +20,7 @@ import {
   identityStateViewOf,
   isSelfViewerRow,
   registrationErrorTextOf,
+  viewerRosterAdminOnlyOf,
   viewerStatusTextOf,
   IDENTITY_NOT_REGISTERED_TEXT,
   IDENTITY_PHASE_NOTE,
@@ -212,6 +213,13 @@ test("authorized viewers: status text and self detection", () => {
   const view = identityStateViewOf({ viewerId: "v-1", registered: true })
   assert.equal(isSelfViewerRow(admin, view), true)
   assert.equal(isSelfViewerRow(revoked, view), false)
+})
+
+test("authorized viewers: a non-admin refusal is a permission note, not a read failure", () => {
+  assert.equal(viewerRosterAdminOnlyOf(new Error("需要管理员令牌")), true, "relay refusal text arrives without a code")
+  assert.equal(viewerRosterAdminOnlyOf(Object.assign(new Error("x"), { code: "admin_required" })), true)
+  assert.equal(viewerRosterAdminOnlyOf(new Error("读取观看端名册超时")), false)
+  assert.equal(viewerRosterAdminOnlyOf(null), false)
 })
 
 test("fingerprint display groups hex in fours and dashes when missing", () => {

@@ -36,6 +36,21 @@
   --pm-r-lg: 12px;
   --pm-r-md: 10px;
   --pm-safe-bottom: 30px;
+  /* 安全区与页面底色由宿主桥接（--pm-host-*：PhoneApp 从 PiRoot 帧取，舞台 47/34、产品 env()）；单独挂载时取系统值 */
+  --pm-inset-top: var(--pm-host-safe-top, env(safe-area-inset-top, 0px));
+  --pm-inset-bottom: var(--pm-host-safe-bottom, max(var(--pm-safe-bottom), env(safe-area-inset-bottom, 0px)));
+  --pm-inset-left: var(--pm-host-safe-left, env(safe-area-inset-left, 0px));
+  --pm-inset-right: var(--pm-host-safe-right, env(safe-area-inset-right, 0px));
+  /* 整页底色：和会话正文同一层（宿主给），顶栏 / 列表 / 搜索不再和正文、系统状态栏差一档灰；抽屉仍用侧栏色 */
+  --pm-page: var(--pm-host-bg, var(--pm-bg));
+  /* 宽屏手机布局（如 iPad mini 竖屏 744，仍 <768）：内容列限宽 640 居中（PI_MOBILE_METRICS.columnMaxW）。
+     百分比在用到它的元素上按其容器宽算；只加在滚动区内容 / 固定条两侧，滚动区本身仍铺满，两侧空白也能滑 */
+  --pm-column-gutter: max(0px, calc((100% - 640px) / 2));
+  /* 设置 › 外观：字号档位相对标准档差几 px（宿主桥接 --pm-host-font-step / --pm-host-lead-step，手机正文 15/20 → 小 14/19、大 16/21），
+     写死的字号、行高都加上它；密度看 <html> 的 data-pi-density，列表行加高 2 / 4（只加不减，触控尺寸不变小）。默认档都是 0 */
+  --pm-fs: var(--pm-host-font-step, 0px);
+  --pm-lh: var(--pm-host-lead-step, 0px);
+  --pm-density: 0px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -43,11 +58,11 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: var(--pm-bg);
+  background: var(--pm-page);
   color: var(--pm-text-1);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-size: 15px;
-  line-height: 22px;
+  font-size: calc(15px + var(--pm-fs));
+  line-height: calc(22px + var(--pm-lh));
   -webkit-font-smoothing: antialiased;
 }
 
@@ -58,35 +73,58 @@
   --pm-swipe-archive-fg: #43434b;
 }
 
+:root[data-pi-density="standard"] .pi-mobile {
+  --pm-density: 2px;
+}
+:root[data-pi-density="relaxed"] .pi-mobile {
+  --pm-density: 4px;
+}
+
 .pi-mobile *,
 .pi-mobile *::before,
 .pi-mobile *::after {
   box-sizing: border-box;
 }
 
-:where(.pi-mobile) button {
-  font: inherit;
-  color: inherit;
-  background: none;
-  border: 0;
-  padding: 0;
-  cursor: pointer;
+/* 元素级重置放进 base 层：会话页正文（Tailwind 工具类，在 utilities 层）嵌在外壳里，不能被这里压掉 */
+@layer base {
+  :where(.pi-mobile) button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+  }
 }
 
 /* ---------------- 顶栏 54（P11-MOB-01） ---------------- */
+/* 顶部安全区算在顶栏里（content-box：内容区仍是 54），刘海 / 状态栏下的那段同色延伸，不另画一条 */
 .pm-topbar {
   display: flex;
   flex: none;
   align-items: center;
   gap: 6px;
+  box-sizing: content-box;
   height: 54px;
-  padding: 0 8px 0 16px;
-  border-bottom: 1px solid var(--pm-border);
-  background: var(--pm-surface);
+  /* 底线铺满；内容跟着内容列（宽屏手机布局时随 --pm-column-gutter 内收） */
+  padding: var(--pm-inset-top) max(8px, var(--pm-inset-right), calc(var(--pm-column-gutter) + 8px)) 0
+    max(16px, var(--pm-inset-left), calc(var(--pm-column-gutter) + 16px));
+  box-shadow: inset 0 -1px 0 var(--pm-border);
+  background: var(--pm-page);
+}
+/* 返回 / 侧栏钮那一侧：图标落在正文 16 的栅格上 */
+.pm-topbar:not([data-variant="home"]) {
+  padding-left: max(8px, var(--pm-inset-left), calc(var(--pm-column-gutter) + 8px));
+}
+/* 会话页顶栏挂了 data-pi-topbar（给输入框浮层量高度）；产品主题按这个标记收窄 PiTopBar 的左右内边距，这里压回本顶栏的 8 */
+.pi-mobile .pm-topbar[data-pi-topbar]:not([data-variant="home"]) {
+  padding-left: max(8px, var(--pm-inset-left), calc(var(--pm-column-gutter) + 8px));
+  padding-right: max(8px, var(--pm-inset-right), calc(var(--pm-column-gutter) + 8px));
 }
 .pm-topbar-title {
   color: var(--pm-text-1);
-  font-size: 17.5px;
+  font-size: calc(17.5px + var(--pm-fs));
   font-weight: 650;
   letter-spacing: -0.01em;
 }
@@ -96,16 +134,38 @@
   min-width: 0;
   flex: 1 1 auto;
 }
-.pm-topbar-title-chat {
+/* 会话页 / 推入页的标题；会话标题另挂 .pm-topbar-title-chat 给隐私模糊用 */
+.pm-topbar-heading .pm-topbar-title {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 16px;
+  font-size: calc(16px + var(--pm-fs));
 }
 .pm-topbar-sub {
+  overflow: hidden;
   color: var(--pm-text-4);
-  font-size: 11.5px;
-  line-height: 14px;
+  font-size: calc(11.5px + var(--pm-fs));
+  line-height: calc(14px + var(--pm-lh));
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pm-topbar-heading-btn {
+  justify-content: center;
+  height: 44px;
+  border-radius: 8px;
+  text-align: left;
+}
+.pm-icon-btn-count {
+  gap: 1px;
+  width: auto;
+  min-width: 36px;
+  padding: 0 6px 0 4px;
+}
+.pm-topbar-count {
+  color: var(--pm-wait);
+  font-size: calc(15px + var(--pm-fs));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .pm-topbar-backspace {
   width: 36px;
@@ -119,6 +179,7 @@
   margin-left: auto;
 }
 .pm-icon-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -128,6 +189,12 @@
   color: var(--pm-text-2);
   flex: none;
 }
+/* 视觉 36、触控 44（PI_MOBILE_METRICS.touchMin） */
+.pm-icon-btn::after {
+  position: absolute;
+  inset: -4px;
+  content: "";
+}
 .pm-icon-btn:hover {
   background: var(--pm-hover);
   color: var(--pm-text-1);
@@ -136,13 +203,18 @@
   width: 28px;
   height: 28px;
 }
-.pi-mobile :focus-visible {
-  outline: 2px solid var(--pm-accent);
-  outline-offset: 1px;
+.pm-icon-btn-sm::after {
+  inset: -8px;
 }
-/* v1.4：文本输入不吃上面的强调色外环，聚焦提示由字段自身 / 容器的中性描边承担（与桌面同一策略） */
-.pi-mobile :is(input, textarea, select):focus-visible {
-  outline: none;
+@layer base {
+  .pi-mobile :focus-visible {
+    outline: 2px solid var(--pm-accent);
+    outline-offset: 1px;
+  }
+  /* v1.4：文本输入不吃上面的强调色外环，聚焦提示由字段自身 / 容器的中性描边承担（与桌面同一策略） */
+  .pi-mobile :is(input, textarea, select):focus-visible {
+    outline: none;
+  }
 }
 .pi-mobile .pm-search-field:focus-within {
   box-shadow: inset 0 0 0 1px var(--pm-text-3);
@@ -150,18 +222,21 @@
 
 /* ---------------- 列表式首页（P11-MOB-04/05/06/07） ---------------- */
 .pm-list-page {
-  background: var(--pm-bg);
+  background: var(--pm-page);
 }
+/* 横屏：内容让开左右安全区（竖屏为 0） */
 .pm-list-body {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+  padding-right: var(--pm-inset-right);
+  padding-left: var(--pm-inset-left);
 }
 .pm-device-strip-wrap {
   position: relative;
   flex: none;
-  padding: 2px 14px 0;
+  padding: 10px calc(14px + var(--pm-column-gutter)) 0;
 }
 .pm-device-strip {
   display: flex;
@@ -183,7 +258,7 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
   font-weight: 550;
 }
 .pm-device-chevron {
@@ -204,9 +279,10 @@
 .pm-device-menu {
   position: absolute;
   z-index: 40;
-  top: 52px;
-  right: 14px;
-  left: 14px;
+  /* 设备条下方 2px：wrap 上内边距 10 + 条高 48 */
+  top: 60px;
+  right: calc(14px + var(--pm-column-gutter));
+  left: calc(14px + var(--pm-column-gutter));
   padding: 4px;
   border: 1px solid var(--pm-border);
   border-radius: 12px;
@@ -231,7 +307,7 @@
 .pm-device-state {
   margin-left: auto;
   color: var(--pm-text-4);
-  font-size: 12px;
+  font-size: calc(12px + var(--pm-fs));
 }
 .pm-new-pill {
   display: flex;
@@ -240,32 +316,37 @@
   justify-content: center;
   gap: 8px;
   height: 46px;
-  margin: 12px 14px 8px;
+  margin: 12px calc(14px + var(--pm-column-gutter)) 8px;
   border-radius: var(--pm-r-lg);
   background: var(--pm-pill);
   color: var(--pm-pill-fg);
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
   font-weight: 550;
 }
 .pm-new-pill:hover {
   background: var(--pm-hover);
 }
+/* 列表滚到底部安全区之下（不再垫一条实色底段）；滚动条同正文滚动区一样隐藏 */
 .pm-home-scroll {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 0 0 56px;
+  padding: 0 var(--pm-column-gutter) calc(var(--pm-inset-bottom) + 24px);
   overflow-y: auto;
-  scrollbar-width: thin;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.pm-home-scroll::-webkit-scrollbar {
+  display: none;
 }
 .pm-home-note {
   margin: 12px 20px;
   color: var(--pm-text-4);
-  font-size: 13px;
+  font-size: calc(13px + var(--pm-fs));
 }
 .pm-search-bodyhead {
   margin: 16px 20px 4px;
   color: var(--pm-text-4);
-  font-size: 12px;
+  font-size: calc(12px + var(--pm-fs));
 }
 .pm-group {
   margin-top: 14px;
@@ -278,7 +359,7 @@
   align-items: center;
   gap: 9px;
   width: 100%;
-  height: 34px;
+  height: calc(34px + var(--pm-density));
   padding: 0 20px 0 22px;
   color: var(--pm-text-3);
   text-align: left;
@@ -290,10 +371,10 @@
   display: flex;
   align-items: center;
   width: 100%;
-  min-height: 40px;
+  min-height: calc(40px + var(--pm-density));
   padding: 0 20px 0 22px;
   color: var(--pm-text-3);
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--pm-fs));
   text-align: left;
 }
 .pm-group-more:hover {
@@ -305,13 +386,151 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--pm-text-2);
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--pm-fs));
   font-weight: 550;
+}
+/* 置顶组没有折叠：静态组头 */
+.pm-group-static {
+  color: var(--pm-icon);
+}
+/* 折叠组的状态点（不是会话数）：出错 > 等你 > 运行 */
+.pm-group-tone {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--pm-run);
+}
+.pm-group-tone[data-tone="waiting"] {
+  background: var(--pm-wait);
+}
+.pm-group-tone[data-tone="error"] {
+  background: var(--pm-error);
+}
+
+/* 朴素入口行：待答（有待处理时）在分组上方、归档（本机有归档时）在分组下方 */
+.pm-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% - 28px);
+  min-height: calc(48px + var(--pm-density));
+  margin: 6px 14px 2px;
+  padding: 0 12px 0 14px;
+  border-radius: var(--pm-r-lg);
+  background: var(--pm-pill);
+  color: var(--pm-text-1);
+  text-align: left;
+}
+.pm-nav-row:hover {
+  background: var(--pm-hover);
+}
+.pm-nav-row > svg:first-child {
+  flex: none;
+  color: var(--pm-wait);
+}
+.pm-nav-row-quiet {
+  min-height: 44px;
+  margin-top: 18px;
+  background: transparent;
+  color: var(--pm-text-3);
+}
+.pm-nav-row-quiet > svg:first-child {
+  color: var(--pm-icon);
+}
+.pm-nav-row-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: calc(15px + var(--pm-fs));
+  font-weight: 550;
+}
+.pm-nav-row-quiet .pm-nav-row-label {
+  font-weight: 500;
+}
+.pm-nav-row-meta {
+  flex: none;
+  color: var(--pm-text-4);
+  font-size: calc(13px + var(--pm-fs));
+  font-variant-numeric: tabular-nums;
+}
+.pm-nav-row-chevron {
+  flex: none;
+  color: var(--pm-text-5);
+}
+.pm-nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--pm-wait) 18%, transparent);
+  color: var(--pm-wait);
+  font-size: calc(12px + var(--pm-fs));
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.pm-nav-row .pm-nav-badge {
+  margin-left: 0;
+}
+
+/* 归档视图的分区头 / 空态 */
+.pm-section-head {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 8px 0 22px;
+}
+.pm-section-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--pm-text-2);
+  font-size: calc(13.5px + var(--pm-fs));
+  font-weight: 550;
+}
+.pm-section-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  margin-left: auto;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: var(--pm-text-3);
+  font-size: calc(13.5px + var(--pm-fs));
+}
+.pm-section-action::after {
+  position: absolute;
+  inset: -6px 0;
+  content: "";
+}
+.pm-section-action:hover {
+  background: var(--pm-hover);
+  color: var(--pm-text-1);
+}
+.pm-empty {
+  padding: 28px 24px;
+  text-align: center;
+}
+.pm-empty-title {
+  margin: 0;
+  color: var(--pm-text-3);
+  font-size: calc(14px + var(--pm-fs));
+}
+.pm-empty-hint {
+  margin: 6px 0 0;
+  color: var(--pm-text-5);
+  font-size: calc(12px + var(--pm-fs));
+  line-height: calc(17px + var(--pm-lh));
 }
 .pm-safe-bottom {
   flex: none;
-  height: var(--pm-safe-bottom);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  height: max(var(--pm-inset-bottom), 10px);
   background: var(--pm-bg);
 }
 
@@ -319,7 +538,7 @@
 .pm-swipe {
   position: relative;
   overflow: hidden;
-  background: var(--pm-surface);
+  background: var(--pm-page);
 }
 .pm-swipe + .pm-swipe .pm-swipe-row::after,
 .pm-swipe + .pm-swipe {
@@ -348,7 +567,7 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: calc(11px + var(--pm-fs));
 }
 .pm-swipe-pin {
   background: var(--pm-swipe-pin-bg);
@@ -364,17 +583,29 @@
   display: flex;
   align-items: flex-start;
   gap: 11px;
-  height: 60px;
-  padding: 10px 20px 0 22px;
-  background: var(--pm-surface);
+  height: calc(60px + var(--pm-density));
+  padding: calc(10px + var(--pm-density) / 2) 20px 0 22px;
+  background: var(--pm-page);
   cursor: pointer;
   touch-action: pan-y;
   user-select: none;
+  -webkit-user-select: none;
+  /* 长按是我们自己的操作卡：关掉 iOS 的系统预览 / 拷贝菜单 */
+  -webkit-touch-callout: none;
   transition: transform 160ms ease;
   will-change: transform;
 }
 .pm-swipe-row[data-dragging] {
   transition: none;
+}
+/* 按下态叠在不透明行底上（行底要盖住左滑托盘，不能直接换成半透明色） */
+@media (hover: hover) {
+  .pm-swipe-row:hover {
+    background-image: linear-gradient(var(--pm-hover), var(--pm-hover));
+  }
+}
+.pm-swipe-row:active:not([data-dragging]) {
+  background-image: linear-gradient(var(--pm-selected), var(--pm-selected));
 }
 .pm-row-dot {
   display: inline-flex;
@@ -420,24 +651,24 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--pm-text-1);
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
   font-weight: 550;
-  line-height: 20px;
+  line-height: calc(20px + var(--pm-lh));
 }
 .pm-row-time {
   margin-left: auto;
   flex: none;
   color: var(--pm-text-5);
-  font-size: 12px;
-  line-height: 20px;
+  font-size: calc(12px + var(--pm-fs));
+  line-height: calc(20px + var(--pm-lh));
 }
 .pm-row-line2 {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--pm-text-4);
-  font-size: 12.5px;
-  line-height: 17px;
+  font-size: calc(12.5px + var(--pm-fs));
+  line-height: calc(17px + var(--pm-lh));
 }
 
 /* ---------------- 抽屉（P11-MOB-02/03） ---------------- */
@@ -519,12 +750,28 @@
 :root[data-pi-theme="light"] .pm-drawer {
   box-shadow: 24px 0 60px rgba(0, 0, 0, 0.18);
 }
+/* 抽屉头：和页面顶栏同高同基线（打开时标题落在顶栏标题的位置），顶部安全区算在里面 */
+.pm-drawer-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  box-sizing: content-box;
+  height: 54px;
+  padding: var(--pm-inset-top) 14px 0 max(26px, calc(var(--pm-inset-left) + 12px));
+}
+.pm-drawer-head .pm-icon-btn {
+  margin-left: auto;
+}
 .pm-drawer-scroll {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 56px 14px 0;
+  padding: 2px 14px 0 max(14px, var(--pm-inset-left));
   overflow-y: auto;
-  scrollbar-width: thin;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.pm-drawer-scroll::-webkit-scrollbar {
+  display: none;
 }
 .pm-drawer-device {
   display: flex;
@@ -552,7 +799,7 @@
   border-radius: var(--pm-r-md);
   background: var(--pm-pill);
   color: var(--pm-pill-fg);
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
   font-weight: 550;
   text-align: left;
 }
@@ -570,7 +817,7 @@
   padding: 0 12px;
   border-radius: var(--pm-r-md);
   color: var(--pm-text-3);
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
   text-align: left;
 }
 .pm-drawer-naive-row:hover {
@@ -583,17 +830,14 @@
 .pm-drawer-section-head {
   display: flex;
   align-items: center;
-  gap: 16px;
-  height: 26px;
+  gap: 6px;
+  min-height: 26px;
   padding: 0 8px;
   color: var(--pm-text-4);
-  font-size: 13px;
+  font-size: calc(13px + var(--pm-fs));
 }
-.pm-drawer-section-tools {
-  display: inline-flex;
-  gap: 16px;
-  margin-left: auto;
-  color: var(--pm-text-4);
+.pm-drawer-section-head .pm-section-action {
+  margin-right: -8px;
 }
 .pm-drawer-group + .pm-drawer-group {
   margin-top: 12px;
@@ -603,7 +847,7 @@
   align-items: center;
   gap: 9px;
   width: 100%;
-  height: 40px;
+  height: calc(40px + var(--pm-density));
   padding: 0 8px;
   border-radius: var(--pm-r-md);
   color: var(--pm-text-2);
@@ -622,7 +866,7 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
 }
 .pm-drawer-session {
   margin-top: 1px;
@@ -632,7 +876,7 @@
   align-items: center;
   gap: 9px;
   width: 100%;
-  height: 48px;
+  height: calc(48px + var(--pm-density));
   padding: 0 8px;
   border-radius: var(--pm-r-md);
   color: var(--pm-text-1);
@@ -648,12 +892,12 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 14.5px;
+  font-size: calc(14.5px + var(--pm-fs));
 }
 .pm-drawer-session-time {
   flex: none;
   color: var(--pm-text-5);
-  font-size: 12px;
+  font-size: calc(12px + var(--pm-fs));
 }
 .pm-dot-core {
   width: 7px;
@@ -670,7 +914,7 @@
   align-items: center;
   gap: 9px;
   min-height: 48px;
-  padding: 10px 14px 0;
+  padding: 10px 14px 0 max(14px, var(--pm-inset-left));
   border-top: 1px solid var(--pm-border);
 }
 .pm-identity-tile {
@@ -694,7 +938,7 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--pm-text-2);
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
 }
 .pm-drawer-identity .pm-icon-btn {
   margin-left: auto;
@@ -734,10 +978,11 @@
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
+  padding-top: 4px;
   color: var(--pm-text-1);
-  font-size: 13px;
+  font-size: calc(15px + var(--pm-fs));
   font-weight: 600;
-  line-height: 18px;
+  line-height: calc(20px + var(--pm-lh));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -745,8 +990,8 @@
   display: flex;
   gap: 8px;
   margin: 6px 0 0;
-  font-size: 12.5px;
-  line-height: 17px;
+  font-size: calc(12.5px + var(--pm-fs));
+  line-height: calc(17px + var(--pm-lh));
 }
 .pm-longpress-key {
   flex: none;
@@ -761,12 +1006,13 @@
 }
 .pm-mono {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-size: calc(11.5px + var(--pm-fs));
 }
 .pm-longpress-sub {
-  margin: 8px 0 12px;
+  margin: 8px 0 0;
   color: var(--pm-text-4);
-  font-size: 11.5px;
+  font-size: calc(12px + var(--pm-fs));
+  line-height: calc(17px + var(--pm-lh));
 }
 .pm-longpress-actions {
   display: flex;
@@ -781,7 +1027,7 @@
   gap: 7px;
   height: 44px;
   color: var(--pm-text-2);
-  font-size: 14px;
+  font-size: calc(14px + var(--pm-fs));
 }
 .pm-longpress-action + .pm-longpress-action {
   border-left: 1px solid var(--pm-border);
@@ -791,15 +1037,16 @@
 }
 
 /* ---------------- 全屏搜索（P11-MOB-11） ---------------- */
+/* 搜索页是外壳根里唯一的一页，不另起层：手机的通知出口（raised）要能盖在它上面 */
 .pm-search-page {
   position: absolute;
   inset: 0;
-  z-index: 40;
-  background: var(--pm-bg);
+  display: flex;
+  flex-direction: column;
+  background: var(--pm-page);
 }
 .pm-search-bar {
   gap: 8px;
-  padding-left: 8px;
 }
 .pm-search-field {
   display: flex;
@@ -819,25 +1066,62 @@
   outline: none;
   background: transparent;
   color: var(--pm-text-1);
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
 }
 .pm-search-input::placeholder {
   color: var(--pm-text-5);
 }
-.pm-search-results {
-  height: calc(100% - 54px);
-  overflow-y: auto;
-  padding-bottom: 30px;
+/* 清除钮自己画（系统的取消叉各浏览器长得不一样，深色下还看不清） */
+.pm-search-input::-webkit-search-cancel-button,
+.pm-search-input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
 }
+.pm-search-clear {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  margin-right: -4px;
+  border-radius: 50%;
+  color: var(--pm-text-4);
+}
+/* 视觉 22、触控 44 */
+.pm-search-clear::after {
+  position: absolute;
+  inset: -11px;
+  content: "";
+}
+.pm-search-clear:hover {
+  color: var(--pm-text-2);
+}
+.pm-search-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 max(var(--pm-inset-right), var(--pm-column-gutter)) calc(var(--pm-inset-bottom) + 24px) max(var(--pm-inset-left), var(--pm-column-gutter));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.pm-search-results::-webkit-scrollbar {
+  display: none;
+}
+/* 同列表行：两行、状态点和时间对齐第一行 */
 .pm-search-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 11px;
   width: 100%;
-  min-height: 56px;
-  padding: 8px 20px 8px 22px;
+  min-height: calc(60px + var(--pm-density));
+  padding: calc(10px + var(--pm-density) / 2) 20px calc(10px + var(--pm-density) / 2) 22px;
   border-bottom: 1px solid var(--pm-border);
   text-align: left;
+}
+.pm-search-row:active {
+  background: var(--pm-selected);
 }
 .pm-search-row-main {
   display: flex;
@@ -849,15 +1133,17 @@
 .pm-search-row-title {
   overflow: hidden;
   color: var(--pm-text-1);
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
   font-weight: 550;
+  line-height: calc(20px + var(--pm-lh));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .pm-search-row-summary {
   overflow: hidden;
   color: var(--pm-text-4);
-  font-size: 12.5px;
+  font-size: calc(12.5px + var(--pm-fs));
+  line-height: calc(17px + var(--pm-lh));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -865,7 +1151,8 @@
   margin-left: auto;
   flex: none;
   color: var(--pm-text-5);
-  font-size: 12px;
+  font-size: calc(12px + var(--pm-fs));
+  line-height: calc(20px + var(--pm-lh));
 }
 
 /* ---------------- 设置项两卡（P11-MOB-10） ---------------- */
@@ -877,7 +1164,7 @@
 }
 .pm-nav-setting-head {
   color: var(--pm-text-1);
-  font-size: 14px;
+  font-size: calc(14px + var(--pm-fs));
   font-weight: 550;
 }
 .pm-nav-setting-cards {
@@ -963,13 +1250,13 @@
 }
 .pm-nav-setting-title {
   color: var(--pm-text-1);
-  font-size: 15px;
+  font-size: calc(15px + var(--pm-fs));
   font-weight: 550;
 }
 .pm-nav-setting-desc {
   color: var(--pm-text-4);
-  font-size: 12px;
-  line-height: 16px;
+  font-size: calc(12px + var(--pm-fs));
+  line-height: calc(16px + var(--pm-lh));
 }
 .pm-nav-setting-radio {
   display: inline-flex;
@@ -990,8 +1277,8 @@
 .pm-nav-setting-foot {
   margin: 0;
   color: var(--pm-text-5);
-  font-size: 11.5px;
-  line-height: 16px;
+  font-size: calc(11.5px + var(--pm-fs));
+  line-height: calc(16px + var(--pm-lh));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1001,12 +1288,14 @@
 }
 
 /* B0 集成补充：shell 装配/会话页插槽/长按卡提示/抽屉设备菜单 */
+/* 高度只取宿主（根节点 100dvh）：不能写 min-height: 100vh，带地址栏的手机浏览器里 100vh 比可视区高，会把 composer 挤出屏外 */
+/* 根上同时挂着 data-pi-sidebar，侧栏 token 表会给它铺 --sb-bg：这里压回整页底色 */
 .pi-mobile.pm-mobile-shell {
   display: flex;
   flex-direction: column;
   width: 100%;
   height: 100%;
-  min-height: 100vh;
+  background: var(--pm-page);
 }
 .pm-list-page {
   display: flex;
@@ -1021,11 +1310,117 @@
   min-height: 0;
   overflow: hidden;
 }
+/* 宽屏手机布局：会话列（正文 + 输入区）同列表限宽 640 居中；滚动区仍铺满 */
+.pm-session-host [data-pi-shell="phone"][data-pi-page="chat"] > [data-pi-dock],
+.pm-session-host [data-pi-part="transcript"][data-variant="phone"] {
+  width: 100%;
+  max-width: 640px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+/* ---------------- 待答推入页 ---------------- */
+.pm-inbox-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px max(var(--pm-inset-right), var(--pm-column-gutter)) calc(var(--pm-inset-bottom) + 24px) max(var(--pm-inset-left), var(--pm-column-gutter));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.pm-inbox-scroll::-webkit-scrollbar {
+  display: none;
+}
+.pm-inbox-group {
+  margin-top: 14px;
+}
+.pm-inbox-group:first-child {
+  margin-top: 6px;
+}
+.pm-inbox-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: calc(34px + var(--pm-density));
+  margin: 0;
+  padding: 0 20px 0 22px;
+  color: var(--pm-text-2);
+  font-size: calc(13.5px + var(--pm-fs));
+  font-weight: 550;
+}
+.pm-inbox-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--pm-online);
+}
+.pm-inbox-dot[data-kind="waiting"] {
+  background: var(--pm-wait);
+}
+.pm-inbox-dot[data-kind="error"] {
+  background: var(--pm-error);
+}
+.pm-inbox-count {
+  color: var(--pm-text-4);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.pm-inbox-row {
+  border-bottom: 1px solid var(--pm-border);
+}
+.pm-inbox-line {
+  display: flex;
+  align-items: center;
+}
+.pm-inbox-open {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  min-width: 0;
+  min-height: calc(60px + var(--pm-density));
+  flex: 1 1 auto;
+  padding: calc(10px + var(--pm-density) / 2) 20px calc(10px + var(--pm-density) / 2) 22px;
+  text-align: left;
+}
+.pm-inbox-open:active {
+  background: var(--pm-selected);
+}
+.pm-inbox-line[data-dismissible] .pm-inbox-open {
+  padding-right: 4px;
+}
+.pm-inbox-dismiss {
+  margin-right: 8px;
+  color: var(--pm-icon);
+}
+/* 原地答确认：两枚 44 高的按钮排在行下，不挤标题 */
+.pm-inbox-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 20px 12px 22px;
+}
+.pm-inbox-btn {
+  min-height: 44px;
+  flex: 1 1 0;
+  border-radius: var(--pm-r-md);
+  background: var(--pm-pill);
+  color: var(--pm-text-1);
+  font-size: calc(15px + var(--pm-fs));
+  font-weight: 550;
+}
+.pm-inbox-btn[data-primary] {
+  background: var(--pm-text-1);
+  color: var(--pm-page);
+}
+.pm-inbox-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .pm-longpress-hint {
-  margin: -6px 0 10px;
+  margin: 4px 0 14px;
   color: var(--pm-text-5);
-  font-size: 10.5px;
-  line-height: 15px;
+  font-size: calc(11px + var(--pm-fs));
+  line-height: calc(15px + var(--pm-lh));
 }
 .pm-drawer-device-wrap {
   position: relative;

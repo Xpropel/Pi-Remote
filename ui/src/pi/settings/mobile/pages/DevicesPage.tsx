@@ -205,6 +205,15 @@ export function DevicesPage() {
                     >
                       {probingId === device.id ? "测试中…" : "测试连接"}
                     </button>
+                    <button
+                      type="button"
+                      className="sm-device-action"
+                      disabled={!device.online}
+                      title={device.online ? "查看这台设备上 pi、扩展与运行环境的诊断信息" : "设备离线，无法诊断"}
+                      onClick={() => act.openHostDiag(device.id)}
+                    >
+                      诊断
+                    </button>
                     {isDefault ? (
                       <span className="sm-device-default">已设为默认</span>
                     ) : (

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useSyncExternalStore } from "react"
 import { nextUnseen, pageTitle } from "@/relay/presence"
 import { roomTitle, type Relay } from "@/relay/useRelay"
 
@@ -43,6 +43,28 @@ export interface UsePageTitleOptions {
 }
 
 /**
+ * 界面此刻画的不是 relay 的当前会话（手机深链「正在打开会话… / 会话不可用」）时，标签页标题用这段文字，
+ * 不再写上一个会话的名字和它的运行中 / 完成前缀；null = 照常。document.title 全局只有一个，替身也是模块级的。
+ */
+let titleStandIn: string | null = null
+const standInListeners = new Set<() => void>()
+
+export function setPageTitleStandIn(text: string | null) {
+  if (titleStandIn === text) return
+  titleStandIn = text
+  for (const listener of standInListeners) listener()
+}
+
+function subscribeTitleStandIn(listener: () => void) {
+  standInListeners.add(listener)
+  return () => {
+    standInListeners.delete(listener)
+  }
+}
+
+const readTitleStandIn = () => titleStandIn
+
+/**
  * 标签页标题跟着会话走：运行中 ●、页面在后台时这一轮跑完了 ✓（回到页面就消失）、断线标「已断开」。
  * P9 修复线 W（review-1 P2-2）：waiting > 0（任意「等你回答」）时前缀「? 」，压过 ● 与 ✓；
  * 「? 」与 favicon 角标都由这里的 waiting 计数驱动，favicon hook（useCompletionBadge）只画图不写标题。
@@ -51,6 +73,7 @@ export interface UsePageTitleOptions {
  */
 export function usePageTitle(relay: Relay, waiting = 0, options: UsePageTitleOptions = {}) {
   const { completion = true, privacy = false, always = false } = options
+  const standIn = useSyncExternalStore(subscribeTitleStandIn, readTitleStandIn)
   const room = relay.rooms.find((item) => item.id === relay.roomId) || null
   const [hidden, setHidden] = useState(pageHidden)
   const [track, setTrack] = useState({ busy: relay.busy, roomId: relay.roomId, unseen: false })
@@ -83,13 +106,16 @@ export function usePageTitle(relay: Relay, waiting = 0, options: UsePageTitleOpt
       window.removeEventListener("keydown", clear)
     }
   }, [always, hidden, track.unseen])
-  const title = pageTitle({
-    room: privacy ? "" : room ? roomTitle(room) : "",
-    busy: relay.busy && relay.online,
-    unseenDone: completion && track.unseen,
-    linkLost: !!relay.token && relay.everConnected && !relay.authed,
-    waiting: waiting > 0,
-  })
+  const linkLost = !!relay.token && relay.everConnected && !relay.authed
+  const title = standIn
+    ? pageTitle({ room: standIn, busy: false, unseenDone: false, linkLost, waiting: waiting > 0 })
+    : pageTitle({
+        room: privacy ? "" : room ? roomTitle(room) : "",
+        busy: relay.busy && relay.online,
+        unseenDone: completion && track.unseen,
+        linkLost,
+        waiting: waiting > 0,
+      })
   useEffect(() => {
     document.title = title
   }, [title])

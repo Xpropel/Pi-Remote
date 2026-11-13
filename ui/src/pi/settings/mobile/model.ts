@@ -273,6 +273,20 @@ export function providersOf(data: unknown): MobileProviderRow[] {
   })
 }
 
+/** pi `getProviderAuthStatus().source` 的已知取值；没见过的原样显示。 */
+const AUTH_SOURCE_LABELS: Record<string, string> = {
+  stored: "登录保存",
+  runtime: "运行时传入",
+  environment: "环境变量",
+  models_json_key: "models.json",
+  models_json_command: "models.json 命令",
+  fallback: "扩展提供",
+}
+
+export function authSourceLabelOf(source: string): string {
+  return AUTH_SOURCE_LABELS[source] ?? source
+}
+
 export interface MobileMcpRow {
   name: string
   connected: boolean

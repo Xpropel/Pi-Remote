@@ -107,7 +107,7 @@ const labels = (tray) => tray.map((x) => x.label)
 const IDS = readdirSync(LIVE_DIR).filter((f) => f.endsWith(".ts")).map((f) => f.slice(0, -3)).sort()
 
 test("每份 live fixture：id 与文件名一致、now 固定为 MOCK_NOW、不写 useRelay 的派生字段", async () => {
-  // P4.2 mock 线新增 p4-devices / p4-workbench；数量只增不减（每份都逐项校验）
+  // 每份都逐项校验
   assert.ok(IDS.length >= 32, `fixture 数量异常：${IDS.length}`)
   assert.equal(MOCK_NOW, 1792809720000, "= replica shared/mock.ts 的 MOCK_NOW")
   for (const id of IDS) {
@@ -375,7 +375,7 @@ test("b/approval-waiting：S3 + blockedBy approval → 输入已禁用 / 先回�
   const attention = attentionOf(relay)
   assert.equal(attention[0].key, "dialog:r-s3:dlg-7f3")
   assert.equal(attention[0].title, "给 history-backfill 补测试")
-  assert.equal(attention[0].detail, "等你处理：允许 pi 运行这条命令吗？")
+  assert.equal(attention[0].detail, "等你回答：允许 pi 运行这条命令吗？")
   // replica 画成「等你确认」（waiting_approval）；现在的协议里停在 input-available（G6）
   assert.equal(toolDisplayState(relay.transcript.items.at(-1).blocks.at(-1)), "running")
   assert.equal(labels(trayOf(relay, fx))[0], "改动 +12 −0")

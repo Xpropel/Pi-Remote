@@ -244,6 +244,14 @@ function argsCommandOf(event: TerminalEvent): string {
   return commandFromInput(event.args)
 }
 
+/** pi 的工具被停止时的结果样板（结果 isError）：bash 接在已有输出后面（"…\n\nCommand aborted"），其余工具整段是 "Operation aborted" */
+const ABORTED_RESULT_SUFFIX = /(?:Command|Operation) aborted\s*$/
+
+/** 工具结果是停止打断的、不是命令自己失败：对话里的工具块只有结果原文，实时帧带的 termStatus 到不了那里 */
+export function abortedToolResult(text: string | null | undefined): boolean {
+  return !!text && ABORTED_RESULT_SUFFIX.test(text)
+}
+
 function termStatusOf(value: unknown): "timeout" | "aborted" | null {
   const status = textField(value).toLowerCase()
   if (status === "timeout" || status === "timed_out" || status === "timedout") return "timeout"
@@ -419,11 +427,39 @@ export type TerminalHistoryToolBlock = {
   command: string
   outputText: string
   stderr?: string
+  /** 工具块的 state / outcome / exitCode，原样带出（会话历史按它判结果；exitCode 只认数据层给的字段） */
+  state?: string
+  outcome?: string
+  exitCode?: number
 }
+
+function toolBlockOf(raw: Record<string, unknown>, id: string, toolName: string): TerminalHistoryToolBlock {
+  const block: TerminalHistoryToolBlock = {
+    id,
+    toolName,
+    command: commandFromInput(raw.input),
+    outputText: typeof raw.outputText === "string" ? raw.outputText : "",
+    stderr: typeof raw.stderr === "string" ? raw.stderr : undefined,
+  }
+  const state = textField(raw.state)
+  if (state) block.state = state
+  const outcome = textField(raw.outcome)
+  if (outcome) block.outcome = outcome
+  const exitCode = finiteNumber(raw.exitCode)
+  if (exitCode !== null) block.exitCode = exitCode
+  return block
+}
+
+/** 原始工具块 → 它在会话历史里的结束条目（工具块对象不变就复用，流式每一批不重算整段输出） */
+const sessionItemCache = new WeakMap<object, TerminalItem | null>()
 
 /** 从 transcript 条目里提取 bash/powershell 工具块（只读，不改正文）。 */
 export function terminalToolBlocks(items: readonly unknown[]): TerminalHistoryToolBlock[] {
-  const result: TerminalHistoryToolBlock[] = []
+  return terminalToolBlockEntries(items).map((entry) => entry.block)
+}
+
+function terminalToolBlockEntries(items: readonly unknown[]): { raw: Record<string, unknown>; block: TerminalHistoryToolBlock }[] {
+  const result: { raw: Record<string, unknown>; block: TerminalHistoryToolBlock }[] = []
   const seen = new Set<string>()
   for (const item of items) {
     if (!isRecord(item) || item.kind !== "assistant" || !Array.isArray(item.blocks)) continue
@@ -433,16 +469,76 @@ export function terminalToolBlocks(items: readonly unknown[]): TerminalHistoryTo
       const toolName = textField(raw.name)
       if (!id || seen.has(id) || !isTerminalToolName(toolName)) continue
       seen.add(id)
-      result.push({
-        id,
-        toolName,
-        command: commandFromInput(raw.input),
-        outputText: typeof raw.outputText === "string" ? raw.outputText : "",
-        stderr: typeof raw.stderr === "string" ? raw.stderr : undefined,
-      })
+      result.push({ raw, block: toolBlockOf(raw, id, toolName) })
     }
   }
   return result
+}
+
+/** 工具块的结果 → 终端条目状态（口径同 transcript 的工具卡）；还没出结果 / 被拒绝 / 在等审批或排队（没跑过）返回 null */
+function blockEndState(block: TerminalHistoryToolBlock): TerminalEntryState | null {
+  if (block.state === "denied" || block.outcome === "denied") return null
+  if (block.state === "output-error" && block.outcome === "timeout") return "timed_out"
+  switch (block.state) {
+    case "output-available":
+      return typeof block.exitCode === "number" && block.exitCode !== 0 ? "failed" : "succeeded"
+    case "output-error":
+      return abortedToolResult(block.outputText) ? "aborted" : "failed"
+    case "cancelled":
+      return "aborted"
+    default:
+      return null
+  }
+}
+
+function historyItemOf(block: TerminalHistoryToolBlock, state: TerminalEntryState): TerminalItem {
+  const output = outputState(block.outputText, false)
+  const stderr = block.stderr ? tailTerminalOutput(block.stderr).text : ""
+  return {
+    id: block.id,
+    toolName: block.toolName,
+    command: block.command,
+    startedAt: null,
+    endedAt: null,
+    durationMs: null,
+    state,
+    exitCode: block.exitCode,
+    output: output.output,
+    outputTruncated: output.outputTruncated,
+    stderr: stderr || undefined,
+    inferredEnd: false,
+  }
+}
+
+/**
+ * 终端视图的会话历史：对话里的命令卡（bash / powershell 工具块）按对话里的先后列出来 —— 页面重开后保留期外的命令也在，
+ * 空态只留给真没跑过命令的会话。
+ *  - 有实时条目的（这次打开页面后跑的、relay 元数据重建的）用实时条目：起止、耗时、退出码、实时输出都在它上面；
+ *  - 只在对话里的：结果只读工具块（成功 / 失败 / 超时 / 已取消，退出码只认工具块的 exitCode 字段），没有起止时刻就不写耗时；
+ *    被拒绝、在等审批 / 排队的没跑过，不列；还没出结果的只在回合在跑（busy）时按运行中列（页面重开后实时帧还没来），否则不列。
+ *  - 实时条目里对话还没有卡的（工具块还没到）接在最后，按开始时间。
+ * 不受 20 条上限和保留期影响：这是会话的命令记录，胶囊的「终端 N」才按保留期数。
+ */
+export function terminalSessionItems(transcript: readonly unknown[], live: readonly TerminalItem[], busy = false): TerminalItem[] {
+  const byId = new Map(live.map((item) => [item.id, item]))
+  const out: TerminalItem[] = []
+  for (const { raw, block } of terminalToolBlockEntries(transcript)) {
+    const current = byId.get(block.id)
+    if (current) {
+      out.push(current)
+      byId.delete(block.id)
+      continue
+    }
+    let item = sessionItemCache.get(raw)
+    if (item === undefined) {
+      const state = blockEndState(block)
+      item = state ? historyItemOf(block, state) : null
+      if (state) sessionItemCache.set(raw, item)
+    }
+    if (item) out.push(item)
+    else if (busy && block.state === "input-available") out.push(historyItemOf(block, "running"))
+  }
+  return byId.size ? [...out, ...sortTerminalItems([...byId.values()])] : out
 }
 
 /**

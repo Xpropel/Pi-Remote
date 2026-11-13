@@ -135,9 +135,11 @@ export function PiTopBar({
         actions={
           actions ?? (
             <>
-              <GhostIconButton label="更多" icon={<Ellipsis />} />
+              <GhostIconButton label="会话菜单" title="会话菜单" icon={<Ellipsis />} />
               <GhostIconButton
-                label="打开 / 关闭右侧面板 ⌘."
+                data-pi-pane-toggle=""
+                label="右侧面板"
+                title="右侧面板"
                 icon={<PanelRight />}
                 forced={paneOpen ? "pressed" : undefined}
                 onClick={onTogglePane}

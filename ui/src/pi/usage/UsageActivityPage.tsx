@@ -21,8 +21,8 @@ import { USAGE_MODELS_MAX, type UsageDay, type UsageSnapshotV1 } from "./types"
  *
  * 数据：`useUsageActivity({deviceId})`（本文件内置 mock provider；arch 接入 relay `usage_get/snapshot` 后替换实现，
  * 组件/UI 不变）。快照经 `validateUsageSnapshot` 校验（无正文/路径/金额等敏感键）。
- * 视觉：混搭（Cursor 深玻璃底盘 / Codex 骨架由宿主提供 / Claude 衬线数字 / 紫色数据 / 陶土橙仅今天环+峰值），
- * 样式自包含在 usage.css（`.pi-usage-root` + `--pu-*`，不依赖任何变体变量）；深色定稿 + 浅色派生自动跟随
+ * 视觉：深玻璃底盘 / 骨架由宿主提供 / 衬线数字 / 紫色数据 / 陶土橙仅今天环+峰值，
+ * 样式自包含在 usage.css（`.pi-usage-root` + `--pu-*`，不依赖宿主变量）；深色定稿 + 浅色派生自动跟随
  * `<html data-pi-theme>`，也可 `theme` prop 强制。六段结构：页头切换 ×2 → 汇总卡×4 → 主图（热力/周柱/累计）→
  * 明细 + 模型分布 → 口径小字；空态/少数据/420 窄屏均覆盖。
  */
@@ -78,7 +78,7 @@ export interface UsageActivityPageProps {
   snapshot?: UsageSnapshotV1
   /**
    * dev/对图专用展示覆盖（design fixture A/B 组）：**只影响文本展示**，不影响数据计算与无障碍朗读。
-   * 生产挂载（Claude/Codex/Cursor 设置页）绝不传；devPreview 仅在 ?fixture= 时映射 designTargets。
+   * 生产挂载（Cursor 设置页）绝不传；devPreview 仅在 ?fixture= 时映射 designTargets。
    */
   displayOverrides?: UsageDisplayOverrides
   /** dev 三态预览（gallery/截图用；生产挂载不传）：强制 loading / error / unavailable */

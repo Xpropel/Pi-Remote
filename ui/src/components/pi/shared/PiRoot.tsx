@@ -9,7 +9,7 @@ import "./pi-theme.css"
 
 /*
  * P2.5 headless：根节点的布局逻辑（写 <html> data 属性、产品模式 fixed / 100dvh 几何、安全区 / 键盘 frame、
- * PiFrameContext）已抽到 `@/pi/headless`（变体 v2 复用同一套语义）。本文件只剩 cursor 的**视觉**部分：
+ * PiFrameContext）已抽到 `@/pi/headless`（共用同一套语义）。本文件只剩 cursor 的**视觉**部分：
  * - 类名（overflow-hidden / --cw-* token / antialiased）与 pi-theme.css 完全保持原样；
  * - 舞台模式的 --cw-pi-safe-* / --cw-pi-keyboard-h 变量、产品模式的 --cw-pi-keyboard-h，pi-theme.css 的几何规则照旧生效；
  * - DOM 结构、data-pi-* 属性、类名零变化（多出的行内 position 几何值与原 pi-theme.css 计算值一致）。
@@ -21,8 +21,8 @@ export interface PiRootProps {
   viewport: PiLayout
   theme: PiTheme
   /**
-   * 变体根标记（P1 架构线，brief §架构契约 6）：写到根节点的 data-pi-ui 上，默认 "cursor"。
-   * PiApp 按偏好传当前变体；claude / codex 的骨架根节点也经这个属性标出来。
+   * Shell marker (P1 architecture line, brief §架构契约 6): written to the root
+   * node's data-pi-ui, default "cursor" — the only shell left (see PiUiVariant).
    */
   ui?: PiUiVariant
   /** 舞台：屏幕的 piScreen.keyboard；只在 390×844 生效（--cw-pi-keyboard-h = 336px）。产品模式不读它，改读 device.keyboard */

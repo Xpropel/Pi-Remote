@@ -1,10 +1,10 @@
 /**
  * 手机端设置 · 开发预览（只给截图 / 对图，不进产品入口）。
  *
- * 打开 `…/src/pi/settings/mobile/dev/harness.html?page=usage&style=claude&theme=dark`
+ * 打开 `…/src/pi/settings/mobile/dev/harness.html?page=usage&theme=dark`
  * page = index | general | model | approval | extensions | appearance | devices |
  *        notifications | shortcuts | privacy | usage | about | interaction
- * style = cursor | claude | codex；theme = dark | light
+ * theme = dark | light
  *
  * mock 只实现页面会读的 relay 字段；不连真 relay、不写任何存储。
  */
@@ -18,9 +18,7 @@ import { MobileSettingsPage } from "../MobileSettingsPage.tsx"
 import {
   SETTINGS_USAGE_METRICS,
   SETTINGS_USAGE_RANGES,
-  settingsStyleOf,
   settingsThemeOf,
-  type SettingsStyle,
   type SettingsTheme,
 } from "../../types.ts"
 import { mobilePageIdOf } from "../types.ts"
@@ -153,7 +151,7 @@ const HARNESS_RESPONSES: Record<string, unknown> = {
   },
   get_provider_auth: {
     providers: [
-      { id: "stepfun", displayName: "StepFun", models: 2, configured: true, authSource: "api_key" },
+      { id: "stepfun", displayName: "StepFun", models: 2, configured: true, authSource: "models_json_key" },
     ],
   },
   get_available_models: {
@@ -202,7 +200,6 @@ const HARNESS_RESPONSES: Record<string, unknown> = {
 }
 
 const params = new URLSearchParams(window.location.search)
-const style: SettingsStyle = settingsStyleOf(params.get("style"))
 const theme: SettingsTheme = settingsThemeOf(params.get("theme")) ?? "dark"
 const page = mobilePageIdOf(params.get("page"))
 const mobileNav: PiMobileNavMode = params.get("nav") === "drawer" ? "drawer" : "list"
@@ -224,7 +221,7 @@ const snapshot = usageSnapshot()
 const device = devices[0]
 
 const ui = {
-  prefs: { ui: style, mobileNav, theme: "dark" },
+  prefs: { mobileNav, theme: "dark" },
   view: "settings",
   sheet: null,
   dialog: null,
@@ -239,9 +236,6 @@ const act = {
   closeSheet: () => undefined,
   closeDialog: () => undefined,
   openSettings: () => undefined,
-  setUiVariant: (variant: SettingsStyle) => {
-    ui.prefs.ui = variant
-  },
   setPref: (key: string, value: unknown) => {
     if (key === "mobileNav") navValue = value as PiMobileNavMode
     ui.prefs.mobileNav = navValue
@@ -285,8 +279,7 @@ const p = {
 const root = document.getElementById("root")
 if (!root) throw new Error("缺少 #root")
 createRoot(root).render(
-  <MobileSettingsPage p={p} style={style} theme={theme} initialPage={page} />,
+  <MobileSettingsPage p={p} theme={theme} initialPage={page} />,
 )
 document.documentElement.dataset.smHarnessPage = page
-document.documentElement.dataset.smHarnessStyle = style
 document.documentElement.dataset.smHarnessTheme = theme

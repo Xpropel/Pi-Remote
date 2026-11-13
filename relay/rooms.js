@@ -783,6 +783,17 @@ const NON_TERMINAL_STOP_REASONS = new Set(["toolUse", "pending", "deferred"]);
 // 最近事件摘要（设计 D §2.3，cap room.activity）：只记这组白名单事件类型，
 // tool_execution_start 只取 toolName 工具名元数据——不带任何正文/参数。
 const LAST_EVENT_TYPES = new Set(["turn_start", "agent_start", "message_update", "tool_execution_start", "compaction_start"]);
+// 停止信号（与 notify.js 同口径）：扩展的 turn_stopped、收尾事件上的 stopped:true、助手消息落成 aborted，
+// 都说明这一轮是用户停止的——落定时既不记完成也不记出错（停止后 pi 可能再起一个 turn 以 error 收尾）。
+// 只有新一轮运行才清；旧扩展只有 aborted 这一路，行为与以前一致。
+const RUN_START_TYPES = new Set(["agent_start", "before_agent_start"]);
+// 「最近有意义的事件」时刻 room.eventAt（侧栏时间列与状态行同源）：只认 pi 侧的回合/消息/工具/压缩/弹窗/远程消息。
+// 观看端订阅、命令、注册、断线只动 lastActivity（淘汰时钟），不算。
+const EVENT_AT_TYPES = new Set([
+  "agent_start", "turn_start", "message_start", "message_end", "tool_execution_start", "tool_execution_end",
+  "turn_end", "agent_end", "agent_settled", "turn_stopped", "compaction_start", "compaction_end",
+  "auto_retry_start", "dialog_open", "dialog_close", "ui_prompt_start", "remote_message",
+]);
 
 /**
  * 在 local 事件出口旁喂一帧宿主事件，维护 room.lastTurnEnd。
@@ -818,6 +829,9 @@ function observeRoomTurnEvent(room, event, now = Date.now()) {
     }
     room.lastEvent = lastEvent;
   }
+  if (EVENT_AT_TYPES.has(type)) room.eventAt = now;
+  if (type === "turn_stopped" || event.stopped === true) room.turnStopped = true;
+  else if (RUN_START_TYPES.has(type)) room.turnStopped = false;
   if (TURN_ACTIVITY_TYPES.has(type)) {
     room.turnOutcome = null;
     room.turnSettled = false;
@@ -833,6 +847,7 @@ function observeRoomTurnEvent(room, event, now = Date.now()) {
       const stopReason = typeof assistantMessage.stopReason === "string" ? assistantMessage.stopReason : "";
       if (stopReason && !NON_TERMINAL_STOP_REASONS.has(stopReason)) {
         room.turnOutcome = stopReason === "aborted" ? "aborted" : (stopReason === "error" || !!assistantMessage.errorMessage ? "error" : "ok");
+        if (stopReason === "aborted") room.turnStopped = true;
       }
     }
     return false;
@@ -843,7 +858,7 @@ function observeRoomTurnEvent(room, event, now = Date.now()) {
     room.lastEvent = null; // 回合落定：最近事件摘要清掉，状态行转走 lastTurnEnd 分支
     const outcome = room.turnOutcome;
     room.turnOutcome = null;
-    if (outcome === "aborted") return false; // 用户主动打断：不记（与 UI 追踪器同口径）
+    if (outcome === "aborted" || room.turnStopped) return false; // 用户主动打断/停止：不记（与 UI 追踪器同口径）
     room.lastTurnEnd = { kind: outcome === "error" ? "error" : "done", at: now };
     return true;
   }
@@ -1510,8 +1525,12 @@ class Rooms {
       lastTurnEnd: null,
       turnOutcome: null,
       turnSettled: false,
+      // 这一轮被用户停止了（口径见 observeRoomTurnEvent）；新一轮运行才清
+      turnStopped: false,
       // 最近事件摘要（设计 D §2.3）：{type, toolName?, at}，无事件/已落定时为 null
       lastEvent: null,
+      // 最近一次有意义的 pi 事件时刻（EVENT_AT_TYPES）；0 = relay 启动后还没见过。只在内存里
+      eventAt: 0,
     };
     this._stampStore(room);
     this._stampInboxRef(room);
@@ -1633,7 +1652,9 @@ class Rooms {
         accountId,
         deviceId,
         label: room.label,
-        name: session && session.name ? session.name : null,
+        // 在线房间先用扩展声明的当前会话名（改名即时生效，索引要等清单扫描）；
+        // 离线、旧扩展或未声明时用索引。label 不是会话名，不作回落
+        name: (room.online && room.sessionName) || (session && session.name ? session.name : null),
         // Crypto Phase 3: a sealed preview envelope stored on the index row
         // is served inside firstMessage -- the form the web room parser
         // reads (firstMessageEncOf); plaintext rows are unchanged.
@@ -1649,6 +1670,8 @@ class Rooms {
         // get()). Presentation only: not cap-stripped in roomsViewFor
         // and never fed to any eviction or ordering decision.
         createdAt: room.createdAt || 0,
+        // 最近有意义的事件时刻（侧栏时间列/状态行同源）；与 lastActivity 不同，不随观看/命令/注册刷新
+        eventAt: room.eventAt || 0,
         // 注意力恢复通道（R3-1）：订阅/重连时 UI 靠它把别房落定记录种回追踪器；只带 kind/at
         lastTurnEnd: room.lastTurnEnd ? { kind: room.lastTurnEnd.kind, at: room.lastTurnEnd.at } : null,
         // 最近事件摘要（设计 D §2.3）：只带 type/toolName/at 元数据；由 roomsViewFor 按 room.activity cap 裁剪
@@ -1680,6 +1703,9 @@ class Rooms {
         if (capInfo.warned) entry.fileWarned = true;
         if (capInfo.dropped > 0) entry.dropped = capInfo.dropped;
       }
+      // 同样稀疏：最近一轮是用户停止的（后到/重连的端据此不补报完成或出错）；扩展注册时报的 pi 版本
+      if (room.online && room.turnStopped) entry.turnStopped = true;
+      if (room.online && room.piVersion) entry.piVersion = room.piVersion;
       return entry;
     });
     return out.sort((left, right) => Number(right.online) - Number(left.online) || left.id.localeCompare(right.id));
@@ -1988,6 +2014,7 @@ function clearSessionState(room) {
   room.lastTurnEnd = null;
   room.turnOutcome = null;
   room.turnSettled = false;
+  room.turnStopped = false;
   room.lastEvent = null;
   return hadTurnEnd;
 }

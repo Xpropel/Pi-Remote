@@ -2,7 +2,7 @@
 //   1. MULTI-01 跨标签页按字段 merge：A 改外观、B 改无关项都保留；快捷键按动作合并；
 //   2. storage 事件同步（源码接线）与不再整包写回；
 //   3. OFFLINE-01 / OFFLINE-02：设备离线时使用活动标缓存态并锁定分段、模型刷新禁用且有原因；
-//   4. LAYOUT-01 / VIS-01：长字符串断行、添加设备行 / 外观勾的盒内溢出修正。
+//   4. LAYOUT-01 / VIS-01：长字符串断行、添加设备行的盒内溢出修正。
 import test from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -97,17 +97,6 @@ test("MULTI-01 设置 Context：读最新存储再写、监听 storage、不再�
   assert.doesNotMatch(source, /useEffect\(\(\) => \{\s*saveSettingsLocal\(target\(\), prefs\)/, "不能每次渲染都把整个 prefs 写回")
 })
 
-test("MULTI-01 外观页只在宿主 style 真变化时回写，storage 同步的皮肤不被旧宿主盖回", () => {
-  for (const file of [
-    "ui/src/pi/settings/pages/AppearancePage.tsx",
-    "ui/src/pi/settings/mobile/pages/AppearancePage.tsx",
-  ]) {
-    const source = read(file)
-    assert.match(source, /hostStyle\.current === style/, `${file} 缺少宿主 style 变化判断`)
-    assert.match(source, /styleSynced\.current = true/, `${file} 缺少首次进入对齐`)
-  }
-})
-
 /* ------------------------------------------------------------------ */
 /* 设备离线判断                                                        */
 /* ------------------------------------------------------------------ */
@@ -173,13 +162,10 @@ test("LAYOUT-01 长 URL / 长字符串在页盒内断行", () => {
   assert.match(css, /\.settings-row-title-text \{[^}]*overflow-wrap: anywhere/s)
 })
 
-test("VIS-01 添加设备行 / 外观选中勾不再越出页盒", () => {
+test("VIS-01 添加设备行不再越出页盒", () => {
   const devices = read("ui/src/pi/settings/pages/devices.css")
   // 页面作用域（0,2,0）压过外壳 `.settings-root button`（0,1,1）；width/margin 必须一起生效。
   assert.match(devices, /\.settings-devices \.settings-device-add \{[^}]*width: calc\(100% \+ 32px\)/s)
   assert.match(devices, /\.settings-devices \.settings-device-add \{[^}]*margin: 0 -16px/s)
   assert.doesNotMatch(devices, /^\.settings-device-add \{\n  display: flex;[\s\S]*?width: calc\(100% \+ 32px\)/m)
-
-  const appearance = read("ui/src/pi/settings/pages/appearance.css")
-  assert.match(appearance, /\.settings-appearance-cards \{[^}]*padding-inline-end: 8px/s, "最后一列没有给 -8px 的选中勾留位置")
 })
