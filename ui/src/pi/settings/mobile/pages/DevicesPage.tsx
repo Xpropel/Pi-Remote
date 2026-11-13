@@ -7,6 +7,8 @@
  *   ● 测试连接：点击时真的发一次命令往返（当前会话 get_state，其他在线设备 get_host_diag），
  *     显示「设备 ↔ 服务器 · xx ms」；设备离线时禁用；
  *   ● 设为默认：纯本机偏好 defaultDeviceId，刷新后保持，不改设备侧配置；
+ *   ● 系统操作：设备行「系统操作」点进单设备系统操作页（SystemOpsPage，与桌面
+ *     展开区共用 useSystemOps / systemOpsLogic），返回行回设备列表；
  *   ○ 新会话自动连上默认设备：本机偏好，即时生效；
  *   ◌ 阻止睡眠 / 常驻托盘：设计预留，不可用。
  *   Viewer identity + authorized viewers: MobileIdentitySection, mounted
@@ -41,6 +43,7 @@ import {
   MobileTag,
 } from "../atoms.tsx"
 import { MobileIdentitySection } from "./IdentitySection.tsx"
+import { MobileSystemOpsPage } from "./SystemOpsPage.tsx"
 
 /** 测试连接的计时起点；浏览器有 performance 就用单调时钟。 */
 function nowMs(): number {
@@ -83,6 +86,7 @@ export function DevicesPage() {
   const devices = relay.devices ?? []
   const [probes, setProbes] = useState<Record<string, DeviceProbe>>({})
   const [probingId, setProbingId] = useState<string | null>(null)
+  const [opsDeviceId, setOpsDeviceId] = useState<string | null>(null)
 
   const makeDefault = (device: Device) => {
     if (prefs.defaultDeviceId === device.id) return
@@ -159,6 +163,13 @@ export function DevicesPage() {
     )
   }
 
+  const opsDevice = opsDeviceId ? devices.find((device) => device.id === opsDeviceId) : undefined
+  if (opsDevice) {
+    return (
+      <MobileSystemOpsPage relay={relay} device={opsDevice} rooms={relay.rooms ?? []} onBack={() => setOpsDeviceId(null)} />
+    )
+  }
+
   return (
     <MobilePageBody page="devices">
       <MobileGroup label="我的设备" stacked>
@@ -213,6 +224,14 @@ export function DevicesPage() {
                       onClick={() => act.openHostDiag(device.id)}
                     >
                       诊断
+                    </button>
+                    <button
+                      type="button"
+                      className="sm-device-action"
+                      title="版本、更新 Pi、重启 Pi、重启设备端、更新设备端组件"
+                      onClick={() => setOpsDeviceId(device.id)}
+                    >
+                      系统操作
                     </button>
                     {isDefault ? (
                       <span className="sm-device-default">已设为默认</span>

@@ -1147,6 +1147,157 @@
   background: var(--st-tile-bg);
 }
 
+/* System operations page: back row, version grid, operation rows. */
+
+[data-pi-settings-mobile] .sm-ops-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: var(--sm-touch);
+  padding: 0 4px;
+  color: var(--st-accent);
+  font-size: 14.5px;
+  font-weight: 500;
+}
+
+[data-pi-settings-mobile] .sm-ops-note {
+  padding: 12px 14px 4px;
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+[data-pi-settings-mobile] .sm-ops-note.is-error {
+  color: var(--st-error);
+}
+
+[data-pi-settings-mobile] .sm-ops-actions {
+  display: flex;
+  padding: 2px 14px 10px;
+}
+
+[data-pi-settings-mobile] .sm-ops-head {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 14px 2px;
+}
+
+[data-pi-settings-mobile] .sm-ops-ver {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 8px 14px 4px;
+}
+
+[data-pi-settings-mobile] .sm-ops-ver-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 9px;
+  background: var(--st-tile-bg);
+  padding: 8px 10px;
+}
+
+[data-pi-settings-mobile] .sm-ops-ver-k {
+  color: var(--st-text-4);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+[data-pi-settings-mobile] .sm-ops-ver-v {
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+[data-pi-settings-mobile] .sm-ops-ver-tag {
+  margin-left: 5px;
+  color: var(--st-wait);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+[data-pi-settings-mobile] .sm-op-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--st-divider);
+}
+
+[data-pi-settings-mobile] .sm-op-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+[data-pi-settings-mobile] .sm-op-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--st-text-1);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+[data-pi-settings-mobile] .sm-op-name.is-ok {
+  color: var(--st-online);
+}
+
+[data-pi-settings-mobile] .sm-op-name.is-error {
+  color: var(--st-error);
+}
+
+[data-pi-settings-mobile] .sm-op-phase {
+  color: var(--st-accent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+[data-pi-settings-mobile] .sm-op-desc {
+  color: var(--st-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+[data-pi-settings-mobile] .sm-op-warn {
+  color: var(--st-wait);
+}
+
+[data-pi-settings-mobile] .sm-op-error {
+  margin-top: 6px;
+  border-radius: 8px;
+  background: var(--st-notice-bad-bg);
+  padding: 7px 10px;
+  color: var(--st-error);
+  font-family: var(--st-font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Spin keyframe: pi-sb-spin from pi-theme.css (page CSS holds no keyframes). */
+[data-pi-settings-mobile] .sm-ops-spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 2px solid var(--st-divider);
+  border-top-color: var(--st-accent);
+  border-radius: 50%;
+  animation: pi-sb-spin 0.9s linear infinite;
+}
+
+[data-pi-settings-mobile] .sm-device-action.is-primary {
+  box-shadow: inset 0 0 0 1px var(--st-text-1);
+  background-color: var(--st-text-1);
+  color: var(--st-card-bg);
+}
+
 /* Phase 4 T-1: plaintext-room list (mirrors the desktop devices page). */
 
 [data-pi-settings-mobile] .sm-plaintext-intro {

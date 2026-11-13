@@ -331,3 +331,158 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* System operations expansion: version grid + operation rows under a device
+   row. The primary action follows the settings grammar (ink-filled, like the
+   switch ON track), not the mock's accent fill. */
+
+.settings-device-ops {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--st-divider);
+  padding: 10px 0 6px;
+}
+
+.settings-device-ops > .settings-device-action {
+  align-self: flex-start;
+}
+
+.settings-ops-note {
+  color: var(--st-text-3);
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 2px 0 6px;
+}
+
+.settings-ops-note.is-error {
+  color: var(--st-error);
+}
+
+.settings-ops-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.settings-ops-ver {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.settings-ops-ver-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 9px;
+  background: var(--st-tile-bg);
+  padding: 8px 10px;
+}
+
+.settings-ops-ver-k {
+  color: var(--st-text-4);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.settings-ops-ver-v {
+  color: var(--st-text-1);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.settings-ops-ver-tag {
+  margin-left: 5px;
+  color: var(--st-wait);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.settings-op-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--st-divider);
+  padding: 10px 0;
+}
+
+.settings-op-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-op-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--st-text-1);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.settings-op-name.is-ok {
+  color: var(--st-online);
+}
+
+.settings-op-name.is-error {
+  color: var(--st-error);
+}
+
+.settings-op-phase {
+  color: var(--st-accent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.settings-op-desc {
+  color: var(--st-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-op-warn {
+  color: var(--st-wait);
+}
+
+.settings-op-error {
+  margin-top: 6px;
+  border-radius: 8px;
+  background: var(--st-notice-bad-bg);
+  padding: 7px 10px;
+  color: var(--st-error);
+  font-family: var(--st-font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* The spin keyframe lives in pi-theme.css (pi-sb-spin): page CSS files hold
+   no keyframes in this codebase, and its reduced-motion block stills the
+   spinner like every other Pi spinner. */
+.settings-ops-spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 2px solid var(--st-divider);
+  border-top-color: var(--st-accent);
+  border-radius: 50%;
+  animation: pi-sb-spin 0.9s linear infinite;
+}
+
+.settings-root .settings-device-action.is-primary {
+  border-color: var(--st-text-1);
+  background: var(--st-text-1);
+  color: var(--st-card-bg);
+}
+
+.settings-root .settings-device-action.is-primary:hover:not(:disabled) {
+  border-color: var(--st-text-1);
+  background: var(--st-text-1);
+}

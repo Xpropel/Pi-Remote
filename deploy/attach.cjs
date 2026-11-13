@@ -5,7 +5,8 @@
  *   deploy\attach.cmd（Windows）/ deploy/attach.sh（macOS、Linux）同上
  *
  * 窗口开着：写 ~/.pi/agent/remote-attach.json，连 7001 发 device_register，
- * 响应 harness_start。退出 / 到期 / 被顶替：删状态文件并断开。已拉起的 pi 不杀。
+ * 响应 harness_start。退出 / 到期 / 被顶替：删状态文件并断开。已拉起的 pi 不杀——
+ * 唯一例外是「系统操作」：用户在设置里主动要求时，才停/重启本窗口账本内拉起的进程。
  *
  * 不读模型密钥。连上之后读取本机会话目录（认 PI_CODING_AGENT_SESSION_DIR，缺省 ~/.pi/agent/sessions），
  * 把会话清单和正文摘要交给 relay（只在内存转发）；目录只来自白名单、浏览根目录（P9 C）或本机命令行入参。
@@ -24,6 +25,7 @@ const crypto = require("node:crypto");
 const net = require("node:net");
 const dgram = require("node:dgram");
 const http = require("node:http");
+const https = require("node:https");
 const { spawn, spawnSync } = require("node:child_process");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -35,8 +37,9 @@ const ATTACH_VERSION = "4.0.0";
  * attach 声明的能力位（随 auth 帧发出；relay 据此算 devices[].features）：
  *   session.files  P9 B：按 sessionId 在设备整个会话根目录里删除会话文件
  *   fs.browse      P9 C：列出浏览根目录内的子目录（只读目录名，不传文件内容）
+ *   device.ops     System operations: device-level restart / update commands
  */
-const CLIENT_CAPS = ["err.v4", "device.token", "session.files", "fs.browse"];
+const CLIENT_CAPS = ["err.v4", "device.token", "session.files", "fs.browse", "device.ops"];
 const PAIR_TIMEOUT_MS = 15000;
 /** 反向同步扫描本机会话目录的间隔（P9 B）：默认 30s，PI_REMOTE_LIBRARY_RESCAN_MS 可改，下限 5s */
 const LIBRARY_RESCAN_MS = 30000;
@@ -2053,6 +2056,262 @@ function removeQuiet(file) {
   } catch {}
 }
 
+/* ---------------- System operations (device-level restart / update) ----------------
+ * The settings page drives these through device commands that reach attach
+ * directly (no active session required). Mutating operations are
+ * fire-and-track: the command replies { accepted: true, operationId } once
+ * validated, the work runs inside attach, and progress is observed through
+ * the operationStatus block in the get_host_diag reply.
+ * Safety rails: restart only ever touches pi processes in this window's own
+ * launch ledger; the pi update runs one fixed npm command built from
+ * constants (never from request input); component updates verify the
+ * release package against SHA256SUMS.txt before any file is swapped.
+ */
+
+const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
+/** The pi update is exactly this fixed install spec; request input never reaches the command line. */
+const PI_UPDATE_SPEC = "@earendil-works/pi-coding-agent@latest";
+/** Exit code that asks a supervising launcher (deploy/linux/device.sh loop mode) to relaunch attach. */
+const OPS_RESTART_EXIT_CODE = 75;
+/** How long the cached "latest pi version" registry answer stays fresh. */
+const PI_UPDATE_CACHE_MS = 10 * 60 * 1000;
+/** SIGTERM grace before a launched pi is SIGKILLed during a restart. */
+const OPS_STOP_GRACE_MS = 5000;
+/** Per-process wait for the room to re-register after a relaunch. */
+const OPS_ROOM_WAIT_MS = 30000;
+/** Delay between the accepted reply and the supervised self-restart exit, so the reply can flush. */
+const OPS_EXIT_FLUSH_MS = 250;
+/** npm install may legitimately take minutes on a slow link; the cap only guards against a hung installer. */
+const OPS_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_NPM_REGISTRY_BASE = "https://registry.npmjs.org";
+const DEFAULT_RELEASE_API_URL = "https://api.github.com/repos/Xpropel/Pi-Remote/releases/latest";
+
+/** The idle operationStatus shape; also the base every transition starts from. */
+function emptyOperationStatus() {
+  return { state: "idle", kind: null, phase: null, startedAt: null, finishedAt: null, detail: null, error: null };
+}
+
+/**
+ * Walk up from a pi entrypoint path looking for the pi package's own
+ * package.json (same search the extension's readPiVersion performs).
+ * Returns { packageDir, version } or null when the package is not on disk
+ * (single-file pi builds have no package tree to find).
+ */
+function findPiPackageDir(startPath, platform = HOST_PLATFORM) {
+  const pa = pathApi(platform);
+  let start = String(startPath || "").trim();
+  if (!start) return null;
+  try {
+    start = fs.realpathSync(start);
+  } catch {}
+  let dir = start;
+  try {
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) dir = pa.dirname(dir);
+  } catch {
+    dir = pa.dirname(dir);
+  }
+  for (let depth = 0; depth < 12 && dir; depth++) {
+    const pkgFile = pa.join(dir, "package.json");
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
+      if (pkg && pkg.name === PI_PACKAGE_NAME) {
+        return { packageDir: dir, version: typeof pkg.version === "string" && pkg.version.trim() ? pkg.version.trim() : null };
+      }
+    } catch {}
+    const parent = pa.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Loose prefix dir owning packageDir under the npm shim math: the directory
+ * above node_modules, stepping over a "lib" segment when one is present.
+ * Null when packageDir is not a scoped package inside a node_modules dir.
+ * Pure path math shared by the shim lookup and the install plan.
+ */
+function npmPrefixDirLoose(packageDir, platform = HOST_PLATFORM) {
+  const pa = pathApi(platform);
+  if (!packageDir) return null;
+  if (pa.basename(packageDir) !== "pi-coding-agent") return null;
+  if (pa.basename(pa.dirname(packageDir)) !== "@earendil-works") return null;
+  const nodeModulesDir = pa.dirname(pa.dirname(packageDir));
+  if (pa.basename(nodeModulesDir) !== "node_modules") return null;
+  let prefixDir = pa.dirname(nodeModulesDir);
+  if (pa.basename(prefixDir) === "lib") prefixDir = pa.dirname(prefixDir);
+  return prefixDir;
+}
+
+/**
+ * Path of the npm shim that belongs to the npm prefix owning packageDir, or
+ * null when packageDir does not sit in an npm prefix layout
+ * (<prefix>/lib/node_modules/<pkg> on POSIX, <prefix>/node_modules/<pkg> on
+ * Windows). Pure path math; the caller checks existence.
+ */
+function npmShimPathForPackageDir(packageDir, platform = HOST_PLATFORM) {
+  const pa = pathApi(platform);
+  const prefixDir = npmPrefixDirLoose(packageDir, platform);
+  if (!prefixDir) return null;
+  return platform === "win32" ? pa.join(prefixDir, "npm.cmd") : pa.join(prefixDir, "bin", "npm");
+}
+
+/**
+ * The npm prefix when packageDir sits in the strict global-install layout:
+ * <prefix>/lib/node_modules/<pkg> on POSIX, <prefix>/node_modules/<pkg> on
+ * Windows. Null otherwise — on POSIX a bare node_modules dir under an
+ * arbitrary directory is a project-local install, not an npm prefix.
+ */
+function npmPrefixForPackageDir(packageDir, platform = HOST_PLATFORM) {
+  const pa = pathApi(platform);
+  if (!packageDir) return null;
+  if (pa.basename(packageDir) !== "pi-coding-agent") return null;
+  if (pa.basename(pa.dirname(packageDir)) !== "@earendil-works") return null;
+  const nodeModulesDir = pa.dirname(pa.dirname(packageDir));
+  if (pa.basename(nodeModulesDir) !== "node_modules") return null;
+  const parentDir = pa.dirname(nodeModulesDir);
+  if (platform === "win32") return parentDir;
+  if (pa.basename(parentDir) !== "lib") return null;
+  return pa.dirname(parentDir);
+}
+
+/**
+ * Install plan for the pi package on disk (pure):
+ *   installMethod "npm-global"  the package lives in the npm global root, in
+ *                 a strict npm prefix layout, or in a prefix layout whose own
+ *                 npm shim is present;
+ *   installMethod "other"       a pi package was found but it is not an npm
+ *                 global install (single-file build, local project install);
+ *   installMethod "unknown"     no pi package found on disk at all.
+ * updatePrefix is the on-disk-probed prefix the update command must target
+ * with --prefix, or null when a plain `npm install -g` (the PATH npm's own
+ * prefix) already lands in the same place. It only ever comes from the local
+ * file system layout, never from request input. The prefix-layout branch
+ * matters because `npm i -g --prefix <dir>` installs drop no npm shim into
+ * <dir> and need not match the PATH npm's global root at all (e.g. a pi
+ * installed with --prefix ~/.local while `npm root -g` is /usr/lib/node_modules):
+ * without targeting that prefix, the update would install into the wrong one.
+ */
+function piInstallPlan({ packageDir = null, npmGlobalRoot = null, npmShimExists = false, platform = HOST_PLATFORM } = {}) {
+  if (!packageDir) return { installMethod: "unknown", updatePrefix: null };
+  const pa = pathApi(platform);
+  const fold = (value) => (caseInsensitivePaths(platform) ? String(value).toLowerCase() : String(value));
+  if (npmGlobalRoot) {
+    const expected = pa.join(String(npmGlobalRoot), "@earendil-works", "pi-coding-agent");
+    if (fold(expected) === fold(packageDir)) return { installMethod: "npm-global", updatePrefix: null };
+  }
+  // Null the prefix out when it is exactly the prefix the PATH npm already
+  // targets (its implied global root equals the probed one): a plain global
+  // install is equivalent there, so no --prefix is needed.
+  const targetedPrefix = (prefixDir) => {
+    if (!prefixDir) return null;
+    if (npmGlobalRoot) {
+      const impliedRoot = platform === "win32" ? pa.join(prefixDir, "node_modules") : pa.join(prefixDir, "lib", "node_modules");
+      if (fold(impliedRoot) === fold(String(npmGlobalRoot))) return null;
+    }
+    return prefixDir;
+  };
+  const layoutPrefix = npmPrefixForPackageDir(packageDir, platform);
+  if (layoutPrefix) return { installMethod: "npm-global", updatePrefix: targetedPrefix(layoutPrefix) };
+  if (npmShimPathForPackageDir(packageDir, platform) && npmShimExists) {
+    return { installMethod: "npm-global", updatePrefix: targetedPrefix(npmPrefixDirLoose(packageDir, platform)) };
+  }
+  return { installMethod: "other", updatePrefix: null };
+}
+
+/** Install-method classification (pure); see piInstallPlan for the full semantics. */
+function classifyPiInstallMethod(args = {}) {
+  return piInstallPlan(args).installMethod;
+}
+
+/** Parse a SHA256SUMS.txt body into a Map of file name -> lowercase sha256 hex. */
+function parseSha256Sums(text) {
+  const sums = new Map();
+  for (const line of String(text == null ? "" : text).split(/\r?\n/)) {
+    const match = line.trim().match(/^([0-9a-fA-F]{64})\s+\*?(.+)$/);
+    if (match) sums.set(match[2].trim(), match[1].toLowerCase());
+  }
+  return sums;
+}
+
+/** Find a release asset whose name matches the pattern; returns the asset object or null. */
+function pickReleaseAsset(assets, namePattern) {
+  if (!Array.isArray(assets)) return null;
+  for (const asset of assets) {
+    if (asset && typeof asset.name === "string" && namePattern.test(asset.name) && typeof asset.browser_download_url === "string") return asset;
+  }
+  return null;
+}
+
+/** Default JSON GET (npm registry / GitHub release API): follows redirects, requires a User-Agent for GitHub. */
+function httpsGetJson(url) {
+  return new Promise((resolve, reject) => {
+    const attempt = (current, redirectsLeft) => {
+      const request = https.get(current, { headers: { "User-Agent": "pi-remote-attach", Accept: "application/json" } }, (response) => {
+        const status = response.statusCode || 0;
+        if (status >= 300 && status < 400 && response.headers.location) {
+          response.resume();
+          if (redirectsLeft <= 0) {
+            reject(new Error("too many redirects fetching " + url));
+            return;
+          }
+          attempt(new URL(response.headers.location, current).toString(), redirectsLeft - 1);
+          return;
+        }
+        if (status !== 200) {
+          response.resume();
+          reject(new Error(`GET ${url} failed with HTTP ${status}`));
+          return;
+        }
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+      request.on("error", reject);
+      request.setTimeout(30000, () => request.destroy(new Error("timed out fetching " + url)));
+    };
+    attempt(String(url), 5);
+  });
+}
+
+/**
+ * Default zip extraction for the component update: try the platform's usual
+ * tools in order (unzip, tar, python3 zipfile). Synchronous like the other
+ * probe helpers; returns true on success, throws with the last error.
+ */
+function extractZipArchive(zipPath, destDir, options = {}) {
+  const platform = options.platform || HOST_PLATFORM;
+  const spawnSyncImpl = options.spawnSyncImpl || spawnSync;
+  fs.mkdirSync(destDir, { recursive: true });
+  const attempts =
+    platform === "win32"
+      ? [["tar", ["-xf", zipPath, "-C", destDir]]]
+      : [
+          ["unzip", ["-q", "-o", zipPath, "-d", destDir]],
+          ["tar", ["-xf", zipPath, "-C", destDir]],
+          ["python3", ["-m", "zipfile", "-e", zipPath, destDir]],
+        ];
+  let lastError = "";
+  for (const [file, args] of attempts) {
+    let result;
+    try {
+      result = spawnSyncImpl(file, args, { encoding: "utf8", timeout: 120000 });
+    } catch (e) {
+      lastError = e && e.message ? e.message : String(e);
+      continue;
+    }
+    if (result && !result.error && result.status === 0) return true;
+    lastError = (result && (result.stderr || (result.error && result.error.message))) || `${file} exited with code ${result && result.status}`;
+  }
+  throw new Error("could not extract the device package: " + lastError);
+}
+
 class AttachController {
   constructor(options = {}) {
     const now = Number(options.now) || Date.now();
@@ -2177,6 +2436,42 @@ class AttachController {
     this.booted = false;
     this._statusLines = 0;
     this._onSignal = null;
+    /* ---- System operations state (see the ops section below the class) ---- */
+    /** True only when a supervising launcher (device.sh loop mode) sets PI_REMOTE_SUPERVISED=1 and relaunches attach on exit code 75. */
+    this.supervised = options.supervised != null ? !!options.supervised : String(this.env.PI_REMOTE_SUPERVISED || "") === "1";
+    /** Device-side data directory for operation bookkeeping: the directory holding the attach state file (~/.pi/agent by default). */
+    this.agentDir = options.agentDir || path.dirname(this.attachFile);
+    /** Pending-operation marker: written right before a supervised self-restart exit, completed by the next boot. */
+    this.operationPendingFile = options.operationPendingFile || path.join(this.agentDir, "operation-pending.json");
+    /** Repository root whose deploy/ and extension/ the component update swaps. */
+    this.deployRoot = options.deployRoot || ROOT;
+    /** Where the extension sync target lives (deploy/sync-extension.sh's destination); tests point it into a sandbox. */
+    this.extensionSyncFile = options.extensionSyncFile || "";
+    this.operationStatus = emptyOperationStatus();
+    /** Set by boot completion of an update_components marker: once booted,
+     *  the launched pi processes still run the pre-update extension copy and
+     *  get one best-effort restart (see restartPiAfterComponentUpdate). */
+    this.pendingComponentUpdatePiRestart = false;
+    this.operationSequence = 0;
+    this.currentOperationId = null;
+    /** Cached get_pi_update_info answer ({ at, info }); the registry half is the expensive part. */
+    this.piUpdateCache = null;
+    this._npmGlobalRoot = undefined;
+    /* Injectable operation IO (tests substitute fakes; production defaults are the real implementations). */
+    this.opsFetchJson = typeof options.opsFetchJson === "function" ? options.opsFetchJson : null;
+    this.opsDownloadFile = typeof options.opsDownloadFile === "function" ? options.opsDownloadFile : null;
+    this.opsSha256File = typeof options.opsSha256File === "function" ? options.opsSha256File : null;
+    this.opsExtractZip = typeof options.opsExtractZip === "function" ? options.opsExtractZip : null;
+    this.opsRunCommand = typeof options.opsRunCommand === "function" ? options.opsRunCommand : null;
+    this.opsDetectPi = typeof options.opsDetectPi === "function" ? options.opsDetectPi : null;
+    this.opsKillProcess = typeof options.opsKillProcess === "function" ? options.opsKillProcess : null;
+    this.opsDelay = typeof options.opsDelay === "function" ? options.opsDelay : null;
+    this.opsStopGraceMs = options.opsStopGraceMs != null ? Math.max(0, Number(options.opsStopGraceMs) || 0) : OPS_STOP_GRACE_MS;
+    this.opsRoomWaitMs = options.opsRoomWaitMs != null ? Math.max(0, Number(options.opsRoomWaitMs) || 0) : OPS_ROOM_WAIT_MS;
+    this.opsExitFlushMs = options.opsExitFlushMs != null ? Math.max(0, Number(options.opsExitFlushMs) || 0) : OPS_EXIT_FLUSH_MS;
+    // A previous window may have exited for a supervised restart/update:
+    // complete its pending marker now so the result is visible immediately.
+    this.completePendingOperation();
   }
 
   registerFrame() {
@@ -2187,7 +2482,7 @@ class AttachController {
       projects: this.projects,
       // P9 B/C：网页要用 trash 写删除文案、用 browse 判断能不能浏览文件夹
       trash: hasTrashCommand(this.platform),
-      features: CLIENT_CAPS.filter((cap) => cap === "session.files" || cap === "fs.browse"),
+      features: CLIENT_CAPS.filter((cap) => cap === "session.files" || cap === "fs.browse" || cap === "device.ops"),
       browse: { roots: this.browseRoots },
       windowExpiresAt: this.expiresAt,
       platform: this.platform,
@@ -2902,6 +3197,14 @@ class AttachController {
       if (name === "harness_start") return void this.onHarness(frame);
       if (name === "delete_session") return void this.onDeleteSession(frame);
       if (name === "list_dirs") return void this.onListDirs(frame);
+      // System operations: device-level, reachable with no active session.
+      if (name === "get_host_diag") return void this.onHostDiag(frame);
+      if (name === "get_pi_update_info") return void this.onPiUpdateInfo(frame);
+      if (name === "get_operation_status") return void this.onOperationStatus(frame);
+      if (name === "harness_restart") return void this.onHarnessRestart(frame);
+      if (name === "update_pi") return void this.onUpdatePi(frame);
+      if (name === "restart_host") return void this.onRestartHost(frame);
+      if (name === "update_components") return void this.onUpdateComponents(frame);
       this.reply(frame.id, { ok: false, code: "unknown_command", error: "这台设备的连接窗口不支持 " + name });
       return;
     }
@@ -3039,6 +3342,13 @@ class AttachController {
       if (!result.ok) this.writeOut(result.error || "启动失败：" + displayPathOf(dir));
       else if (result.status === "already_running") this.writeOut("已在运行，不另起：" + displayPathOf(dir));
       else this.writeOut("已拉起：" + displayPathOf(dir));
+    }
+    // A component update completed by this boot swapped the extension on
+    // disk; restart the launched pi processes onto the new copy (best
+    // effort, recorded in the operation status, never blocking boot).
+    if (this.pendingComponentUpdatePiRestart) {
+      this.pendingComponentUpdatePiRestart = false;
+      void this.restartPiAfterComponentUpdate();
     }
   }
 
@@ -3644,6 +3954,778 @@ class AttachController {
     const lines = shot && shot.status === 0 ? String(shot.stdout || "").split("\n").map((l) => l.trim()) : [];
     const last = lines.filter((l) => l && !/^Pane is dead\b/.test(l)).pop() || "";
     return `pi 退出了（退出码 ${code == null ? "?" : code}）${last ? "：" + last.slice(0, 160) : ""}。tmux attach -t ${session} 看现场`;
+  }
+
+  /* ================= System operations ================= */
+
+  opsDelayImpl(milliseconds) {
+    const delay = this.opsDelay || ((wait) => new Promise((resolve) => setTimeout(resolve, wait)));
+    return delay(Math.max(0, Number(milliseconds) || 0));
+  }
+
+  /** Start tracking a mutating operation; returns its operationId for the accepted reply. */
+  beginOperation(kind) {
+    this.operationSequence += 1;
+    const operationId = `op-${Date.now().toString(36)}-${this.operationSequence}`;
+    this.currentOperationId = operationId;
+    this.operationStatus = { state: "running", kind, phase: null, startedAt: Date.now(), finishedAt: null, detail: null, error: null };
+    return operationId;
+  }
+
+  setOperationPhase(phase) {
+    if (this.operationStatus.state === "running") this.operationStatus.phase = phase;
+  }
+
+  completeOperation(detail, extra) {
+    this.operationStatus = {
+      ...this.operationStatus,
+      ...(extra || {}),
+      state: "succeeded",
+      phase: null,
+      finishedAt: Date.now(),
+      detail: detail || null,
+      error: null,
+    };
+  }
+
+  failOperation(error, detail, extra) {
+    this.operationStatus = {
+      ...this.operationStatus,
+      ...(extra || {}),
+      state: "failed",
+      phase: null,
+      finishedAt: Date.now(),
+      detail: detail || null,
+      error: error ? String(error) : null,
+    };
+  }
+
+  /** Shared guard for every mutating operation: one operation at a time per device. */
+  operationBusy(frame) {
+    return this.reply(frame.id, { ok: false, code: "operation_in_progress", error: "这台设备上已有系统操作正在进行" });
+  }
+
+  /**
+   * Boot completion for the pending-operation marker: a window that exited
+   * with code 75 for restart_host / update_components left { kind, startedAt }
+   * behind; the relaunched window turns it into the visible final status and
+   * deletes the marker. update_components additionally verifies the
+   * extension sync actually landed (installed copy matches the new source).
+   */
+  completePendingOperation() {
+    let marker = null;
+    try {
+      marker = JSON.parse(fs.readFileSync(this.operationPendingFile, "utf8"));
+    } catch {
+      return;
+    }
+    removeQuiet(this.operationPendingFile);
+    if (!marker || typeof marker !== "object") return;
+    const startedAt = Number(marker.startedAt) > 0 ? Number(marker.startedAt) : null;
+    if (marker.kind === "restart_host") {
+      this.operationStatus = {
+        state: "succeeded",
+        kind: "restart_host",
+        phase: null,
+        startedAt,
+        finishedAt: Date.now(),
+        detail: "Device side restarted",
+        error: null,
+      };
+      return;
+    }
+    if (marker.kind === "update_components") {
+      const inSync = this.extensionInSync();
+      this.operationStatus = inSync
+        ? {
+            state: "succeeded",
+            kind: "update_components",
+            phase: null,
+            startedAt,
+            finishedAt: Date.now(),
+            detail: `Device components updated, attach ${ATTACH_VERSION} running`,
+            error: null,
+          }
+        : {
+            state: "failed",
+            kind: "update_components",
+            phase: null,
+            startedAt,
+            finishedAt: Date.now(),
+            detail: null,
+            error: "The installed extension does not match the updated source after the component update",
+          };
+      // The files on disk are new, but pi processes launched before the
+      // update still execute the extension copy they loaded at start; they
+      // get a best-effort restart once this window has booted (bootDirs).
+      if (inSync) this.pendingComponentUpdatePiRestart = true;
+    }
+  }
+
+  /**
+   * Best-effort follow-up of a boot-completed component update: restart
+   * every launched pi so it loads the new extension. The component update
+   * itself already succeeded, so the outcome is recorded in the status
+   * detail/result only — a pi that does not come back never flips the
+   * operation to failed.
+   */
+  async restartPiAfterComponentUpdate() {
+    let summary;
+    try {
+      summary = await this.restartAllLaunchedPi();
+    } catch (e) {
+      if (this.operationStatus.kind === "update_components" && this.operationStatus.state === "succeeded") {
+        this.operationStatus = {
+          ...this.operationStatus,
+          detail: `Device components updated, attach ${ATTACH_VERSION} running; the launched Pi processes could not be restarted to load the new extension: ${e && e.message ? e.message : e}`,
+        };
+      }
+      return;
+    }
+    if (this.operationStatus.kind !== "update_components" || this.operationStatus.state !== "succeeded") return;
+    const total = summary.restarted + summary.failed.length;
+    if (!total) return;
+    if (summary.failed.length) {
+      this.operationStatus = {
+        ...this.operationStatus,
+        detail: `Device components updated, attach ${ATTACH_VERSION} running; ${summary.failed.length} of ${total} Pi processes did not restart to load the new extension: ${summary.failed[0].error}`,
+        result: summary,
+      };
+    } else {
+      this.operationStatus = {
+        ...this.operationStatus,
+        detail: `Device components updated, attach ${ATTACH_VERSION} running; Pi restarted to load the new extension (${summary.restarted} process${summary.restarted === 1 ? "" : "es"})`,
+        result: summary,
+      };
+    }
+  }
+
+  /** The extension sync destination, mirroring deploy/sync-extension.sh. */
+  extensionSyncTargetPath() {
+    if (this.extensionSyncFile) return this.extensionSyncFile;
+    const agentRoot = String(this.env.PI_CODING_AGENT_DIR || "").trim() || path.join(os.homedir(), ".pi", "agent");
+    return path.join(agentRoot, "extensions", "pi-remote-sync.ts");
+  }
+
+  /** True when the installed extension file is byte-identical to the repository source. */
+  extensionInSync() {
+    try {
+      const source = path.join(this.deployRoot, "extension", "pi-remote-sync.ts");
+      const target = this.extensionSyncTargetPath();
+      if (!fs.existsSync(source) || !fs.existsSync(target)) return false;
+      const sourceHash = md5File(source);
+      return !!sourceHash && sourceHash === md5File(target);
+    } catch {
+      return false;
+    }
+  }
+
+  /** EXT_VERSION read from the repository extension source (falling back to the installed copy); null when unreadable. */
+  readExtensionVersion() {
+    const candidates = [path.join(this.deployRoot, "extension", "pi-remote-sync.ts"), this.extensionSyncTargetPath()];
+    for (const file of candidates) {
+      try {
+        const match = fs.readFileSync(file, "utf8").match(/EXT_VERSION\s*=\s*"([^"]+)"/);
+        if (match) return match[1];
+      } catch {}
+    }
+    return null;
+  }
+
+  /** `npm root -g` for this machine (cached); null when npm cannot answer. */
+  npmGlobalRoot() {
+    if (this._npmGlobalRoot !== undefined) return this._npmGlobalRoot;
+    let root = null;
+    try {
+      const result =
+        this.platform === "win32"
+          ? this.spawnSyncImpl("cmd.exe", ["/c", "npm", "root", "-g"], { encoding: "utf8", timeout: 10000 })
+          : this.spawnSyncImpl("npm", ["root", "-g"], { encoding: "utf8", timeout: 10000 });
+      if (result && !result.error && result.status === 0) {
+        const line = String(result.stdout || "").trim().split(/\r?\n/)[0];
+        if (line) root = line;
+      }
+    } catch {}
+    this._npmGlobalRoot = root;
+    return root;
+  }
+
+  /**
+   * How the pi on this device was installed and which version is on disk.
+   * Synchronous (fs + one npm probe); the registry half lives in piUpdateInfo.
+   */
+  detectPiInstallation() {
+    if (this.opsDetectPi) return this.opsDetectPi();
+    const info = findPiInfo(this.spawnSyncImpl, this.env, this.platform);
+    let packageInfo = null;
+    const starts = [];
+    if (info && info.path && info.path !== "pi") starts.push(info.path);
+    if (info && info.path === "pi") {
+      const onPath = findOnPath(this.platform === "win32" ? ["pi.exe", "pi.cmd", "pi.bat", "pi"] : ["pi"], this.platform, this.env);
+      if (onPath) starts.push(onPath);
+    }
+    for (const start of starts) {
+      packageInfo = findPiPackageDir(start, this.platform);
+      if (packageInfo) break;
+    }
+    const packageDir = packageInfo ? packageInfo.packageDir : null;
+    const shimPath = npmShimPathForPackageDir(packageDir, this.platform);
+    const plan = piInstallPlan({
+      packageDir,
+      npmGlobalRoot: this.npmGlobalRoot(),
+      npmShimExists: !!shimPath && fs.existsSync(shimPath),
+      platform: this.platform,
+    });
+    return { currentVersion: packageInfo ? packageInfo.version : null, installMethod: plan.installMethod, updatePrefix: plan.updatePrefix, packageDir, piPath: info ? info.path : "" };
+  }
+
+  /** Latest published pi version from the npm registry (device-side query). */
+  async fetchLatestPiVersion() {
+    const base = String(this.env.PI_REMOTE_NPM_REGISTRY || "").trim() || DEFAULT_NPM_REGISTRY_BASE;
+    const url = `${base.replace(/\/+$/, "")}/${encodeURIComponent(PI_PACKAGE_NAME)}/latest`;
+    const fetchJson = this.opsFetchJson || httpsGetJson;
+    const json = await fetchJson(url);
+    const version = json && typeof json.version === "string" ? json.version.trim() : "";
+    if (!version) throw new Error("the npm registry did not return a version for " + PI_PACKAGE_NAME);
+    return version;
+  }
+
+  /** get_pi_update_info payload, with the registry answer cached for PI_UPDATE_CACHE_MS. */
+  async piUpdateInfo() {
+    const now = Date.now();
+    if (this.piUpdateCache && now - this.piUpdateCache.at < PI_UPDATE_CACHE_MS) return this.piUpdateCache.info;
+    const detected = this.detectPiInstallation();
+    let latestVersion = null;
+    let checkError = null;
+    try {
+      latestVersion = await this.fetchLatestPiVersion();
+    } catch (e) {
+      checkError = e && e.message ? e.message : String(e);
+    }
+    const info = {
+      currentVersion: detected.currentVersion,
+      latestVersion,
+      installMethod: detected.installMethod,
+      updatePrefix: detected.updatePrefix || null,
+      canUpdate: detected.installMethod === "npm-global" && !!latestVersion && latestVersion !== detected.currentVersion,
+      checkError,
+    };
+    this.piUpdateCache = { at: now, info };
+    return info;
+  }
+
+  async onPiUpdateInfo(frame) {
+    try {
+      const info = await this.piUpdateInfo();
+      // The ops area reads its availability facts from this reply first:
+      // get_host_diag is answered by the extension while a session is active
+      // and carries none of these attach-side fields.
+      this.reply(frame.id, {
+        ok: true,
+        status: "ok",
+        data: {
+          ...info,
+          supervised: this.supervised,
+          launchedPiCount: this.launchedPiTargets().length,
+          attachVersion: ATTACH_VERSION,
+        },
+      });
+    } catch (e) {
+      this.reply(frame.id, { ok: false, code: "internal", error: "读取 Pi 更新信息失败：" + (e && e.message ? e.message : e) });
+    }
+  }
+
+  /** get_operation_status payload: the attach-held operation status on its own
+   *  direct route, so UI progress polling never depends on which side answers
+   *  get_host_diag (the extension's fixed-shape reply has no such field). */
+  onOperationStatus(frame) {
+    this.reply(frame.id, { ok: true, status: "ok", data: { operationStatus: { ...this.operationStatus } } });
+  }
+
+  /**
+   * Device-level diagnostics answered by attach itself (the no-session route).
+   * The extension answers the same command inside a live session; the fields
+   * attach owns — install method, supervision, operation status, launched pi
+   * count — are reported here.
+   */
+  onHostDiag(frame) {
+    const detected = this.detectPiInstallation();
+    this.reply(frame.id, {
+      ok: true,
+      status: "ok",
+      data: {
+        piVersion: detected.currentVersion,
+        nodeVersion: process.version,
+        platform: platformId(this.platform),
+        arch: process.arch,
+        extensionVersion: this.readExtensionVersion(),
+        attach: { active: true, version: ATTACH_VERSION, deviceId: this.deviceId, expiresAt: this.expiresAt },
+        piInstallMethod: detected.installMethod,
+        supervised: this.supervised,
+        operationStatus: { ...this.operationStatus },
+        launchedPiCount: this.launchedPiTargets().length,
+      },
+    });
+  }
+
+  /**
+   * The live pi processes this window is responsible for: launch-ledger
+   * entries (its own launches plus adopted ones) that are verifiably alive.
+   * tmux launches are checked in tmux; window launches (Terminal / console)
+   * have no signal handle, so their room being online is the liveness proof.
+   * Dead claims are pruned as a side effect, like planLaunch does.
+   */
+  launchedPiTargets() {
+    this.adoptLivePi();
+    const targets = [];
+    const seenTmuxSessions = new Set();
+    const roomOnline = (roomId) => !!(roomId && (this.onlineRooms || []).some((room) => String(room && room.id) === String(roomId)));
+    for (const [sessionId, claim] of [...this.spawnedBySession]) {
+      if (!claim) {
+        this.spawnedBySession.delete(sessionId);
+        continue;
+      }
+      const alive = claim.tmuxSession ? this.claimAlive(claim) : roomOnline(sessionId);
+      if (!alive) {
+        this.spawnedBySession.delete(sessionId);
+        continue;
+      }
+      if (claim.tmuxSession) seenTmuxSessions.add(claim.tmuxSession);
+      targets.push({
+        sessionId: String(sessionId),
+        cwd: null,
+        tmuxSession: claim.tmuxSession || null,
+        roomId: String(sessionId),
+        claimKeys: [{ map: "session", key: String(sessionId) }],
+      });
+    }
+    for (const [key, claim] of [...this.spawnedByCwd]) {
+      if (!claim) {
+        this.spawnedByCwd.delete(key);
+        continue;
+      }
+      const room = claim.roomId ? (this.onlineRooms || []).find((entry) => String(entry && entry.id) === String(claim.roomId)) : null;
+      const alive = claim.tmuxSession
+        ? this.claimAlive(claim)
+        : !!room || (this.onlineRooms || []).some((entry) => entry && entry.online && normalizeDir(entry.cwd, this.platform) === key);
+      if (!alive) {
+        this.spawnedByCwd.delete(key);
+        this.seenOnline.delete(key);
+        continue;
+      }
+      if (claim.tmuxSession && seenTmuxSessions.has(claim.tmuxSession)) {
+        // The same pi already has a session-form target; merge the ledger
+        // keys so a restart clears both claims, and keep the raw cwd.
+        const existing = targets.find((target) => target.tmuxSession === claim.tmuxSession);
+        if (existing) {
+          existing.claimKeys.push({ map: "cwd", key });
+          if (!existing.cwd) existing.cwd = room ? String(room.cwd) : key;
+          continue;
+        }
+      }
+      if (claim.tmuxSession) seenTmuxSessions.add(claim.tmuxSession);
+      targets.push({
+        sessionId: claim.roomId ? String(claim.roomId) : null,
+        cwd: room ? String(room.cwd) : key,
+        tmuxSession: claim.tmuxSession || null,
+        roomId: claim.roomId ? String(claim.roomId) : null,
+        claimKeys: [{ map: "cwd", key }],
+      });
+    }
+    return targets;
+  }
+
+  tmuxPanePids(session) {
+    const result = this.tmuxRun(["list-panes", "-s", "-t", "=" + session, "-F", "#{pane_pid}"]);
+    if (!result || result.status !== 0) return [];
+    return String(result.stdout || "")
+      .split("\n")
+      .map((line) => Number.parseInt(line.trim(), 10))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+  }
+
+  /** Signal a pane process group first (the pane leader's group reaches pi itself), then the bare pid. */
+  signalProcessTree(pid, signal) {
+    const kill = this.opsKillProcess || ((target, sig) => process.kill(target, sig));
+    try {
+      kill(-pid, signal);
+      return;
+    } catch {}
+    try {
+      kill(pid, signal);
+    } catch {}
+  }
+
+  /**
+   * Stop one launched pi: SIGTERM, grace, SIGKILL, then drop the tmux
+   * session shell. Only tmux launches can be signalled — attach holds no
+   * handle on Terminal / console window launches, and says so per process.
+   */
+  async stopLaunchedPi(target) {
+    if (!target.tmuxSession) {
+      return { ok: false, error: "pi was launched in a separate window (Terminal/console) that attach cannot signal" };
+    }
+    const session = target.tmuxSession;
+    for (const pid of this.tmuxPanePids(session)) this.signalProcessTree(pid, "SIGTERM");
+    const deadline = Date.now() + this.opsStopGraceMs;
+    while (Date.now() < deadline) {
+      if (!this.tmuxAlive(session)) return { ok: true };
+      await this.opsDelayImpl(200);
+    }
+    if (!this.tmuxAlive(session)) return { ok: true };
+    for (const pid of this.tmuxPanePids(session)) this.signalProcessTree(pid, "SIGKILL");
+    this.tmuxRun(["kill-session", "-t", "=" + session]);
+    await this.opsDelayImpl(200);
+    return this.tmuxAlive(session) ? { ok: false, error: "pi did not exit after SIGKILL" } : { ok: true };
+  }
+
+  /**
+   * Restart one launched pi with its exact original launch parameters
+   * (session resume when the session is known, otherwise the same cwd) and
+   * wait for its room to re-register.
+   */
+  async restartLaunchedPi(target) {
+    const stopped = await this.stopLaunchedPi(target);
+    if (!stopped.ok) return { ok: false, roomId: target.roomId || null, error: stopped.error };
+    // Clear the ledger entries first, or the relaunch reads as already_running.
+    for (const claimKey of target.claimKeys) {
+      if (claimKey.map === "session") this.spawnedBySession.delete(claimKey.key);
+      else {
+        this.spawnedByCwd.delete(claimKey.key);
+        this.seenOnline.delete(claimKey.key);
+      }
+    }
+    const launchArgs = target.sessionId ? { sessionId: target.sessionId, source: "remote" } : { cwd: target.cwd, source: "remote" };
+    const waiter = this.armLaunchWaiter(
+      target.sessionId ? "session" : "cwd",
+      target.sessionId ? String(target.sessionId) : normalizeDir(target.cwd, this.platform),
+      this.opsRoomWaitMs,
+      {},
+    );
+    const launched = await this.launch(launchArgs);
+    if (!launched.ok) {
+      if (waiter) waiter.fail(launched.error || "launch failed");
+      return { ok: false, roomId: target.roomId || null, error: launched.error || "launch failed" };
+    }
+    if (!waiter) return { ok: true, roomId: launched.roomId || target.roomId || null };
+    const outcome = await waiter.promise;
+    if (outcome && outcome.roomId) return { ok: true, roomId: outcome.roomId };
+    if (outcome && outcome.failed) return { ok: false, roomId: target.roomId || null, error: outcome.failed };
+    return {
+      ok: false,
+      roomId: target.roomId || null,
+      error: `the session did not come back online within ${Math.max(1, Math.round(this.opsRoomWaitMs / 1000))}s (it may still appear later)`,
+    };
+  }
+
+  /** Restart every launched pi, sequentially (launch() admits one start at a time). */
+  async restartAllLaunchedPi() {
+    const targets = this.launchedPiTargets();
+    let restarted = 0;
+    const failed = [];
+    for (const target of targets) {
+      const result = await this.restartLaunchedPi(target);
+      if (result.ok) restarted += 1;
+      else failed.push({ roomId: result.roomId || target.roomId || null, error: result.error || "restart failed" });
+    }
+    return { restarted, failed };
+  }
+
+  async onHarnessRestart(frame) {
+    if (this.operationStatus.state === "running") return this.operationBusy(frame);
+    if (!this.launchedPiTargets().length) {
+      return this.reply(frame.id, { ok: false, code: "no_launched_pi", error: "这台设备上没有由 Pi-Remote 拉起的 Pi" });
+    }
+    const operationId = this.beginOperation("harness_restart");
+    this.reply(frame.id, { ok: true, status: "accepted", data: { accepted: true, operationId } });
+    void this.runHarnessRestart();
+  }
+
+  async runHarnessRestart() {
+    this.setOperationPhase("restarting");
+    try {
+      const summary = await this.restartAllLaunchedPi();
+      const total = summary.restarted + summary.failed.length;
+      if (summary.failed.length) {
+        this.failOperation(summary.failed[0].error, `Restarted ${summary.restarted} of ${total} pi processes`, { result: summary });
+      } else {
+        this.completeOperation(`Pi restarted (${summary.restarted} process${summary.restarted === 1 ? "" : "es"})`, { result: summary });
+      }
+    } catch (e) {
+      this.failOperation(e && e.message ? e.message : String(e));
+    }
+  }
+
+  /** Run one fixed external command, capturing bounded output tails; resolves { code, stdoutTail, stderrTail }. */
+  runOpsCommand(file, args, options = {}) {
+    if (this.opsRunCommand) return this.opsRunCommand(file, args, options);
+    const timeoutMs = options.timeoutMs || OPS_INSTALL_TIMEOUT_MS;
+    return new Promise((resolve) => {
+      let child;
+      try {
+        child = this.spawnImpl(file, args, { stdio: ["ignore", "pipe", "pipe"] });
+      } catch (e) {
+        resolve({ code: -1, stdoutTail: "", stderrTail: e && e.message ? e.message : String(e) });
+        return;
+      }
+      if (!child || typeof child.on !== "function") {
+        resolve({ code: -1, stdoutTail: "", stderrTail: "spawn returned no child handle" });
+        return;
+      }
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const finish = (code, extraError) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ code, stdoutTail: stdout.slice(-4000), stderrTail: (stderr + (extraError || "")).slice(-4000) });
+      };
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {}
+        finish(-1, "\n[timed out]");
+      }, timeoutMs);
+      if (child.stdout && typeof child.stdout.on === "function") child.stdout.on("data", (chunk) => { stdout = (stdout + chunk).slice(-16000); });
+      if (child.stderr && typeof child.stderr.on === "function") child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-16000); });
+      child.on("error", (e) => finish(-1, e && e.message ? e.message : String(e)));
+      child.on("exit", (code) => finish(code == null ? -1 : code));
+    });
+  }
+
+  async onUpdatePi(frame) {
+    if (this.operationStatus.state === "running") return this.operationBusy(frame);
+    let info;
+    try {
+      info = await this.piUpdateInfo();
+    } catch (e) {
+      return this.reply(frame.id, { ok: false, code: "internal", error: "读取 Pi 更新信息失败：" + (e && e.message ? e.message : e) });
+    }
+    if (info.installMethod !== "npm-global") {
+      return this.reply(frame.id, { ok: false, code: "unsupported_install_method", error: "这台设备上的 Pi 不是通过 npm 全局安装的，无法在这里更新" });
+    }
+    if (!info.latestVersion) {
+      return this.reply(frame.id, { ok: false, code: "update_check_failed", error: "查不到 Pi 的最新版本：" + (info.checkError || "注册表没有回应") });
+    }
+    if (info.latestVersion === info.currentVersion) {
+      return this.reply(frame.id, { ok: false, code: "already_latest", error: "Pi 已是最新版本 " + info.currentVersion });
+    }
+    const operationId = this.beginOperation("update_pi");
+    this.reply(frame.id, { ok: true, status: "accepted", data: { accepted: true, operationId } });
+    void this.runUpdatePi(info);
+  }
+
+  async runUpdatePi(info) {
+    try {
+      this.setOperationPhase("checking");
+      this.setOperationPhase("installing");
+      // Fixed command only: the package spec is a module constant, never request
+      // input. The one variable part is --prefix, and it only ever carries the
+      // prefix probed from the local file system layout by detectPiInstallation
+      // (pi installed with `npm i -g --prefix <dir>` must be updated into that
+      // same prefix, not into the PATH npm's default one).
+      const installArgs = ["install", "-g"];
+      if (info.updatePrefix) installArgs.push("--prefix", info.updatePrefix);
+      installArgs.push(PI_UPDATE_SPEC);
+      const command =
+        this.platform === "win32"
+          ? { file: "cmd.exe", args: ["/c", "npm", ...installArgs] }
+          : { file: "npm", args: installArgs };
+      const result = await this.runOpsCommand(command.file, command.args, { timeoutMs: OPS_INSTALL_TIMEOUT_MS });
+      if (result.code !== 0) {
+        // Install failed: the existing pi stays installed and running; no restart.
+        this.failOperation((result.stderrTail || result.stdoutTail || `npm exited with code ${result.code}`).trim());
+        return;
+      }
+      this.piUpdateCache = null;
+      this.setOperationPhase("restarting");
+      const summary = await this.restartAllLaunchedPi();
+      if (summary.failed.length) {
+        this.failOperation(summary.failed[0].error, `Pi updated to ${info.latestVersion}, but ${summary.failed.length} pi process(es) did not restart`, { result: summary });
+        return;
+      }
+      this.setOperationPhase("verifying");
+      const detected = this.detectPiInstallation();
+      if (detected.currentVersion !== info.latestVersion) {
+        this.failOperation(`installed pi version is ${detected.currentVersion || "unknown"}, expected ${info.latestVersion}`);
+        return;
+      }
+      this.completeOperation(`Pi updated, ${info.latestVersion} running`, { result: summary });
+    } catch (e) {
+      this.failOperation(e && e.message ? e.message : String(e));
+    }
+  }
+
+  /**
+   * Write the pending marker, let the accepted reply flush, then exit with
+   * the supervisor's relaunch code. Only reachable when supervised.
+   */
+  async exitForSupervisedRestart(kind) {
+    this.setOperationPhase("restarting");
+    try {
+      writeJsonAtomic(this.operationPendingFile, { kind, startedAt: this.operationStatus.startedAt });
+    } catch (e) {
+      this.failOperation("could not write the pending-operation marker: " + (e && e.message ? e.message : e));
+      return;
+    }
+    await this.opsDelayImpl(this.opsExitFlushMs);
+    this.shutdown("系统操作：按网页请求重启设备端", OPS_RESTART_EXIT_CODE);
+  }
+
+  async onRestartHost(frame) {
+    if (this.operationStatus.state === "running") return this.operationBusy(frame);
+    if (!this.supervised) {
+      return this.reply(frame.id, { ok: false, code: "not_supervised", error: "这台设备的连接窗口不是由监督脚本拉起的，无法远程重启" });
+    }
+    const operationId = this.beginOperation("restart_host");
+    this.reply(frame.id, { ok: true, status: "accepted", data: { accepted: true, operationId } });
+    void this.exitForSupervisedRestart("restart_host");
+  }
+
+  /** Copy the current deploy/ tree and extension source into the backup slot for this operation. */
+  backupComponentFiles() {
+    const backupDir = path.join(this.agentDir, "component-backup", String(this.operationStatus.startedAt || Date.now()));
+    fs.rmSync(backupDir, { recursive: true, force: true });
+    fs.mkdirSync(backupDir, { recursive: true });
+    const deployDir = path.join(this.deployRoot, "deploy");
+    if (fs.existsSync(deployDir)) fs.cpSync(deployDir, path.join(backupDir, "deploy"), { recursive: true });
+    const extensionSource = path.join(this.deployRoot, "extension", "pi-remote-sync.ts");
+    if (fs.existsSync(extensionSource)) fs.copyFileSync(extensionSource, path.join(backupDir, "extension-pi-remote-sync.ts"));
+    return backupDir;
+  }
+
+  /** Replace deploy/ and the extension source with the extracted package's copies. */
+  installComponentFiles(extractedDir) {
+    const deployTarget = path.join(this.deployRoot, "deploy");
+    fs.rmSync(deployTarget, { recursive: true, force: true });
+    fs.cpSync(path.join(extractedDir, "deploy"), deployTarget, { recursive: true });
+    const extensionTarget = path.join(this.deployRoot, "extension", "pi-remote-sync.ts");
+    fs.mkdirSync(path.dirname(extensionTarget), { recursive: true });
+    fs.copyFileSync(path.join(extractedDir, "extension", "pi-remote-sync.ts"), extensionTarget);
+    if (this.platform !== "win32") {
+      // Zip extraction does not always preserve exec bits; entry scripts need them.
+      const restoreExecBits = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) restoreExecBits(full);
+          else if (entry.name.endsWith(".sh")) {
+            try {
+              fs.chmodSync(full, 0o755);
+            } catch {}
+          }
+        }
+      };
+      restoreExecBits(deployTarget);
+    }
+  }
+
+  /** Undo a half-finished swap from the backup made by backupComponentFiles. */
+  restoreComponentBackup(backupDir) {
+    const deployBackup = path.join(backupDir, "deploy");
+    if (fs.existsSync(deployBackup)) {
+      const deployTarget = path.join(this.deployRoot, "deploy");
+      fs.rmSync(deployTarget, { recursive: true, force: true });
+      fs.cpSync(deployBackup, deployTarget, { recursive: true });
+    }
+    const extensionBackup = path.join(backupDir, "extension-pi-remote-sync.ts");
+    if (fs.existsSync(extensionBackup)) {
+      fs.copyFileSync(extensionBackup, path.join(this.deployRoot, "extension", "pi-remote-sync.ts"));
+    }
+  }
+
+  /**
+   * The extension sync step of the component update (deploy/sync-extension.sh
+   * equivalent): copy the repository extension into the pi extensions
+   * directory atomically; a destination that already IS the source is skipped.
+   */
+  syncExtensionFile() {
+    const source = path.join(this.deployRoot, "extension", "pi-remote-sync.ts");
+    const target = this.extensionSyncTargetPath();
+    let sameFile = false;
+    try {
+      const sourceStat = fs.statSync(source);
+      const targetStat = fs.statSync(target);
+      sameFile = sourceStat.dev === targetStat.dev && sourceStat.ino === targetStat.ino;
+    } catch {}
+    if (sameFile) return;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const tempPath = `${target}.tmp.${process.pid}`;
+    fs.copyFileSync(source, tempPath);
+    fs.renameSync(tempPath, target);
+  }
+
+  releaseApiUrl() {
+    return String(this.env.PI_REMOTE_RELEASE_API || "").trim() || DEFAULT_RELEASE_API_URL;
+  }
+
+  async onUpdateComponents(frame) {
+    if (this.operationStatus.state === "running") return this.operationBusy(frame);
+    // Supervision is validated before anything is downloaded or changed:
+    // without a supervising launcher the post-swap restart cannot happen.
+    if (!this.supervised) {
+      return this.reply(frame.id, { ok: false, code: "not_supervised", error: "这台设备的连接窗口不是由监督脚本拉起的，无法远程更新组件" });
+    }
+    const operationId = this.beginOperation("update_components");
+    this.reply(frame.id, { ok: true, status: "accepted", data: { accepted: true, operationId } });
+    void this.runUpdateComponents();
+  }
+
+  async runUpdateComponents() {
+    const stagingDir = path.join(this.agentDir, "component-update");
+    const cleanupStaging = () => {
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true });
+      } catch {}
+    };
+    try {
+      this.setOperationPhase("downloading");
+      const fetchJson = this.opsFetchJson || httpsGetJson;
+      const release = await fetchJson(this.releaseApiUrl());
+      const platformTag = platformId(this.platform);
+      const zipAsset = pickReleaseAsset(release && release.assets, new RegExp(`^Pi-Remote-device-${platformTag}-v.+\\.zip$`));
+      const sumsAsset = pickReleaseAsset(release && release.assets, /^SHA256SUMS\.txt$/);
+      if (!zipAsset || !sumsAsset) {
+        throw new Error(`release ${(release && release.tag_name) || "?"} has no device package for ${platformTag}`);
+      }
+      cleanupStaging();
+      fs.mkdirSync(stagingDir, { recursive: true });
+      const downloadFile = this.opsDownloadFile || ((url, dest) => loadCloudflaredLib().downloadHttps(url, dest));
+      const sumsPath = path.join(stagingDir, "SHA256SUMS.txt");
+      const zipPath = path.join(stagingDir, zipAsset.name);
+      await downloadFile(sumsAsset.browser_download_url, sumsPath);
+      await downloadFile(zipAsset.browser_download_url, zipPath);
+      this.setOperationPhase("verifying");
+      const sums = parseSha256Sums(fs.readFileSync(sumsPath, "utf8"));
+      const expected = sums.get(zipAsset.name);
+      if (!expected) throw new Error(`SHA256SUMS.txt has no entry for ${zipAsset.name}`);
+      const sha256File = this.opsSha256File || ((file) => loadCloudflaredLib().sha256File(file));
+      const actual = String(await sha256File(zipPath)).toLowerCase();
+      if (actual !== expected) {
+        // Verification failed before the swap: no device file has been touched.
+        throw new Error(`sha256 mismatch: expected ${expected}, got ${actual} (${zipAsset.name})`);
+      }
+      const extractedDir = path.join(stagingDir, "extracted");
+      const extractZip = this.opsExtractZip || extractZipArchive;
+      await extractZip(zipPath, extractedDir, { platform: this.platform, spawnSyncImpl: this.spawnSyncImpl });
+      if (!fs.existsSync(path.join(extractedDir, "deploy", "attach.cjs")) || !fs.existsSync(path.join(extractedDir, "extension", "pi-remote-sync.ts"))) {
+        throw new Error("the device package is missing deploy/attach.cjs or extension/pi-remote-sync.ts");
+      }
+      this.setOperationPhase("swapping");
+      const backupDir = this.backupComponentFiles();
+      try {
+        this.installComponentFiles(extractedDir);
+        this.syncExtensionFile();
+      } catch (swapError) {
+        this.restoreComponentBackup(backupDir);
+        throw swapError;
+      }
+      cleanupStaging();
+      await this.exitForSupervisedRestart("update_components");
+    } catch (e) {
+      cleanupStaging();
+      this.failOperation(e && e.message ? e.message : String(e));
+    }
   }
 
   shutdown(reason, code = 0) {
@@ -6442,6 +7524,18 @@ module.exports = {
   startShareWindowServer,
   printShareOffer,
   printTunnelOffer,
+  OPS_RESTART_EXIT_CODE,
+  PI_PACKAGE_NAME,
+  PI_UPDATE_SPEC,
+  emptyOperationStatus,
+  findPiPackageDir,
+  npmShimPathForPackageDir,
+  npmPrefixForPackageDir,
+  piInstallPlan,
+  classifyPiInstallMethod,
+  parseSha256Sums,
+  pickReleaseAsset,
+  extractZipArchive,
 };
 
 if (require.main === module) {

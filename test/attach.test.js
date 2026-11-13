@@ -1155,7 +1155,7 @@ test("attach 鉴权帧：有设备令牌就按设备鉴权，共享 token 照带
     { proto: f.proto, kind: f.client.kind, platform: f.client.platform, deviceId: f.deviceId, deviceToken: f.deviceToken, token: f.token },
     { proto: 4, kind: "attach", platform: "macos", deviceId: "d1", deviceToken: "dt", token: "lt" },
   );
-  assert.deepEqual(f.caps, ["err.v4", "device.token", "session.files", "fs.browse"]);
+  assert.deepEqual(f.caps, ["err.v4", "device.token", "session.files", "fs.browse", "device.ops"]);
   const legacy = attach.attachAuthFrame({ token: "lt", deviceId: "d1", platform: "win32" });
   assert.equal("deviceToken" in legacy, false);
   assert.equal(legacy.client.platform, "windows");
@@ -1561,7 +1561,7 @@ test("device_register：P9 带上 trash / features / browse.roots", (t) => {
   assert.equal(withTrash.type, "device_register");
   assert.equal(withTrash.device.trash, true);
   assert.deepEqual(withTrash.device.browse, { roots: ["/tmp/one", "/tmp/two"] });
-  assert.deepEqual(withTrash.device.features, ["session.files", "fs.browse"]);
+  assert.deepEqual(withTrash.device.features, ["session.files", "fs.browse", "device.ops"]);
   process.env.PATH = bin; // withFakeTrash 已把 PATH 换过去；这里再确认无 trash 的平台组合
   assert.equal(Array.isArray(withTrash.device.projects), true);
 });

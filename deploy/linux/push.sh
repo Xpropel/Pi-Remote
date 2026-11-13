@@ -28,6 +28,7 @@ kit_files=(
   deploy/sync-extension.sh
   deploy/linux/device.cjs
   deploy/linux/device.sh
+  deploy/linux/supervise-attach.sh
 )
 
 server="root@<你的服务器IP>"

@@ -14,7 +14,7 @@ const { PrefsStore, cleanPrefsSubset } = require("./prefs");
 const { attachCommon, keepalive } = require("./conn");
 const { PAIR_CODES_MAX, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, pairSourceBlocked, notePairFailure, requestSource, b64buf, authPayload, p256PubKey, verifyP256, cleanViewerPubKeys, adminPayload } = require("./pairing");
 const { ackTrackerOf, isAckFp } = require("./acktrack");
-const { commandTimeoutMs, MESSAGE_COMMANDS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, pruneDedupe, dedupeKeyOf } = require("./commands");
+const { commandTimeoutMs, MESSAGE_COMMANDS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, DEVICE_OPERATION_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, pruneDedupe, dedupeKeyOf } = require("./commands");
 const { MAX_DEVICE_NAME, UNREGISTERED_DEVICE, normPath, canonicalCwd, cwdAllowed, underRoots, boundAccount } = require("./devices");
 const { replaySessionArchives } = require("./sessionArchive");
 const { purgeSessions } = require("./purge");
@@ -513,6 +513,14 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
         send(socket, ackFrame(origId, false, { error: PROTOCOL.errors.device_update_required.message, code: "device_update_required", deviceId }), config);
         return;
       }
+      runCommand(socket, frame, null, deviceRecord.conn, { dedupeScope: deviceId, deviceId });
+      return;
+    }
+    // System operations (device.ops): attach executes them, so the whole group
+    // always goes to the device connection — with or without an active session —
+    // and never to a room. This short-circuit must precede the active-room logic
+    // below, which would otherwise hand the command to the extension.
+    if (DEVICE_OPERATION_COMMANDS.has(cmdName) || cmdName === "get_pi_update_info" || cmdName === "get_operation_status") {
       runCommand(socket, frame, null, deviceRecord.conn, { dedupeScope: deviceId, deviceId });
       return;
     }

@@ -18,7 +18,9 @@ const { storeSessionArchive, broadcastSessionArchive } = require("./sessionArchi
 const { purgeSessions } = require("./purge");
 
 /** attach 声明的能力里 relay 关心的子集（P9 B/C）：决定设备级 session.files 命令与目录浏览是否可用 */
-const DEVICE_FEATURES = ["session.files", "fs.browse"];
+/* device.ops joins the passthrough set: the roster entry's features are how the
+ * UI learns that this device's attach can run system operations. */
+const DEVICE_FEATURES = ["session.files", "fs.browse", "device.ops"];
 
 /** G2 approval-gate tiers (same values as the bridge's APPROVAL_GATE_TIERS):
  *  the ext_status cache only carries a switches block whose tier is legal. */
@@ -1419,7 +1421,7 @@ function startLocalServer(config, rooms, store, relayContext, onListening, onErr
             dev.platform = platform;
             dev.projects = cleanProjects(device.projects);
             // P9 B/C：attach 声明的能力、设备侧事实（PATH 里有没有 trash）、允许浏览的根目录。
-            // features 只留 relay 关心的两个；browseRoots 复用 cleanProjects 的清洗（非空字符串/去重/单条上限），
+            // features keeps only the DEVICE_FEATURES subset; browseRoots 复用 cleanProjects 的清洗（非空字符串/去重/单条上限），
             // 总条数按协议的 browseRootsMax 截断。
             dev.features = DEVICE_FEATURES.filter((feature) => hasCap(socket, feature));
             dev.trash = device.trash === true;

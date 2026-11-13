@@ -43,6 +43,7 @@ function makeContext(options = {}) {
     user: options.user || env.USER || env.LOGNAME || "",
     envPath: path.join(kit, ".env"),
     attachCjs: path.join(kit, "deploy", "attach.cjs"),
+    superviseSh: path.join(kit, "deploy", "linux", "supervise-attach.sh"),
     startPi: path.join(kit, "deploy", "start-pi.sh"),
     deviceSh: path.join(kit, "deploy", "linux", "device.sh"),
     extSrc: path.join(kit, "extension", "pi-remote-sync.ts"),
@@ -704,9 +705,13 @@ async function cmdUp(context, options = {}) {
   // 窗口自己的退出码也落盘：tmux 3.4 丢 #{pane_dead_status} 时还能报出真实原因
   const exitFile = attachExitFile(context);
   removeQuiet(exitFile);
+  // The window runs under the supervisor loop: attach may ask for a
+  // self-restart (system operations) by exiting with code 75, and
+  // PI_REMOTE_SUPERVISED=1 tells attach that this loop will relaunch it.
   const tmuxArgs = [
     "new-session", "-d", "-s", ATTACH_SESSION, "-c", context.kit,
-    "/usr/bin/env", `PI_REMOTE_EXIT_FILE=${exitFile}`,
+    "/usr/bin/env", `PI_REMOTE_EXIT_FILE=${exitFile}`, "PI_REMOTE_SUPERVISED=1",
+    "/bin/sh", context.superviseSh,
     context.nodeBin, context.attachCjs, "--max-hours", String(hours), ...dirs,
   ].map(tmuxArg);
   // 窗口当场失败（令牌被撤销、缺配置）时窗格留着，下面把原因抓出来再收掉

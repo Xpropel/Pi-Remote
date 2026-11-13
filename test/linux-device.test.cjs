@@ -232,7 +232,8 @@ test("up：没配对先拦；tmux 命令拆成参数、-t 精确匹配、≥3.2 
   const attachExit = attach.exitCodePath(device.ATTACH_SESSION, box.home);
   assert.deepEqual(created, [
     "new-session", "-d", "-s", device.ATTACH_SESSION, "-c", box.kit,
-    "/usr/bin/env", `PI_REMOTE_EXIT_FILE=${attachExit}`,
+    "/usr/bin/env", `PI_REMOTE_EXIT_FILE=${attachExit}`, "PI_REMOTE_SUPERVISED=1",
+    "/bin/sh", path.join(box.kit, "deploy", "linux", "supervise-attach.sh"),
     process.execPath, path.join(box.kit, "deploy", "attach.cjs"), "--max-hours", "36",
     path.join(box.work, "app"), path.join(box.work, "a b\\;"),
     ";", "set-option", "-w", "-t", `=${device.ATTACH_SESSION}:`, "remain-on-exit", "failed",
@@ -635,7 +636,7 @@ test("doctor：PI_REMOTE_PI_BIN 写错时报「路径不存在」，不是笼统
 
 test("deploy/linux 下的 shell 脚本：LF、可执行、bash 3.2 语法通过；device.sh 经符号链接调用也找得到 device.cjs", { skip: process.platform === "win32" }, (t) => {
   const scripts = fs.readdirSync(LINUX_DIR).filter((n) => n.endsWith(".sh"));
-  assert.deepEqual(scripts.sort(), ["device.sh", "push.sh"]);
+  assert.deepEqual(scripts.sort(), ["device.sh", "push.sh", "supervise-attach.sh"]);
   for (const name of scripts) {
     const file = path.join(LINUX_DIR, name);
     const text = fs.readFileSync(file, "utf8");
@@ -695,7 +696,7 @@ function pushSandbox(t, { live = false } = {}) {
   const root = tmp("pi-linux-push-");
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const repo = path.join(root, "repo");
-  const files = ["package.json", "package-lock.json", ".env.example", "protocol/v4.json", "extension/pi-remote-sync.ts", "deploy/attach.cjs", "deploy/session-library.cjs", "deploy/attach.sh", "deploy/start-pi.sh", "deploy/sync-extension.sh", "deploy/linux/device.cjs", "deploy/linux/device.sh", "deploy/linux/push.sh"];
+  const files = ["package.json", "package-lock.json", ".env.example", "protocol/v4.json", "extension/pi-remote-sync.ts", "deploy/attach.cjs", "deploy/session-library.cjs", "deploy/attach.sh", "deploy/start-pi.sh", "deploy/sync-extension.sh", "deploy/linux/device.cjs", "deploy/linux/device.sh", "deploy/linux/push.sh", "deploy/linux/supervise-attach.sh"];
   for (const rel of files) {
     fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
     fs.copyFileSync(path.join(REPO, rel), path.join(repo, rel));

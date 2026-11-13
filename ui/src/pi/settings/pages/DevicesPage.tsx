@@ -11,6 +11,10 @@
  *     结果显示「设备 ↔ 服务器 · xx ms」；设备离线时按钮禁用。
  *   ● 设为默认：纯本机偏好（defaultDeviceId，写 pi_remote_pi_settings_v2），刷新后保持；
  *     不是 relay 的设备概念，也不改设备侧配置。
+ *   ● 系统操作：设备行「系统操作」展开区（DeviceSystemOps）：版本块（get_host_diag）+
+ *     更新 Pi / 重启 Pi / 重启设备端 / 更新设备端组件四行；整区按设备 features 的
+ *     device.ops 能力位门控，命令走 runDeviceCommand，进度与结果读 diag 的
+ *     operationStatus（轮询口径在 useSystemOps，可用性与文案在 systemOpsLogic）。
  *   ○ 新会话自动连上默认设备：本机偏好，改完立即写 pi_remote_pi_settings_v2。
  *   ◌ 阻止设备睡眠、常驻托盘/菜单栏：协议没有对应字段 / 概念，保留形态并标「设计预留」。
  *
@@ -25,7 +29,7 @@
  * options live on the room). Presentation only; nothing here writes room
  * data or changes any policy.
  */
-import { useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useState } from "react"
 import { ChevronRight, Laptop, Monitor, Plus, Server } from "lucide-react"
 import { adminTokenErrorText, adminTokenReady, canRevoke, deviceErrorText, ENC_FALLBACK_LABEL, ENC_REASON_LABELS, errorCode, type Device } from "@/relay/devices"
 import { useNow } from "@/pi/hooks/useNow"
@@ -52,6 +56,7 @@ import {
   type PlaintextRoomGroup,
   type PlaintextRoomLike,
 } from "./devicesLogic"
+import { DeviceSystemOps } from "./DeviceSystemOps"
 import { IdentitySection } from "./IdentitySection"
 import "./devices.css"
 
@@ -94,6 +99,7 @@ export function DevicesPage() {
   const [revoking, setRevoking] = useState<string | null>(null)
   const [probes, setProbes] = useState<Record<string, DeviceProbe>>({})
   const [probingId, setProbingId] = useState<string | null>(null)
+  const [opsDeviceId, setOpsDeviceId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!armed) return
@@ -221,8 +227,10 @@ export function DevicesPage() {
             const name = deviceNameOf(device)
             const removeLabel = revoking === device.id ? "撤销中…" : armed === device.id ? "再点一次移除" : "移除"
             const probe = probes[device.id]
+            const opsOpen = opsDeviceId === device.id
             return (
-              <div className="settings-device-row" key={device.id} data-settings-device={device.id}>
+              <Fragment key={device.id}>
+              <div className="settings-device-row" data-settings-device={device.id}>
                 <DeviceGlyph device={device} />
                 <span className="settings-device-meta">
                   <span className="settings-device-name">
@@ -272,6 +280,15 @@ export function DevicesPage() {
                   >
                     诊断
                   </button>
+                  <button
+                    type="button"
+                    className="settings-device-action"
+                    aria-expanded={opsOpen}
+                    title="版本、更新 Pi、重启 Pi、重启设备端、更新设备端组件"
+                    onClick={() => setOpsDeviceId(opsOpen ? null : device.id)}
+                  >
+                    系统操作
+                  </button>
                   {isDefault ? (
                     <span className="settings-device-default is-action">已设为默认</span>
                   ) : (
@@ -291,6 +308,8 @@ export function DevicesPage() {
                   ) : null}
                 </span>
               </div>
+              {opsOpen ? <DeviceSystemOps relay={relay} device={device} rooms={relay.rooms} /> : null}
+              </Fragment>
             )
           })
         )}

@@ -9,6 +9,11 @@ const SESSION_OP_COMMANDS = new Set(["new_session", "switch_session", "fork", "c
 const SLOW_READ_COMMANDS = new Set(["export_session", "list_sessions", "get_entries", "get_projection", "get_tree", "get_session_stats", "get_file", "get_image", "search_session_bodies"]);
 /** 没有活动房间也能对目标 .jsonl 执行的会话文件操作（改名/导出/冷 fork）。 */
 const INACTIVE_SESSION_COMMANDS = new Set(["rename_session_file", "export_session_file", "fork_session_file"]);
+/** Mutating system operations (device.ops): attach executes them fire-and-track,
+ *  so the command timeout only covers the acceptance reply, never the work.
+ *  get_pi_update_info and get_operation_status are the read-only members of
+ *  the ops group (see READONLY_DEVICE_COMMANDS); deliberately not in this set. */
+const DEVICE_OPERATION_COMMANDS = new Set(["harness_restart", "update_pi", "restart_host", "update_components"]);
 
 function commandTimeoutMs(command, args, harnessStartTimeoutMs) {
   // harness_start 只有一个口径：cfg.harnessStartTimeoutMs（原来这里写死 10000，改配置只生效一半）
@@ -25,6 +30,13 @@ function commandTimeoutMs(command, args, harnessStartTimeoutMs) {
   }
   // 目录浏览是本地 readdir，正常几毫秒；给 8s 而不是默认 15s，卡住时网页能更早报错重试（P9 C）
   if (command === "list_dirs") return 8000;
+  // System operations (device.ops): the update check queries the npm registry
+  // from the device side, so it gets 20s; the mutating ops only wait for the
+  // acceptance reply (progress is tracked via get_operation_status), pinned
+  // at 15s. The status read itself is a local attach answer: 10s.
+  if (command === "get_pi_update_info") return 20000;
+  if (command === "get_operation_status") return 10000;
+  if (DEVICE_OPERATION_COMMANDS.has(command)) return 15000;
   if (SESSION_OP_COMMANDS.has(command) || SLOW_READ_COMMANDS.has(command) || INACTIVE_SESSION_COMMANDS.has(command)) return 30000;
   if (command === "abort") return 20000;
   return 15000;
@@ -39,12 +51,13 @@ const REMOTE_MESSAGE_EVENTS = new Set(["remote_message", "remote_message_deliver
 const DEVICE_COMMANDS = new Set([
   "switch_session", "new_session", "fork", "clone", "get_state", "get_sessions", "harness_start",
   "get_file", "get_image", "get_host_diag", "search_session_bodies", "list_dirs",
+  "get_pi_update_info", "get_operation_status", ...DEVICE_OPERATION_COMMANDS,
   ...INACTIVE_SESSION_COMMANDS,
 ]);
 
 /** 只读设备命令：没有活动会话时也允许直达设备（诊断/文件回程恰恰在没会话时最需要）。
  *  仍是 DEVICE_COMMANDS 的子集：白名单与设备在线检查照旧，发消息类永远不在此列。 */
-const READONLY_DEVICE_COMMANDS = new Set(["get_file", "get_image", "get_host_diag"]);
+const READONLY_DEVICE_COMMANDS = new Set(["get_file", "get_image", "get_host_diag", "get_pi_update_info", "get_operation_status"]);
 
 const DEVICE_ERRORS = {
   no_device: "这台设备从未连接过",
@@ -187,4 +200,4 @@ function pruneDedupe(rooms, config) {
   }
 }
 
-module.exports = { commandTimeoutMs, MESSAGE_COMMANDS, REMOTE_MESSAGE_EVENTS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, armReconcileCleanup, pruneDedupe, stableJson, argsDigest, dedupeKeyOf };
+module.exports = { commandTimeoutMs, MESSAGE_COMMANDS, REMOTE_MESSAGE_EVENTS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, DEVICE_OPERATION_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, armReconcileCleanup, pruneDedupe, stableJson, argsDigest, dedupeKeyOf };
