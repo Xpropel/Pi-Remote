@@ -705,9 +705,17 @@ test("update_components: download, verify, swap with backup, sync extension, sup
     deployRoot: kit,
     extensionSyncFile: syncTarget,
   });
-  assert.equal(nextBoot.ctl.operationStatus.state, "succeeded");
+  // Boot completion deletes the marker but holds the status non-terminal
+  // until the pi restart attempt lands the single final write.
+  assert.equal(nextBoot.ctl.operationStatus.state, "running");
   assert.equal(nextBoot.ctl.operationStatus.kind, "update_components");
   assert.equal(fs.existsSync(path.join(dir, "operation-pending.json")), false);
+  nextBoot.ctl.consumeComponentUpdatePiRestart();
+  await waitFor(() => nextBoot.ctl.operationStatus.state === "succeeded");
+  // This window's ledger is empty, and the final detail says so.
+  assert.match(nextBoot.ctl.operationStatus.detail, /Device components updated/);
+  assert.match(nextBoot.ctl.operationStatus.detail, /no launched Pi processes to restart/);
+  assert.deepEqual(nextBoot.ctl.operationStatus.result, { restarted: 0, failed: [] });
 });
 
 test("boot completion of update_components: boot restarts launched pi onto the new extension; a pi failure stays a succeeded update", async (t) => {
@@ -730,7 +738,10 @@ test("boot completion of update_components: boot restarts launched pi onto the n
       deployRoot: kit,
       extensionSyncFile: syncTarget,
     });
-    assert.equal(booted.ctl.operationStatus.state, "succeeded");
+    // Boot completion alone never publishes a terminal state anymore:
+    // the pi restart attempt below lands the final write.
+    assert.equal(booted.ctl.operationStatus.state, "running");
+    assert.equal(booted.ctl.operationStatus.finishedAt, null);
     booted.ctl.dirs = [];
     let calls = 0;
     booted.ctl.restartAllLaunchedPi = async () => {
@@ -758,6 +769,53 @@ test("boot completion of update_components: boot restarts launched pi onto the n
   assert.equal(failRun.booted.ctl.operationStatus.state, "succeeded");
   assert.match(failRun.booted.ctl.operationStatus.detail, /1 of 2 Pi processes/);
   assert.match(failRun.booted.ctl.operationStatus.detail, /room did not come back/);
+});
+
+test("boot completion of update_components: no terminal state is visible while the pi restart attempt is still pending", async (t) => {
+  // Same post-restart device state as the previous test.
+  const kit = tmpDir();
+  t.after(() => fs.rmSync(kit, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(kit, "extension"), { recursive: true });
+  fs.writeFileSync(path.join(kit, "extension", "pi-remote-sync.ts"), "NEW EXTENSION\n");
+  const syncTarget = path.join(kit, "installed", "pi-remote-sync.ts");
+  fs.mkdirSync(path.dirname(syncTarget), { recursive: true });
+  fs.writeFileSync(syncTarget, "NEW EXTENSION\n");
+  const agentDir = tmpDir();
+  t.after(() => fs.rmSync(agentDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(agentDir, "operation-pending.json"), JSON.stringify({ kind: "update_components", startedAt: 1234 }));
+
+  const booted = makeCtl({
+    attachFile: path.join(agentDir, "remote-attach.json"),
+    deployRoot: kit,
+    extensionSyncFile: syncTarget,
+  });
+  booted.ctl.dirs = [];
+  // A pi restart attempt that only returns when the test releases it.
+  let releaseRestart = null;
+  let restartCalls = 0;
+  booted.ctl.restartAllLaunchedPi = () => {
+    restartCalls += 1;
+    return new Promise((resolve) => {
+      releaseRestart = () => resolve({ restarted: 1, failed: [] });
+    });
+  };
+  await booted.ctl.bootDirs();
+  assert.equal(restartCalls, 1);
+  // Give the completion chain every chance to misbehave: while the
+  // attempt is pending, the status must not read as a finished
+  // operation (a polling UI stops at the first terminal state it sees).
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(booted.ctl.operationStatus.state, "running");
+  assert.equal(booted.ctl.operationStatus.finishedAt, null);
+  assert.equal(booted.ctl.operationStatus.detail, null);
+
+  releaseRestart();
+  await waitFor(() => booted.ctl.operationStatus.state === "succeeded");
+  // The single terminal write already carries the pi segment.
+  assert.match(booted.ctl.operationStatus.detail, /Device components updated/);
+  assert.match(booted.ctl.operationStatus.detail, /Pi restarted to load the new extension \(1 process\)/);
+  assert.ok(booted.ctl.operationStatus.finishedAt > 0);
+  assert.deepEqual(booted.ctl.operationStatus.result, { restarted: 1, failed: [] });
 });
 
 /* ---------------- Component update merge semantics (defect B) ---------------- */
@@ -857,9 +915,12 @@ test("boot completion without start directories: registration consumes the pendi
     deployRoot: kit,
     extensionSyncFile: syncTarget,
   });
-  // The marker completed at construction; the restart flag is pending and
-  // this window has no start directories, so bootDirs can never fire.
-  assert.equal(booted.ctl.operationStatus.state, "succeeded");
+  // The marker was consumed at construction; the restart flag is pending
+  // and the status is held non-terminal until the restart attempt lands
+  // the final write. This window has no start directories, so bootDirs
+  // can never fire.
+  assert.equal(booted.ctl.operationStatus.state, "running");
+  assert.equal(booted.ctl.operationStatus.finishedAt, null);
   assert.equal(booted.ctl.pendingComponentUpdatePiRestart, true);
   assert.deepEqual(booted.ctl.dirs, []);
   let bootDirsCalls = 0;

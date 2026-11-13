@@ -157,6 +157,30 @@ export function operationStatusReplyOf(value: unknown): OperationStatus | null {
   return null
 }
 
+/** Freshness key of a status: when it finished, else when it started, else null (an idle status carries no operation). */
+function operationStatusStampOf(status: OperationStatus): number | null {
+  return status.finishedAt ?? status.startedAt
+}
+
+/**
+ * Merge the two reads of the attach-held operationStatus taken when the
+ * area opens: the copy riding the get_host_diag reply and the copy from the
+ * attach-direct get_operation_status command (null when that read failed or
+ * the device build has no such command). With an active session the
+ * extension answers get_host_diag and its fixed-shape reply normalizes to
+ * idle, which must not erase the result the direct read brings back. When
+ * both sides carry an operation, the fresher stamp wins; a tie goes to the
+ * direct read, the dedicated channel.
+ */
+export function mergedOperationStatusOf(diagStatus: OperationStatus, commandStatus: OperationStatus | null): OperationStatus {
+  if (!commandStatus) return diagStatus
+  const commandStamp = operationStatusStampOf(commandStatus)
+  if (commandStamp == null) return diagStatus
+  const diagStamp = operationStatusStampOf(diagStatus)
+  if (diagStamp == null) return commandStatus
+  return commandStamp >= diagStamp ? commandStatus : diagStatus
+}
+
 /**
  * Attach version in the diag reply: the attach block may carry it as
  * attach.version; a top-level attachVersion or a bare string attach are also

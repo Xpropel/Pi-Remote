@@ -4056,79 +4056,84 @@ class AttachController {
       return;
     }
     if (marker.kind === "update_components") {
-      const inSync = this.extensionInSync();
-      this.operationStatus = inSync
-        ? {
-            state: "succeeded",
-            kind: "update_components",
-            phase: null,
-            startedAt,
-            finishedAt: Date.now(),
-            detail: `Device components updated, attach ${ATTACH_VERSION} running`,
-            error: null,
-          }
-        : {
-            state: "failed",
-            kind: "update_components",
-            phase: null,
-            startedAt,
-            finishedAt: Date.now(),
-            detail: null,
-            error: "The installed extension does not match the updated source after the component update",
-          };
+      if (!this.extensionInSync()) {
+        this.operationStatus = {
+          state: "failed",
+          kind: "update_components",
+          phase: null,
+          startedAt,
+          finishedAt: Date.now(),
+          detail: null,
+          error: "The installed extension does not match the updated source after the component update",
+        };
+        return;
+      }
       // The files on disk are new, but pi processes launched before the
       // update still execute the extension copy they loaded at start; they
       // get a best-effort restart once this window registers
       // (consumeComponentUpdatePiRestart, also reached from bootDirs).
-      if (inSync) this.pendingComponentUpdatePiRestart = true;
+      // Until that attempt returns, the status deliberately stays
+      // "running": restartPiAfterComponentUpdate lands the one and only
+      // terminal write with the pi outcome already composed into the
+      // detail, so a polling reader never adopts a terminal state whose
+      // detail is still missing its pi segment.
+      this.operationStatus = {
+        state: "running",
+        kind: "update_components",
+        phase: "restarting",
+        startedAt,
+        finishedAt: null,
+        detail: null,
+        error: null,
+      };
+      this.pendingComponentUpdatePiRestart = true;
     }
   }
 
   /**
    * Best-effort follow-up of a boot-completed component update: restart
-   * every launched pi so it loads the new extension. The component update
-   * itself already succeeded, so the outcome is recorded in the status
+   * every launched pi so it loads the new extension. Boot completion held
+   * the operation in "running" precisely so this attempt lands the one
+   * and only terminal write, with the pi outcome already composed into
+   * the detail — a polling reader never sees a terminal state whose
+   * detail still lacks its pi segment. The component update itself
+   * already succeeded, so the outcome is recorded in the status
    * detail/result only — a pi that does not come back never flips the
    * operation to failed.
    */
   async restartPiAfterComponentUpdate() {
-    let summary;
+    if (this.operationStatus.kind !== "update_components" || this.operationStatus.state !== "running") return;
+    const base = `Device components updated, attach ${ATTACH_VERSION} running`;
+    let detail = null;
+    let summary = null;
     try {
       summary = await this.restartAllLaunchedPi();
     } catch (e) {
-      if (this.operationStatus.kind === "update_components" && this.operationStatus.state === "succeeded") {
-        this.operationStatus = {
-          ...this.operationStatus,
-          detail: `Device components updated, attach ${ATTACH_VERSION} running; the launched Pi processes could not be restarted to load the new extension: ${e && e.message ? e.message : e}`,
-        };
+      detail = `${base}; the launched Pi processes could not be restarted to load the new extension: ${e && e.message ? e.message : e}`;
+    }
+    if (summary) {
+      const total = summary.restarted + summary.failed.length;
+      if (!total) {
+        // No launched pi in the ledger: nothing to restart, but the status
+        // must say so instead of silently implying a restart happened.
+        detail = `${base}; no launched Pi processes to restart onto the new extension`;
+      } else if (summary.failed.length) {
+        detail = `${base}; ${summary.failed.length} of ${total} Pi processes did not restart to load the new extension: ${summary.failed[0].error}`;
+      } else {
+        detail = `${base}; Pi restarted to load the new extension (${summary.restarted} process${summary.restarted === 1 ? "" : "es"})`;
       }
-      return;
     }
-    if (this.operationStatus.kind !== "update_components" || this.operationStatus.state !== "succeeded") return;
-    const total = summary.restarted + summary.failed.length;
-    if (!total) {
-      // No launched pi in the ledger: nothing to restart, but the status
-      // must say so instead of silently implying a restart happened.
-      this.operationStatus = {
-        ...this.operationStatus,
-        detail: `Device components updated, attach ${ATTACH_VERSION} running; no launched Pi processes to restart onto the new extension`,
-        result: summary,
-      };
-      return;
-    }
-    if (summary.failed.length) {
-      this.operationStatus = {
-        ...this.operationStatus,
-        detail: `Device components updated, attach ${ATTACH_VERSION} running; ${summary.failed.length} of ${total} Pi processes did not restart to load the new extension: ${summary.failed[0].error}`,
-        result: summary,
-      };
-    } else {
-      this.operationStatus = {
-        ...this.operationStatus,
-        detail: `Device components updated, attach ${ATTACH_VERSION} running; Pi restarted to load the new extension (${summary.restarted} process${summary.restarted === 1 ? "" : "es"})`,
-        result: summary,
-      };
-    }
+    // Nothing can interleave into a competing write here: while the
+    // status is "running" every mutating command is rejected as busy.
+    this.operationStatus = {
+      ...this.operationStatus,
+      state: "succeeded",
+      phase: null,
+      finishedAt: Date.now(),
+      detail,
+      error: null,
+      ...(summary ? { result: summary } : {}),
+    };
   }
 
   /** The extension sync destination, mirroring deploy/sync-extension.sh. */

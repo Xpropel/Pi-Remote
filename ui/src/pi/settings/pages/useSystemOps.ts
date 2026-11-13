@@ -4,11 +4,14 @@
  *
  * Loads get_host_diag + get_pi_update_info on mount, sends the four mutating
  * commands through the existing device-command channel, and tracks the
- * attach-held operationStatus: while an operation runs it polls
- * get_operation_status every 2s -- the attach-direct read, because with an
- * active session get_host_diag is answered by the extension and its
- * fixed-shape reply carries no operationStatus (the diag field remains the
- * fallback for device builds without the status command). Polling tolerates
+ * attach-held operationStatus. The opening load also reads
+ * get_operation_status directly and merges the two status copies by
+ * freshness: with an active session get_host_diag is answered by the
+ * extension and its fixed-shape reply carries no operationStatus, so
+ * without the direct read a previous operation's result row would not come
+ * back on reopen (the diag field remains the fallback for device builds
+ * without the status command). While an operation runs it polls
+ * get_operation_status every 2s. Polling tolerates
  * failures (restart_host / update_components take the device offline
  * mid-operation by design); on the terminal status it refreshes the update
  * info and the diag so the version block reflects the outcome. Unmounting
@@ -21,6 +24,7 @@ import type { DeviceLike } from "./devicesLogic.ts"
 import {
   deviceBusyOf,
   IDLE_OPERATION_STATUS,
+  mergedOperationStatusOf,
   normalizePiUpdateInfo,
   operationErrorTextOf,
   operationStartedStatusOf,
@@ -114,20 +118,27 @@ export function useSystemOps(relay: SystemOpsRelayLike, device: SystemOpsDeviceL
   const loadAll = useCallback(
     async (initial: boolean) => {
       const seq = ++loadSeqRef.current
-      const [diagResult] = await Promise.allSettled([
+      const [diagResult, statusResult] = await Promise.allSettled([
         runCommand("get_host_diag"),
+        // The attach-direct status read rides along: with an active session
+        // the extension answers get_host_diag and its reply carries no
+        // operationStatus, so this is the read that restores a previous
+        // operation's result on open. Its failure only loses that copy.
+        runCommand("get_operation_status"),
         // The update check runs alongside; its failure is a row state, not a load failure.
         fetchUpdate(),
       ])
       if (!aliveRef.current || seq !== loadSeqRef.current) return
+      const commandStatus = statusResult.status === "fulfilled" ? operationStatusReplyOf(statusResult.value) : null
       if (diagResult.status === "fulfilled") {
         const next = systemOpsDiagOf(diagResult.value)
         if (next) {
           setDiag(next)
-          // While an operation is tracked as running, a diag read that raced
-          // its acceptance may still report the previous status; only adopt
+          const mergedStatus = mergedOperationStatusOf(next.operationStatus, commandStatus)
+          // While an operation is tracked as running, a read that raced its
+          // acceptance may still report the previous status; only adopt
           // statuses that belong to the same operation kind.
-          setStatus((prev) => (prev.state === "running" && next.operationStatus.kind !== prev.kind ? prev : next.operationStatus))
+          setStatus((prev) => (prev.state === "running" && mergedStatus.kind !== prev.kind ? prev : mergedStatus))
           setLoadPhase("ready")
           setLoadError("")
           return

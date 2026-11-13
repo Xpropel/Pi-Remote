@@ -124,6 +124,34 @@ test("operation status reply: { operationStatus } parsed, junk yields null for t
   assert.equal(ops.operationStatusReplyOf("running"), null)
 })
 
+test("status merge on open: the fresher of the diag copy and the direct-read copy wins", () => {
+  const older = { state: "succeeded", kind: "harness_restart", phase: null, startedAt: NOW - 200_000, finishedAt: NOW - 150_000, detail: "older result", error: null }
+  const newer = { state: "succeeded", kind: "update_pi", phase: null, startedAt: NOW - 100_000, finishedAt: NOW - 50_000, detail: "newer result", error: null }
+
+  // Both sides empty: nothing to restore.
+  assert.deepEqual(ops.mergedOperationStatusOf(ops.IDLE_OPERATION_STATUS, null), ops.IDLE_OPERATION_STATUS)
+  assert.deepEqual(ops.mergedOperationStatusOf(ops.IDLE_OPERATION_STATUS, ops.IDLE_OPERATION_STATUS), ops.IDLE_OPERATION_STATUS)
+
+  // Only one side carries an operation: that side is used. The diag-idle /
+  // direct-result pair is the active-session case -- the extension answered
+  // get_host_diag without the field, so only the direct read brings the
+  // previous operation's result back.
+  assert.deepEqual(ops.mergedOperationStatusOf(older, null), older)
+  assert.deepEqual(ops.mergedOperationStatusOf(ops.IDLE_OPERATION_STATUS, newer), newer)
+
+  // Both sides carry an operation: the fresher stamp wins, either way round.
+  assert.deepEqual(ops.mergedOperationStatusOf(newer, older), newer)
+  assert.deepEqual(ops.mergedOperationStatusOf(older, newer), newer)
+
+  // A running status is stamped by its startedAt, so a just-started
+  // operation beats an older finished one...
+  const running = { state: "running", kind: "restart_host", phase: "restarting", startedAt: NOW - 10_000, finishedAt: null, detail: null, error: null }
+  assert.deepEqual(ops.mergedOperationStatusOf(running, newer), running)
+  // ...and equal stamps go to the direct read, the dedicated channel.
+  const tied = { ...newer, detail: "direct read copy" }
+  assert.deepEqual(ops.mergedOperationStatusOf({ ...newer, detail: "diag copy" }, tied), tied)
+})
+
 test("availability facts: the update-info reply wins over diag, diag is the fallback", () => {
   // With an active session the extension answers get_host_diag and its shape
   // has no attach fields; stale diag values must not override the attach reply.
@@ -345,5 +373,6 @@ test("wiring: both devices pages mount the ops UI, commands and polling follow t
   assert.match(hook, /get_pi_update_info/)
   assert.match(hook, /get_host_diag/)
   assert.match(hook, /get_operation_status/)
+  assert.match(hook, /mergedOperationStatusOf/)
   assert.match(hook, /POLL_MS = 2000/)
 })
