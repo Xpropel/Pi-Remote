@@ -759,3 +759,147 @@ test("boot completion of update_components: boot restarts launched pi onto the n
   assert.match(failRun.booted.ctl.operationStatus.detail, /1 of 2 Pi processes/);
   assert.match(failRun.booted.ctl.operationStatus.detail, /room did not come back/);
 });
+
+/* ---------------- Component update merge semantics (defect B) ---------------- */
+
+test("update_components: the swap merges over deploy/ — files the package does not carry survive", async (t) => {
+  const { kit, syncTarget } = componentKit(t);
+  // A repository-tree install carries deploy files the curated release
+  // package never ships; attach itself needs start-pi.sh to launch pi.
+  fs.writeFileSync(path.join(kit, "deploy", "start-pi.sh"), "START PI SCRIPT\n");
+  fs.mkdirSync(path.join(kit, "deploy", "docker"), { recursive: true });
+  fs.writeFileSync(path.join(kit, "deploy", "docker", "keep.txt"), "KEEP ME\n");
+  const zipBytes = Buffer.from("fake zip bytes");
+  const { ctl, exits, dir, send } = makeCtl({
+    supervised: true,
+    deployRoot: kit,
+    extensionSyncFile: syncTarget,
+    opsFetchJson: async () => RELEASE,
+    opsDownloadFile: async (url, dest) => {
+      if (url.endsWith("SHA256SUMS.txt")) fs.writeFileSync(dest, sha256Hex(zipBytes) + "  Pi-Remote-device-windows-v9.9.9.zip\n");
+      else fs.writeFileSync(dest, zipBytes);
+    },
+    opsSha256File: async (file) => sha256Hex(fs.readFileSync(file)),
+    opsExtractZip: async (zipPath, destDir) => {
+      fs.mkdirSync(path.join(destDir, "deploy"), { recursive: true });
+      fs.mkdirSync(path.join(destDir, "extension"), { recursive: true });
+      fs.writeFileSync(path.join(destDir, "deploy", "attach.cjs"), "NEW ATTACH\n");
+      fs.writeFileSync(path.join(destDir, "deploy", "new-tool.sh"), "NEW TOOL\n");
+      fs.writeFileSync(path.join(destDir, "extension", "pi-remote-sync.ts"), "NEW EXTENSION\n");
+    },
+  });
+  const frame = await send("update_components");
+  assert.equal(frame.data.accepted, true);
+  await waitFor(() => exits.length > 0);
+  assert.deepEqual(exits, [attach.OPS_RESTART_EXIT_CODE]);
+  // Package files landed (overwrite + addition)...
+  assert.equal(fs.readFileSync(path.join(kit, "deploy", "attach.cjs"), "utf8"), "NEW ATTACH\n");
+  assert.equal(fs.readFileSync(path.join(kit, "deploy", "new-tool.sh"), "utf8"), "NEW TOOL\n");
+  // ...and every file the package does not carry is still there, untouched.
+  assert.equal(fs.readFileSync(path.join(kit, "deploy", "start-pi.sh"), "utf8"), "START PI SCRIPT\n");
+  assert.equal(fs.readFileSync(path.join(kit, "deploy", "docker", "keep.txt"), "utf8"), "KEEP ME\n");
+  // The backup still snapshots the whole pre-update tree.
+  const backups = fs.readdirSync(path.join(dir, "component-backup"));
+  assert.equal(backups.length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, "component-backup", backups[0], "deploy", "start-pi.sh"), "utf8"), "START PI SCRIPT\n");
+});
+
+test("component swap rollback: overwritten files restored, added files removed, unlisted files kept", async (t) => {
+  const { kit } = componentKit(t);
+  fs.writeFileSync(path.join(kit, "deploy", "start-pi.sh"), "START PI SCRIPT\n");
+  const extracted = tmpDir();
+  t.after(() => fs.rmSync(extracted, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(extracted, "deploy"), { recursive: true });
+  fs.mkdirSync(path.join(extracted, "extension"), { recursive: true });
+  fs.writeFileSync(path.join(extracted, "deploy", "attach.cjs"), "NEW ATTACH\n");
+  fs.writeFileSync(path.join(extracted, "deploy", "added-tool.sh"), "ADDED BY UPDATE\n");
+  fs.writeFileSync(path.join(extracted, "extension", "pi-remote-sync.ts"), "NEW EXTENSION\n");
+
+  const { ctl } = makeCtl({ deployRoot: kit });
+  const backupDir = ctl.backupComponentFiles();
+  ctl.installComponentFiles(extracted);
+  assert.equal(fs.readFileSync(path.join(kit, "deploy", "attach.cjs"), "utf8"), "NEW ATTACH\n");
+  assert.equal(fs.readFileSync(path.join(kit, "deploy", "added-tool.sh"), "utf8"), "ADDED BY UPDATE\n");
+  assert.deepEqual(ctl.componentUpdateAddedFiles, ["added-tool.sh"]);
+
+  ctl.restoreComponentBackup(backupDir);
+  // Overwritten files are back to their pre-update bytes...
+  assert.equal(fs.readFileSync(path.join(kit, "deploy", "attach.cjs"), "utf8"), "OLD ATTACH\n");
+  assert.equal(fs.readFileSync(path.join(kit, "extension", "pi-remote-sync.ts"), "utf8"), "OLD EXTENSION\n");
+  // ...files the update added are gone again...
+  assert.equal(fs.existsSync(path.join(kit, "deploy", "added-tool.sh")), false);
+  // ...and files the package never carried were never touched.
+  assert.equal(fs.readFileSync(path.join(kit, "deploy", "start-pi.sh"), "utf8"), "START PI SCRIPT\n");
+  assert.deepEqual(ctl.componentUpdateAddedFiles, []);
+});
+
+/* ---------------- Pending pi restart without start directories (defect A) ---------------- */
+
+/** Device dir in the post-component-update state: marker pending, extension swapped and synced. */
+function pendingUpdateKit(t) {
+  const kit = tmpDir();
+  t.after(() => fs.rmSync(kit, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(kit, "extension"), { recursive: true });
+  fs.writeFileSync(path.join(kit, "extension", "pi-remote-sync.ts"), "NEW EXTENSION\n");
+  const syncTarget = path.join(kit, "installed", "pi-remote-sync.ts");
+  fs.mkdirSync(path.dirname(syncTarget), { recursive: true });
+  fs.writeFileSync(syncTarget, "NEW EXTENSION\n");
+  const agentDir = tmpDir();
+  t.after(() => fs.rmSync(agentDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(agentDir, "operation-pending.json"), JSON.stringify({ kind: "update_components", startedAt: 1234 }));
+  return { kit, syncTarget, agentDir };
+}
+
+test("boot completion without start directories: registration consumes the pending pi restart, bootDirs never runs", async (t) => {
+  const { kit, syncTarget, agentDir } = pendingUpdateKit(t);
+  const booted = makeCtl({
+    attachFile: path.join(agentDir, "remote-attach.json"),
+    deployRoot: kit,
+    extensionSyncFile: syncTarget,
+  });
+  // The marker completed at construction; the restart flag is pending and
+  // this window has no start directories, so bootDirs can never fire.
+  assert.equal(booted.ctl.operationStatus.state, "succeeded");
+  assert.equal(booted.ctl.pendingComponentUpdatePiRestart, true);
+  assert.deepEqual(booted.ctl.dirs, []);
+  let bootDirsCalls = 0;
+  const originalBootDirs = booted.ctl.bootDirs.bind(booted.ctl);
+  booted.ctl.bootDirs = async () => {
+    bootDirsCalls += 1;
+    return originalBootDirs();
+  };
+  let restartCalls = 0;
+  booted.ctl.restartAllLaunchedPi = async () => {
+    restartCalls += 1;
+    return { restarted: 1, failed: [] };
+  };
+  assert.equal(restartCalls, 0);
+
+  await booted.ctl.handleMessage({ type: "auth_result", ok: true });
+
+  await waitFor(() => /Pi restarted to load the new extension/.test(booted.ctl.operationStatus.detail || ""));
+  assert.equal(restartCalls, 1);
+  assert.equal(bootDirsCalls, 0);
+  assert.equal(booted.ctl.pendingComponentUpdatePiRestart, false);
+  assert.equal(booted.ctl.operationStatus.state, "succeeded");
+  assert.match(booted.ctl.operationStatus.detail, /Device components updated/);
+  assert.deepEqual(booted.ctl.operationStatus.result, { restarted: 1, failed: [] });
+});
+
+test("boot completion without start directories and an empty ledger: flag cleared, detail says no pi needed a restart", async (t) => {
+  const { kit, syncTarget, agentDir } = pendingUpdateKit(t);
+  const booted = makeCtl({
+    attachFile: path.join(agentDir, "remote-attach.json"),
+    deployRoot: kit,
+    extensionSyncFile: syncTarget,
+  });
+  assert.equal(booted.ctl.pendingComponentUpdatePiRestart, true);
+  booted.ctl.restartAllLaunchedPi = async () => ({ restarted: 0, failed: [] });
+
+  await booted.ctl.handleMessage({ type: "auth_result", ok: true });
+
+  await waitFor(() => /no launched Pi processes to restart/.test(booted.ctl.operationStatus.detail || ""));
+  assert.equal(booted.ctl.pendingComponentUpdatePiRestart, false);
+  assert.equal(booted.ctl.operationStatus.state, "succeeded");
+  assert.match(booted.ctl.operationStatus.detail, /Device components updated/);
+});

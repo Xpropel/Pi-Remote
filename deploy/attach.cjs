@@ -2452,6 +2452,10 @@ class AttachController {
      *  the launched pi processes still run the pre-update extension copy and
      *  get one best-effort restart (see restartPiAfterComponentUpdate). */
     this.pendingComponentUpdatePiRestart = false;
+    /** Deploy-relative files the in-flight component update added (they did
+     *  not exist before the swap); a rollback deletes exactly these, while
+     *  overwritten files are restored from the backup snapshot. */
+    this.componentUpdateAddedFiles = [];
     this.operationSequence = 0;
     this.currentOperationId = null;
     /** Cached get_pi_update_info answer ({ at, info }); the registry half is the expensive part. */
@@ -3154,6 +3158,10 @@ class AttachController {
         this.stateWritten = true;
       }
       this.send(this.registerFrame());
+      // Registration is complete: settle a component update this boot
+      // completed, even when this window has no start directories and
+      // bootDirs will never run.
+      this.consumeComponentUpdatePiRestart();
       this.paintStatus();
       this.scheduleLibrary();
       // P9 B：反向同步定时器跟着认证走（shutdown 时停；断线期间 rescanOnce 自己会跳过）
@@ -3344,12 +3352,25 @@ class AttachController {
       else this.writeOut("已拉起：" + displayPathOf(dir));
     }
     // A component update completed by this boot swapped the extension on
-    // disk; restart the launched pi processes onto the new copy (best
-    // effort, recorded in the operation status, never blocking boot).
-    if (this.pendingComponentUpdatePiRestart) {
-      this.pendingComponentUpdatePiRestart = false;
-      void this.restartPiAfterComponentUpdate();
-    }
+    // disk; restart the launched pi processes onto the new copy.
+    this.consumeComponentUpdatePiRestart();
+  }
+
+  /**
+   * Consume the pi-restart follow-up a boot-completed component update left
+   * pending. bootDirs only runs for windows started with directories, so
+   * registration consumes the flag too: a connection-only window (attach
+   * started without directory arguments) never runs bootDirs, and its
+   * launched pi processes would otherwise keep the old extension — and
+   * stay offline — forever. The restart chain adopts live pi processes
+   * itself (launchedPiTargets), so no boot step needs to run first. The
+   * check-and-clear is synchronous: whichever path gets here first wins,
+   * the other one no-ops.
+   */
+  consumeComponentUpdatePiRestart() {
+    if (!this.pendingComponentUpdatePiRestart) return;
+    this.pendingComponentUpdatePiRestart = false;
+    void this.restartPiAfterComponentUpdate();
   }
 
   async onHarness(frame) {
@@ -4057,7 +4078,8 @@ class AttachController {
           };
       // The files on disk are new, but pi processes launched before the
       // update still execute the extension copy they loaded at start; they
-      // get a best-effort restart once this window has booted (bootDirs).
+      // get a best-effort restart once this window registers
+      // (consumeComponentUpdatePiRestart, also reached from bootDirs).
       if (inSync) this.pendingComponentUpdatePiRestart = true;
     }
   }
@@ -4084,7 +4106,16 @@ class AttachController {
     }
     if (this.operationStatus.kind !== "update_components" || this.operationStatus.state !== "succeeded") return;
     const total = summary.restarted + summary.failed.length;
-    if (!total) return;
+    if (!total) {
+      // No launched pi in the ledger: nothing to restart, but the status
+      // must say so instead of silently implying a restart happened.
+      this.operationStatus = {
+        ...this.operationStatus,
+        detail: `Device components updated, attach ${ATTACH_VERSION} running; no launched Pi processes to restart onto the new extension`,
+        result: summary,
+      };
+      return;
+    }
     if (summary.failed.length) {
       this.operationStatus = {
         ...this.operationStatus,
@@ -4595,11 +4626,36 @@ class AttachController {
     return backupDir;
   }
 
-  /** Replace deploy/ and the extension source with the extracted package's copies. */
+  /**
+   * Merge the extracted package over deploy/ and replace the extension
+   * source. Package files overwrite or are added one by one; files the
+   * package does not carry are never deleted — the release package ships a
+   * curated subset of deploy/, while a repository-tree install carries the
+   * full set, including files attach itself needs at runtime (start-pi.sh).
+   * Added files are recorded as they land (even if the copy dies midway)
+   * so restoreComponentBackup can remove exactly those again.
+   */
   installComponentFiles(extractedDir) {
+    const deploySource = path.join(extractedDir, "deploy");
     const deployTarget = path.join(this.deployRoot, "deploy");
-    fs.rmSync(deployTarget, { recursive: true, force: true });
-    fs.cpSync(path.join(extractedDir, "deploy"), deployTarget, { recursive: true });
+    const addedFiles = [];
+    this.componentUpdateAddedFiles = addedFiles;
+    const mergeTree = (sourceDir, targetDir, relativeDir) => {
+      fs.mkdirSync(targetDir, { recursive: true });
+      for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+        const sourcePath = path.join(sourceDir, entry.name);
+        const targetPath = path.join(targetDir, entry.name);
+        if (entry.isDirectory()) {
+          mergeTree(sourcePath, targetPath, relativeDir ? path.join(relativeDir, entry.name) : entry.name);
+        } else {
+          if (!fs.existsSync(targetPath)) {
+            addedFiles.push(relativeDir ? path.join(relativeDir, entry.name) : entry.name);
+          }
+          fs.copyFileSync(sourcePath, targetPath);
+        }
+      }
+    };
+    mergeTree(deploySource, deployTarget, "");
     const extensionTarget = path.join(this.deployRoot, "extension", "pi-remote-sync.ts");
     fs.mkdirSync(path.dirname(extensionTarget), { recursive: true });
     fs.copyFileSync(path.join(extractedDir, "extension", "pi-remote-sync.ts"), extensionTarget);
@@ -4620,14 +4676,24 @@ class AttachController {
     }
   }
 
-  /** Undo a half-finished swap from the backup made by backupComponentFiles. */
+  /**
+   * Undo a half-finished swap from the backup made by backupComponentFiles.
+   * The snapshot is merged back over the live tree (restoring every file
+   * the swap overwrote) and the files the swap added — recorded by
+   * installComponentFiles — are deleted again; anything else on disk was
+   * never the update's to touch and stays untouched.
+   */
   restoreComponentBackup(backupDir) {
     const deployBackup = path.join(backupDir, "deploy");
+    const deployTarget = path.join(this.deployRoot, "deploy");
     if (fs.existsSync(deployBackup)) {
-      const deployTarget = path.join(this.deployRoot, "deploy");
-      fs.rmSync(deployTarget, { recursive: true, force: true });
+      fs.mkdirSync(deployTarget, { recursive: true });
       fs.cpSync(deployBackup, deployTarget, { recursive: true });
     }
+    for (const relativePath of this.componentUpdateAddedFiles || []) {
+      removeQuiet(path.join(deployTarget, relativePath));
+    }
+    this.componentUpdateAddedFiles = [];
     const extensionBackup = path.join(backupDir, "extension-pi-remote-sync.ts");
     if (fs.existsSync(extensionBackup)) {
       fs.copyFileSync(extensionBackup, path.join(this.deployRoot, "extension", "pi-remote-sync.ts"));
