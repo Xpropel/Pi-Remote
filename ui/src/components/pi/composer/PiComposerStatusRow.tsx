@@ -12,7 +12,7 @@ import { C_ERROR, C_SECONDARY, menuRowH, ROW_FOCUS, rowText, TOUCH_44_DOWN, type
 
 /** 框下状态行的数据（design §6.4 PiStatusRowData，跨区契约：只许加可选字段） */
 export interface PiStatusRowData {
-  /** 设备名："MacBook Pro" */
+  /** Device segment: fixed English platform label ("This Mac" / "This PC" / "This Linux", produced by composerViewOf from the device platform; the concrete device name is only its fallback for an unknown platform) */
   device?: string
   /** git 分支（get_git_branch，有才显示；null = 没有） */
   branch?: string | null
@@ -104,7 +104,17 @@ export function PiComposerStatusRow({
     <div
       data-slot="pi-composer-status-row"
       data-tone={tone}
-      className={cn("flex min-w-0 items-center gap-3 px-1", phone ? "h-8" : "h-7", text, copy == null && className)}
+      className={cn(
+        "flex min-w-0 items-center gap-3 pr-1",
+        // Left indent = the composer capsule's radius: the capsule is a full pill
+        // (--cw-radius-composer 9999px), so its left arc ends half a capsule height
+        // from its left edge, and the row's first letter aligns with that point.
+        // Desktop capsule height is --cw-composer-min-h; the phone capsule's
+        // min-height is 52px (PiFollowUpComposer), so its radius is 26px.
+        phone ? "h-8 pl-[26px]" : "h-7 pl-[calc(var(--cw-composer-min-h)/2)]",
+        text,
+        copy == null && className,
+      )}
       {...(copy == null ? rest : {})}
     >
       {delivery && (

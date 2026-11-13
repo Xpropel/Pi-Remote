@@ -14,7 +14,7 @@ import { attentionItemsOf } from "../ui/src/relay/attention.ts"
 import { composerBlockOf } from "../ui/src/pi/model/composerButton.ts"
 import { queueSectionsOf, trayItemsOf } from "../ui/src/pi/model/tray.ts"
 import { changesOfSession } from "../ui/src/pi/model/changes.ts"
-import { composerViewOf, deliveryOf, PI_OVERLIMIT_NOTE } from "../ui/src/pi/model/composerView.ts"
+import { composerViewOf, deliveryOf, PI_OVERLIMIT_NOTE, thisDeviceLabelOf } from "../ui/src/pi/model/composerView.ts"
 import { contextWindowLabel, modelExplainerOf, modelPillName, modelRowsOf, thinkingLevelZh, thinkingSegmentsOf, modelContextWindowOf } from "../ui/src/pi/model/models.ts"
 import { PI_SLASH_DESC_OVERRIDE, slashBrowseGroupsOf, slashBuiltinRows, slashResourceOf, slashResourceRow } from "../ui/src/pi/model/slashMenu.ts"
 import { SLASH_BUILTINS_COPY } from "../ui/src/pi/model/slashBuiltins.ts"
@@ -270,6 +270,30 @@ describe("tray 与排队面板：c 区 fixture", () => {
     assert.equal(v.placeholder, "输入已禁用")
     assert.equal(v.status.note, "先回答上面的问题")
     assert.equal(v.status.tone, "warn")
+  })
+})
+
+describe("composerViewOf：状态行设备段显示平台标签（This Mac / This PC / This Linux）", () => {
+  test("thisDeviceLabelOf：relay 归一值与老值都认，未知 / 缺失为 null", () => {
+    assert.equal(thisDeviceLabelOf("macos"), "This Mac")
+    assert.equal(thisDeviceLabelOf("darwin"), "This Mac")
+    assert.equal(thisDeviceLabelOf("windows"), "This PC")
+    assert.equal(thisDeviceLabelOf("win32"), "This PC")
+    assert.equal(thisDeviceLabelOf("linux"), "This Linux")
+    assert.equal(thisDeviceLabelOf(" Darwin "), "This Mac")
+    assert.equal(thisDeviceLabelOf("freebsd"), null)
+    assert.equal(thisDeviceLabelOf(""), null)
+    assert.equal(thisDeviceLabelOf(null), null)
+    assert.equal(thisDeviceLabelOf(undefined), null)
+  })
+  test("有平台：设备段是平台标签（固定英文），不露具体设备名，分支照旧", () => {
+    assert.deepEqual(view({ device: { name: "UI测试机B", online: true, platform: "darwin" }, branch: "main" }).status, { device: "This Mac", branch: "main" })
+    assert.equal(view({ device: { name: "台式机", online: true, platform: "windows" } }).status.device, "This PC")
+    assert.equal(view({ device: { name: "dev-box", online: true, platform: "linux" } }).status.device, "This Linux")
+  })
+  test("平台未知 / 缺失：回退具体设备名，不编假标签", () => {
+    assert.equal(view({ device: { name: "MacBook Pro", online: true, platform: "freebsd" } }).status.device, "MacBook Pro")
+    assert.equal(view({ branch: "main" }).status.device, "MacBook Pro")
   })
 })
 

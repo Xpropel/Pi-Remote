@@ -22,7 +22,7 @@ const MODELS = [
  * get_available_models 回包（replica c/mock.ts C_MODELS）。形状照 chat/slash.tsx 的读法：models = 全部、available = 已配置的；
  * 「未配置」= 在 models 里不在 available 里。逐字段没有和 data-interface §4.11.2 核对。
  * 2026-11-09 改版新增字段：条目带 reasoning / thinkingLevels（按模型算的级别子集），顶层带
- * defaultModel（设备默认模型，菜单 Auto 行用）；字段缺失时菜单按设计说明降级（级别切换后可调、Auto 行隐藏）。
+ * defaultModel（设备默认模型；桥回包照旧带，菜单已不设 Auto 行、不读它）；字段缺失时菜单按设计说明降级（级别切换后可调）。
  */
 export const GET_MODELS = { models: MODELS, available: MODELS.filter((x) => x.provider !== "qwen"), defaultModel: { provider: "anthropic", id: "claude-sonnet-4-5" } }
 /** get_available_thinking_levels 回包 */

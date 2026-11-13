@@ -88,7 +88,11 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
     const turnEndByRoom = new Map(relay.roomTurnEnds.map((t) => [t.roomId, t]))
     // 搜索时不截行：收在「更多 N」里的会话也要能被搜到
     const uncapped = ui.search != null ? { maxRows: Number.POSITIVE_INFINITY } : {}
-    const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: ui.prefs.grouping, expanded: ui.expanded, ...uncapped })
+    // The sidebar belongs to the selected device: only its folders are
+    // listed, and group headers drop the device-name prefix (the device
+    // is already named at the top of the sidebar). No selection yet ->
+    // no filter, so every device shows until one is picked.
+    const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: ui.prefs.grouping, expanded: ui.expanded, filter: relay.selectedDeviceId ?? null, ...uncapped })
     const groups: PiSidebarGroup[] = legacy.groups.map((group) => {
       const cwd = group.cwd ?? ""
       // 归档视图里组全部展开（归档列表通常很短）；静态菜单的目标行所在组也展开

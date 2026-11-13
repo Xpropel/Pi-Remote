@@ -18,12 +18,10 @@ export const piScreen: PiScreenMeta = {
     "键盘开着时（输入框上方浮层，不用 sheet）",
   ],
   notes:
-    "E10 E11 G02；2026-11-09 改版（Cursor 式结构）：搜索 → Auto 行（设备默认）→ 模型列表（只列已配置的，行只有名字 + 最右尾列，当前 ✓；Qwen3 Coder 未配置、不进行）。桌面悬停行尾列出 Edit、右侧出介绍卡（事实行 + 费用说明，ch4/ModelExplainerCard 直接 import，费用一行橙色 = 全产品唯一的橙色）；点 Edit 才出参数面板（上下文变体 + 思考级别）。手机为 PiSheet 两级：第一级 Edit 常驻行尾，点 Edit / 点当前行进第二级参数页，无介绍卡。模型表是 mock。",
+    "E10 E11 G02；2026-11-09 改版（Cursor 式结构）：搜索 → 模型列表（只列已配置的，行只有名字 + 最右尾列，当前 ✓；Qwen3 Coder 未配置、不进行）。桌面悬停行尾列出 Edit、右侧出介绍卡（事实行 + 费用说明，ch4/ModelExplainerCard 直接 import，费用一行橙色 = 全产品唯一的橙色）；点 Edit 才出参数面板（上下文变体 + 思考级别）。手机为 PiSheet 两级：第一级 Edit 常驻行尾，点 Edit / 点当前行进第二级参数页，无介绍卡。模型表是 mock。",
 }
 
 const HOVER = "google/gemini-2.5-pro"
-/** 设备默认模型（菜单 Auto 行；回包 defaultModel 的形状） */
-const DEFAULT_MODEL = { provider: "anthropic", modelId: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }
 /** 悬停 Gemini 的介绍卡：只有事实（窗口 + 图片）与费用说明，不编简介（改版 §2.4） */
 const GEMINI_FACTS_EXPLAINER = {
   title: "Gemini 2.5 Pro",
@@ -45,7 +43,6 @@ export default function Screen({ viewport, theme }: PiScreenProps) {
         thinking={THINKING_CURRENT}
         variant="desktop"
         hoverKey={HOVER}
-        defaultModel={DEFAULT_MODEL}
         explainer={
           // 费用一行用 Pi 的警告橙（C5：--cw-orange 在白底只有 3.1:1）；只在这张卡里重设，章节件不改
           <ModelExplainerCard
@@ -76,7 +73,7 @@ export default function Screen({ viewport, theme }: PiScreenProps) {
           dock={dock}
           sheet={
             <PiSheet static title="模型" bodyClassName="px-4">
-              <PiModelMenu static variant="phone" models={C_MODELS} thinkingLevels={THINKING_LEVELS} thinking={THINKING_CURRENT} defaultModel={DEFAULT_MODEL} />
+              <PiModelMenu static variant="phone" models={C_MODELS} thinkingLevels={THINKING_LEVELS} thinking={THINKING_CURRENT} />
             </PiSheet>
           }
         >

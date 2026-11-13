@@ -116,7 +116,10 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
     )
     // 搜索页按这份数据筛：开着时不截行，「更多 N」里收起的会话也搜得到（列表 / 抽屉这时被搜索页盖住）
     const uncapped = input.search?.open ? { maxRows: Number.POSITIVE_INFINITY } : {}
-    const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: p.ui.prefs.grouping, expanded: p.ui.expanded, ...uncapped })
+    // Same scoping as the desktop sidebar: the list belongs to the
+    // selected device — only its folders, headers without the device
+    // prefix. No selection yet -> no filter.
+    const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: p.ui.prefs.grouping, filter: relay.selectedDeviceId ?? null, expanded: p.ui.expanded, ...uncapped })
     const sessionOf = new Map(base.sessions.map((session) => [session.id, session]))
     // 设计 D §2.2：一行实时状态（roomStatusLine）的输入面——房间事实按 id 索引、未读落定按 roomId 索引
     const roomById = new Map(relay.rooms.map((r) => [r.id, r]))

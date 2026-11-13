@@ -56,6 +56,21 @@ export type PiComposerViewInput = {
 
 export const PI_OVERLIMIT_NOTE = "太长了，最多 100000 字"
 
+/**
+ * Device segment of the status row: a fixed English platform label instead of the
+ * concrete device name (the name already appears in the sidebar / top bar).
+ * Relay normalizes platform to macos / windows / linux; legacy values (darwin / win32)
+ * are accepted too. Unknown or missing platform returns null and the caller falls
+ * back to the device name, so no fake label is ever shown.
+ */
+export function thisDeviceLabelOf(platform: string | null | undefined): string | null {
+  const key = (platform || "").trim().toLowerCase()
+  if (key === "macos" || key === "darwin") return "This Mac"
+  if (key === "windows" || key === "win32") return "This PC"
+  if (key === "linux") return "This Linux"
+  return null
+}
+
 /** 投递选择器的值：sendMode 是 follow_up 时"等这轮结束"，其余（auto / steer）按默认"插入当前回合"（决定 10） */
 export function deliveryOf(sendMode: string | null | undefined): "steer" | "follow_up" {
   return sendMode === "follow_up" ? "follow_up" : "steer"
@@ -74,8 +89,11 @@ export function composerViewOf(input: PiComposerViewInput): { placeholder: strin
   const reason = composerReasonOf(input.link, input.device, { state: input.state, s7, slowAck: input.slowAck }, input.blockedBy, input.loaded)
   const status: PiComposerStatus = {}
   const deviceName = input.device?.name?.trim()
-  if (reason.showDevice && deviceName) {
-    status.device = deviceName
+  // The device segment shows the platform label (This Mac / This PC / This Linux);
+  // the concrete name is only the fallback for an unknown or missing platform.
+  const deviceLabel = thisDeviceLabelOf(input.device?.platform) ?? deviceName
+  if (reason.showDevice && deviceLabel) {
+    status.device = deviceLabel
     if (input.branch) status.branch = input.branch
   }
   // 审批卡挡着输入（D-08）时不出投递选择器和行尾 Spinner：输入只读，投递方式无从谈起；回合在跑由流里的审批卡和停止钮表达（design b/approval-waiting）

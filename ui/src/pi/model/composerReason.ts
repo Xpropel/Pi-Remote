@@ -26,8 +26,8 @@ export type PiComposerReason = {
 
 /** 连接口径：useLinkState / linkView 的 kind；只有 ok 算连着 */
 export type PiReasonLink = { kind: "ok" | "first" | "waiting" | "reconnecting" } | null | undefined
-/** 当前会话的设备；不知道是哪台设备时为 null */
-export type PiReasonDevice = { name: string; online: boolean } | null | undefined
+/** 当前会话的设备；不知道是哪台设备时为 null。platform = relay 归一后的设备平台（macos / windows / linux，老数据可能是 darwin / win32），状态行设备段据此显示 This Mac / This PC / This Linux */
+export type PiReasonDevice = { name: string; online: boolean; platform?: string | null } | null | undefined
 /**
  * 状态机状态，外加两个 composerMachine 的 id 里装不下的事实：
  * s7 = S7 的原因（ComposerUi 的 blockReason：revoked / readonly）；slowAck = S2 已超过 200ms 没收到 ack（容器计时）。

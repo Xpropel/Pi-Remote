@@ -33,7 +33,7 @@ import { mentionPathsIn } from "@/components/pi/composer/mentionInline"
 import { queueEditInvalidationOf, sharedSendNowLock } from "@/components/pi/composer/queueGuard"
 import { composerTriggerOf, slashMenuGroups } from "@/pi/model/composerInput"
 import { composerViewOf, PI_SLOW_ACK_MS } from "@/pi/model/composerView"
-import { modelContextWindowOf, modelDefaultOf, modelExplainerOf } from "@/pi/model/models"
+import { modelContextWindowOf, modelExplainerOf } from "@/pi/model/models"
 import { PROMPT_RECALL_IDLE, promptHistoryKey, promptRecallAfterDraft, promptRecallStep, type PromptRecall, type PromptRecallKey } from "@/pi/model/promptRecall"
 import { SLASH_BUILTINS_COPY } from "@/pi/model/slashBuiltins"
 import { slashBrowseGroupsOf, slashBuiltinRows, slashResourceOf } from "@/pi/model/slashMenu"
@@ -55,7 +55,6 @@ import {
   sessionLoaded,
   useLegacyStyle,
   useModelActions,
-  useModelAuto,
   useModelData,
   useRelayCommand,
 } from "./cShared"
@@ -114,8 +113,6 @@ export function ModelMenuContent({
   data,
   hoverKey,
   isStatic,
-  auto,
-  onAutoChange,
   onConfigureModels,
 }: {
   relay: Relay
@@ -123,15 +120,10 @@ export function ModelMenuContent({
   data: ReturnType<typeof useModelData>
   hoverKey?: string
   isStatic: boolean
-  /** Controlled Auto state (redesign section 4); undefined = the user never toggled Auto on this device */
-  auto?: boolean
-  onAutoChange?: (next: boolean) => void
   /** Empty-state action (redesign section 7): the host opens the host settings; the menu itself only forwards the click */
   onConfigureModels?: () => void
 }) {
   const actions = useModelActions(relay)
-  // Device default from the get_available_models payload (redesign section 2.5); null = the payload carries none, the menu then hides the Auto row instead of guessing
-  const defaultModel = modelDefaultOf(data.raw)
   const explainerFor = (key: string): ReactNode => {
     const row = data.rows.find((m) => m.key === key)
     if (!row) return null
@@ -149,9 +141,6 @@ export function ModelMenuContent({
         thinking={relay.thinkingLevel}
         onSelectModel={(key) => actions.selectModel(key, data.rows)}
         onThinkingChange={actions.setThinking}
-        defaultModel={defaultModel}
-        auto={auto}
-        onAutoChange={onAutoChange}
         onConfigureModels={onConfigureModels}
         listPhase={data.listPhase}
         listError={data.listError}
@@ -169,8 +158,6 @@ export function ModelMenuContent({
         thinking={relay.thinkingLevel}
         hoverKey={hoverKey}
         explainer={hoverKey ? explainerFor(hoverKey) : undefined}
-        defaultModel={defaultModel}
-        auto={auto}
         onConfigureModels={onConfigureModels}
       />
     )
@@ -184,9 +171,6 @@ export function ModelMenuContent({
       onSelectModel={(key) => actions.selectModel(key, data.rows)}
       onThinkingChange={actions.setThinking}
       explainerFor={explainerFor}
-      defaultModel={defaultModel}
-      auto={auto}
-      onAutoChange={onAutoChange}
       onConfigureModels={onConfigureModels}
       listPhase={data.listPhase}
       listError={data.listError}
@@ -241,8 +225,10 @@ function linkOf(relay: Relay, now: number) {
   return pageLinkView(relay, now)
 }
 
-function deviceOf(relay: Relay): { name: string; online: boolean } | null {
-  return relay.deviceMode && relay.selectedDevice ? { name: relay.selectedDevice.name, online: relay.selectedDevice.online } : null
+function deviceOf(relay: Relay): { name: string; online: boolean; platform?: string | null } | null {
+  return relay.deviceMode && relay.selectedDevice
+    ? { name: relay.selectedDevice.name, online: relay.selectedDevice.online, platform: relay.selectedDevice.platform }
+    : null
 }
 
 /** 排队面板的三段 → PiQueuePanel 的 remote / host / outbox */
@@ -654,8 +640,6 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
   const slash = useSlashCommands(p, resources)
   const attach = useAttach(p)
   const queue = useQueue(relay)
-  // Model menu Auto (redesign section 4): the container owns the per-device stored choice; the menu only reports toggles (turning Auto on already selects the default model inside the menu)
-  const modelAuto = useModelAuto(relay)
   const openModelConfigure = () => {
     act.closeMenu()
     // Land on the settings model page; the desktop and mobile rememberers
@@ -888,7 +872,7 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
         onMentionsChange={onMentionsChange}
         images={images}
         onRemoveImage={(index) => relay.removePendingImage(index)}
-        model={modelAuto.auto ? { name: "Auto", thinking: "" } : modelPillOf(relay)}
+        model={modelPillOf(relay)}
         placeholder={view.placeholder}
         tray={tray}
         onTrayItem={onTrayItem}
@@ -925,7 +909,7 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
         onModelOpenChange={toggle(C_IDS.model)}
         modelMenu={
           sheetMenus ? undefined : (
-            <ModelMenuContent relay={relay} variant={variant} data={modelData} isStatic={false} auto={modelAuto.auto} onAutoChange={modelAuto.setAuto} onConfigureModels={openModelConfigure} />
+            <ModelMenuContent relay={relay} variant={variant} data={modelData} isStatic={false} onConfigureModels={openModelConfigure} />
           )
         }
         slashGroups={slashGroups}
@@ -965,9 +949,8 @@ export function ComposerSheets(p: PiContainerProps) {
   const now = useNow(1000)
   const isStatic = usePiStatic()
   const modelData = useModelData(relay, sheetId === C_IDS.model)
-  // Same Auto wiring as the desktop dock; opening settings replaces the
-  // session view (and this sheet with it), so there is no sheet to close first
-  const modelAuto = useModelAuto(relay)
+  // Opening settings replaces the session view (and this sheet with it),
+  // so there is no sheet to close first
   const openModelConfigure = () => {
     rememberSettingsPage("model")
     rememberMobileSettingsPage("model")
@@ -1001,8 +984,6 @@ export function ComposerSheets(p: PiContainerProps) {
             variant="phone"
             data={modelData}
             isStatic={isStatic}
-            auto={modelAuto.auto}
-            onAutoChange={modelAuto.setAuto}
             onConfigureModels={isStatic ? undefined : openModelConfigure}
           />
         </SheetHost>
