@@ -1,15 +1,12 @@
 import { PiDisplayOptions } from "@/components/pi/composer"
 import { PiSheet } from "@/components/pi/shared"
 import { usePiStatic } from "@/components/pi/shared/layers"
-import { useNow } from "@/pi/hooks/useNow"
-import { sessionCountsOf } from "@/pi/model/newSession"
 import { usePrefsWriter, useSettingsPrefs } from "./cShared"
 import { PI_UI_IDS, type PiContainerProps } from "./types"
 
 /**
- * 显示选项（plan §7.3 quick-settings、P5.5，c 线）：devices、sessionsByDevice（每台设备的会话数）、偏好。
- * "分组：按设备 / 不分组"写 act.setPref("grouping", …)（改分组时 expanded 自动清空），a 的 SidebarContainer 读 ui.prefs.grouping；
- * 设备筛选写 prefs.deviceFilter（"全部设备" = null）；筛选生效时侧栏顶部的 chip 归 a 画（决定 2）；设备行时长用 piDuration 整点写法（部件里）。顶栏仍然不挂入口。
+ * 显示选项（plan §7.3 quick-settings、P5.5，c 线）：偏好。
+ * "分组：按设备 / 不分组"写 act.setPref("grouping", …)（改分组时 expanded 自动清空），a 的 SidebarContainer 读 ui.prefs.grouping。顶栏仍然不挂入口。
  *
  * DisplayOptionsContainer：桌面菜单内容，a 的 SidebarContainer 把它传给 PiSidebar 的 optionsMenu（账户区滑杆的锚定菜单）。
  * DisplayOptionsSheet：手机 sheet（PhoneApp 的 sheet 槽），ui.sheet?.id === PI_UI_IDS.displayOptions 时出现（a 的账户栏滑杆开它）。
@@ -18,15 +15,11 @@ import { PI_UI_IDS, type PiContainerProps } from "./types"
  */
 
 function useDisplayOptions(p: PiContainerProps) {
-  const { relay, act, variant } = p
-  const now = useNow(1000)
+  const { act, variant } = p
   const prefs = useSettingsPrefs(p)
   const write = usePrefsWriter(p)
   return {
     prefs,
-    devices: relay.devices,
-    counts: sessionCountsOf(relay.sessionsByDevice, relay.devices),
-    now,
     onPrefsChange: write,
     onOpenSettings: () => {
       if (variant === "phone") act.closeSheet()

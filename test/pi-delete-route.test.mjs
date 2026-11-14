@@ -216,6 +216,15 @@ describe("删掉的会话的离线房间（localStorage 记录，编排 10-26 00
 })
 
 describe("接线（源码口径）", () => {
+  test("SessionMenuContainer：副标题与删除文案按跨设备上下文分流（单设备去设备名、跨设备保留）", () => {
+    const src = read("pi/containers/SessionMenuContainer.tsx")
+    assert.match(src, /crossDevice: sessionMenuCrossDeviceOf\(row\.deviceId, relay\.selectedDeviceId\)/, "跨设备与否用行所在设备 vs 选中设备判（组件已有上下文）")
+    assert.match(src, /const subtitle = sessionMenuSubtitleOf\(\{/, "手机 sheet 副标题走 sessionMenuSubtitleOf")
+    assert.match(src, /subtitle=\{subtitle \?\? undefined\}/)
+    assert.doesNotMatch(src, /\[t\.device\?\.name, t\.row\.cwd/, "旧的无条件「设备名/目录名」拼接已去掉")
+    assert.match(src, /const deleteDeviceName = t\.crossDevice \? t\.device\?\.name \|\| "这台设备" : "这台设备"/, "删除成功提示同口径：跨设备写真名、单设备写这台设备")
+    assert.match(src, /deviceName=\{t\.crossDevice \? t\.device\?\.name : undefined\}/, "删除确认同口径：单设备不传设备名（弹窗退回「这台设备」，标题仍指认目标）")
+  })
   test("SessionMenuContainer：用 sessionDeleteRouteOf(…device, serverPurge) 选路，经 relay.deleteSession 删除；成功提示分 trash / 其它", () => {
     const src = read("pi/containers/SessionMenuContainer.tsx")
     assert.match(src, /const serverPurge = relay\.serverCaps\.includes\("session\.purge"\)/)

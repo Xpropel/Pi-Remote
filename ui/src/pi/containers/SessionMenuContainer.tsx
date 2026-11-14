@@ -3,7 +3,7 @@ import { AAnchored, PiDeleteDialog, PiRenameDialog, PiSessionMenu, type PiSessio
 import { PiButton, PiDialog, PiSheet, piBaseName, usePiStatic, type PiReturnFocus } from "@/components/pi/shared"
 import { cn } from "@/lib/utils"
 import { mobileRouteUrl } from "@/mobile/model"
-import { sessionDeleteErrorText, sessionDeleteRouteOf, sessionMenuOf, type PiSessionDeleteRoute, type PiSessionMenuModel } from "@/pi/model/sessionMenu"
+import { sessionDeleteErrorText, sessionDeleteRouteOf, sessionMenuCrossDeviceOf, sessionMenuOf, sessionMenuSubtitleOf, type PiSessionDeleteRoute, type PiSessionMenuModel } from "@/pi/model/sessionMenu"
 import { openSessionRow, sidebarDataOf, type PiDeviceListedSession, type PiSidebarData } from "@/pi/model/sidebarSource"
 import { deviceErrorText, type Device } from "@/relay/devices"
 import { scheduleDisplayText, scheduleStatusLine } from "@/relay/schedule"
@@ -19,6 +19,8 @@ interface MenuTarget {
   session: PiSessionMenuSession
   /** 删除路由（P9 B）：目标正在运行 / 发设备（session.purge + session.files）/ 发同目录在线房间 / 都不可用带原因 */
   deleteRoute: PiSessionDeleteRoute
+  /** Cross-device context (row not on the selected device): sheet subtitle and delete copy keep the device name; single-device drops it */
+  crossDevice: boolean
   /** 定时消息（D-§3.7）：这一房 armed 排期数；relay 未声明 room.schedule 时为 undefined（菜单不出此项） */
   scheduleCount?: number
 }
@@ -53,6 +55,7 @@ function targetOf(p: PiContainerProps, data: PiSidebarData, rowId: string | unde
     device,
     model,
     deleteRoute,
+    crossDevice: sessionMenuCrossDeviceOf(row.deviceId, relay.selectedDeviceId),
     scheduleCount,
     session: {
       title: row.title,
@@ -266,13 +269,16 @@ export function SessionMenuContainer(props: PiContainerProps) {
     const t = targetOf(props, data, dialog.arg)
     if (!t) return null
     const serverPurge = relay.serverCaps.includes("session.purge")
-    const deleteDeviceName = t.device?.name || "这台设备"
+    // Single-device context: the quoted title identifies the target, so the
+    // dialog and the success notice fall back to "这台设备"; cross-device
+    // keeps the real device name so the target stays identifiable.
+    const deleteDeviceName = t.crossDevice ? t.device?.name || "这台设备" : "这台设备"
     return (
       <PiDeleteDialog
         key={t.row.id}
         viewport={viewport}
         title={t.row.title}
-        deviceName={t.device?.name}
+        deviceName={t.crossDevice ? t.device?.name : undefined}
         serverPurge={serverPurge}
         trash={!!t.device?.trash}
         returnFocus={returnTo(t.row.id)}
@@ -304,12 +310,16 @@ export function SessionMenuContainer(props: PiContainerProps) {
   if (phone && ui.sheet?.id === A_SESSION_MENU) {
     const t = targetOf(props, data, ui.sheet.arg)
     if (!t) return null
-    const where = [t.device?.name, t.row.cwd ? piBaseName(t.row.cwd) : ""].filter(Boolean).join("/")
-    const count = t.row.messageCount > 0 ? `${t.row.messageCount} 条` : ""
+    const subtitle = sessionMenuSubtitleOf({
+      deviceName: t.device?.name,
+      directoryName: t.row.cwd ? piBaseName(t.row.cwd) : null,
+      messageCount: t.row.messageCount,
+      crossDevice: t.crossDevice,
+    })
     return (
       <PiSheet
         title={t.session.title}
-        subtitle={[where, count].filter(Boolean).join(" · ") || undefined}
+        subtitle={subtitle ?? undefined}
         returnFocus={returnTo(t.row.id)}
         onOpenChange={(open) => {
           if (!open) act.closeSheet()

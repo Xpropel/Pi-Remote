@@ -9,7 +9,6 @@ import {
   MOCK_DEVICES,
   MOCK_LINK,
   MOCK_NOW,
-  mockSessionCounts,
   piLinkSummary,
   piSessionGroups,
 } from "@/pi/dev/fixtures/gallery/shared"
@@ -28,7 +27,7 @@ export const piScreen: PiScreenMeta = {
   title: "显示选项",
   states: ["筛选生效（左栏顶部 chip「只看 MacBook Pro ×」，组头只写目录名）"],
   notes:
-    "K01 C03 H06（待用户确认 6）。快捷设置不回到顶栏【测试 quick-settings】，改由账户区右端的滑杆图标打开（hunt-fullwindow-poster#9 只有图标，打开后的内容整套推断）：设备筛选（shared PiDeviceMenu 的行样式，含「全部设备」）→ 分组方式 → 主题 → 工具显示 → 全部设置…。桌面从滑杆上方弹出、宽 260、左缘对齐左栏；手机 = 列表页 + PiSheet，行 48。",
+    "K01 C03 H06（待用户确认 6）。快捷设置不回到顶栏【测试 quick-settings】，改由账户区右端的滑杆图标打开（hunt-fullwindow-poster#9 只有图标，打开后的内容整套推断）：分组方式 → 主题 → 工具显示 → 全部设置…。桌面从滑杆上方弹出、宽 260、左缘对齐左栏；手机 = 列表页 + PiSheet，行 48。",
 }
 
 export default function Screen({ viewport, theme }: PiScreenProps) {
@@ -43,7 +42,7 @@ export default function Screen({ viewport, theme }: PiScreenProps) {
           scrollTop={0}
           sheet={
             <PiSheet static title="显示选项" bodyClassName="px-2">
-              <PiDisplayOptions static variant="phone" bare prefs={C_PREFS} devices={MOCK_DEVICES} counts={mockSessionCounts()} now={MOCK_NOW} />
+              <PiDisplayOptions static variant="phone" bare prefs={C_PREFS} />
             </PiSheet>
           }
         >
@@ -72,7 +71,7 @@ export default function Screen({ viewport, theme }: PiScreenProps) {
           // 不是模态：没有压暗；浮层贴在账户区（高 52）上方 4px
           <div className="pointer-events-none absolute inset-0">
             <div className="pointer-events-auto absolute bottom-[56px] left-2">
-              <PiDisplayOptions static variant="desktop" prefs={C_PREFS} devices={MOCK_DEVICES} counts={mockSessionCounts()} now={MOCK_NOW} />
+              <PiDisplayOptions static variant="desktop" prefs={C_PREFS} />
             </div>
           </div>
         }

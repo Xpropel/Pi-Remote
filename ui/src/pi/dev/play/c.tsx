@@ -696,9 +696,6 @@ export function PlayDisplayOptionsMenu({ ui, act, variant }: PlaySlotProps) {
       variant={variant}
       bare={variant === "phone"}
       prefs={c.prefs}
-      devices={MOCK_DEVICES}
-      counts={mockSessionCounts()}
-      now={MOCK_NOW}
       onPrefsChange={(patch) => set((cur) => ({ prefs: { ...cur.prefs, ...patch }, last: `prefs:${Object.keys(patch).join(",")}` }))}
       onOpenSettings={() => {
         if (variant === "phone") act.closeSheet()

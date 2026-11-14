@@ -77,7 +77,6 @@ export interface CPrefs {
   approvalGateTier: "high-risk" | "all-non-readonly" | "list"
   /** 完成提示音（默认关） */
   sound: boolean
-  /** 列表：设备筛选与分组 */
-  deviceFilter: string
+  /** List grouping */
   grouping: "device" | "flat"
 }

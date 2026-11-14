@@ -31,8 +31,6 @@ export type PiPrefs = {
   density: PiDensity
   /** 列表分组：默认设备与目录（D-07） */
   grouping: PiGrouping
-  /** 设备筛选（设备 id）；null = 全部设备 */
-  deviceFilter: string | null
   /** 默认投递："插入当前回合"（决定 10） */
   delivery: PiDeliveryPref
   /** 回合结束提示音，默认关 */
@@ -64,7 +62,6 @@ export const DEFAULT_PI_PREFS: PiPrefs = {
   theme: "system",
   density: "balanced",
   grouping: "device",
-  deviceFilter: null,
   delivery: "steer",
   completionSound: false,
   dialogRemoteAnswer: false,
@@ -127,13 +124,11 @@ export function resolvePiTheme(pref: PiThemePref, systemDark: boolean): "light" 
 export function migratePiPrefs(stored: unknown, legacy?: unknown, legacyTheme?: unknown): PiPrefs {
   const cur = obj(stored)
   if (cur) {
-    const filter = cur.deviceFilter
     return {
       v: PI_PREFS_VERSION,
       theme: piThemePrefOf(cur, legacyTheme),
       density: pick(cur.density, ["compact", "balanced", "detailed"], DEFAULT_PI_PREFS.density),
       grouping: pick(cur.grouping, ["device", "flat"], DEFAULT_PI_PREFS.grouping),
-      deviceFilter: typeof filter === "string" && filter ? filter : null,
       delivery: pick(cur.delivery, ["steer", "follow_up"], DEFAULT_PI_PREFS.delivery),
       completionSound: bool(cur.completionSound, DEFAULT_PI_PREFS.completionSound),
       dialogRemoteAnswer: bool(cur.dialogRemoteAnswer, DEFAULT_PI_PREFS.dialogRemoteAnswer),

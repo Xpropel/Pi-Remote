@@ -232,3 +232,31 @@ export function sessionMenuOf(input: PiSessionMenuInput): PiSessionMenuModel {
 export function sessionMenuCountText(messageCount: number | null | undefined): string | null {
   return typeof messageCount === "number" && messageCount > 0 ? `${messageCount} 条` : null
 }
+
+/**
+ * Whether the menu target sits in a cross-device context: its row is not on
+ * the currently selected device (or no device is selected yet, so nothing is
+ * filtered away). Same scoping rule as the sidebar (v2.1.22 ruling): inside
+ * one device the device name is redundant; in cross-device mixes (pending
+ * inbox, global search) it is what identifies where the session lives.
+ */
+export function sessionMenuCrossDeviceOf(rowDeviceId: string, selectedDeviceId: string | null | undefined): boolean {
+  return rowDeviceId !== (selectedDeviceId ?? null)
+}
+
+/**
+ * Phone session-menu sheet subtitle: "directory · 31 条" in a single-device
+ * context, "device/directory · 31 条" across devices. Returns null when
+ * there is nothing to show.
+ */
+export function sessionMenuSubtitleOf(input: {
+  deviceName?: string | null
+  directoryName?: string | null
+  messageCount?: number | null
+  crossDevice: boolean
+}): string | null {
+  const where = (input.crossDevice ? [input.deviceName, input.directoryName] : [input.directoryName]).filter((part): part is string => !!part).join("/")
+  const count = sessionMenuCountText(input.messageCount)
+  const text = [where || null, count].filter((part): part is string => !!part).join(" · ")
+  return text || null
+}

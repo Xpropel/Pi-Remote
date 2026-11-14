@@ -9,7 +9,7 @@ import { paletteSessionsOf } from "../ui/src/pi/model/palette.ts"
 import { searchSessions } from "../ui/src/shell/searchModel.ts"
 import { bootViewOf, listLoadingOf, relayHostOf, connectingText } from "../ui/src/pi/model/boot.ts"
 import { cacheHitOf, gitBranchOf, gitBranchText, sessionModelLine } from "../ui/src/pi/model/sessionInfo.ts"
-import { sessionMenuOf, sessionMenuCountText, sessionDeleteRouteOf, PI_MENU_REASON } from "../ui/src/pi/model/sessionMenu.ts"
+import { sessionMenuOf, sessionMenuCountText, sessionMenuCrossDeviceOf, sessionMenuSubtitleOf, sessionDeleteRouteOf, PI_MENU_REASON } from "../ui/src/pi/model/sessionMenu.ts"
 import { highlightMatch, highlightPartOf } from "../ui/src/pi/model/highlightMatch.ts"
 import { sidebarSessionsOf, attentionWithOfflineDevices, otherAttentionCount, sessionCountsOf } from "../ui/src/pi/model/sidebarSource.ts"
 import { sidebarGroups } from "../ui/src/pi/model/sidebarGroups.ts"
@@ -261,6 +261,29 @@ test("sessionMenuOf：未载入会话走文件级命令（设备在线、有路�
   assert.equal(linkDown.items.rename.reason, PI_MENU_REASON.linkDown)
   assert.equal(sessionMenuCountText(31), "31 条")
   assert.equal(sessionMenuCountText(0), null, "清单里没有条数就不写")
+})
+
+test("sessionMenu 副标题：单设备只留目录名，跨设备保留设备名（v2.1.22 口径，与侧栏同一条规则）", () => {
+  // 跨设备判定：行不在选中设备上 = 跨设备；还没选中设备（无过滤）也算跨设备
+  assert.equal(sessionMenuCrossDeviceOf("dev-a", "dev-a"), false, "行在选中设备上 = 单设备上下文")
+  assert.equal(sessionMenuCrossDeviceOf("dev-b", "dev-a"), true, "行在别的设备上 = 跨设备")
+  assert.equal(sessionMenuCrossDeviceOf("dev-a", null), true, "未选中设备 = 跨设备")
+  assert.equal(sessionMenuCrossDeviceOf("dev-a", undefined), true)
+  // 单设备打开：副标题只留「目录名 · N 条」
+  assert.equal(
+    sessionMenuSubtitleOf({ deviceName: "MacBook Pro", directoryName: "pi-remote", messageCount: 31, crossDevice: false }),
+    "pi-remote · 31 条",
+  )
+  // 跨设备入口打开（待答 / 全局搜索）：保留设备名认目标
+  assert.equal(
+    sessionMenuSubtitleOf({ deviceName: "MacBook Pro", directoryName: "pi-remote", messageCount: 31, crossDevice: true }),
+    "MacBook Pro/pi-remote · 31 条",
+  )
+  // 边界：没有条数只写位置；没有目录时单设备为空、跨设备退回设备名；两样都没有就不写副标题
+  assert.equal(sessionMenuSubtitleOf({ deviceName: "MacBook Pro", directoryName: "pi-remote", messageCount: 0, crossDevice: false }), "pi-remote")
+  assert.equal(sessionMenuSubtitleOf({ deviceName: "MacBook Pro", directoryName: null, messageCount: 31, crossDevice: false }), "31 条")
+  assert.equal(sessionMenuSubtitleOf({ deviceName: "MacBook Pro", directoryName: null, messageCount: 31, crossDevice: true }), "MacBook Pro · 31 条")
+  assert.equal(sessionMenuSubtitleOf({ deviceName: "MacBook Pro", directoryName: null, messageCount: 0, crossDevice: false }), null)
 })
 
 /* ---------------- 会话信息 ---------------- */

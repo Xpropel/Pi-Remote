@@ -369,7 +369,7 @@ describe("新建会话：预选设备和目录（M-04）、最近目录、启动
 
 describe("设置 / 显示选项：偏好读写口径（三项读旧键、两边一起写）", () => {
   test("读：主题 / 密度 / 分组来自新偏好；提示音、网页回答、立即发送读旧键；投递读 relay.sendMode", () => {
-    const p = settingsPrefsOf({ ...DEFAULT_PI_PREFS, deviceFilter: "d-mbp" }, { completionSound: true, dialogRemoteAnswer: true, queueSend: "steer" }, "follow_up")
+    const p = settingsPrefsOf(DEFAULT_PI_PREFS, { completionSound: true, dialogRemoteAnswer: true, queueSend: "steer" }, "follow_up")
     assert.deepEqual(p, {
       ui: "cursor",
       theme: "system",
@@ -384,10 +384,8 @@ describe("设置 / 显示选项：偏好读写口径（三项读旧键、两边�
       approvalGate: false,
       approvalGateTier: "high-risk",
       sound: true,
-      deviceFilter: "d-mbp",
       grouping: "device",
     })
-    assert.equal(settingsPrefsOf(DEFAULT_PI_PREFS, {}, "auto").deviceFilter, "all")
     assert.equal(settingsPrefsOf(DEFAULT_PI_PREFS, {}, "auto").busyDelivery, "steer")
     // G1/G2 开关同 dialogRemote 口径：旧键给了就读旧键（useRelay 下达现读旧键），没给才落新偏好
     const g = settingsPrefsOf({ ...DEFAULT_PI_PREFS, askUserEnabled: false, approvalGateTier: "list" }, { askUserEnabled: true, approvalGateEnabled: true }, "auto")
@@ -395,7 +393,7 @@ describe("设置 / 显示选项：偏好读写口径（三项读旧键、两边�
     assert.equal(g.approvalGate, true)
     assert.equal(g.approvalGateTier, "list", "旧键没给档位 → 落新偏好")
   })
-  test("写：提示音 / 网页回答 = 新偏好 + 旧键；立即发送只写旧键；投递 = 偏好 + sendMode；全部设备 = null；字号没有落点", () => {
+  test("写：提示音 / 网页回答 = 新偏好 + 旧键；立即发送只写旧键；投递 = 偏好 + sendMode；字号没有落点；已删的设备筛选不写任何地方", () => {
     assert.deepEqual(settingsWritesOf({ sound: true }), [
       { kind: "pref", key: "completionSound", value: true },
       { kind: "legacy", patch: { completionSound: true } },
@@ -405,7 +403,8 @@ describe("设置 / 显示选项：偏好读写口径（三项读旧键、两边�
       { kind: "pref", key: "delivery", value: "follow_up" },
       { kind: "sendMode", value: "follow_up" },
     ])
-    assert.deepEqual(settingsWritesOf({ deviceFilter: "all" }), [{ kind: "pref", key: "deviceFilter", value: null }])
+    // The deviceFilter pref was removed: a patch carrying the dead key writes nothing.
+    assert.deepEqual(settingsWritesOf({ deviceFilter: "all" }), [])
     assert.deepEqual(settingsWritesOf({ fontSize: "large" }), [])
     assert.deepEqual(settingsWritesOf({ dialogRemote: false }).map((w) => w.kind), ["pref", "legacy"])
     // G1/G2 开关同网页回答口径：新偏好 + 旧键两边一起写

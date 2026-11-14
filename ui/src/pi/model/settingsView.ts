@@ -29,7 +29,6 @@ export type PiSettingsPrefs = {
   /** G2 审批档位（默认只问高危） */
   approvalGateTier: PiApprovalGateTier
   sound: boolean
-  deviceFilter: string
   grouping: "device" | "flat"
 }
 
@@ -59,7 +58,6 @@ export function settingsPrefsOf(prefs: PiPrefs, legacy: PiLegacyStylePrefs, send
     approvalGate: legacy.approvalGateEnabled ?? prefs.approvalGateEnabled,
     approvalGateTier: legacy.approvalGateTier ?? prefs.approvalGateTier,
     sound: legacy.completionSound ?? prefs.completionSound,
-    deviceFilter: prefs.deviceFilter ?? "all",
     grouping: prefs.grouping,
   }
 }
@@ -75,7 +73,6 @@ export function settingsWritesOf(patch: Partial<PiSettingsPrefs>): PiSettingsWri
   if (patch.theme) out.push({ kind: "pref", key: "theme", value: patch.theme })
   if (patch.density) out.push({ kind: "pref", key: "density", value: patch.density })
   if (patch.grouping) out.push({ kind: "pref", key: "grouping", value: patch.grouping })
-  if (patch.deviceFilter !== undefined) out.push({ kind: "pref", key: "deviceFilter", value: patch.deviceFilter === "all" || !patch.deviceFilter ? null : patch.deviceFilter })
   if (patch.busyDelivery) {
     out.push({ kind: "pref", key: "delivery", value: patch.busyDelivery })
     out.push({ kind: "sendMode", value: patch.busyDelivery })

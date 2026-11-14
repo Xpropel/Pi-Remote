@@ -169,8 +169,7 @@ export const C_PREFS: CPrefs = {
   approvalGateTier: "high-risk",
   /** 完成提示音（默认关） */
   sound: false,
-  /** 列表：设备筛选与分组 */
-  deviceFilter: "all",
+  /** List grouping */
   grouping: "device",
 }
 
