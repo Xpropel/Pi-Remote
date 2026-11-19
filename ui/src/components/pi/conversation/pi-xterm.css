@@ -1,0 +1,275 @@
+/**
+ * Vendored from @xterm/xterm/css/xterm.css with stacking tokens aligned to pi-theme.css
+ * (no numeric z-index values under ui/src/components/pi; scoped inside [data-pi-part="shell-viewport"]).
+ */
+
+/* Complete 16-color ANSI + selection foreground palette for light and dark modes */
+[data-pi-part="shell-viewport"],
+[data-pi-root][data-pi-theme="light"] [data-pi-part="shell-viewport"] {
+  --cw-pi-shell-selection-fg: #18181b;
+  --cw-pi-shell-black: #18181b;
+  --cw-pi-shell-red: #dc2626;
+  --cw-pi-shell-green: #15803d;
+  --cw-pi-shell-yellow: #a16207;
+  --cw-pi-shell-blue: #2563eb;
+  --cw-pi-shell-magenta: #9333ea;
+  --cw-pi-shell-cyan: #0e7490;
+  --cw-pi-shell-white: #52525b;
+  --cw-pi-shell-bright-black: #64646c;
+  --cw-pi-shell-bright-red: #b91c1c;
+  --cw-pi-shell-bright-green: #047857;
+  --cw-pi-shell-bright-yellow: #b45309;
+  --cw-pi-shell-bright-blue: #1d4ed8;
+  --cw-pi-shell-bright-magenta: #7e22ce;
+  --cw-pi-shell-bright-cyan: #0369a1;
+  --cw-pi-shell-bright-white: #18181b;
+}
+
+[data-pi-theme="dark"] [data-pi-part="shell-viewport"],
+[data-pi-root][data-pi-theme="dark"] [data-pi-part="shell-viewport"] {
+  --cw-pi-shell-selection-fg: #ffffff;
+  --cw-pi-shell-black: #3f3f46;
+  --cw-pi-shell-red: #f87171;
+  --cw-pi-shell-green: #4ade80;
+  --cw-pi-shell-yellow: #facc15;
+  --cw-pi-shell-blue: #60a5fa;
+  --cw-pi-shell-magenta: #c084fc;
+  --cw-pi-shell-cyan: #22d3ee;
+  --cw-pi-shell-white: #e4e4e7;
+  --cw-pi-shell-bright-black: #8e8e93;
+  --cw-pi-shell-bright-red: #fca5a5;
+  --cw-pi-shell-bright-green: #86efac;
+  --cw-pi-shell-bright-yellow: #fde047;
+  --cw-pi-shell-bright-blue: #93c5fd;
+  --cw-pi-shell-bright-magenta: #d8b4fe;
+  --cw-pi-shell-bright-cyan: #67e8f9;
+  --cw-pi-shell-bright-white: #fafafa;
+}
+
+.xterm {
+  cursor: text;
+  position: relative;
+  user-select: none;
+  -ms-user-select: none;
+  -webkit-user-select: none;
+}
+
+.xterm.focus,
+.xterm:focus {
+  outline: none;
+}
+
+.xterm .xterm-helpers {
+  position: absolute;
+  top: 0;
+  z-index: var(--cw-pi-z-raised);
+}
+
+.xterm .xterm-helper-textarea {
+  padding: 0;
+  border: 0;
+  margin: 0;
+  position: absolute;
+  opacity: 0;
+  left: -9999em;
+  top: 0;
+  width: 0;
+  height: 0;
+  z-index: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  resize: none;
+}
+
+.xterm .composition-view {
+  background: var(--cw-pi-shell-bg);
+  color: var(--cw-pi-shell-fg);
+  display: none;
+  position: absolute;
+  white-space: nowrap;
+  z-index: var(--cw-pi-z-raised);
+}
+
+.xterm .composition-view.active {
+  display: block;
+}
+
+.xterm .xterm-viewport {
+  background-color: transparent;
+  overflow-y: scroll;
+  cursor: default;
+  position: absolute;
+  right: 0;
+  left: 0;
+  top: 0;
+  bottom: 0;
+}
+
+.xterm .xterm-screen {
+  position: relative;
+}
+
+.xterm .xterm-screen canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.xterm-char-measure-element {
+  display: inline-block;
+  visibility: hidden;
+  position: absolute;
+  top: 0;
+  left: -9999em;
+  line-height: normal;
+}
+
+.xterm.enable-mouse-events {
+  cursor: default;
+}
+
+.xterm.xterm-cursor-pointer,
+.xterm .xterm-cursor-pointer {
+  cursor: pointer;
+}
+
+.xterm.column-select.focus {
+  cursor: crosshair;
+}
+
+.xterm .xterm-accessibility:not(.debug),
+.xterm .xterm-message {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  z-index: var(--cw-pi-z-raised);
+  color: transparent;
+  pointer-events: none;
+}
+
+.xterm .xterm-accessibility-tree:not(.debug) *::selection {
+  color: transparent;
+}
+
+.xterm .xterm-accessibility-tree {
+  font-family: monospace;
+  user-select: text;
+  white-space: pre;
+}
+
+.xterm .xterm-accessibility-tree > div {
+  transform-origin: left;
+  width: fit-content;
+}
+
+.xterm .live-region {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.xterm-dim {
+  opacity: 1 !important;
+}
+
+.xterm-underline-1 { text-decoration: underline; }
+.xterm-underline-2 { text-decoration: double underline; }
+.xterm-underline-3 { text-decoration: wavy underline; }
+.xterm-underline-4 { text-decoration: dotted underline; }
+.xterm-underline-5 { text-decoration: dashed underline; }
+
+.xterm-overline {
+  text-decoration: overline;
+}
+
+.xterm-overline.xterm-underline-1 { text-decoration: overline underline; }
+.xterm-overline.xterm-underline-2 { text-decoration: overline double underline; }
+.xterm-overline.xterm-underline-3 { text-decoration: overline wavy underline; }
+.xterm-overline.xterm-underline-4 { text-decoration: overline dotted underline; }
+.xterm-overline.xterm-underline-5 { text-decoration: overline dashed underline; }
+
+.xterm-strikethrough {
+  text-decoration: line-through;
+}
+
+.xterm-screen .xterm-decoration-container .xterm-decoration {
+  z-index: var(--cw-pi-z-raised);
+  position: absolute;
+}
+
+.xterm-screen .xterm-decoration-container .xterm-decoration.xterm-decoration-top-layer {
+  z-index: var(--cw-pi-z-raised);
+}
+
+.xterm-decoration-overview-ruler {
+  z-index: var(--cw-pi-z-raised);
+  position: absolute;
+  top: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+.xterm-decoration-top {
+  z-index: var(--cw-pi-z-raised);
+  position: relative;
+}
+
+.xterm .xterm-scrollable-element > .scrollbar {
+  cursor: default;
+}
+
+.xterm .xterm-scrollable-element > .scrollbar > .scra {
+  cursor: pointer;
+  font-size: 11px !important;
+}
+
+.xterm .xterm-scrollable-element > .visible {
+  opacity: 1;
+  background: transparent;
+  transition: opacity 100ms linear;
+  z-index: var(--cw-pi-z-raised);
+}
+
+.xterm .xterm-scrollable-element > .invisible {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.xterm .xterm-scrollable-element > .invisible.fade {
+  transition: opacity 800ms linear;
+}
+
+.xterm .xterm-scrollable-element > .shadow {
+  position: absolute;
+  display: none;
+}
+.xterm .xterm-scrollable-element > .shadow.top {
+  display: block;
+  top: 0;
+  left: 3px;
+  height: 3px;
+  width: 100%;
+  box-shadow: var(--vscode-scrollbar-shadow, var(--cw-shadow-card)) 0 6px 6px -6px inset;
+}
+.xterm .xterm-scrollable-element > .shadow.left {
+  display: block;
+  top: 3px;
+  left: 0;
+  height: 100%;
+  width: 3px;
+  box-shadow: var(--vscode-scrollbar-shadow, var(--cw-shadow-card)) 6px 0 6px -6px inset;
+}
+.xterm .xterm-scrollable-element > .shadow.top-left-corner {
+  display: block;
+  top: 0;
+  left: 0;
+  height: 3px;
+  width: 3px;
+}
+.xterm .xterm-scrollable-element > .shadow.top.left {
+  box-shadow: var(--vscode-scrollbar-shadow, var(--cw-shadow-card)) 6px 0 6px -6px inset;
+}

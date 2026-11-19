@@ -66,9 +66,8 @@ export function PiToolsDialog({
       }
     >
       <div data-slot="pi-tools-dialog" className="flex flex-col gap-3 pt-1">
-        <PiDialogNote variant={v}>改的是这个会话当前启用的工具，不是本机注册表。</PiDialogNote>
         <PiDialogStatus variant={v} phase={phase} error={loadError} onRetry={onRetry} empty={phase === "ready" && rows.length === 0 ? "没有可管理的工具" : null}>
-          {fallback && <PiDialogNote variant={v}>全表拿不到，只列出当前启用的工具。</PiDialogNote>}
+          {fallback && <PiDialogNote variant={v}>仅显示当前已启用的工具。</PiDialogNote>}
           <div role="group" aria-label="启用的工具" className="-mx-2 flex flex-col">
             {rows.map((row) => {
               const on = selected.includes(row.name)

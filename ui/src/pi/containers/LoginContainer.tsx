@@ -2,6 +2,7 @@ import { useState } from "react"
 import { PiLoginCard } from "@/components/pi/shell"
 import { PiPhonePage } from "@/components/pi/shared"
 import { relayHostOf } from "@/pi/model/boot"
+import { writeDeviceHubPicked } from "@/pi/model/deviceHub"
 import type { PiContainerProps } from "./types"
 
 /**
@@ -11,7 +12,7 @@ import type { PiContainerProps } from "./types"
  * 桌面：满屏居中（略偏上）；手机：PiPhonePage 里卡顶在安全区下 96。
  */
 export function LoginContainer(props: PiContainerProps) {
-  const { relay, variant } = props
+  const { relay, act, variant } = props
   const host = relayHostOf(import.meta.env.VITE_RELAY_URL, location)
   const [value, setValue] = useState("")
   const card = (
@@ -21,13 +22,21 @@ export function LoginContainer(props: PiContainerProps) {
       state={relay.authError ? "error" : value.trim() ? "typing" : "empty"}
       value={value}
       onValueChange={setValue}
-      onSubmit={() => relay.login(value)}
+      onSubmit={() => {
+        writeDeviceHubPicked(false, typeof sessionStorage === "undefined" ? null : sessionStorage)
+        relay.login(value)
+        act.openDeviceHub()
+      }}
       // relay 的原话（"token 不正确"）+ 它已经做了的事（清掉本地 token）
       errorText={relay.authError ? `${relay.authError}，已清除这个浏览器里保存的 token` : undefined}
     />
   )
   if (variant === "phone") {
-    return <PiPhonePage contentClassName="px-4 pt-24">{card}</PiPhonePage>
+    return (
+      <PiPhonePage className="pi-hub-surface" contentClassName="px-4 pt-24">
+        {card}
+      </PiPhonePage>
+    )
   }
-  return <div className="absolute inset-0 flex items-center justify-center pb-20">{card}</div>
+  return <div className="pi-hub-surface absolute inset-0 flex items-center justify-center pb-20">{card}</div>
 }

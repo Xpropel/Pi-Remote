@@ -8,7 +8,15 @@
  *   ◌ reserved：不可用形态 + 「设计预留」徽标。
  * 这里不读 relay、不读 storage，也不决定业务文案。
  */
-import { useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react"
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react"
 import {
   Activity,
   Bell,
@@ -77,14 +85,114 @@ function handleRadioArrow<T extends string>(
   if (!options[next]?.disabled) onChange?.(options[next].value)
 }
 
+export const SETTINGS_TITLE_TOOLTIP_DELAY_MS = 1500
+
+interface TooltipCoords {
+  x: number
+  y: number
+  placement: "above" | "below"
+}
+
+/**
+ * 标题 1.5s 悬停解释气泡：只在真实鼠标悬停超过 `SETTINGS_TITLE_TOOLTIP_DELAY_MS` 时出现，
+ * 移出、按下、滚动或按 Esc 时立刻清除；无 `tooltip` 时零额外包裹与监听。
+ */
+export function SettingsHoverTitle({
+  children,
+  tooltip,
+  className,
+}: {
+  children: ReactNode
+  tooltip?: string
+  className?: string
+}) {
+  const [tip, setTip] = useState<TooltipCoords | null>(null)
+  const timerRef = useRef<number | null>(null)
+  const anchorRef = useRef<HTMLSpanElement | null>(null)
+
+  const clearTimer = useCallback(() => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }, [])
+
+  const close = useCallback(() => {
+    clearTimer()
+    setTip(null)
+  }, [clearTimer])
+
+  useEffect(() => clearTimer, [clearTimer])
+
+  useEffect(() => {
+    if (!tooltip) close()
+  }, [tooltip, close])
+
+  useEffect(() => {
+    if (!tip) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close()
+    }
+    window.addEventListener("scroll", close, true)
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => {
+      window.removeEventListener("scroll", close, true)
+      window.removeEventListener("keydown", onKeyDown, true)
+    }
+  }, [tip, close])
+
+  if (!tooltip) {
+    return className ? <span className={className}>{children}</span> : <>{children}</>
+  }
+
+  const handleMouseEnter = () => {
+    clearTimer()
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null
+      const el = anchorRef.current
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      const placement = rect.top > 110 ? "above" : "below"
+      const maxLeft = Math.max(12, window.innerWidth - 312)
+      const x = Math.min(Math.max(12, Math.round(rect.left)), maxLeft)
+      const y = placement === "above" ? Math.round(rect.top - 7) : Math.round(rect.bottom + 7)
+      setTip({ x, y, placement })
+    }, SETTINGS_TITLE_TOOLTIP_DELAY_MS)
+  }
+
+  return (
+    <span
+      ref={anchorRef}
+      className={className ? `${className} settings-has-tooltip` : "settings-has-tooltip"}
+      data-settings-tooltip=""
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={close}
+      onPointerDown={close}
+    >
+      {children}
+      {tip ? (
+        <span
+          role="tooltip"
+          className={`settings-title-tip settings-title-tip--${tip.placement}`}
+          style={{ left: `${tip.x}px`, top: `${tip.y}px` }}
+        >
+          {tooltip}
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /* 结构                                                                */
 /* ------------------------------------------------------------------ */
 
-export function SettingsPageTitle({ title, note }: { title: string; note?: ReactNode }) {
+export function SettingsPageTitle({ title, note, tooltip }: { title: string; note?: ReactNode; tooltip?: string }) {
   return (
     <header className="settings-page-head">
-      <h1 className="settings-page-title">{title}</h1>
+      <h1 className="settings-page-title">
+        <SettingsHoverTitle tooltip={tooltip}>{title}</SettingsHoverTitle>
+      </h1>
       {note ? <p className="settings-page-note">{note}</p> : null}
     </header>
   )
@@ -93,17 +201,23 @@ export function SettingsPageTitle({ title, note }: { title: string; note?: React
 export function SettingsGroup({
   label,
   description,
+  tooltip,
   first = false,
   children,
 }: {
   label?: string
   description?: ReactNode
+  tooltip?: string
   first?: boolean
   children: ReactNode
 }) {
   return (
     <section className={first ? "settings-group settings-group--first" : "settings-group"}>
-      {label ? <h2 className="settings-group-label">{label}</h2> : null}
+      {label ? (
+        <h2 className="settings-group-label">
+          <SettingsHoverTitle tooltip={tooltip}>{label}</SettingsHoverTitle>
+        </h2>
+      ) : null}
       <div className="settings-card">{children}</div>
       {description ? <p className="settings-group-description">{description}</p> : null}
     </section>
@@ -139,19 +253,31 @@ export function SettingsStatusBadge({ status }: { status?: SettingsItemStatus })
   )
 }
 
-function RowTitle({ title, status }: { title: ReactNode; status?: SettingsItemStatus }) {
+function RowTitle({ title, status, tooltip }: { title: ReactNode; status?: SettingsItemStatus; tooltip?: string }) {
   return (
     <span className="settings-row-title">
-      <span className="settings-row-title-text">{title}</span>
+      <SettingsHoverTitle tooltip={tooltip} className="settings-row-title-text">
+        {title}
+      </SettingsHoverTitle>
       <SettingsStatusBadge status={status} />
     </span>
   )
 }
 
-function RowCopy({ title, description, status }: { title: ReactNode; description?: ReactNode; status?: SettingsItemStatus }) {
+function RowCopy({
+  title,
+  description,
+  status,
+  tooltip,
+}: {
+  title: ReactNode
+  description?: ReactNode
+  status?: SettingsItemStatus
+  tooltip?: string
+}) {
   return (
     <span className="settings-row-grow">
-      <RowTitle title={title} status={status} />
+      <RowTitle title={title} status={status} tooltip={tooltip} />
       {description ? <span className="settings-row-description">{description}</span> : null}
     </span>
   )
@@ -164,6 +290,7 @@ function RowCopy({ title, description, status }: { title: ReactNode; description
 export interface SettingsRowProps {
   title: ReactNode
   description?: ReactNode
+  tooltip?: string
   status?: SettingsItemStatus
   disabled?: boolean
   children?: ReactNode
@@ -171,7 +298,7 @@ export interface SettingsRowProps {
 }
 
 /** 标准行：左标题 / 说明，右控件。◐ / ◌ 行自动算 inert 并加徽标。 */
-export function SettingsRow({ title, description, status, disabled, children, className }: SettingsRowProps) {
+export function SettingsRow({ title, description, tooltip, status, disabled, children, className }: SettingsRowProps) {
   const inert = settingsItemInert(status, disabled)
   return (
     <div
@@ -180,7 +307,7 @@ export function SettingsRow({ title, description, status, disabled, children, cl
       data-settings-inert={inert ? "true" : undefined}
       aria-disabled={inert || undefined}
     >
-      <RowCopy title={title} description={description} status={status} />
+      <RowCopy title={title} description={description} status={status} tooltip={tooltip} />
       {children ? (
         <span className="settings-row-controls" inert={inert || undefined}>
           {children}
@@ -194,16 +321,18 @@ export function SettingsRow({ title, description, status, disabled, children, cl
 export function SettingsReadOnlyRow({
   title,
   description,
+  tooltip,
   value,
   status = "bridge",
 }: {
   title: ReactNode
   description?: ReactNode
+  tooltip?: string
   value: ReactNode
   status?: SettingsItemStatus
 }) {
   return (
-    <SettingsRow title={title} description={description} status={status}>
+    <SettingsRow title={title} description={description} tooltip={tooltip} status={status}>
       <span className="settings-value">{value}</span>
     </SettingsRow>
   )
@@ -213,6 +342,7 @@ export function SettingsReadOnlyRow({
 export function SettingsActionRow({
   title,
   description,
+  tooltip,
   status,
   disabled,
   onClick,
@@ -220,6 +350,7 @@ export function SettingsActionRow({
 }: {
   title: ReactNode
   description?: ReactNode
+  tooltip?: string
   status?: SettingsItemStatus
   disabled?: boolean
   onClick?: () => void
@@ -238,12 +369,97 @@ export function SettingsActionRow({
         if (!inert) onClick?.()
       }}
     >
-      <RowCopy title={title} description={description} status={status} />
+      <RowCopy title={title} description={description} status={status} tooltip={tooltip} />
       <span className="settings-row-controls">
         {value ? <span className="settings-value">{value}</span> : null}
         <ChevronRight size={14} strokeWidth={2} aria-hidden="true" className="settings-chevron" />
       </span>
     </button>
+  )
+}
+
+export interface SettingsActionButtonProps {
+  title: ReactNode
+  label?: ReactNode
+  hint?: string
+  disabled?: boolean
+  tone?: "default" | "primary" | "danger"
+  leading?: ReactNode
+  dataOp?: string
+  ariaExpanded?: boolean
+  onClick?: () => void
+}
+
+/** 紧凑横向动作按钮：用于多按钮工具行 / 栏内并排操作，避免单个按钮独占一整行。 */
+export function SettingsActionButton({
+  title,
+  label,
+  hint,
+  disabled,
+  tone = "default",
+  leading,
+  dataOp,
+  ariaExpanded,
+  onClick,
+}: SettingsActionButtonProps) {
+  const toneClass =
+    tone === "primary"
+      ? " settings-button--primary"
+      : tone === "danger"
+        ? " settings-button--danger"
+        : ""
+  return (
+    <button
+      type="button"
+      className={`settings-button settings-button--compact${toneClass}`}
+      disabled={disabled}
+      title={hint ?? (typeof title === "string" ? title : undefined)}
+      data-settings-op={dataOp}
+      aria-expanded={ariaExpanded}
+      onClick={() => {
+        if (!disabled) onClick?.()
+      }}
+    >
+      {leading}
+      <span>{label ?? title}</span>
+    </button>
+  )
+}
+
+/** 精简多按钮操作行：左文右按钮组（或纯紧凑横向按钮条），让多项关联操作并排收纳。 */
+export function SettingsActionBar({
+  title,
+  description,
+  tooltip,
+  children,
+}: {
+  title?: ReactNode
+  description?: ReactNode
+  tooltip?: string
+  children: ReactNode
+}) {
+  const hasCopy = title != null || description != null
+  if (!hasCopy) {
+    return (
+      <div className="settings-row settings-action-bar is-strip">
+        <span className="settings-action-bar-btns">{children}</span>
+      </div>
+    )
+  }
+  return (
+    <div className="settings-row settings-action-bar">
+      <span className="settings-action-bar-copy">
+        {title ? (
+          <span className="settings-row-title">
+            <SettingsHoverTitle tooltip={tooltip} className="settings-row-title-text">
+              {title}
+            </SettingsHoverTitle>
+          </span>
+        ) : null}
+        {description ? <span className="settings-row-description">{description}</span> : null}
+      </span>
+      <span className="settings-action-bar-btns">{children}</span>
+    </div>
   )
 }
 
@@ -289,6 +505,7 @@ export interface SettingsOption<T extends string> {
 export function SettingsRadioGroup<T extends string>({
   label,
   description,
+  tooltip,
   value,
   options,
   onChange,
@@ -297,6 +514,7 @@ export function SettingsRadioGroup<T extends string>({
 }: {
   label: string
   description?: ReactNode
+  tooltip?: string
   value: T | null
   options: readonly SettingsOption<T>[]
   onChange?: (value: T) => void
@@ -311,7 +529,7 @@ export function SettingsRadioGroup<T extends string>({
       data-settings-inert={inert ? "true" : undefined}
       aria-disabled={inert || undefined}
     >
-      <RowCopy title={label} description={description} status={status} />
+      <RowCopy title={label} description={description} status={status} tooltip={tooltip} />
       <div
         className="settings-radio-group"
         role="radiogroup"
@@ -347,6 +565,7 @@ export function SettingsRadioGroup<T extends string>({
 export function SettingsInlineRadio<T extends string>({
   label,
   description,
+  tooltip,
   value,
   options,
   onChange,
@@ -355,6 +574,7 @@ export function SettingsInlineRadio<T extends string>({
 }: {
   label: string
   description?: ReactNode
+  tooltip?: string
   value: T | null
   options: readonly SettingsOption<T>[]
   onChange?: (value: T) => void
@@ -363,7 +583,7 @@ export function SettingsInlineRadio<T extends string>({
 }) {
   const inert = settingsItemInert(status, disabled)
   return (
-    <SettingsRow title={label} description={description} status={status} disabled={disabled}>
+    <SettingsRow title={label} description={description} tooltip={tooltip} status={status} disabled={disabled}>
       <span
         className="settings-inline-options"
         role="radiogroup"
@@ -444,6 +664,7 @@ export function SettingsSegmented<T extends string>({
 export function SettingsSelect<T extends string>({
   label,
   description,
+  tooltip,
   value,
   options,
   groups,
@@ -453,6 +674,7 @@ export function SettingsSelect<T extends string>({
 }: {
   label: string
   description?: ReactNode
+  tooltip?: string
   value: T
   options: readonly SettingsOption<T>[]
   /** Optional grouped options, rendered as <optgroup> after the flat ones
@@ -469,7 +691,7 @@ export function SettingsSelect<T extends string>({
     </option>
   )
   return (
-    <SettingsRow title={label} description={description} status={status} disabled={disabled}>
+    <SettingsRow title={label} description={description} tooltip={tooltip} status={status} disabled={disabled}>
       <span className="settings-select-wrap">
         <select
           className="settings-select"
@@ -496,6 +718,7 @@ export function SettingsSelect<T extends string>({
 export function SettingsSlider({
   label,
   description,
+  tooltip,
   value,
   min,
   max,
@@ -508,6 +731,7 @@ export function SettingsSlider({
 }: {
   label: string
   description?: ReactNode
+  tooltip?: string
   value: number
   min: number
   max: number
@@ -531,7 +755,7 @@ export function SettingsSlider({
       data-settings-inert={inert ? "true" : undefined}
       aria-disabled={inert || undefined}
     >
-      <RowCopy title={label} description={description} status={status} />
+      <RowCopy title={label} description={description} status={status} tooltip={tooltip} />
       <div className="settings-slider-row">
         {lowLabel ? <span className="settings-slider-end">{lowLabel}</span> : null}
         <input
@@ -565,6 +789,7 @@ export interface SettingsColorOption {
 export function SettingsColorDots({
   label,
   description,
+  tooltip,
   value,
   options,
   onChange,
@@ -573,6 +798,7 @@ export function SettingsColorDots({
 }: {
   label?: string
   description?: ReactNode
+  tooltip?: string
   value: string | null
   options: readonly SettingsColorOption[]
   onChange?: (value: string) => void
@@ -612,7 +838,7 @@ export function SettingsColorDots({
   )
   if (!label) return control
   return (
-    <SettingsRow title={label} description={description} disabled={disabled} status={status}>
+    <SettingsRow title={label} description={description} tooltip={tooltip} disabled={disabled} status={status}>
       {control}
     </SettingsRow>
   )
@@ -738,3 +964,23 @@ export function SettingsPlaceholder({ page }: { page: SettingsPageId }) {
     </div>
   )
 }
+
+export {
+  ExtensionResourceModal,
+  type ExtensionResourceModalProps,
+} from "./ExtensionResourceModal.tsx"
+
+export {
+  ProviderConfigModal,
+  ModelConfigModal,
+  McpServerModal,
+  type ModelConfigModel,
+  type ModelConfigProvider,
+  type UpsertProviderPayload,
+  type UpsertModelPayload,
+  type McpConfigServer,
+  type UpsertMcpServerPayload,
+  type ProviderConfigModalProps,
+  type ModelConfigModalProps,
+  type McpServerModalProps,
+} from "./ConfigModals.tsx"

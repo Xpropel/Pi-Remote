@@ -1,6 +1,8 @@
 import {
+  createContext,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -14,7 +16,7 @@ import {
 import { SubagentRow } from "@/components/kit/stream/SubagentRow"
 import { AgentProse, ChatColumn, InlineLink } from "@/components/kit"
 import { cn } from "@/lib/utils"
-import { piAgo, piDuration, piModelShort, piThinkSeconds, piTokens } from "@/components/pi/shared/format"
+import { piAgoEn, piDuration, piModelShort, piThinkSeconds, piTokens } from "@/components/pi/shared/format"
 import { usePiStatic } from "@/components/pi/shared/layers"
 import { usePiMotion } from "@/pi/hooks/useReducedMotion"
 import { usePiStickToBottom } from "@/pi/hooks/usePiStickToBottom"
@@ -88,6 +90,8 @@ export interface PiTranscriptProps {
   layout?: "centered" | "pane"
   /** 长回复折叠（D16）：这些 text 块（"<item.key>:<块下标>"）超过 maxHeight 时收起 */
   folded?: readonly string[]
+  /** 回答生成或内容变长时是否自动贴底跟随；关闭后仅在切会话或自己发消息时回到底部（默认 true） */
+  autoScroll?: boolean
   /** 运行行的文字（默认"正在工作"；等工具审批时写"等你批准"，等提问 / 弹窗时写"等你回答"） */
   runningLabel?: string
   className?: string
@@ -111,7 +115,7 @@ export interface PiTranscriptProps {
 
 /** 重试过的出错回合折成一行，放在重试那一轮的用户卡下面："上次出错，已重试 ›"；点开是当时的过程（出错行不再带「重新回答」） */
 function RetriedAttempts({ attempts, retrying, renderItem }: { attempts: readonly Turn[]; retrying: boolean; renderItem: (item: PiItem) => ReactNode }) {
-  const verb = `${attempts.length > 1 ? `出错 ${attempts.length} 次` : "上次出错"}，${retrying ? "正在重试" : "已重试"}`
+  const verb = `${attempts.length > 1 ? `Failed ${attempts.length} times` : "Previous attempt failed"}, ${retrying ? "retrying" : "retried"}`
   return (
     <div data-pi-part="retried-attempts">
       <PiToolLine verb={verb}>
@@ -183,7 +187,7 @@ function desktopColumn(layout: "centered" | "pane") {
  * - 根节点 data-pi-stick="bottom" | "free"、data-pi-new-count：给 ui-interact 断言。
  */
 function PiTranscriptLive(props: PiTranscriptProps) {
-  const { items, variant, scroll = "bottom", layout = "centered", className, sessionKey, onStickChange, ref } = props
+  const { items, variant, scroll = "bottom", layout = "centered", autoScroll = true, className, sessionKey, onStickChange, ref } = props
   const phone = variant === "phone"
   const stick = usePiStickToBottom()
   const { pageTransitionMs } = usePiMotion()
@@ -211,6 +215,11 @@ function PiTranscriptLive(props: PiTranscriptProps) {
   const contentRef = useRef<HTMLElement | null>(null)
   const initialScroll = useRef(scroll)
   const { attach, release, scrollToBottom } = stick
+  const autoScrollRef = useRef(autoScroll)
+  useLayoutEffect(() => {
+    autoScrollRef.current = autoScroll
+    if (!autoScroll) release()
+  }, [autoScroll, release])
   useLayoutEffect(() => {
     const el = anchorRef.current
     const scroller = el?.closest<HTMLElement>(phone ? "[data-pi-scroller]" : "[data-cw-scroller]") ?? null
@@ -225,25 +234,36 @@ function PiTranscriptLive(props: PiTranscriptProps) {
         scroller.scrollTop = at
         release()
       }
+      if (!autoScrollRef.current) release()
     }
     attach(scroller, content)
+    // 关闭「生成时自动滚到底部」时：内容流增高不触发自动跟滚，但保留 contentRef 以便手点「回到底部」与新消息计数。
+    const ro =
+      content && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            if (!autoScrollRef.current) release()
+          })
+        : null
+    if (ro && content) ro.observe(content)
     return () => {
+      ro?.disconnect()
       attach(null, null)
       scrollerRef.current = null
       contentRef.current = null
     }
   }, [phone, attach, release])
 
-  // 切会话后：回到底部重新贴住，内容淡入（减少动效时不淡入）。只在 shownKey 真的变了时跑（开发模式 StrictMode 的二次挂载不算）
+  // 切会话后：回到底部重新贴住（关闭 autoScroll 时打开到底部即松开），内容淡入（减少动效时不淡入）。只在 shownKey 真的变了时跑（开发模式 StrictMode 的二次挂载不算）
   const prevShown = useRef(shownKey)
   useLayoutEffect(() => {
     if (prevShown.current === shownKey) return
     prevShown.current = shownKey
     const scroller = scrollerRef.current
     if (scroller) scroller.scrollTop = scroller.scrollHeight
-    scrollToBottom(true)
+    if (autoScrollRef.current) scrollToBottom(true)
+    else release()
     if (pageTransitionMs > 0) contentRef.current?.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: SWITCH_FADE_MS, easing: "ease-out" })
-  }, [shownKey, scrollToBottom, pageTransitionMs])
+  }, [shownKey, scrollToBottom, release, pageTransitionMs])
 
   // 本页发出消息（O-R1）：回到底部重新贴住。离开底部（上滑、点开上面的图片）之后自己再发消息，流不该停在原处、计数也不该从那里数
   const sentLast = useRef(lastKey)
@@ -324,6 +344,7 @@ interface TranscriptContentProps {
  * ItemView 的 memo 就永远命不中（生产里 folded 一直没传，等于白加）。
  */
 const NO_BLOCK_KEYS: readonly string[] = []
+const TurnTextContext = createContext<boolean | null>(null)
 
 /** 流的内容（静态 / 可交互共用）：流顶一行 → "显示更早的 N 条" → 各回合 → 运行行 */
 function TranscriptContent({ src, items, hidden, nextPage, onShowEarlier, onOpenImage: openImage }: TranscriptContentProps) {
@@ -380,36 +401,41 @@ function TranscriptContent({ src, items, hidden, nextPage, onShowEarlier, onOpen
         // 回合用时的起止口径见 turns.ts 的 turnDurationOf（插进来的排队消息接手时，前一回合算到它注入为止）
         const duration = isRunningTurn ? null : turnDurationOf(turns, ti)
         const lastAssistant = lastAssistantOf(turn)
+        const hasTurnText = turn.rest.some(
+          (it) => it.kind === "assistant" && it.blocks.some((b) => b.kind === "text" && b.text.trim().length > 0),
+        )
         let subagentsPlaced = !isRunningTurn || !subagents || subagents.length === 0
         return (
           // 回合之间空 24（和用户卡上沿的 16 折叠），比回合内的 6 / 8 明显大一档，一眼分得出一问一答
           <div key={turn.user?.key ?? `t${ti}`} data-pi-part="turn" className={cn("group/turn", vi > 0 && "mt-(--cw-space-6)")}>
             {turn.user && <PiUserTurn item={turn.user} imageHeight={phone ? 120 : 160} onOpenImage={openImage} />}
-            {duration != null && duration > 0 && <PiReceipt>用时 {piDuration(duration, { zero: true })}</PiReceipt>}
+            {duration != null && duration > 0 && <PiReceipt>Worked for {piDuration(duration, { zero: true })}</PiReceipt>}
             {attempts.length > 0 && <RetriedAttempts attempts={attempts} retrying={isRunningTurn} renderItem={renderAttemptItem} />}
-            {turn.rest.map((item) => {
-              let sub: ReactNode = null
-              if (!subagentsPlaced && item.kind === "assistant") {
-                subagentsPlaced = true
-                sub = <SubagentRows subagents={subagents ?? []} now={now} />
-              }
-              return (
-                <ItemView
-                  key={item.key}
-                  item={item}
-                  variant={variant}
-                  density={density}
-                  open={open}
-                  fold={fold}
-                  foldLong={foldLong}
-                  subagentSlot={sub}
-                  replyMeta={!isRunningTurn && item === lastAssistant ? replyMeta(item, now) : null}
-                  thinkingSince={isRunningTurn && item === lastAssistant ? thinkingSince : undefined}
-                  showRetry={ti === retryTurn}
-                  onOpenImage={openImage}
-                />
-              )
-            })}
+            <TurnTextContext.Provider value={hasTurnText}>
+              {turn.rest.map((item) => {
+                let sub: ReactNode = null
+                if (!subagentsPlaced && item.kind === "assistant") {
+                  subagentsPlaced = true
+                  sub = <SubagentRows subagents={subagents ?? []} now={now} />
+                }
+                return (
+                  <ItemView
+                    key={item.key}
+                    item={item}
+                    variant={variant}
+                    density={density}
+                    open={open}
+                    fold={fold}
+                    foldLong={foldLong}
+                    subagentSlot={sub}
+                    replyMeta={!isRunningTurn && item === lastAssistant ? replyMeta(item, now) : null}
+                    thinkingSince={isRunningTurn && item === lastAssistant ? thinkingSince : undefined}
+                    showRetry={ti === retryTurn}
+                    onOpenImage={openImage}
+                  />
+                )
+              })}
+            </TurnTextContext.Provider>
             {!subagentsPlaced && <SubagentRows subagents={subagents ?? []} now={now} />}
           </div>
         )
@@ -424,7 +450,7 @@ function TranscriptContent({ src, items, hidden, nextPage, onShowEarlier, onOpen
 function replyMeta(item: PiAssistantItem, now: number): string {
   const parts: string[] = []
   const end = itemEndOf(item)
-  if (end != null) parts.push(piAgo(end, now))
+  if (end != null) parts.push(piAgoEn(end, now))
   if (item.model) parts.push(piModelShort(item.model))
   // 停止生成的回复 pi 记 0 用量（没报上来），写「0 tok」是错的
   if (item.usage?.totalTokens) parts.push(`${piTokens(item.usage.totalTokens)} tok`)
@@ -580,6 +606,8 @@ function AssistantView({
 }: Omit<ItemViewProps, "item"> & { item: PiAssistantItem }) {
   const phone = variant === "phone"
   const actions = usePiTranscriptActions()
+  const turnTextCtx = useContext(TurnTextContext)
+  const turnHasText = turnTextCtx ?? item.blocks.some((b) => b.kind === "text" && b.text.trim().length > 0)
   const out: ReactNode[] = []
   const blocks = item.blocks
   const cutAt = cutBlockOf(item)
@@ -664,7 +692,7 @@ function AssistantView({
       out.push(
         <PiToolLine
           key={key}
-          verb={runningNow ? "正在查看" : "查看了"}
+          verb={runningNow ? "Exploring" : "Explored"}
           detail={detail}
           running={runningNow}
           open={density === "detailed" || open.has(group[0].id)}
@@ -682,12 +710,12 @@ function AssistantView({
       out.push(
         <PiToolLine
           key={key}
-          verb={status === "running" ? "正在读取" : "读取"}
+          verb={status === "running" ? "Reading" : "Read"}
           detail={readDetail(b)}
           running={status === "running"}
           onOpen={openFile && path && status !== "failed" ? () => openFile(path) : undefined}
-          openLabel={`打开 ${path}`}
-          trailing={status === "failed" ? "失败" : status === "aborted" ? "已取消" : undefined}
+          openLabel={`Open ${path}`}
+          trailing={status === "failed" ? "Failed" : status === "aborted" ? "Cancelled" : undefined}
           trailingTone={status === "failed" ? "error" : "muted"}
         />,
       )
@@ -706,7 +734,7 @@ function AssistantView({
     } else if (w === "terminal") {
       const command = toolCommand(b)
       if (status === "denied" || status === "timed_out" || status === "aborted") {
-        // 没真正跑出结果的命令：一行灰字 + 行尾原因（§5 "已拒绝""超时（120 秒）"）
+        // 没真正跑出结果的命令：一行灰字 + 行尾原因
         const sec = timeoutSeconds(b)
         out.push(
           <PiToolLine
@@ -714,7 +742,7 @@ function AssistantView({
             verb={bashPhrase(command)}
             // 命令原文等宽，和终端卡头的命令段同一个样子
             detail={<span className="font-(family-name:--cw-font-mono) text-(length:--cw-text-code)">{command}</span>}
-            trailing={status === "denied" ? "已拒绝" : status === "aborted" ? "已取消" : sec != null ? `超时（${sec} 秒）` : "超时"}
+            trailing={status === "denied" ? "Denied" : status === "aborted" ? "Cancelled" : sec != null ? `Timed out (${sec}s)` : "Timed out"}
           />,
         )
       } else {
@@ -764,7 +792,7 @@ function AssistantView({
             verb={line.verb}
             detail={line.detail}
             running={status === "running"}
-            trailing={status === "failed" ? "失败" : status === "denied" ? "已拒绝" : status === "aborted" ? "已取消" : undefined}
+            trailing={status === "failed" ? "Failed" : status === "denied" ? "Denied" : status === "aborted" ? "Cancelled" : undefined}
             trailingTone={status === "failed" ? "error" : "muted"}
           />,
         )
@@ -774,10 +802,10 @@ function AssistantView({
       out.push(
         <PiToolLine
           key={key}
-          verb={name == null ? "正在调用工具" : status === "running" ? `正在调用 ${name}` : `调用 ${name}`}
+          verb={name == null ? "Calling tool" : status === "running" ? `Calling ${name}` : `Called ${name}`}
           detail={otherDetail(b)}
           running={status === "running"}
-          trailing={status === "failed" ? "失败" : status === "denied" ? "已拒绝" : status === "aborted" ? "已取消" : undefined}
+          trailing={status === "failed" ? "Failed" : status === "denied" ? "Denied" : status === "aborted" ? "Cancelled" : undefined}
           trailingTone={status === "failed" ? "error" : "muted"}
         />,
       )
@@ -792,21 +820,47 @@ function AssistantView({
   if (end)
     out.push(
       end.error ? (
-        <PiTurnError key="stop" detail={end.detail} action={retry ? "重新回答" : null} onAction={retry ? actions?.regenerate : undefined}>
+        <PiTurnError key="stop" detail={end.detail} action={retry ? "Regenerate" : null} onAction={retry ? actions?.regenerate : undefined}>
           {end.text}
         </PiTurnError>
       ) : (
         <PiReceipt key="stop">{end.text}</PiReceipt>
       ),
     )
-  if (replyMeta != null && !end?.error)
-    out.push(<PiReplyActions key="actions" meta={replyMeta} retry={showRetry} variant={variant} item={actions ? item : undefined} />)
+  if (replyMeta != null && (!end?.error || turnHasText)) {
+    const el = (
+      <PiReplyActions
+        key={turnHasText ? "actions" : undefined}
+        meta={replyMeta}
+        retry={end?.error ? false : showRetry}
+        variant={variant}
+        item={actions ? item : undefined}
+      />
+    )
+    out.push(
+      turnHasText ? (
+        el
+      ) : (
+        <div key="actions" className="[&_[data-cw-id=pi-reply-copy]]:hidden">
+          {actions ? (
+            <PiTranscriptActionsContext.Provider value={{ ...actions, copyReply: undefined }}>{el}</PiTranscriptActionsContext.Provider>
+          ) : (
+            el
+          )}
+        </div>
+      ),
+    )
+  }
   return <div data-pi-part="assistant">{out}</div>
 }
 
 function mergeReads(summary: string, reads: number): string {
   // 精简密度：读取并进探索行，文件数相加
-  const m = /^(\d+) 个文件(.*)$/.exec(summary)
-  if (m) return `${Number(m[1]) + reads} 个文件${m[2]}`
-  return `${reads} 个文件，${summary}`
+  const m = /^(\d+) files?(.*)$/.exec(summary)
+  if (m) {
+    const total = Number(m[1]) + reads
+    return `${total} ${total === 1 ? "file" : "files"}${m[2]}`
+  }
+  const prefix = `${reads} ${reads === 1 ? "file" : "files"}`
+  return summary ? `${prefix}, ${summary}` : prefix
 }

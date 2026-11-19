@@ -47,8 +47,9 @@ export interface PiMobileNavProps {
   sessionSubtitle?: string
   /** 会话页顶栏左侧按钮上的计数：其他会话里等你处理的条数 */
   sessionAttentionCount?: number
-  /** 点会话标题（会话信息）/ 右端 …（会话菜单）；不给就没有对应入口 */
+  /** 点会话标题（会话信息）/ 面板与工具 / 右端 …（会话菜单）；不给就没有对应入口 */
   onSessionInfo?: () => void
+  onSessionPane?: () => void
   onSessionMenu?: () => void
   /** 长按卡的「更多」：打开该行的完整会话菜单（改名 / 删除 / 分叉…）；不给就只有置顶 / 归档 */
   onRowMenu?: (session: PiSidebarSession) => void

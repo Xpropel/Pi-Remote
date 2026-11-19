@@ -272,7 +272,7 @@ test("a/reconnecting：waiting 4 秒、composer「写好先排队 / 未连接服
   assert.equal(reason.note, "未连接服务器 · 发送会排队")
   assert.equal(reason.tone, "warn")
   assert.equal(reason.live, false, "连接状态由 PiStatusLine 播报")
-  assert.equal(labels(trayOf(relay, fx))[0], "排队 1 · 等重连")
+  assert.equal(labels(trayOf(relay, fx))[0], "Queued 1 · Reconnecting")
   const sections = queueSectionsOf(relay.remoteQueue.items, relay.queue, fx.outbox, false, true)
   assert.deepEqual(sections.map((x) => x.title), ["本页待发 · 等重连"])
 })
@@ -332,21 +332,23 @@ test("b/conversation：最后一回合 2 组、探索合并「查看了 3 个文
   assert.equal(toolWeightOf("bash"), "terminal")
   assert.equal(relay.composer.state, "S0")
   assert.deepEqual(composerButtonOf(relay.composer.state, false), { variant: "send-muted", disabled: true, ghostStop: false })
-  assert.deepEqual(trayOf(relay, fx).map((x) => x.kind), ["changes"])
-  assert.equal(labels(trayOf(relay, fx))[0], "改动 +32 −9", "改动 pill 的数字来自 details.patch（G5）")
+  assert.deepEqual(trayOf(relay, fx), [], "静态改动不再停留在输入框上方 tray")
+  const sessionChanges = changesOfSession(relay.transcript.items)
+  assert.equal(sessionChanges.added, 32, "改动行数来自 details.patch（G5）")
+  assert.equal(sessionChanges.removed, 9, "删减行数来自 details.patch（G5）")
   assert.equal(turn[0].images[0].omitted, true, "用户卡截图走 get_image")
 })
 
-test("b/conversation-streaming：S3 黑圆停止、tray 任务 2/4 · 终端 1 · 改动、一条 subagent 在跑", async () => {
+test("b/conversation-streaming：S3 黑圆停止、tray Tasks 2/4 · Terminal 1、一条 subagent 在跑", async () => {
   const { relay, fx } = await load("conversation-streaming")
   assert.equal(relay.composer.state, "S3")
   assert.equal(relay.composer.stopVisible, true)
   assert.equal(composerBlockOf(relay.composer.state, null).button.variant, "stop")
   const tray = trayOf(relay, fx)
-  assert.deepEqual(tray.map((x) => x.kind), ["tasks", "terminal", "changes"])
-  assert.equal(tray[0].label, "任务 2/4")
+  assert.deepEqual(tray.map((x) => x.kind), ["tasks", "terminal"])
+  assert.equal(tray[0].label, "Tasks 2/4")
   assert.equal(tray[0].running, true)
-  assert.equal(tray[1].label, "终端 1")
+  assert.equal(tray[1].label, "Terminal 1")
   assert.equal(tray[1].running, true)
   assert.deepEqual(workingCapsuleView(relay.agentState, fx.now), { kind: "working", count: 1, succeeded: 0, failed: 0, aborted: 0 })
   const live = relay.transcript.items.find((x) => x.key === relay.transcript.liveKey)
@@ -378,7 +380,8 @@ test("b/approval-waiting：S3 + blockedBy approval → 输入已禁用 / 先回�
   assert.equal(attention[0].detail, "等你回答：允许 pi 运行这条命令吗？")
   // replica 画成「等你确认」（waiting_approval）；现在的协议里停在 input-available（G6）
   assert.equal(toolDisplayState(relay.transcript.items.at(-1).blocks.at(-1)), "running")
-  assert.equal(labels(trayOf(relay, fx))[0], "改动 +12 −0")
+  assert.deepEqual(trayOf(relay, fx), [])
+  assert.equal(changesOfSession(relay.transcript.items).added, 12)
 })
 
 test("b/stream-errors：进入 r-s6 清掉它的出错条目；失败 / 已拒绝 / 超时三种工具态；回合出错 overloaded_error；发送失败", async () => {
@@ -427,7 +430,7 @@ test("b/changes-pane：3 个文件（按第一次编辑的先后）、viewport �
   const viewportEdit = relay.transcript.items.flatMap((x) => (x.kind === "assistant" ? x.blocks : [])).find((b) => b.id === "toolu_01Kp2q")
   assert.equal(viewportEdit.firstChangedLine, 34)
   assert.deepEqual([changes.added, changes.removed], [32, 9])
-  assert.equal(labels(trayOf(relay, fx)).at(-1), "改动 +32 −9")
+  assert.deepEqual(trayOf(relay, fx), [])
 })
 
 test("b/terminal-pane：3 条命令都在保留期内（成功 30 秒、失败 60 秒）、终端 pill 计运行中的 1 条", async () => {
@@ -438,7 +441,7 @@ test("b/terminal-pane：3 条命令都在保留期内（成功 30 秒、失败 6
   assert.equal(terminalRetentionMs({ state: "failed" }), 60 * S)
   assert.ok(fx.now - relay.terminalItems[0].endedAt < 30 * S)
   const pill = trayOf(relay, fx).find((x) => x.kind === "terminal")
-  assert.equal(pill.label, "终端 1")
+  assert.equal(pill.label, "Terminal 1")
 })
 
 test("b/file-pane：get_file 回包照扩展 readFileInRoot 的契约（G10）：文件名、utf8、大小（按正文实际字节）、未截断", async () => {
@@ -452,10 +455,10 @@ test("b/file-pane：get_file 回包照扩展 readFileInRoot 的契约（G10）�
   assert.equal("path" in file || "text" in file, false, "replica 的 path / text 不是契约字段")
 })
 
-test("b/task-panel：tray「任务 2/4」在跑、进行中那项写 activeForm", async () => {
+test("b/task-panel：tray「Tasks 2/4」在跑、进行中那项写 activeForm", async () => {
   const { relay, fx } = await load("task-panel")
   const pill = trayOf(relay, fx).find((x) => x.kind === "tasks")
-  assert.equal(pill.label, "任务 2/4")
+  assert.equal(pill.label, "Tasks 2/4")
   assert.equal(pill.running, true)
   const doing = relay.taskList.filter((x) => x.status === "in_progress")
   assert.deepEqual(doing.map((x) => x.activeForm), ["正在跑横屏用例"])
@@ -543,7 +546,7 @@ test("c/model-menu：5 档思考级别、当前 medium、当前模型 Claude Son
   )
 })
 
-test("c/queue-panel：两段（网页发的 q1、终端里排的 1 条），已插入的 q2 不出；tray「排队 2」", async () => {
+test("c/queue-panel：两段（网页发的 q1、终端里排的 1 条），已插入的 q2 不出；tray「Queued 2」", async () => {
   const { relay, fx } = await load("queue-panel")
   const sections = queueSectionsOf(relay.remoteQueue.items, relay.queue, fx.outbox, true, true)
   assert.deepEqual(sections.map((x) => x.title), ["网页发的", "终端里排的 · 只读"])
@@ -552,7 +555,7 @@ test("c/queue-panel：两段（网页发的 q1、终端里排的 1 条），已�
   assert.equal(canMutateRemoteQueueItem(sections[0].items[0]), true)
   assert.equal(remoteQueueSourceLabel("web"), "网页")
   const tray = trayOf(relay, fx)
-  assert.deepEqual(tray.map((x) => x.label).slice(0, 2), ["任务 2/4", "排队 2"])
+  assert.deepEqual(tray.map((x) => x.label).slice(0, 2), ["Tasks 2/4", "Queued 2"])
 })
 
 test("c/queue-panel states：离线 outbox → 三段「本页待发 · 等重连 / 网页发的 / 终端里排的 · 只读」、pill 计数含 outbox", async () => {
@@ -561,7 +564,7 @@ test("c/queue-panel states：离线 outbox → 三段「本页待发 · 等重�
   const sections = queueSectionsOf(relay.remoteQueue.items, relay.queue, outbox, false, true)
   assert.deepEqual(sections.map((x) => x.title), ["本页待发 · 等重连", "网页发的", "终端里排的 · 只读"])
   const tray = trayItemsOf({ remoteQueue: relay.remoteQueue.items, localQueue: relay.queue, outbox, linkOk: false, deviceOnline: true })
-  assert.equal(tray[0].label, "排队 3 · 等重连")
+  assert.equal(tray[0].label, "Queued 3 · Reconnecting")
   assert.equal(queueSectionsOf(relay.remoteQueue.items, relay.queue, outbox, true, true)[0].title, "本页待发", "连着时不写「等重连」")
   assert.equal(fx.outbox, undefined, "主图没有 outbox")
 })

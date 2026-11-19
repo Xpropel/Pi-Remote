@@ -37,6 +37,7 @@ import {
   usageStatsOf,
 } from "@/pi/model/dialogsData"
 import { compactionNumbersOf, compactionResultText } from "@/relay/compactionResult"
+import { forkedSessionRow } from "@/relay/useRelay"
 import { commandErrorText, copyToClipboard, currentSessionTitle, useRelayCommand } from "./cShared"
 import { DisplayOptionsOverlay } from "./DisplayOptionsContainer"
 import { HostDiagContainer } from "./HostDiagContainer"
@@ -88,7 +89,23 @@ function sessionBlockedReason(relay: Relay): string | null {
 
 /** 弹窗的 arg 指向的会话：当前会话，或者（会话菜单打开的）别的、还没载入的会话（带文件路径，冷操作用） */
 function targetSessionOf(relay: Relay, arg: string | undefined): { current: boolean; path: string | null; title: string | null } {
-  if (!arg || arg === relay.roomId) return { current: true, path: null, title: currentSessionTitle(relay) }
+  if (!arg || arg === relay.roomId) {
+    const lazy = relay.lazySession
+    if (lazy && lazy.id === relay.roomId) {
+      const preferred = lazy.deviceId ? relay.sessionsByDevice[lazy.deviceId] : undefined
+      const hit =
+        preferred?.find((s) => s.id === lazy.id) ??
+        Object.values(relay.sessionsByDevice)
+          .flatMap((list) => list)
+          .find((s) => s.id === lazy.id)
+      return {
+        current: false,
+        path: hit?.path || lazy.path || null,
+        title: hit?.name || hit?.firstMessage || lazy.firstMessage || currentSessionTitle(relay),
+      }
+    }
+    return { current: true, path: null, title: currentSessionTitle(relay) }
+  }
   for (const list of Object.values(relay.sessionsByDevice)) {
     const hit = list.find((s) => s.id === arg)
     if (hit) return { current: false, path: hit.path || null, title: hit.name || hit.firstMessage || null }
@@ -203,14 +220,23 @@ function ForkContainer(props: PiContainerProps) {
     const beforeDraft = relay.draft
     setPending(entryId)
     setError(null)
-    relay.runCommand("fork", { entryId }).then(
+    relay.runCommand("fork", { entryId, position: "before" }).then(
       (data) => {
         noteSlashCommandUsed("/fork")
         const text = data && typeof data === "object" && typeof (data as { text?: unknown }).text === "string" ? String((data as { text: string }).text) : ""
+        const targetRoomId =
+          data && typeof data === "object" && typeof (data as { sessionId?: unknown }).sessionId === "string"
+            ? String((data as { sessionId: string }).sessionId).trim()
+            : ""
         if (text.trim()) {
           const merged = mergeForkDraft(beforeDraft, text)
           // 命令回包和新房订阅谁先到不一定：交给 relay 在真正进了新房间后回填（和旧界面同一个入口）
-          relay.restoreDraftAfterSwitch(originRoom, merged.text, merged.appended ? `${FORK_BACKFILL_COPY}（${FORK_APPEND_HINT}）` : FORK_BACKFILL_COPY)
+          relay.restoreDraftAfterSwitch(
+            originRoom,
+            merged.text,
+            merged.appended ? `${FORK_BACKFILL_COPY}（${FORK_APPEND_HINT}）` : FORK_BACKFILL_COPY,
+            targetRoomId || undefined,
+          )
         } else relay.notify("已从这条消息分叉，列表里会出现新会话")
         shell.close()
       },
@@ -228,8 +254,9 @@ function ForkContainer(props: PiContainerProps) {
     relay.forkSessionFile(path).then(
       (data) => {
         noteSlashCommandUsed("/fork")
-        const created = data && typeof data === "object" && typeof (data as { sessionPath?: unknown }).sessionPath === "string" ? String((data as { sessionPath: string }).sessionPath) : ""
-        relay.notify(created ? `已分叉成新会话：${fileBaseName(created)}` : "已分叉成新会话")
+        const forked = forkedSessionRow(data)
+        if (forked) relay.selectListedSession(forked)
+        relay.notify("已分叉为新会话")
         shell.close()
       },
       (err: unknown) => {

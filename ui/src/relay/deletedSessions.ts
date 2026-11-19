@@ -10,6 +10,8 @@
  */
 export const DELETED_SESSIONS_KEY = "pi_remote_deleted_sessions"
 export const DELETED_SESSION_TTL_MS = 6 * 60 * 60 * 1000
+/** 「仅从本页列表移除」的长效保留期（1 年）。 */
+export const HIDDEN_SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000
 
 export type DeletedSessionsStorage = {
   getItem(key: string): string | null

@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore, type MouseEvent, type ReactNode } from "react"
+import { decodeTextFile, insertFileBlock, TEXT_FILE_MAX_BYTES } from "@/chat/composerTools"
 import { MenuItem } from "@/components/kit"
 import { SuggestionPills } from "@/components/kit/composer/SuggestionPills"
-import { EMPTY_MODEL_FALLBACK, PiAttachMenu, PiEmptyComposer, PiFolderBrowser, PiFolderPicker, type PiEmptyMenu } from "@/components/pi/composer"
+import { EMPTY_MODEL_FALLBACK, PiAttachMenu, PiEmptyComposer, PiFolderBrowser, PiFolderPicker, type PiAttachPick, type PiEmptyMenu } from "@/components/pi/composer"
 import { TOUCH_44_DOWN } from "@/components/pi/composer/styles"
 import { PiDeviceMenu, PiPhonePage, PiSheet, PiTopBar } from "@/components/pi/shared"
 import { piBaseName } from "@/components/pi/shared/format"
 import { usePiStatic } from "@/components/pi/shared/layers"
 import { cn } from "@/lib/utils"
 import { useNow } from "@/pi/hooks/useNow"
+import { usePiSettingsPrefs } from "@/pi/hooks/usePiSettingsPrefs"
 import { browseAccessOf, initialBrowsePathOf, knownFoldersOf } from "@/pi/model/folderBrowser"
 import { deviceScopeLabel, folderForDevice, newSessionDefaultsOf, offlineReasonOf, recentFoldersOf, runningRoomOf, sessionCountsOf, startingText } from "@/pi/model/newSession"
 import { useMissingFolders } from "@/pi/model/folderExistence"
@@ -76,10 +78,31 @@ function setStore(patch: Partial<NewState>) {
   if (import.meta.hot) import.meta.hot.data.newSession = store
   for (const fn of [...listeners]) fn()
 }
+const ASK_TOOLS = ["read", "grep", "ls", "find", "tool_search"] as const
+
+function firstLineTitleOf(text: string): string {
+  const firstLine = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0)
+  return firstLine ? firstLine.slice(0, 36) : ""
+}
+
+let activeRelayRoomId = ""
+/** 记录宿主当前活跃会话房间 id；延迟发送后如用户已切到别的会话则不再向原队列发初始化命令 */
+export function syncActiveRelayRoom(roomId: string) {
+  activeRelayRoomId = roomId
+}
+
 /** 侧栏组头"+"（在这个目录新建会话，m6）：预选这一组的设备和目录，草稿留着；正在启动时不改（启动的是已经选好的那一组） */
 export function presetNewSession(deviceId: string, folder: string) {
   if (store.starting) return
   setStore({ deviceId, folder, error: null })
+}
+/** 顶栏「新会话」清掉上一次工作区组头+或页内选择留下的锁定，按当前默认设备与项目重选 */
+export function resetNewSessionSelection() {
+  if (store.starting) return
+  setStore({ deviceId: null, folder: null, auto: null, error: null, browsing: false })
 }
 function useNewState(): NewState {
   return useSyncExternalStore(
@@ -96,12 +119,20 @@ function useNewState(): NewState {
 
 /** 当前要用的设备与目录（没手选过就用这次进页冻结的预选，还没冻结就用实时预选；目录不在设备允许的范围里时换成第一个） */
 function useSelection(relay: Relay, state: NewState) {
+  const prefs = usePiSettingsPrefs()
   // 点选了未载入的会话时，relay.rooms 里它那间是合成房间（online 只表示设备在线，lazyRoomFromRow），不算「在跑」
   const lazyId = relay.lazySession?.id
   const liveRooms = useMemo(() => (lazyId ? relay.rooms.filter((room) => room.id !== lazyId) : relay.rooms), [relay.rooms, lazyId])
+  const preferredDeviceId = useMemo(() => {
+    if (relay.selectedDeviceId) return relay.selectedDeviceId
+    if (prefs.autoConnectDevice && prefs.defaultDeviceId && relay.devices.some((d) => d.id === prefs.defaultDeviceId && d.online)) {
+      return prefs.defaultDeviceId
+    }
+    return null
+  }, [relay.selectedDeviceId, relay.devices, prefs.autoConnectDevice, prefs.defaultDeviceId])
   const defaultsInput = useMemo(
-    () => ({ devices: relay.devices, rooms: liveRooms, sessionsByDevice: relay.sessionsByDevice, selectedDeviceId: relay.selectedDeviceId }),
-    [relay.devices, liveRooms, relay.sessionsByDevice, relay.selectedDeviceId],
+    () => ({ devices: relay.devices, rooms: liveRooms, sessionsByDevice: relay.sessionsByDevice, selectedDeviceId: preferredDeviceId }),
+    [relay.devices, liveRooms, relay.sessionsByDevice, preferredDeviceId],
   )
   const provisional = useMemo(() => newSessionDefaultsOf(defaultsInput), [defaultsInput])
   const auto = state.auto && relay.devices.some((d) => d.id === state.auto?.deviceId) ? state.auto : null
@@ -130,6 +161,9 @@ const SEND_WAIT_MS = 3000
 
 function useStartFlow(p: PiContainerProps, state: NewState) {
   const { relay, act } = p
+  const piSettings = usePiSettingsPrefs()
+  const piSettingsRef = useRef(piSettings)
+  piSettingsRef.current = piSettings
   const s = state.starting
   // 用时间点而不是每次重新计时：relay 每次更新都会重跑 effect，计时器不能因此一直被推后
   const idleSince = useRef<number | null>(null)
@@ -169,6 +203,7 @@ function useStartFlow(p: PiContainerProps, state: NewState) {
       const text = newSessionDraftOf()
       relay.setDraft(own.trim() && own.trim() !== text.trim() ? `${own}\n\n${text}` : text)
       setStore({ starting: null, error: null, draft: "" })
+      setStore({ deviceId: null, folder: null })
       act.openSession()
       return
     }
@@ -211,9 +246,51 @@ function useStartFlow(p: PiContainerProps, state: NewState) {
     const send = () => {
       sendBy.current = null
       if (store.starting !== s) return
-      void relay.sendText(s.text)
       setStore({ starting: null, error: null, draft: "" })
+      setStore({ deviceId: null, folder: null })
       act.openSession()
+      const curSettings = piSettingsRef.current
+      const askMode = curSettings.newSessionMode === "ask"
+      const autoTitle = curSettings.newSessionAutoTitle ? firstLineTitleOf(s.text) : ""
+      const targetRoomId = relay.roomId
+      if (targetRoomId) activeRelayRoomId = targetRoomId
+      void (async () => {
+        let askApplied = false
+        if (relay.online) {
+          if (askMode) {
+            try {
+              await relay.runCommand("set_active_tools", { tools: [...ASK_TOOLS] })
+              askApplied = true
+            } catch {
+              askApplied = false
+            }
+          }
+          if (autoTitle) {
+            void relay.runCommand("set_session_name", { name: autoTitle }).catch(() => {})
+          }
+        }
+        const promptText = askMode && !askApplied ? `[仅提问，不改文件]\n\n${s.text}` : s.text
+        await relay.sendText(promptText)
+        if (!relay.online && targetRoomId && (askMode || autoTitle)) {
+          const runWhenReady = async (command: string, args: Record<string, unknown>) => {
+            const deadline = Date.now() + Math.max(20_000, HARNESS_START_TIMEOUT_MS)
+            while (Date.now() < deadline) {
+              if (activeRelayRoomId !== targetRoomId) return false
+              try {
+                await relay.runCommand(command, args)
+                return true
+              } catch (err) {
+                const code = (err as { code?: string } | null)?.code
+                if (code !== "room_offline") return false
+              }
+              await new Promise((resolve) => window.setTimeout(resolve, 750))
+            }
+            return false
+          }
+          if (askMode && !askApplied) await runWhenReady("set_active_tools", { tools: [...ASK_TOOLS] })
+          if (autoTitle) await runWhenReady("set_session_name", { name: autoTitle })
+        }
+      })()
     }
     if (relay.online) {
       send()
@@ -236,7 +313,7 @@ function useStartFlow(p: PiContainerProps, state: NewState) {
   }, [s])
 }
 
-function NewComposer(p: PiContainerProps) {
+function NewComposer(p: PiContainerProps & { onPickAttach?: (pick: PiAttachPick) => void }) {
   const { relay, ui, act, variant } = p
   const phone = variant === "phone"
   const isStatic = usePiStatic()
@@ -255,6 +332,12 @@ function NewComposer(p: PiContainerProps) {
   useEffect(() => {
     if (isStatic) return
     return () => setStore({ auto: null, browsing: false })
+  }, [isStatic])
+  useEffect(() => {
+    if (isStatic) return
+    return () => {
+      if (!store.starting) setStore({ deviceId: null, folder: null })
+    }
   }, [isStatic])
   const starting = state.starting
   const counts = sessionCountsOf(relay.sessionsByDevice, relay.devices)
@@ -385,7 +468,7 @@ function NewComposer(p: PiContainerProps) {
           )
         }
         folderMenu={phone ? undefined : folderPicker("desktop")}
-        plusMenu={phone ? undefined : <PiAttachMenu variant="desktop" className="w-[280px]" commandsDisabled onPick={() => relay.notify("新会话的第一条先发文字；图片和文件在会话开始后再加", "warn")} />}
+        plusMenu={phone ? undefined : <PiAttachMenu variant="desktop" className="w-[280px]" commandsDisabled onPick={(pick) => p.onPickAttach?.(pick)} />}
         below={below}
         sending={!!starting}
         className={cn(starting && "pointer-events-none opacity-90")}
@@ -396,7 +479,7 @@ function NewComposer(p: PiContainerProps) {
 }
 
 /** 新建会话页手机的 sheet（设备、目录、+；模型只读，没有 sheet） */
-function NewSheets(p: PiContainerProps) {
+function NewSheets(p: PiContainerProps & { onPickAttach?: (pick: PiAttachPick) => void }) {
   const { relay, ui, act } = p
   const now = useNow(1000)
   const state = useNewState()
@@ -489,9 +572,9 @@ function NewSheets(p: PiContainerProps) {
           variant="phone"
           bare
           commandsDisabled
-          onPick={() => {
+          onPick={(pick) => {
             close()
-            relay.notify("新会话的第一条先发文字；图片和文件在会话开始后再加", "warn")
+            p.onPickAttach?.(pick)
           }}
         />
       </PiSheet>
@@ -501,7 +584,49 @@ function NewSheets(p: PiContainerProps) {
 }
 
 export function NewSessionContainer(props: PiContainerProps) {
-  const { act, variant } = props
+  const { act, variant, relay } = props
+  const textInputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    syncActiveRelayRoom(relay.roomId)
+  }, [relay.roomId])
+  const onPickAttach = (pick: PiAttachPick) => {
+    if (pick === "text") {
+      textInputRef.current?.click()
+      return
+    }
+    relay.notify(pick === "image" ? "新会话的第一条先发文字；图片请在会话开始后再加" : "新会话开始后再查看命令或用量", "warn")
+  }
+  const textInput = (
+    <input
+      ref={textInputRef}
+      type="file"
+      hidden
+      accept="text/*,.md,.txt,.json,.ts,.tsx,.js,.mjs,.cjs,.py,.sh,.go,.rs,.yaml,.yml,.toml,.css,.html"
+      onChange={(event) => {
+        const file = event.currentTarget.files?.[0]
+        event.currentTarget.value = ""
+        if (!file) return
+        if (file.size > TEXT_FILE_MAX_BYTES) {
+          relay.notify(`${file.name} 超过 64 KB，未插入`, "warn")
+          return
+        }
+        void file.arrayBuffer().then((buffer) => {
+          const decoded = decodeTextFile(new Uint8Array(buffer))
+          if (!decoded.ok) {
+            relay.notify(decoded.reason, "warn")
+            return
+          }
+          const inserted = insertFileBlock(newSessionDraftOf(), file.name, decoded.text)
+          if (!inserted.ok) {
+            relay.notify(inserted.reason, "warn")
+            return
+          }
+          setNewSessionDraft(inserted.text)
+          if (inserted.truncated) relay.notify(`${file.name} 太长，截掉了 ${inserted.omittedChars} 字`, "warn")
+        })
+      }}
+    />
+  )
   if (variant === "phone") {
     return (
       <PiPhonePage
@@ -509,14 +634,15 @@ export function NewSessionContainer(props: PiContainerProps) {
         contentClassName="h-full"
         dock={
           <div className="px-4 pt-2 pb-2">
-            <NewComposer {...props} />
+            <NewComposer {...props} onPickAttach={onPickAttach} />
           </div>
         }
         sheet={
           <>
-            <NewSheets {...props} />
+            <NewSheets {...props} onPickAttach={onPickAttach} />
             {/* 新建会话在手机上是整页（不在 PhoneApp 的共用 sheet 槽里）：设备菜单的"配对新设备…"要的 a 的配对 sheet 放在本页 */}
             <PairingContainer {...props} />
+            {textInput}
           </>
         }
       >
@@ -539,8 +665,9 @@ export function NewSessionContainer(props: PiContainerProps) {
   return (
     <div className="absolute inset-0 flex justify-center px-10 pt-[268px]">
       <div className="w-full max-w-[640px]">
-        <NewComposer {...props} />
+        <NewComposer {...props} onPickAttach={onPickAttach} />
       </div>
+      {textInput}
     </div>
   )
 }

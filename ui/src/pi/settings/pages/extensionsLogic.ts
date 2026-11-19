@@ -29,8 +29,10 @@ export interface HostCommand {
   description: string
   /** extension / prompt / skill / 其它；小写。 */
   source: string
-  /** 技能文件 frontmatter 的 disable-model-invocation（只读呈现，改它要桥）。 */
+  /** 技能文件 frontmatter 的 disable-model-invocation。 */
   manualOnly: boolean
+  /** pi 提供的来源文件路径（sourceInfo.path）。 */
+  sourcePath?: string
 }
 
 const MANUAL_KEYS = [
@@ -75,11 +77,14 @@ export function hostCommandsOf(data: unknown): HostCommand[] {
     const key = name.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
+    const info = obj(rec.sourceInfo)
+    const sourcePath = text(info?.path) || text(rec.path)
     out.push({
       name,
       description: text(rec.description),
       source,
       manualOnly: manualOnlyOf(rec),
+      ...(sourcePath ? { sourcePath } : {}),
     })
   }
   return out
@@ -124,6 +129,14 @@ export interface McpServerRow {
   connected: boolean
   toolCount: number | null
   error: string
+  command?: string
+  args?: string[]
+  url?: string
+  hasUrlQuery?: boolean
+  description?: string
+  timeout?: number
+  envKeys?: string[]
+  headerKeys?: string[]
 }
 
 /** 任意 get_mcp_servers 回包 → 可渲染清单。字段缺失不补假值。 */
@@ -141,7 +154,7 @@ export function mcpServersOf(data: unknown): McpServerRow[] {
     const name = text(rec.name) || text(rec.id)
     if (!name) continue
     const toolCount = typeof rec.toolCount === "number" && Number.isFinite(rec.toolCount) ? Math.max(0, Math.round(rec.toolCount)) : null
-    out.push({
+    const row: McpServerRow = {
       name,
       transport: text(rec.transport),
       exposure: text(rec.exposure).toLowerCase(),
@@ -149,7 +162,19 @@ export function mcpServersOf(data: unknown): McpServerRow[] {
       connected: rec.connected === true,
       toolCount,
       error: text(rec.error),
-    })
+    }
+    const command = text(rec.command)
+    if (command) row.command = command
+    if (Array.isArray(rec.args)) row.args = rec.args.filter((x): x is string => typeof x === "string")
+    const url = text(rec.url)
+    if (url) row.url = url
+    if (rec.hasUrlQuery === true) row.hasUrlQuery = true
+    const description = text(rec.description)
+    if (description) row.description = description
+    if (typeof rec.timeout === "number" && Number.isFinite(rec.timeout)) row.timeout = rec.timeout
+    if (Array.isArray(rec.envKeys)) row.envKeys = rec.envKeys.filter((x): x is string => typeof x === "string")
+    if (Array.isArray(rec.headerKeys)) row.headerKeys = rec.headerKeys.filter((x): x is string => typeof x === "string")
+    out.push(row)
   }
   return out
 }
@@ -166,4 +191,245 @@ export function mcpStatusTextOf(server: McpServerRow): string {
 
 export function mcpToneOf(server: McpServerRow): "online" | "offline" {
   return server.connected ? "online" : "offline"
+}
+
+/** 解析 MCP server 启动参数串，支持单/双引号与反斜杠转义。 */
+export function splitCommandArgs(raw: string): string[] {
+  const out: string[] = []
+  let current = ""
+  let quote: '"' | "'" | null = null
+  let hasToken = false
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i]
+    if (quote) {
+      if (ch === "\\" && quote === '"' && i + 1 < raw.length) {
+        current += raw[i + 1]
+        i += 1
+        hasToken = true
+        continue
+      }
+      if (ch === quote) {
+        quote = null
+        continue
+      }
+      current += ch
+      hasToken = true
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      hasToken = true
+      continue
+    }
+    if (/\s/.test(ch)) {
+      if (hasToken) {
+        out.push(current)
+        current = ""
+        hasToken = false
+      }
+      continue
+    }
+    current += ch
+    hasToken = true
+  }
+  if (hasToken) out.push(current)
+  return out
+}
+
+/** 将 MCP server 启动参数数组格式化为可编辑命令行文本。 */
+export function formatCommandArgs(args?: readonly string[]): string {
+  if (!args?.length) return ""
+  return args
+    .map((arg) => (/[\s"'\\]/.test(arg) || arg === "" ? `"${arg.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : arg))
+    .join(" ")
+}
+
+/* ------------------------------------------------------------------ */
+/* 技能 / 提示词模板 / 扩展 / Pi 包清单增删与启停                         */
+/* ------------------------------------------------------------------ */
+
+export type ExtensionResourceKind = "skill" | "prompt" | "extension" | "package"
+
+export interface BuiltinExtensionSpec {
+  id: string
+  target: string
+  label: string
+  defaultEnabled: boolean
+}
+
+export const BUILTIN_EXTENSION_SPECS: readonly BuiltinExtensionSpec[] = [
+  { id: "mcp", target: "builtin:mcp", label: "MCP 支持", defaultEnabled: true },
+  { id: "codemode", target: "builtin:codemode", label: "代码模式 codemode", defaultEnabled: true },
+  { id: "tool-search", target: "builtin:tool-search", label: "工具搜索", defaultEnabled: true },
+  { id: "llama.cpp", target: "builtin:llama.cpp", label: "本地模型 llama.cpp", defaultEnabled: false },
+]
+
+export function stripResourcePrefix(entry: string): { prefix: "" | "+" | "-" | "!"; bare: string } {
+  const trimmed = entry.trim()
+  if (trimmed.startsWith("+") || trimmed.startsWith("-") || trimmed.startsWith("!")) {
+    return { prefix: trimmed[0] as "+" | "-" | "!", bare: trimmed.slice(1).trim() }
+  }
+  return { prefix: "", bare: trimmed }
+}
+
+function resourceTargetMatches(entryBare: string, candidate: string): boolean {
+  const cleanEntry = entryBare.trim().toLowerCase()
+  const cleanCand = candidate.trim().toLowerCase()
+  if (!cleanEntry || !cleanCand) return false
+  if (cleanEntry === cleanCand) return true
+  if (cleanEntry.endsWith(`/${cleanCand}`) || cleanCand.endsWith(`/${cleanEntry}`)) return true
+  return false
+}
+
+export function isResourceEnabled(
+  entries: readonly string[] | null,
+  candidates: readonly string[],
+  defaultOn = true,
+): boolean {
+  const list = entries ?? []
+  let result = defaultOn
+  for (const raw of list) {
+    const { prefix, bare } = stripResourcePrefix(raw)
+    if (!candidates.some((cand) => resourceTargetMatches(bare, cand))) continue
+    if (prefix === "-" || prefix === "!") result = false
+    else result = true
+  }
+  return result
+}
+
+export function toggleResourceEntry(
+  entries: readonly string[] | null,
+  target: string,
+  enabled: boolean,
+  defaultOn = true,
+  matchCandidates: readonly string[] = [target],
+): string[] {
+  const list = entries ?? []
+  const filtered = list.filter((raw) => {
+    const { bare } = stripResourcePrefix(raw)
+    return !matchCandidates.some((cand) => resourceTargetMatches(bare, cand))
+  })
+  if (defaultOn) {
+    return enabled ? filtered : [...filtered, `-${target}`]
+  }
+  return enabled ? [...filtered, `+${target}`] : filtered
+}
+
+export function addResourceEntry(entries: readonly string[] | null, rawTarget: string): string[] | null {
+  const clean = rawTarget.trim()
+  if (!clean) return null
+  const { prefix, bare } = stripResourcePrefix(clean)
+  if (!bare || /[\r\n]/.test(clean)) return null
+  const list = entries ?? []
+  const filtered = list.filter((raw) => {
+    const existing = stripResourcePrefix(raw)
+    return existing.bare.toLowerCase() !== bare.toLowerCase()
+  })
+  return [...filtered, prefix === "-" || prefix === "!" ? bare : clean]
+}
+
+export function removeResourceEntry(
+  entries: readonly string[] | null,
+  target: string,
+  matchCandidates: readonly string[] = [target],
+): string[] {
+  const list = entries ?? []
+  return list.filter((raw) => {
+    const { bare } = stripResourcePrefix(raw)
+    return !matchCandidates.some((cand) => resourceTargetMatches(bare, cand))
+  })
+}
+
+export interface CustomResourceRow {
+  raw: string
+  target: string
+  enabled: boolean
+}
+
+export function customResourceRowsOf(
+  entries: readonly string[] | null,
+  excludeTargets: readonly string[] = [],
+): CustomResourceRow[] {
+  const list = entries ?? []
+  const byTarget = new Map<string, CustomResourceRow>()
+  for (const raw of list) {
+    const { prefix, bare } = stripResourcePrefix(raw)
+    if (!bare) continue
+    if (bare.toLowerCase().startsWith("builtin:")) continue
+    if (excludeTargets.some((ex) => resourceTargetMatches(bare, ex))) continue
+    byTarget.set(bare.toLowerCase(), {
+      raw,
+      target: bare,
+      enabled: prefix !== "-" && prefix !== "!",
+    })
+  }
+  return [...byTarget.values()]
+}
+
+export type PackageSettingInput =
+  | string
+  | {
+      source: string
+      extensions?: string[]
+      skills?: string[]
+      prompts?: string[]
+      themes?: string[]
+    }
+
+export interface PackageRow {
+  key: string
+  index: number
+  source: string
+  enabled: boolean
+}
+
+export function packageRowsOf(entries: readonly PackageSettingInput[] | null): PackageRow[] {
+  const list = entries ?? []
+  return list
+    .map((entry, index) => {
+      const rawSource = typeof entry === "string" ? entry : entry.source
+      const { prefix, bare } = stripResourcePrefix(rawSource)
+      if (!bare) return null
+      return {
+        key: `${index}:${bare}`,
+        index,
+        source: bare,
+        enabled: prefix !== "-" && prefix !== "!",
+      }
+    })
+    .filter((row): row is PackageRow => row !== null)
+}
+
+export function togglePackageEntry(
+  entries: readonly PackageSettingInput[] | null,
+  index: number,
+  enabled: boolean,
+): PackageSettingInput[] {
+  const list = [...(entries ?? [])]
+  const current = list[index]
+  if (current === undefined) return list
+  const rawSource = typeof current === "string" ? current : current.source
+  const { bare } = stripResourcePrefix(rawSource)
+  if (!bare) return list
+  const nextSource = enabled ? bare : `-${bare}`
+  list[index] = typeof current === "string" ? nextSource : { ...current, source: nextSource }
+  return list
+}
+
+export function addPackageEntry(entries: readonly PackageSettingInput[] | null, rawSource: string): PackageSettingInput[] | null {
+  const clean = rawSource.trim()
+  if (!clean || /[\r\n]/.test(clean)) return null
+  const { bare } = stripResourcePrefix(clean)
+  if (!bare) return null
+  const list = entries ?? []
+  const filtered = list.filter((item) => {
+    const src = typeof item === "string" ? item : item.source
+    return stripResourcePrefix(src).bare.toLowerCase() !== bare.toLowerCase()
+  })
+  return [...filtered, bare]
+}
+
+export function removePackageEntry(entries: readonly PackageSettingInput[] | null, index: number): PackageSettingInput[] {
+  const list = entries ?? []
+  return list.filter((_, i) => i !== index)
 }

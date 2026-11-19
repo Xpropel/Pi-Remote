@@ -367,14 +367,11 @@ export function PiApprovalCard({
             </InlineLink>
           </div>
         )}
-        {answerable && (
-          <footer className="mt-3 flex items-center gap-2 text-(length:--cw-text-sm) leading-(--cw-leading-sm)">
-            <span className={cn("min-w-0 flex-1 truncate", T_SECONDARY)}>任一设备先答为准</span>
-            {kind !== "confirm" && (!interactive || !denying) && (
-              <InlineLink className={cn("shrink-0", phone && "py-3")} onClick={interactive ? () => setDenying(true) : undefined}>
-                拒绝并说明理由…
-              </InlineLink>
-            )}
+        {answerable && kind !== "confirm" && (!interactive || !denying) && (
+          <footer className="mt-3 flex items-center justify-end text-(length:--cw-text-sm) leading-(--cw-leading-sm)">
+            <InlineLink className={cn("shrink-0", phone && "py-3")} onClick={interactive ? () => setDenying(true) : undefined}>
+              拒绝并说明理由…
+            </InlineLink>
           </footer>
         )}
       </div>

@@ -9,9 +9,17 @@
  *   - 五个 ⌘ 组合在有菜单 / 浮层开着时不触发（shortcuts.ts 的 piShortcutAllowed）。
  * 手机不挂：enabled 传 false。
  */
+import { createContext, createElement, useContext, useEffect, type ReactNode } from "react"
 import { usePiLayerState } from "@/components/pi/shared/layers"
-import { usePiShortcuts, type PiShortcutHandlers } from "./usePiShortcuts.ts"
+import { isXtermTarget, usePiShortcuts, type PiShortcutHandlers } from "./usePiShortcuts.ts"
 import type { PiPlatform } from "../model/shortcuts.ts"
+
+const PiSettingsShortcutsContext = createContext(false)
+
+/** PiSettingsHost 启用自定义快捷键分发时通知外壳跳过重复的默认绑定。 */
+export function PiSettingsShortcutsProvider({ value, children }: { value: boolean; children: ReactNode }) {
+  return createElement(PiSettingsShortcutsContext.Provider, { value }, children)
+}
 
 export interface UsePiShellShortcutsOptions extends Omit<PiShortcutHandlers, "onCloseMenu" | "onCloseOverlay"> {
   enabled: boolean
@@ -23,8 +31,30 @@ export interface UsePiShellShortcutsOptions extends Omit<PiShortcutHandlers, "on
 
 export function usePiShellShortcuts({ enabled, canStop, platform, isComposerElement, ...handlers }: UsePiShellShortcutsOptions): void {
   const layers = usePiLayerState()
+  const settingsHostHandlesGlobal = useContext(PiSettingsShortcutsContext)
+  useEffect(() => {
+    if (!enabled) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isXtermTarget(event.target)) return
+      // 焦点在 .xterm 内时阻止 Ctrl 组合键继续冒泡到 window（避免设置页全局快捷键抢占 Ctrl+B / Ctrl+K / Ctrl+.）
+      if (event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.stopPropagation()
+      }
+    }
+    document.addEventListener("keydown", onKeyDown)
+    return () => document.removeEventListener("keydown", onKeyDown)
+  }, [enabled])
+  const resolvedHandlers: PiShortcutHandlers = settingsHostHandlesGlobal
+    ? {
+        ...handlers,
+        onNewSession: undefined,
+        onCommandPalette: undefined,
+        onToggleSidebar: undefined,
+        onOpenSettings: undefined,
+      }
+    : handlers
   usePiShortcuts({
-    ...handlers,
+    ...resolvedHandlers,
     enabled,
     platform,
     isComposerElement,

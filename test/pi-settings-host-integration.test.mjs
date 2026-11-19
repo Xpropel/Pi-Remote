@@ -102,9 +102,11 @@ test("四个通知消费者都从同一份 gate 取开关（等待/出错/完成
   assert.match(code.host, /errorEnabled: gate\.error/)
   assert.match(code.host, /useCompletionSound\(relay, \{\s*enabled: notifications && gate\.sound/)
   assert.match(code.host, /useCompletionNotice\(relay, \{ gate, enabled: notifications \}\)/)
-  assert.match(code.noticeHook, /notificationNoticeOf\(gate, signal\.error \? "error" : "done", away\)/)
+  assert.match(code.noticeHook, /const kind = signal\.error \? "error" : "done"/)
+  assert.match(code.noticeHook, /notificationNoticeOf\(gate, kind, away\)/)
+  assert.match(code.noticeHook, /notificationSystemVisible\(gate, kind, away\)/)
   assert.match(code.noticeHook, /const pushNotice = relay\.pushNotice/)
-  assert.match(code.noticeHook, /pushNotice\(notice\)/)
+  assert.match(code.noticeHook, /pushNotice\(\{ \.\.\.notice, context:/)
 })
 
 test("通知 hook 的偏好参数接上了，且旧入口默认行为不变", () => {
@@ -235,10 +237,12 @@ test("存档 / 置顶经本机 store；同一标签页内其它侧栏实例能�
 
 /* ------------------------------------------------------------------ 安全 / 边界 */
 
-test("不申请系统通知权限、不新增 Notification / ServiceWorker", () => {
-  for (const key of ["host", "noticeHook", "prefsHook", "piApp", "liveRoute"]) {
-    assert.doesNotMatch(code[key], /Notification\.requestPermission|new Notification\(|serviceWorker\.register/, `${FILES[key]} 不应申请系统通知`)
+test("宿主与通知 hook 不擅自申请权限、不新增 ServiceWorker", () => {
+  for (const key of ["host", "prefsHook", "piApp", "liveRoute"]) {
+    assert.doesNotMatch(code[key], /Notification\.requestPermission|new Notification\(|serviceWorker\.register/, `${FILES[key]} 不应申请或直呼系统通知`)
   }
+  assert.doesNotMatch(code.noticeHook, /Notification\.requestPermission|serviceWorker\.register/, "noticeHook 不主动弹权限请求或注册 SW")
+  assert.match(code.noticeHook, /Notification\.permission !== "granted"/, "系统通知仅在用户已授权后触发")
   assert.match(code.noticeHook, /relay\.pushNotice/, "应用内提醒走现有通知栈")
 })
 

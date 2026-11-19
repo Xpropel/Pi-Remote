@@ -172,7 +172,7 @@ describe("models：get_available_models / thinking levels → 菜单", () => {
     assert.equal(rows.find((r) => r.modelId === "gemini-2.5-pro").costNote, "输入超过 200k 时单价翻倍")
     assert.equal(rows.filter((r) => r.costNote).length, 1, "没有 tiers 的模型不写费用说明")
     const segments = thinkingSegmentsOf(await relay.runCommand("get_available_thinking_levels"))
-    assert.deepEqual(segments.map((s) => s.label), ["关", "最少", "低", "中", "高"])
+    assert.deepEqual(segments.map((s) => s.label), ["Off", "Minimal", "Low", "Medium", "High"])
     assert.equal(modelPillName(relay), "Sonnet 4.5")
   })
   test("说明卡：标题、窗口、费用拆两行、provider/modelId；没有说明不出费用段", () => {
@@ -227,7 +227,7 @@ describe("slashMenu：常用 / 内置 / 本机资源", () => {
 /* ---------------- tray / 排队面板（fixture） ---------------- */
 
 describe("tray 与排队面板：c 区 fixture", () => {
-  test("queue-panel：任务 2/4 → 排队 2 → 终端 1 → 改动；面板两段（网页发的 / 终端里排的 · 只读）", async () => {
+  test("queue-panel：Tasks 2/4 → Queued 2 → Terminal 1；面板两段（网页发的 / 终端里排的 · 只读）", async () => {
     const { relay } = await load("queue-panel")
     const tray = trayItemsOf({
       taskList: relay.taskList,
@@ -239,18 +239,18 @@ describe("tray 与排队面板：c 区 fixture", () => {
       linkOk: true,
       deviceOnline: true,
     })
-    assert.deepEqual(tray.map((t) => t.label.split(" ")[0] + " " + t.label.split(" ")[1]), ["任务 2/4", "排队 2", "终端 1", "改动 +32"])
+    assert.deepEqual(tray.map((t) => t.label), ["Tasks 2/4", "Queued 2", "Terminal 1"])
     const sections = queueSectionsOf(relay.remoteQueue.items, relay.queue, relay.outbox, true, true)
     assert.deepEqual(sections.map((s) => s.title), ["网页发的", "终端里排的 · 只读"])
   })
-  test("断线时有 outbox：第一段「本页待发 · 等重连」，pill「排队 N · 等重连」", async () => {
+  test("断线时有 outbox：第一段「本页待发 · 等重连」，pill「Queued N · Reconnecting」", async () => {
     const { fx } = await load("queue-panel")
     const relay = liveRelayOf({ ...fx, outbox: [{ cid: "c-1", text: "先别动 shell.css", status: "queued" }, { cid: "c-2", text: "补测试", status: "failed" }] })
     const sections = queueSectionsOf(relay.remoteQueue.items, relay.queue, relay.outbox, false, true)
     assert.equal(sections[0].title, "本页待发 · 等重连")
     assert.deepEqual(sections[0].items.map((i) => i.status), ["queued", "failed"])
     const tray = trayItemsOf({ remoteQueue: relay.remoteQueue.items, localQueue: relay.queue, outbox: relay.outbox, linkOk: false, deviceOnline: true })
-    assert.equal(tray.find((t) => t.kind === "queue").label, "排队 4 · 等重连")
+    assert.equal(tray.find((t) => t.kind === "queue").label, "Queued 4 · Reconnecting")
   })
   test("b/approval-waiting（PLAN 5.5 验证）：S3、blockedBy approval → 占位「输入已禁用」、状态行「先回答上面的问题」、黑圆钮仍是停止", async () => {
     const { fx, relay } = await load("approval-waiting")

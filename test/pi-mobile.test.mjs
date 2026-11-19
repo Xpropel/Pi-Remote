@@ -159,6 +159,7 @@ test("S6 r3：744 宽（仍走手机布局）列表、待答、搜索结果与�
   const css = await read("ui/src/pi/mobile/mobile.css")
   assert.equal(css.includes("--pm-column-gutter: max(0px, calc((100% - 640px) / 2));"), true)
   assert.equal(css.includes("padding: 0 var(--pm-column-gutter) calc(var(--pm-inset-bottom) + 24px);"), true, "列表滚动区")
+  assert.match(css, /\.pm-session-host \{[^}]*position: relative;/, "内嵌 PiPhonePage 需相对 .pm-session-host 定位，避免盖住 .pm-topbar")
   assert.match(css, /\.pm-session-host \[data-pi-part="transcript"\]\[data-variant="phone"\] \{[^}]*max-width: 640px;/)
 })
 

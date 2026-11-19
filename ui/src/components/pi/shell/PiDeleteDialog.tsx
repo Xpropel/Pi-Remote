@@ -28,12 +28,14 @@ export interface PiDeleteDialogProps extends PiOverlayControl {
   serverPurge?: boolean
   /** 设备 PATH 里有 trash（删除进废纸篓而不是直接删）；缺省 false */
   trash?: boolean
+  /** 仅从当前浏览器列表移除，不删除设备磁盘文件 */
+  localOnly?: boolean
   /** 确认删除：返回 Promise 时按钮显示"删除中…"，失败（reject 一个 Error）时红字写 error.message，弹窗不关 */
   onConfirm?: () => void | Promise<void>
   returnFocus?: PiReturnFocus
 }
 
-export function PiDeleteDialog({ viewport, title, deviceName, serverPurge = false, trash = false, onConfirm, returnFocus, open, onOpenChange, static: staticProp }: PiDeleteDialogProps) {
+export function PiDeleteDialog({ viewport, title, deviceName, serverPurge = false, trash = false, localOnly = false, onConfirm, returnFocus, open, onOpenChange, static: staticProp }: PiDeleteDialogProps) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState("")
   const phone = viewport === "phone"
@@ -55,6 +57,9 @@ export function PiDeleteDialog({ viewport, title, deviceName, serverPurge = fals
     : trash
       ? `「${title}」会移到 ${device} 的废纸篓，和在 pi 里删除一样。服务器上的记录和副本会一起清除。`
       : `「${title}」的会话文件会从 ${device} 上删除，这台设备没有废纸篓，删除后不能恢复。服务器上的记录和副本会一起清除。`
+  const copy = localOnly
+    ? `「${title}」会从当前浏览器的列表中移除，${device} 上的会话文件与记录会原样保留。`
+    : body
   return (
     <PiDialog
       title="删除会话"
@@ -71,13 +76,13 @@ export function PiDeleteDialog({ viewport, title, deviceName, serverPurge = fals
             取消
           </PiButton>
           <PiButton variant={variant} className={phone ? "flex-1" : undefined} disabled={pending} data-cw-id="pi-delete-confirm" onClick={() => void confirm()}>
-            {pending ? "删除中…" : "删除"}
+            {localOnly ? (pending ? "移除中…" : "移除") : pending ? "删除中…" : "删除"}
           </PiButton>
         </>
       }
     >
       <p className={cn("m-0 text-(--cw-text-2)", phone ? "text-[15px] leading-[22px]" : "text-(length:--cw-text-md) leading-[19px]")}>
-        {body}
+        {copy}
       </p>
       {error ? (
         <p role="alert" className="mt-2 mb-0 text-(length:--cw-text-md) leading-[18px] text-(--cw-pi-error)">

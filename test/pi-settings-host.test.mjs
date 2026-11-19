@@ -65,6 +65,33 @@ test("默认设备：在线 + 无选中 / 选中离线才自动选；手动 / �
   assert.equal(host.defaultDevicePickOf({ ...base, appliedDefaultId: "d-mbp" }), null, "同一个默认设备只应用一次")
   assert.equal(host.defaultDevicePickOf({ ...base, defaultDeviceId: "" }), null, "未设置默认设备")
   assert.equal(host.defaultDevicePickOf({ ...base, defaultDeviceId: "d-win" }), null, "默认设备离线")
+  assert.equal(host.defaultDevicePickOf({ ...base, autoConnectDevice: false }), null, "关闭自动连接默认设备时不选")
+})
+
+test("自动归档：autoArchiveCutoffMsOf 与 effectiveSidebarArchivesOf 跳过在线/活跃/置顶/无时间戳会话", () => {
+  const now = Date.UTC(2026, 10, 15, 0, 0, 0)
+  const dayMs = 86_400_000
+  assert.equal(host.autoArchiveCutoffMsOf("never", now), null)
+  assert.equal(host.autoArchiveCutoffMsOf("7d", now), now - 7 * dayMs)
+  assert.equal(host.autoArchiveCutoffMsOf("30d", now), now - 30 * dayMs)
+
+  const archives = host.effectiveSidebarArchivesOf({
+    manualArchives: ["d::manual"],
+    autoArchive: "7d",
+    now,
+    pins: ["d::pinned-list"],
+    sessions: [
+      { key: "d::stale", updatedAt: now - 8 * dayMs },
+      { key: "d::fresh", updatedAt: now - 2 * dayMs },
+      { key: "d::active", updatedAt: now - 10 * dayMs, active: true },
+      { key: "d::online", updatedAt: now - 10 * dayMs, online: true },
+      { key: "d::pinned-flag", updatedAt: now - 10 * dayMs, pinned: true },
+      { key: "d::pinned-list", updatedAt: now - 10 * dayMs },
+      { key: "d::no-ts", updatedAt: 0 },
+      { key: "d::manual", updatedAt: now - 1 * dayMs },
+    ],
+  })
+  assert.deepEqual(archives, ["d::manual", "d::stale"])
 })
 
 /* ------------------------------------------------------------------ 通知 */
@@ -78,8 +105,16 @@ test("通知门控：等待 / 出错 / 完成 × 仅页面外 / 总是 × 声音
     onlyWhenAway: true,
     sound: false,
     badge: true,
+    system: false,
     privacy: false,
   })
+
+  // 系统桌面通知仅在开启且不在页面时发送
+  const sysOn = gateOf({ notifySystem: true })
+  assert.equal(sysOn.system, true)
+  assert.equal(host.notificationSystemVisible(sysOn, "waiting", true), true)
+  assert.equal(host.notificationSystemVisible(sysOn, "waiting", false), false)
+  assert.equal(host.notificationSystemVisible(sysOn, "done", true), false)
 
   // 完成默认关：完成类通知一律不发，等待/出错照旧。
   assert.equal(host.notificationEventOn(gate, "done"), false)
@@ -214,4 +249,27 @@ test("快捷键：菜单 / 弹窗 / 面板 / 设置页打开时不抢键", () =>
   for (const field of ["menu", "sheet", "dialog", "palette", "settings"]) {
     assert.equal(host.shortcutBlockedByOverlay({ ...closed, [field]: true }), true, `${field} 打开时应让键`)
   }
+})
+
+test("隐私保留时长：retentionCutoffMsOf 与 filterSessionsByRetention 保活不误删", () => {
+  const now = new Date("2026-11-15T12:00:00Z").getTime()
+  assert.equal(host.retentionCutoffMsOf("forever", now), null)
+  const cutoff30 = host.retentionCutoffMsOf("30d", now)
+  assert.equal(typeof cutoff30, "number")
+
+  const dayMs = 24 * 60 * 60 * 1000
+  const sessions = [
+    { id: "recent", updatedAt: now - 5 * dayMs, online: false, busy: false },
+    { id: "stale-offline", updatedAt: now - 60 * dayMs, online: false, busy: false },
+    { id: "stale-current", updatedAt: now - 60 * dayMs, online: false, busy: false },
+    { id: "stale-online", updatedAt: now - 60 * dayMs, online: true, busy: false },
+    { id: "stale-busy", updatedAt: now - 60 * dayMs, online: false, busy: true },
+    { id: "no-timestamp", updatedAt: 0, online: false, busy: false },
+  ]
+  const filtered = host.filterSessionsByRetention(sessions, "30d", now, "stale-current")
+  assert.deepEqual(
+    filtered.map((s) => s.id),
+    ["recent", "stale-current", "stale-online", "stale-busy", "no-timestamp"],
+  )
+  assert.equal(host.filterSessionsByRetention(sessions, "forever", now, "recent").length, sessions.length)
 })

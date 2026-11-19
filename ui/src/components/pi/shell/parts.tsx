@@ -26,7 +26,7 @@ export type AButtonScale = "md" | "field" | "lg"
 const SCALE: Record<AButtonScale, string> = {
   md: "h-8 rounded-(--cw-radius-input) px-3 text-(length:--cw-text-md)",
   field: "h-10 rounded-(--cw-radius-input) px-4 text-(length:--cw-text-base)",
-  lg: "h-12 rounded-[12px] px-4 text-[16px]",
+  lg: "h-12 rounded-[14px] px-4 text-[16px]",
 }
 
 export interface APrimaryButtonProps extends Omit<ButtonProps, "size" | "variant"> {

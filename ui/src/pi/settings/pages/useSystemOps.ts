@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { hostDiagErrorText } from "../../model/hostDiag.ts"
 import type { DeviceLike } from "./devicesLogic.ts"
+import { notifySettingsPiRestarted } from "./settingsWriteHooks.ts"
 import {
   deviceBusyOf,
   IDLE_OPERATION_STATUS,
@@ -40,6 +41,7 @@ import {
 } from "./systemOpsLogic.ts"
 
 export interface SystemOpsRelayLike {
+  roomId?: string | null
   runDeviceCommand?: (deviceId: string, command: string, args?: Record<string, unknown>) => Promise<unknown>
 }
 
@@ -201,6 +203,9 @@ export function useSystemOps(relay: SystemOpsRelayLike, device: SystemOpsDeviceL
       if (cancelled || !aliveRef.current || !nextStatus) return
       setStatus(nextStatus)
       if (nextStatus.state === "succeeded" || nextStatus.state === "failed") {
+        if (nextStatus.state === "succeeded" && (nextStatus.kind === "harness_restart" || nextStatus.kind === "update_pi")) {
+          notifySettingsPiRestarted(deviceId, relayRef.current.roomId)
+        }
         void fetchUpdate()
         void refreshDiag()
       }

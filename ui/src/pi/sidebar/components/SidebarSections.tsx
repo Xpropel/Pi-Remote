@@ -25,6 +25,7 @@ export function SidebarSections({
   archiveView = false,
   inboxActive = false,
   rowMenu,
+  workspaceMenu,
   menuTargetId,
 }: {
   data: PiSidebarData
@@ -35,6 +36,7 @@ export function SidebarSections({
   /** 主区正在显示待答页 */
   inboxActive?: boolean
   rowMenu?: (session: PiSidebarSession) => ReactNode
+  workspaceMenu?: (group: PiSidebarGroup) => ReactNode
   menuTargetId?: string
 }) {
   const showInbox = typeof data.inboxCount === "number" && !!actions.openInbox
@@ -121,44 +123,86 @@ export function SidebarSections({
             <div key={group.id} className="sb-groupsection" data-kind={group.kind}>
               <div className="sb-wsrow sb-wsrow-static" data-p11-surface="P11-SIDE-13">
                 <PinIcon />
-                <span className="sb-wsname">{group.label}</span>
+                <span className="sb-wsname sb-wstitle">{group.label}</span>
               </div>
               <div className="sb-groupsessions">{group.sessions.map(renderRow)}</div>
             </div>
           )
         }
+        const renderMore = () => (
+          <>
+            {/* D-3: rows past the per-group cap need a visible way in; without
+                this row the sections silently hid every session past row 5. */}
+            {actions.toggleExpanded && group.more != null && group.more > 0 ? (
+              <button type="button" className="sb-groupmore" onClick={() => actions.toggleExpanded?.(group.id)}>
+                更多 {group.more}
+              </button>
+            ) : null}
+            {actions.toggleExpanded && group.expanded ? (
+              <button type="button" className="sb-groupmore" onClick={() => actions.toggleExpanded?.(group.id)}>
+                收起
+              </button>
+            ) : null}
+          </>
+        )
+        if (group.kind === "flat") {
+          return (
+            <div key={group.id} className="sb-groupsection" data-kind={group.kind}>
+              {group.sessions.length > 0 ? (
+                <div className="sb-groupsessions">
+                  {group.sessions.map(renderRow)}
+                  {renderMore()}
+                </div>
+              ) : null}
+            </div>
+          )
+        }
         const tone = group.collapsed ? groupToneOf(group) : "idle"
         const holdsCurrent = group.collapsed && group.sessions.some((session) => session.selected)
+        const showWorkspaceActions = group.kind === "workspace" && Boolean(group.cwd) && !archiveView && Boolean(workspaceMenu || actions.newSessionInGroup)
         return (
           <div key={group.id} className="sb-groupsection" data-kind={group.kind}>
-            <button
-              type="button"
+            <div
               className="sb-wsrow"
-              data-p11-surface="P11-SIDE-07"
+              data-open={!group.collapsed ? "" : undefined}
               data-current={holdsCurrent ? "" : undefined}
-              aria-expanded={!group.collapsed}
-              title={group.cwd || undefined}
-              onClick={() => actions.toggleGroup(group.id)}
+              data-p11-surface="P11-SIDE-07"
             >
-              {group.collapsed ? <FolderClosedIcon /> : <FolderOpenIcon />}
-              <span className="sb-wsname">{group.label}</span>
-              {tone !== "idle" ? <span className="sb-wstone" data-tone={tone} role="img" aria-label={GROUP_TONE_LABEL[tone]} /> : null}
-            </button>
+              <button
+                type="button"
+                className="sb-wsrow-main"
+                aria-expanded={!group.collapsed}
+                title={group.cwd || group.label}
+                onClick={() => actions.toggleGroup(group.id)}
+              >
+                {group.collapsed ? <FolderClosedIcon /> : <FolderOpenIcon />}
+                <span className="sb-wsname sb-wstitle">{group.label}</span>
+                {tone !== "idle" ? <span className="sb-wstone" data-tone={tone} role="img" aria-label={GROUP_TONE_LABEL[tone]} /> : null}
+              </button>
+              {showWorkspaceActions ? (
+                <div className="sb-wsacts">
+                  {workspaceMenu ? workspaceMenu(group) : null}
+                  {actions.newSessionInGroup ? (
+                    <button
+                      type="button"
+                      className="sb-iconbtn sb-wsact"
+                      aria-label={`在 ${group.label} 新建会话`}
+                      title="在此目录新建会话"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        actions.newSessionInGroup?.(group)
+                      }}
+                    >
+                      <PlusIcon />
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             {group.sessions.length > 0 && !group.collapsed ? (
               <div className="sb-groupsessions">
                 {group.sessions.map(renderRow)}
-                {/* D-3: rows past the per-group cap need a visible way in; without
-                    this row the sections silently hid every session past row 5. */}
-                {actions.toggleExpanded && group.more != null && group.more > 0 ? (
-                  <button type="button" className="sb-groupmore" onClick={() => actions.toggleExpanded?.(group.id)}>
-                    更多 {group.more}
-                  </button>
-                ) : null}
-                {actions.toggleExpanded && group.expanded ? (
-                  <button type="button" className="sb-groupmore" onClick={() => actions.toggleExpanded?.(group.id)}>
-                    收起
-                  </button>
-                ) : null}
+                {renderMore()}
               </div>
             ) : null}
           </div>

@@ -112,7 +112,7 @@ test("手机几何：单列全宽、触控 ≥44、安全区、26 周热力图",
   assert.match(css, /max-width:\s*none/)
   assert.equal(types.MOBILE_SETTINGS_COPY.heatmapWeeksNote, "按屏幕宽度显示近 26 周")
   assert.match(usagePage, /heatmapWeekDates\(todayKey,\s*26\)|MOBILE_SETTINGS_METRICS\.heatmapWeeks/)
-  assert.ok(usagePage.includes("MOBILE_SETTINGS_COPY.heatmapWeeksNote"))
+  assert.doesNotMatch(usagePage, /sm-heat-foot/, "手机端使用活动已移除热力图底部说明废话")
   assert.ok(!/52\s*\*\s*7|52 周/.test(usagePage), "手机端不画 52 周")
 })
 
@@ -236,6 +236,8 @@ test("外观：四组、去掉界面风格 / 内容列宽 / 字体 / 密度，�
   for (const key of ["fontSize", "reducedMotion"]) {
     assert.ok(appearancePage.includes(`setPref("${key}"`), `外观缺 ${key} 的即时写入`)
   }
+  assert.match(appearancePage, /const themePref = p\.ui\.prefs\.theme/)
+  assert.match(appearancePage, /value=\{themePref\}/)
   assert.match(appearancePage, /setPref\("appearanceTheme"/)
   assert.match(appearancePage, /p\.act\.setPref\("theme"/, "明暗立即换宿主主题")
   assert.match(appearancePage, /act\.setPref\("accent", accent\)/, "强调色即时写本机偏好")
@@ -260,9 +262,9 @@ test("○ 本机项即时持久化；◐ / ◌ 只读与标注；● 接真实 r
   // 存储契约仍由共享 model 提供（本机 localStorage）。
   assert.equal(settingsModel.SETTINGS_STORAGE_KEY, "pi_remote_pi_settings_v2")
 
-  // ◐ / ◌：徽标由共享原子给，页面必须传状态；可写项已从只读集合移出，但剩下的仍要标。
-  assert.ok((mobileText.match(/status="bridge"/g) ?? []).length >= 12)
-  assert.ok((mobileText.match(/status="reserved"/g) ?? []).length >= 9)
+  // ◐ / ◌：已移除死掉的「设计预留」开关（审批联网/搜索与设备常驻托盘）。
+  assert.equal((mobileText.match(/status="bridge"/g) ?? []).length, 0)
+  assert.equal((mobileText.match(/status="reserved"/g) ?? []).length, 0)
   assert.match(readMobile("atoms.tsx"), /SettingsStatusBadge/)
   assert.ok(mobileText.includes("settingsItemInert"))
   assert.ok(mobileText.includes("inert={inert"))
@@ -279,26 +281,41 @@ test("○ 本机项即时持久化；◐ / ◌ 只读与标注；● 接真实 r
   // ●：真实 relay / 命令。
   assert.ok(readMobile("pages/GeneralPage.tsx").includes("relay.serverName"))
   assert.ok(readMobile("pages/GeneralPage.tsx").includes("act.openPairing"))
+  assert.match(generalPage, /useSettingsPrefs\(p\)/)
+  assert.match(generalPage, /usePrefsWriter\(p\)/)
+  assert.match(generalPage, /writeConversation\(\{ askUser: checked \}\)/)
+  assert.match(generalPage, /writeConversation\(\{ dialogRemote: checked \}\)/)
+  assert.match(generalPage, /writeConversation\(\{ approvalGate: checked \}\)/)
+  assert.match(generalPage, /writeConversation\(\{ approvalGateTier: value \}\)/)
+  assert.doesNotMatch(generalPage, /麦克风|断线后自动重连/)
   assert.ok(readMobile("pages/DevicesPage.tsx").includes("relay.devices"))
   assert.ok(readMobile("pages/ApprovalPage.tsx").includes("set_active_tools"))
   assert.ok(readMobile("pages/ApprovalPage.tsx").includes("get_active_tools"))
+  assert.match(approvalPage, /需先在「设备」启用浏览器身份/)
+  assert.doesNotMatch(approvalPage, /需先在「通用」启用浏览器身份/)
   assert.ok(readMobile("pages/ModelPage.tsx").includes("get_provider_auth"))
   assert.ok(readMobile("pages/ExtensionsPage.tsx").includes("get_mcp_servers"))
   assert.ok(usagePage.includes("useUsageActivity"))
   assert.ok(readMobile("pages/AboutPage.tsx").includes("serverDisplayName"))
+  assert.match(mobileAboutPage, /OPEN_SOURCE_LICENSES/)
+  assert.doesNotMatch(mobileAboutPage, /本仓库为个人项目|仅供本人使用/)
   assert.ok(readMobile("pages/PrivacyPage.tsx").includes("buildDataExport"))
+  assert.match(privacyPage, /runCommand\("export_session"\)/)
   assert.ok(readMobile("pages/PrivacyPage.tsx").includes("parseSettingsImport"))
   assert.ok(readMobile("pages/PrivacyPage.tsx").includes("downloadTextFile"))
   assert.ok(readMobile("pages/PrivacyPage.tsx").includes("clearCacheStorage"))
 })
 
 test("手机数据真实性：模型 / 扩展 / 审批不再用设计示例兜底，模型刷新接真命令", () => {
-  // 模型：默认模型只认 get_settings；不拿当前会话模型 / 思考档冒充
-  assert.match(modelPage, /get_settings/)
+  // 模型：默认模型只认 get_settings（经 useSettingsDocument）；供应商/模型新增编辑接真实弹窗与配置命令
+  assert.match(modelPage, /useSettingsDocument/)
+  assert.match(modelPage, /get_models_config/)
   assert.match(modelPage, /get_available_models/)
   assert.match(modelPage, /modelsQuery\.reload/)
-  assert.match(modelPage, /重新向 pi 读取模型清单/)
-  assert.match(modelPage, /setLastModels\(\{ room: roomKey, data: modelsQuery\.data \}\)/)
+  assert.doesNotMatch(modelPage, /重新向设备读取模型清单/, "空闲刷新模型清单说明已精简移除")
+  assert.match(modelPage, /setLastModels\(\{ key: targetKey, data: modelsQuery\.data \}\)/)
+  assert.match(modelPage, /ProviderConfigModal/)
+  assert.match(modelPage, /ModelConfigModal/)
   assert.match(modelPage, /仍显示上次读取的清单/)
   assert.match(modelPage, /disabled=\{!ready \|\| modelsLoading\}/)
   assert.doesNotMatch(modelPage.replace(/\/\*[\s\S]*?\*\//g, ""), /relay\.modelMeta|relay\.thinkingLevel|claude-sonnet-4-5/)
@@ -310,11 +327,12 @@ test("手机数据真实性：模型 / 扩展 / 审批不再用设计示例兜�
     assert.ok(extensionsPage.includes(text), `扩展页缺空态文案：${text}`)
   }
 
-  // 审批：没有工具表时不摆 8 个设计示例工具
+  // 审批：没有工具表时不摆 8 个设计示例工具；未打开会话且可写时改默认可用工具 defaultTools
   assert.doesNotMatch(mobileText, /FALLBACK_TOOLS|FALLBACK_ACTIVE/)
   assert.match(approvalPage, /连接主机后显示可用工具/)
   assert.match(approvalPage, /可用工具读取失败/)
-  assert.match(approvalPage, /rows\.length === 0/)
+  assert.match(approvalPage, /hostRows\.length > 0 && roomReady/)
+  assert.match(approvalPage, /approvalDefaultToolRowsOf/)
 })
 
 test("手机设备 / 关于：延迟、测试连接、默认设备、pi 版本、诊断导出、检查更新", () => {
@@ -326,6 +344,10 @@ test("手机设备 / 关于：延迟、测试连接、默认设备、pi 版本�
   assert.match(mobileDevicesPage, /defaultDeviceId/)
   assert.match(mobileDevicesPage, /act\.setPref\("defaultDeviceId"/)
   assert.match(mobileDevicesPage, /默认设备/)
+  assert.match(mobileDevicesPage, /device\.bridgeOnline === false \? "waiting" : "online"/)
+  assert.match(mobileDevicesPage, /!selected && canRevoke\(device\)/)
+  assert.match(mobileDevicesPage, /再点一次移除/)
+  assert.match(mobileDevicesPage, /relay\.revokeDevice/)
   assert.doesNotMatch(mobileDevicesPage, /data-sources?|暂无数据源或接口/)
 
   assert.match(mobileAboutPage, /get_host_diag/)

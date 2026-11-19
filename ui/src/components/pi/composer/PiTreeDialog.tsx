@@ -99,7 +99,7 @@ export function PiTreeDialog({
                 className={phone ? "w-full" : "w-[240px]"}
                 onValueChange={isStatic ? undefined : (value) => onJumpModeChange?.(value as "direct" | "summarize")}
               />
-              {jumpMode === "summarize" && <PiDialogNote variant={v}>会先让模型总结要离开的分支，可能要几十秒；总结失败时不会跳转。</PiDialogNote>}
+              {jumpMode === "summarize" && <PiDialogNote variant={v}>总结耗时较长，失败时不跳转。</PiDialogNote>}
             </div>
             <PiSegments
               variant={v}

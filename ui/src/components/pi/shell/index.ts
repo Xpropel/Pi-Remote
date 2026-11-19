@@ -2,6 +2,7 @@
 export * from "./pairing"
 export * from "./parts"
 export * from "./PiLoginCard"
+export * from "./PiDeviceHub"
 export * from "./PiNoDevices"
 export * from "./PiSearchResults"
 export * from "./PiSessionMenu"

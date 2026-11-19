@@ -90,7 +90,8 @@ describe("等待提醒的撤回", () => {
       hook,
       /ledgerRef\.current = step\.ledger\s*if \(step\.retract\) retractNoticeScope\(WAITING_NOTICE_SCOPE\)\s*if \(!enabled \|\| step\.fresh\.length === 0\) return/,
     )
-    assert.match(hook, /if \(notice\) \{\s*pushNotice\(notice\)\s*ledgerRef\.current = waitingNoticeAnnounced\(ledgerRef\.current, step\.fresh\)\s*\}/)
+    assert.match(hook, /if \(notice\) pushNotice\(notice\)/)
+    assert.match(hook, /if \(notice \|\| systemVisible\) \{\s*ledgerRef\.current = waitingNoticeAnnounced\(ledgerRef\.current, step\.fresh\)\s*\}/)
     assert.match(hook, /\}, \[waitingKeys, knownKeys, ready, away, enabled, gate, pushNotice, retractNoticeScope\]\)/)
     assert.match(read("relay/useRelay.ts"), /retractNoticeScope: noticeStack\.retract,/)
   })

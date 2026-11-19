@@ -75,9 +75,6 @@ export function PiCompactDialog({
           </PiDialogNote>
         ) : (
           <>
-            <PiDialogNote variant={v} tone="primary">
-              让模型把更早的对话总结成一段，腾出上下文；会消耗一次调用。
-            </PiDialogNote>
             <label className="flex flex-col gap-1.5">
               <span className={cn("text-(length:--cw-text-sm)", C_SECONDARY)}>总结要求（可选）</span>
               <textarea
@@ -94,7 +91,7 @@ export function PiCompactDialog({
                 )}
               />
             </label>
-            {busy && <PiDialogNote variant={v}>pi 正在输出，压缩会被拒绝；等这轮结束再开始。</PiDialogNote>}
+            {busy && <PiDialogNote variant={v}>pi 输出中，结束后可压缩。</PiDialogNote>}
             {offline && <PiDialogNote variant={v}>{offline}</PiDialogNote>}
           </>
         )}

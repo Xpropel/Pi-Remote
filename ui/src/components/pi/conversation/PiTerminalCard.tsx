@@ -1,8 +1,15 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  type RefObject,
+} from "react"
 import { PiSpinner } from "@/components/pi/shared/PiSpinner"
 import { createLucideIcon, KitIcon } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
-import { CARD, CARD_GAP, CARD_HEAD_H, CARD_ICON, INSET_FOCUS, PiDisclosure } from "./PiCard"
+import { CARD, CARD_GAP, CARD_TERMINAL_HEAD_H, INSET_FOCUS, PiDisclosure } from "./PiCard"
 import { ROW_HL_FOCUS, ROW_HL_HOVER, T_ATTENTION, T_ERROR, T_SECONDARY } from "./styles"
 
 /** 横向终端图标（几何照 ch2/TerminalCard 的 TerminalWideIcon；不 import ch2，免得带进 ch2.css） */
@@ -32,7 +39,7 @@ export type PiTerminalStatus =
 export interface PiTerminalCardProps {
   /** 人话短语（--cw-text-2）。pane 里不给，只显示命令 */
   phrase?: ReactNode
-  /** 命令原文（等宽灰字；桌面单行截断，手机最多两行） */
+  /** 命令原文（等宽灰字；单行水平滚动，悬停显示横向滑动条） */
   command: string
   status: PiTerminalStatus
   exitCode?: number
@@ -44,16 +51,73 @@ export interface PiTerminalCardProps {
   stderr?: string
   /** 展开输出区 */
   open?: boolean
+  /** 展开/收起回调（受控模式时同步给外层） */
+  onOpenChange?: (open: boolean) => void
   /** 输出区最高（CSS px），超出滚动并贴底跟随 */
   outputMaxHeight?: number
   /** 输出只露最后 N 行（流内详细密度 10 行） */
   tailLines?: number
-  /** 手机：输出软换行（修 U-15）、卡头至少 44、命令最多两行；桌面：不折行、横滚、卡头 31 */
+  /** 手机：输出软换行（修 U-15）；命令头部始终单行不折行 */
   wrap?: boolean
   lineNumbers?: boolean
   /** 输出被截断（上游截断或超过 200 行）：输出区顶部灰字 */
   truncated?: boolean
   className?: string
+}
+
+interface CmdScrollThumb {
+  trackLeft: number
+  trackWidth: number
+  thumbLeft: number
+  thumbWidth: number
+}
+
+function useCmdScrollThumb(scrollerRef: RefObject<HTMLSpanElement | null>, depsKey: string): CmdScrollThumb | null {
+  const [thumb, setThumb] = useState<CmdScrollThumb | null>(null)
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) {
+      setThumb(null)
+      return
+    }
+    let cancelled = false
+    const update = () => {
+      if (cancelled) return
+      const { scrollLeft, scrollWidth, clientWidth, offsetLeft } = el
+      if (scrollWidth <= clientWidth + 1 || clientWidth <= 0) {
+        setThumb(null)
+        return
+      }
+      const trackWidth = clientWidth
+      const thumbWidth = Math.min(trackWidth, Math.max(24, (trackWidth * clientWidth) / scrollWidth))
+      const maxScroll = scrollWidth - clientWidth
+      const maxThumbLeft = Math.max(0, trackWidth - thumbWidth)
+      const thumbLeft = maxScroll > 0 ? (maxThumbLeft * scrollLeft) / maxScroll : 0
+      setThumb((prev) =>
+        prev &&
+        Math.abs(prev.trackLeft - offsetLeft) < 0.5 &&
+        Math.abs(prev.trackWidth - trackWidth) < 0.5 &&
+        Math.abs(prev.thumbLeft - thumbLeft) < 0.5 &&
+        Math.abs(prev.thumbWidth - thumbWidth) < 0.5
+          ? prev
+          : { trackLeft: offsetLeft, trackWidth, thumbLeft, thumbWidth },
+      )
+    }
+    update()
+    el.addEventListener("scroll", update, { passive: true })
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    if (el.parentElement) ro.observe(el.parentElement)
+    if (typeof document !== "undefined" && document.fonts?.ready) {
+      void document.fonts.ready.then(update)
+    }
+    return () => {
+      cancelled = true
+      el.removeEventListener("scroll", update)
+      ro.disconnect()
+    }
+  }, [scrollerRef, depsKey])
+  return thumb
 }
 
 /**
@@ -73,6 +137,7 @@ export function PiTerminalCard({
   output = "",
   stderr,
   open: openProp,
+  onOpenChange,
   outputMaxHeight = 200,
   tailLines,
   wrap,
@@ -84,11 +149,18 @@ export function PiTerminalCard({
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const open = userOpen ?? !!openProp
   const scroller = useRef<HTMLDivElement>(null)
+  const cmdScroller = useRef<HTMLSpanElement>(null)
+  const pointerDownScrollLeft = useRef(0)
+  const [dragging, setDragging] = useState(false)
+  const dragCleanup = useRef<(() => void) | null>(null)
   const outLines = output ? output.replace(/\n$/, "").split("\n") : []
   const errLines = stderr ? stderr.replace(/\n$/, "").split("\n") : []
-  let lines = [...outLines.map((t) => ({ t, err: false })), ...errLines.map((t) => ({ t, err: true }))]
-  if (tailLines != null && lines.length > tailLines) lines = lines.slice(-tailLines)
+  const rawLines = [...outLines.map((t) => ({ t, err: false })), ...errLines.map((t) => ({ t, err: true }))]
+  const lines = tailLines != null && rawLines.length > tailLines ? rawLines.slice(-tailLines) : rawLines
+  const lineOffset = rawLines.length - lines.length
   const hasOutput = lines.length > 0
+
+  useLayoutEffect(() => () => dragCleanup.current?.(), [])
 
   // 贴底跟随：同步设置，截图时就在底部（舞台不允许依赖计时器）
   useLayoutEffect(() => {
@@ -97,6 +169,51 @@ export function PiTerminalCard({
   }, [open, output, stderr])
 
   const trailing = trailingText(status, exitCode, timeoutSec, elapsed)
+  const thumb = useCmdScrollThumb(
+    cmdScroller,
+    `${command}\n${typeof phrase === "string" ? phrase : ""}\n${status}\n${trailing?.text ?? ""}\n${hasOutput ? 1 : 0}`,
+  )
+
+  const onScrollbarPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
+    const el = cmdScroller.current
+    const bar = e.currentTarget
+    if (!el || !thumb) return
+    e.preventDefault()
+    e.stopPropagation()
+    dragCleanup.current?.()
+    const rect = bar.getBoundingClientRect()
+    const maxScroll = el.scrollWidth - el.clientWidth
+    const maxThumbLeft = Math.max(1, thumb.trackWidth - thumb.thumbWidth)
+    const clickX = e.clientX - rect.left
+    const hitThumb = clickX >= thumb.thumbLeft - 2 && clickX <= thumb.thumbLeft + thumb.thumbWidth + 2
+    if (!hitThumb && maxScroll > 0) {
+      const nextThumbLeft = Math.min(maxThumbLeft, Math.max(0, clickX - thumb.thumbWidth / 2))
+      el.scrollLeft = (nextThumbLeft / maxThumbLeft) * maxScroll
+    }
+    const startX = e.clientX
+    const startScroll = el.scrollLeft
+    setDragging(true)
+    bar.setPointerCapture(e.pointerId)
+    const onMove = (ev: PointerEvent) => {
+      if (maxScroll <= 0) return
+      const dx = ev.clientX - startX
+      el.scrollLeft = Math.min(maxScroll, Math.max(0, startScroll + (dx / maxThumbLeft) * maxScroll))
+    }
+    const cleanup = (ev?: PointerEvent) => {
+      if (ev && bar.hasPointerCapture(ev.pointerId)) bar.releasePointerCapture(ev.pointerId)
+      bar.removeEventListener("pointermove", onMove)
+      bar.removeEventListener("pointerup", cleanup)
+      bar.removeEventListener("pointercancel", cleanup)
+      dragCleanup.current = null
+      setDragging(false)
+    }
+    dragCleanup.current = () => cleanup()
+    bar.addEventListener("pointermove", onMove)
+    bar.addEventListener("pointerup", cleanup)
+    bar.addEventListener("pointercancel", cleanup)
+  }
+
   return (
     <div
       data-pi-part="terminal-card"
@@ -108,24 +225,36 @@ export function PiTerminalCard({
       <button
         type="button"
         aria-expanded={hasOutput ? open : undefined}
-        onClick={() => hasOutput && setUserOpen(!open)}
-        // 卡头是开关：手机（wrap）至少 44 高（§4.4；B2），长命令最多折成两行（R2-B-m3），单行时仍是 44；桌面 31（同 diff 卡头，PiCard）
+        onPointerDown={() => {
+          pointerDownScrollLeft.current = cmdScroller.current?.scrollLeft ?? 0
+        }}
+        onClick={() => {
+          if (cmdScroller.current && Math.abs(cmdScroller.current.scrollLeft - pointerDownScrollLeft.current) > 4) return
+          if (!hasOutput) return
+          const next = !open
+          if (openProp === undefined || onOpenChange === undefined) setUserOpen(!open)
+          onOpenChange?.(next)
+        }}
+        // 卡头始终保持紧凑单行高（26px），命令超出时单行水平滚动
         className={cn(
-          wrap ? "min-h-11 py-[3px]" : CARD_HEAD_H,
-          "flex w-full min-w-0 items-center gap-2 pr-2.5 pl-2.5 text-left font-(family-name:--cw-font-sans) text-(length:--cw-text-base) leading-(--cw-leading-base) outline-none",
+          CARD_TERMINAL_HEAD_H,
+          "flex w-full min-w-0 items-center gap-1.5 px-2.5 text-left font-(family-name:--cw-font-sans) text-(length:--cw-text-md) leading-[18px] outline-none",
           INSET_FOCUS,
           hasOutput ? cn(ROW_HL_HOVER, ROW_HL_FOCUS) : "cursor-default",
         )}
       >
         {status === "running" ? (
-          <span className="inline-grid size-[14px] shrink-0 place-items-center">
-            <PiSpinner size={12} tone="muted" arc={0.5} label="运行中" />
+          <span className="inline-grid size-[13px] shrink-0 place-items-center">
+            <PiSpinner size={11} tone="muted" arc={0.5} label="Running" />
           </span>
         ) : (
-          <KitIcon icon={PiTerminalIcon} size={CARD_ICON} className="text-(--cw-text-3)" />
+          <KitIcon icon={PiTerminalIcon} size={13} className="shrink-0 text-(--cw-text-3)" />
         )}
-        {/* 手机没有悬停看全文：命令放不下时折到第二行（和输出区一样按字符折，两行装得最满），再长才省略（R2-B-m3）；桌面单行截断 */}
-        <span className={cn("min-w-0 flex-1", wrap ? "line-clamp-2 break-all" : "truncate")}>
+        <span
+          ref={cmdScroller}
+          data-pi-part="terminal-cmd-scroll"
+          className="block min-w-0 flex-1 overflow-x-auto overflow-y-hidden whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
           {phrase != null && <span className="text-(--cw-text-2)">{phrase}</span>}
           <span
             className={cn(
@@ -149,17 +278,32 @@ export function PiTerminalCard({
         )}
         {hasOutput && <PiDisclosure open={open} />}
       </button>
+      {thumb && (
+        <div
+          aria-hidden
+          data-pi-part="terminal-cmd-scrollbar"
+          data-dragging={dragging ? "" : undefined}
+          style={{ left: thumb.trackLeft, width: thumb.trackWidth }}
+          onPointerDown={onScrollbarPointerDown}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span
+            data-pi-part="terminal-cmd-thumb"
+            style={{ width: thumb.thumbWidth, transform: `translateX(${thumb.thumbLeft}px)` }}
+          />
+        </div>
+      )}
       {open && hasOutput && (
         <div
           ref={scroller}
           data-pi-part="terminal-output"
           className={cn(
-            "border-t border-(--cw-divider) bg-(--cw-code-chip-bg) px-3 py-2 font-(family-name:--cw-font-mono) text-(length:--cw-text-code) leading-[18px] text-(--cw-text-2)",
+            "border-t border-(--cw-divider) bg-(--cw-code-chip-bg) px-2.5 py-1.5 font-(family-name:--cw-font-mono) text-(length:--cw-text-code) leading-[18px] text-(--cw-text-2)",
             wrap ? "overflow-y-auto" : "overflow-auto",
           )}
           style={{ maxHeight: outputMaxHeight }}
         >
-          {truncated && <div className={cn("pb-1 font-(family-name:--cw-font-sans)", T_SECONDARY)}>只保留最后 200 行</div>}
+          {truncated && <div className={cn("pb-1 font-(family-name:--cw-font-sans)", T_SECONDARY)}>Showing last 200 lines</div>}
           {lines.map((l, i) => (
             <div
               key={i}
@@ -171,7 +315,7 @@ export function PiTerminalCard({
             >
               {/* 行号和 diff 行号同一个 token（N1：浅色 --cw-text-3 在 --cw-code-chip-bg 上只有 3.11） */}
               {lineNumbers && (
-                <span className="mr-3 w-6 shrink-0 text-right text-(--cw-diff-lineno) select-none">{i + 1}</span>
+                <span className="mr-3 min-w-6 shrink-0 text-right text-(--cw-diff-lineno) select-none">{lineOffset + i + 1}</span>
               )}
               <span className="min-w-0 flex-1">{l.t || " "}</span>
             </div>
@@ -190,19 +334,19 @@ function trailingText(
 ): { text: string; error?: boolean; attention?: boolean } | null {
   switch (status) {
     case "waiting":
-      return { text: "等你批准", attention: true }
+      return { text: "Awaiting approval", attention: true }
     case "queued":
-      return { text: "排队中" }
+      return { text: "Queued" }
     case "failed":
-      return { text: exitCode != null ? `失败 · 退出 ${exitCode}` : "失败", error: true }
+      return { text: exitCode != null ? `Failed · exit ${exitCode}` : "Failed", error: true }
     case "timed_out":
-      return { text: timeoutSec != null ? `超时（${timeoutSec} 秒）` : "超时" }
+      return { text: timeoutSec != null ? `Timed out (${timeoutSec}s)` : "Timed out" }
     case "denied":
-      return { text: "已拒绝" }
+      return { text: "Denied" }
     case "aborted":
-      return { text: "已取消" }
+      return { text: "Cancelled" }
     case "unknown":
-      return { text: "连接断开，结果未知" }
+      return { text: "Disconnected · status unknown" }
     case "running":
     case "succeeded":
       return elapsed ? { text: elapsed } : null

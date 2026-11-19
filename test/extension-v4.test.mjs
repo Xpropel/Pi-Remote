@@ -1677,3 +1677,464 @@ test("P9：cmdDeleteSession 回 method（无 trash 时 unlink），并保留不�
   assert.equal(fs.existsSync(file2), false);
   assert.ok(fs.readdirSync(moved).includes("1700_s2.jsonl"));
 });
+
+test("Track1A：runSessionOp 上下文脏标记、refreshContext/clearQueue 与 pi.on(context) 防串音（含工具多步与 Turn2）", async (t) => {
+  const prevRelay = process.env.PI_REMOTE_RELAY;
+  const prevToken = process.env.PI_REMOTE_TOKEN;
+  process.env.PI_REMOTE_RELAY = "ws://127.0.0.1:1";
+  process.env.PI_REMOTE_TOKEN = "track1a-token";
+  t.after(() => {
+    if (prevRelay === undefined) delete process.env.PI_REMOTE_RELAY;
+    else process.env.PI_REMOTE_RELAY = prevRelay;
+    if (prevToken === undefined) delete process.env.PI_REMOTE_TOKEN;
+    else process.env.PI_REMOTE_TOKEN = prevToken;
+  });
+
+  const freshJiti = createJiti(import.meta.url, { moduleCache: false, interopDefault: false });
+  const freshExt = await freshJiti.import(new URL("../extension/pi-remote-sync.ts", import.meta.url).pathname);
+
+  const handlers = new Map();
+  const commands = new Map();
+  const mockPi = {
+    registerCommand(name, def) { commands.set(name, def); },
+    registerTool() {},
+    on(name, fn) {
+      if (!handlers.has(name)) handlers.set(name, []);
+      handlers.get(name).push(fn);
+    },
+  };
+  freshExt.default(mockPi);
+
+  const contextHandler = handlers.get("context")?.[0];
+  const sessionStartHandler = handlers.get("session_start")?.[0];
+  const shutdownHandler = handlers.get("session_shutdown")?.[0];
+  assert.equal(typeof contextHandler, "function", "必须注册 context 钩子");
+  assert.equal(typeof sessionStartHandler, "function");
+  t.after(() => { try { shutdownHandler?.(); } catch {} });
+
+  const oldU = { role: "user", content: [{ type: "text", text: "旧会话问题" }], timestamp: 100 };
+  const oldA = { role: "assistant", content: [{ type: "text", text: "旧会话回答" }], timestamp: 101 };
+  let activeMessages = [oldU, oldA];
+  let currentId = "sess-old";
+  let currentFile = "/tmp/sess-old.jsonl";
+  let refreshCount = 0;
+  let clearQueueCount = 0;
+
+  const sm = {
+    sessionId: currentId,
+    cwd: "/tmp/proj",
+    getSessionId: () => currentId,
+    getSessionFile: () => currentFile,
+    getEntries: () => [],
+    buildSessionContext: () => ({ messages: activeMessages }),
+    newSession() {
+      currentId = "sess-new";
+      currentFile = "/tmp/sess-new.jsonl";
+      this.sessionId = currentId;
+      activeMessages = [];
+      return currentFile;
+    },
+  };
+  const ownerSession = {
+    refreshContext() { refreshCount += 1; },
+    clearQueue() { clearQueueCount += 1; },
+  };
+  const cmdCtx = {
+    sessionManager: sm,
+    isIdle: () => true,
+    owner: { session: ownerSession },
+  };
+
+  sessionStartHandler({}, cmdCtx);
+  assert.equal(contextHandler({ messages: [oldU, oldA] }, cmdCtx), undefined, "未 dirty 时 context 钩子不干预");
+
+  const manual = commands.get("pi-remote");
+  assert.ok(manual);
+  await manual.handler("new", cmdCtx);
+  assert.ok(refreshCount >= 1, "runSessionOp 触发 refreshContext");
+  assert.ok(clearQueueCount >= 1, "runSessionOp 触发 clearQueue");
+
+  // 场景1：Turn1 刚输入，Agent 仍带旧上下文 [oldU, oldA, newU]，且 newU 尚未进 sm
+  const tNow = Date.now() + 10;
+  const newU = { role: "user", content: [{ type: "text", text: "新会话第一问" }], timestamp: tNow };
+  const res1 = contextHandler({ messages: [oldU, oldA, newU] }, cmdCtx);
+  assert.deepEqual(res1.messages, [newU], "剥离旧会话前缀且保留尚未入库的 newU");
+
+  // 场景2：工具调用中途，newU 已落入 sm，Agent.state.messages 仍残留 [oldU, oldA] 并追加了 toolCall/toolResult
+  activeMessages = [newU];
+  const toolCallMsg = { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "read", arguments: {} }], timestamp: tNow + 1 };
+  const toolResMsg = { role: "toolResult", toolCallId: "tc1", toolName: "read", content: [{ type: "text", text: "ok" }], timestamp: tNow + 2 };
+  const res2 = contextHandler({ messages: [oldU, oldA, newU, toolCallMsg, toolResMsg] }, cmdCtx);
+  assert.deepEqual(res2.messages, [newU, toolCallMsg, toolResMsg], "工具循环中不重复也不丢当前轮消息");
+
+  // 场景3：session_start 重绑新 runtime 会话后 dirty 清零
+  sessionStartHandler({}, { sessionManager: { ...sm, sessionId: "sess-fresh", getSessionId: () => "sess-fresh" }, isIdle: () => true });
+  assert.equal(contextHandler({ messages: [newU] }, cmdCtx), undefined, "session_start 后不再改写消息");
+});
+
+test("Track1A：fork 支持 position(before/at)、第一条 Turn before 走 newSession、get_fork_messages 用 getBranch、runSessionOp 带 sessionId", async () => {
+  const { bridge } = wired();
+  let branchCalls = [];
+  let newSessionCalls = [];
+  let activeId = "s-orig";
+  let activeFile = "/tmp/s-orig.jsonl";
+  const allEntries = [
+    { id: "u1", parentId: null, type: "message", message: { role: "user", content: [{ type: "text", text: "第一问" }] } },
+    { id: "a1", parentId: "u1", type: "message", message: { role: "assistant", content: [{ type: "text", text: "第一答" }] } },
+    { id: "u-dead", parentId: "a1", type: "message", message: { role: "user", content: [{ type: "text", text: "废弃分支" }] } },
+    { id: "u2", parentId: "a1", type: "message", message: { role: "user", content: [{ type: "text", text: "第二问" }] } },
+    { id: "a2", parentId: "u2", type: "message", message: { role: "assistant", content: [{ type: "text", text: "第二答" }] } },
+  ];
+  const branchEntries = [allEntries[0], allEntries[1], allEntries[3], allEntries[4]];
+  bridge.ctx = {
+    isIdle: () => true,
+    sessionManager: {
+      sessionId: activeId,
+      cwd: "/tmp/proj",
+      getSessionId: () => activeId,
+      getSessionFile: () => activeFile,
+      getEntries: () => allEntries,
+      getBranch: () => branchEntries,
+      buildSessionContext: () => ({ messages: branchEntries.map((e) => e.message) }),
+      createBranchedSession(id) {
+        branchCalls.push(id);
+        activeId = "s-branched-" + id;
+        activeFile = "/tmp/" + activeId + ".jsonl";
+        return activeFile;
+      },
+      newSession(opts) {
+        newSessionCalls.push(opts);
+        activeId = "s-new-from-turn1";
+        activeFile = "/tmp/" + activeId + ".jsonl";
+        return activeFile;
+      },
+    },
+  };
+
+  // get_fork_messages 排除废弃分支 u-dead
+  const forkList = bridge.cmdGetForkMessages();
+  assert.deepEqual(forkList.messages.map((m) => m.entryId), ["u1", "u2"]);
+
+  // u2 默认 before ->停在 parentId(a1)，带回 text
+  const beforeU2 = await bridge.runSessionOp("fork", { entryId: "u2" });
+  assert.equal(branchCalls.at(-1), "a1");
+  assert.equal(beforeU2.text, "第二问");
+  assert.equal(beforeU2.sessionId, "s-branched-a1");
+  assert.equal(bridge.sessionContextDirty, true, "runSessionOp 内 bindSession 不会洗掉 sessionContextDirty");
+
+  // u2 显式 at -> 停在 u2，不回填 text
+  const atU2 = await bridge.runSessionOp("fork", { entryId: "u2", position: "at" });
+  assert.equal(branchCalls.at(-1), "u2");
+  assert.equal("text" in atU2, false);
+
+  // a1 默认 at -> 停在 a1，不回填 text
+  const atA1 = await bridge.runSessionOp("fork", { entryId: "a1" });
+  assert.equal(branchCalls.at(-1), "a1");
+  assert.equal("text" in atA1, false);
+
+  // u1 (无 parentId) before -> 调用 sm.newSession({ parentSession })，带回 text
+  const beforeU1 = await bridge.runSessionOp("fork", { entryId: "u1", position: "before" });
+  assert.equal(newSessionCalls.length, 1);
+  assert.ok(newSessionCalls[0].parentSession);
+  assert.equal(beforeU1.text, "第一问");
+  assert.equal(beforeU1.sessionId, "s-new-from-turn1");
+
+  // 直接 bindSession 绑定新鲜 sessionId -> 重置 sessionContextDirty
+  bridge.bindSession({ isIdle: () => true, sessionManager: { ...bridge.ctx.sessionManager, sessionId: "s-fresh", getSessionId: () => "s-fresh" } });
+  assert.equal(bridge.sessionContextDirty, false);
+});
+
+test("Track1A：jailInactiveSessionPath 跨项目安全校验与 cmdForkSessionFile 精准节点分叉", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cross-proj-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sessionsRoot = path.join(root, "sessions");
+  const dirA = path.join(sessionsRoot, "--work-projA--");
+  const dirB = path.join(sessionsRoot, "--work-projB--");
+  const badSibling = path.join(sessionsRoot, "not-encoded");
+  const outsideFile = path.join(root, "outside.jsonl");
+  fs.mkdirSync(dirA, { recursive: true });
+  fs.mkdirSync(dirB, { recursive: true });
+  fs.mkdirSync(badSibling, { recursive: true });
+  fs.writeFileSync(outsideFile, JSON.stringify({ type: "session", id: "out", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp" }) + "\n");
+  fs.writeFileSync(path.join(badSibling, "s.jsonl"), JSON.stringify({ type: "session", id: "bad", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp" }) + "\n");
+
+  const activeA = path.join(dirA, "active.jsonl");
+  fs.writeFileSync(activeA, JSON.stringify({ type: "session", version: 3, id: "act-a", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/work/projA" }) + "\n");
+
+  const targetB = path.join(dirB, "targetB.jsonl");
+  const lines = [
+    { type: "session", version: 3, id: "sess-b", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/work/projB" },
+    { type: "message", id: "u1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: { role: "user", content: [{ type: "text", text: "B首问" }] } },
+    { type: "message", id: "a1", parentId: "u1", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "B首答" }] } },
+    { type: "message", id: "u2", parentId: "a1", timestamp: "2026-01-01T00:00:03.000Z", message: { role: "user", content: [{ type: "text", text: "B二问" }] } },
+    { type: "message", id: "a2", parentId: "u2", timestamp: "2026-01-01T00:00:04.000Z", message: { role: "assistant", content: [{ type: "text", text: "B二答" }] } },
+  ];
+  fs.writeFileSync(targetB, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+
+  const bridge = fileBridge(dirA, activeA);
+  // switch_session 必须保持严格 jailSessionPath，禁止跨项目目录
+  assert.throws(() => bridge.jailSessionPath(targetB), (e) => e.code === "bad_args" && /越界/.test(e.message));
+  // jailInactiveSessionPath 允许兄弟 --*-- 目录，拒绝根目录外与非 --*-- 兄弟目录
+  assert.equal(bridge.jailInactiveSessionPath(targetB), path.resolve(targetB));
+  assert.throws(() => bridge.jailInactiveSessionPath(outsideFile), (e) => e.code === "bad_args" && /越界/.test(e.message));
+  assert.throws(() => bridge.jailInactiveSessionPath(path.join(badSibling, "s.jsonl")), (e) => e.code === "bad_args" && /越界/.test(e.message));
+
+  // 跨项目定点 fork(position=before u2)：产物落在 targetB 自身目录 dirB，保留 [u1, a1]
+  const forked = await bridge.executeCommand("fork_session_file", { sessionPath: targetB, entryId: "u2", position: "before" });
+  assert.equal(forked.ok, true);
+  assert.equal(path.dirname(forked.sessionPath), dirB.replace(/\\/g, "/"));
+  assert.equal(forked.firstMessage, "B首问");
+  assert.equal(forked.name, null);
+  assert.equal(forked.session.messageCount, 2);
+
+  // 节点不存在 -> not_found
+  await assert.rejects(
+    bridge.executeCommand("fork_session_file", { sessionPath: targetB, entryId: "missing-node", position: "at" }),
+    (e) => e.code === "not_found",
+  );
+
+  // 第一条 u1 before -> 空分支（仅头）
+  const emptyFork = await bridge.executeCommand("fork_session_file", { sessionPath: targetB, entryId: "u1", position: "before" });
+  assert.equal(emptyFork.ok, true);
+  assert.equal(emptyFork.session.messageCount, 0);
+});
+
+test("Track1A：session-library 活动分支重建与 attach.cjs 设备级 file_ops 端到端", async (t) => {
+  const lib = require("../deploy/session-library.cjs");
+  const { AttachController } = require("../deploy/attach.cjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-attach-fileops-"));
+  const origSessionDirEnv = process.env.PI_CODING_AGENT_SESSION_DIR;
+  process.env.PI_CODING_AGENT_SESSION_DIR = root;
+  t.after(() => {
+    if (origSessionDirEnv === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+    else process.env.PI_CODING_AGENT_SESSION_DIR = origSessionDirEnv;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const projB = path.join(root, "--work-projB--");
+  fs.mkdirSync(projB, { recursive: true });
+  const file = path.join(projB, "2026-01-01T00-00-00-000Z_sess-tree.jsonl");
+  const treeLines = [
+    { type: "session", version: 3, id: "sess-tree", timestamp: 1000, cwd: "/work/projB" },
+    { type: "message", id: "u1", parentId: null, timestamp: 1001, message: { role: "user", content: [{ type: "text", text: "主干一问" }] } },
+    { type: "message", id: "a1", parentId: "u1", timestamp: 1002, message: { role: "assistant", content: [{ type: "text", text: "主干一答" }] } },
+    { type: "message", id: "u-dead", parentId: "a1", timestamp: 1003, message: { role: "user", content: [{ type: "text", text: "被树跳切走的废问" }] } },
+    { type: "message", id: "u2", parentId: "a1", timestamp: 1004, message: { role: "user", content: [{ type: "text", text: "活动分支二问" }] } },
+  ];
+  fs.writeFileSync(file, treeLines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+
+  // 1) readArchive 必须只认活动分支 [u1, a1, u2]，排除 u-dead
+  const arch = lib.readArchive(file);
+  assert.equal(arch.messageCount, 3);
+  assert.deepEqual(arch.messages.map((m) => m.id), ["u1", "a1", "u2"]);
+
+  // 2) AttachController 零在线房间执行 rename / export / fork 并即时推送 manifest + archive
+  const sentFrames = [];
+  const ctrl = new AttachController({
+    deviceId: "dev-1",
+    accountId: "acc-1",
+    attachFile: path.join(root, "attach.json"),
+    writeOut: () => {},
+  });
+  t.after(() => { if (ctrl.libraryTimer) clearTimeout(ctrl.libraryTimer); });
+  ctrl.send = (frame) => { sentFrames.push(frame); return true; };
+
+  await ctrl.onRenameSessionFile({ id: "cmd-rn", args: { sessionPath: file, name: "树分支新名" } });
+  const rnReply = sentFrames.find((f) => f.type === "command_result" && f.id === "cmd-rn");
+  assert.equal(rnReply.ok, true);
+  assert.equal(rnReply.data.name, "树分支新名");
+  assert.ok(sentFrames.some((f) => f.type === "session_manifest" && f.sessions[0]?.name === "树分支新名"));
+  assert.ok(sentFrames.some((f) => f.type === "session_archive" && f.session?.name === "树分支新名"));
+
+  await ctrl.onExportSessionFile({ id: "cmd-ex", args: { sessionPath: file, format: "text" } });
+  const exReply = sentFrames.find((f) => f.type === "command_result" && f.id === "cmd-ex");
+  assert.equal(exReply.ok, true);
+  assert.match(exReply.data.text, /活动分支二问/);
+  assert.doesNotMatch(exReply.data.text, /被树跳切走的废问/);
+
+  await ctrl.onForkSessionFile({ id: "cmd-fk", args: { sessionPath: file, entryId: "u2", position: "before" } });
+  const fkReply = sentFrames.find((f) => f.type === "command_result" && f.id === "cmd-fk");
+  assert.equal(fkReply.ok, true);
+  assert.equal(fkReply.data.session.messageCount, 2);
+  assert.equal(fkReply.data.text, "活动分支二问");
+
+  // 运行中的会话禁止 rename_session_file
+  ctrl.onlineRooms = [{ id: "sess-tree", cwd: "/work/projB" }];
+  await ctrl.onRenameSessionFile({ id: "cmd-rn-busy", args: { sessionPath: file, name: "禁止改名" } });
+  const busyReply = sentFrames.find((f) => f.type === "command_result" && f.id === "cmd-rn-busy");
+  assert.equal(busyReply.ok, false);
+  assert.equal(busyReply.code, "session_running");
+});
+
+test("Track1A：relay/viewer.js session.file_ops 零房间与跨项目直达设备且 fork 后即时写入 index", async (t) => {
+  const { startRelay } = require("../relay/server.js");
+  const WebSocket = require("ws");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-relay-fileops-"));
+  const sockets = [];
+  const relay = await startRelay({
+    localPort: 0,
+    viewerPort: 0,
+    dataDir,
+    quiet: true,
+    exitOnListenError: false,
+    localToken: "test-local-token-fileops",
+    viewerToken: "test-viewer-token-fileops",
+    adminToken: "test-admin-token-fileops",
+    perMessageDeflate: false,
+  });
+  t.after(async () => {
+    for (const s of sockets) {
+      try { s.terminate(); } catch {}
+    }
+    await relay.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const connectWs = (url, authFrameObj) => new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    sockets.push(ws);
+    const inbox = [];
+    const waiters = [];
+    const timer = setTimeout(() => reject(new Error(`连接或等待 auth_result 超时: ${authFrameObj.role}`)), 4000);
+    ws.on("message", (buf) => {
+      const f = JSON.parse(String(buf));
+      inbox.push(f);
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        if (waiters[i].pred(f)) {
+          const w = waiters.splice(i, 1)[0];
+          clearTimeout(w.timer);
+          w.resolve(f);
+        }
+      }
+    });
+    const waitFor = (pred, label = "frame", ms = 4000) => {
+      const hit = inbox.find(pred);
+      if (hit) return Promise.resolve(hit);
+      return new Promise((res, rej) => {
+        const w = {
+          pred,
+          resolve: res,
+          timer: setTimeout(() => {
+            const idx = waiters.indexOf(w);
+            if (idx >= 0) waiters.splice(idx, 1);
+            rej(new Error(`等待 ${label} 超时；已收到：${inbox.map((x) => x.type).join(",")}`));
+          }, ms),
+        };
+        waiters.push(w);
+      });
+    };
+    ws.on("open", async () => {
+      try {
+        ws.send(JSON.stringify(authFrameObj));
+        const auth = await waitFor((f) => f.type === "auth_result", "auth_result");
+        clearTimeout(timer);
+        resolve({ ws, auth, inbox, waitFor });
+      } catch (e) {
+        clearTimeout(timer);
+        reject(e);
+      }
+    });
+    ws.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+
+  const DEV = "dev-fileops";
+  const attach = await connectWs(`ws://127.0.0.1:${relay.localPort}`, {
+    type: "auth",
+    role: "local",
+    proto: 4,
+    token: "test-local-token-fileops",
+    caps: ["err.v4", "session.files", "fs.browse", "device.ops", "session.file_ops"],
+    client: { kind: "attach", version: "4.0.0", platform: "macos" },
+  });
+  attach.ws.send(JSON.stringify({
+    type: "device_register",
+    device: {
+      id: DEV,
+      accountId: "admin",
+      name: "Mac",
+      platform: "macos",
+      projects: ["/work/projA"],
+    },
+  }));
+  await attach.waitFor((f) => f.type === "room_list", "device room_list");
+
+  // 种子会话在 /work/projB
+  attach.ws.send(JSON.stringify({
+    type: "session_manifest",
+    deviceId: DEV,
+    full: false,
+    updatedAt: Date.now(),
+    sessions: [{ id: "sess-b", path: "/sessions/--work-projB--/sess-b.jsonl", cwd: "/work/projB", name: "B会话", messageCount: 2, updatedAt: Date.now() }],
+  }));
+  for (let i = 0; i < 40 && !relay.index.getSession("admin", DEV, "sess-b"); i++) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+
+  const viewer = await connectWs(`ws://127.0.0.1:${relay.viewerPort}`, {
+    type: "auth",
+    role: "viewer",
+    proto: 4,
+    token: "test-viewer-token-fileops",
+    caps: ["err.v4"],
+  });
+  const devEntry = (viewer.auth.devices || []).find((d) => d.id === DEV);
+  assert.ok(devEntry && devEntry.features.includes("session.file_ops"), "devices[].features 必须包含 session.file_ops");
+
+  // 1) 零房间直达 attach，fork 后 result.data.session 即时写进 relay.index
+  viewer.ws.send(JSON.stringify({
+    type: "command",
+    id: "v-fk-1",
+    deviceId: DEV,
+    command: "fork_session_file",
+    args: { sessionPath: "/sessions/--work-projB--/sess-b.jsonl" },
+  }));
+  const attachFk = await attach.waitFor((f) => f.type === "command" && f.command === "fork_session_file", "attach fork_session_file");
+  const forkedRow = { id: "sess-b-fork", path: "/sessions/--work-projB--/sess-b-fork.jsonl", cwd: "/work/projB", name: null, firstMessage: "hi", messageCount: 2, updatedAt: Date.now(), parentSession: "/sessions/--work-projB--/sess-b.jsonl", active: false };
+  attach.ws.send(JSON.stringify({
+    type: "command_result",
+    id: attachFk.id,
+    deviceId: DEV,
+    ok: true,
+    data: { id: "sess-b-fork", sessionPath: forkedRow.path, parentSession: forkedRow.parentSession, cwd: "/work/projB", session: forkedRow },
+  }));
+  const ackFk = await viewer.waitFor((f) => f.type === "ack" && f.id === "v-fk-1", "ack v-fk-1");
+  assert.equal(ackFk.ok, true);
+  assert.equal(relay.index.getSession("admin", DEV, "sess-b-fork").path, forkedRow.path, "fork 结果即时写入 relay.index");
+
+  // 2) 有一个 /work/projA 的在线扩展房间，对 /work/projB 的 rename 必须直达 attach 而非落进 projA 房间
+  const extA = await connectWs(`ws://127.0.0.1:${relay.localPort}`, {
+    type: "auth",
+    role: "local",
+    proto: 4,
+    token: "test-local-token-fileops",
+    caps: ["err.v4", "sync.v3"],
+  });
+  extA.ws.send(JSON.stringify({
+    type: "room_register",
+    room: { id: "room-projA", deviceId: DEV, cwd: "/work/projA", name: "A房" },
+  }));
+  await extA.waitFor((f) => f.type === "room_registered", "room_registered");
+
+  viewer.ws.send(JSON.stringify({
+    type: "command",
+    id: "v-rn-1",
+    deviceId: DEV,
+    command: "rename_session_file",
+    args: { sessionPath: "/sessions/--work-projB--/sess-b.jsonl", name: "跨项目新名" },
+  }));
+  const attachRn = await attach.waitFor((f) => f.type === "command" && f.command === "rename_session_file", "attach rename_session_file");
+  assert.equal(extA.inbox.some((f) => f.type === "command" && f.command === "rename_session_file"), false, "绝不能交给 /work/projA 房间");
+  attach.ws.send(JSON.stringify({
+    type: "command_result",
+    id: attachRn.id,
+    deviceId: DEV,
+    ok: true,
+    data: { id: "sess-b", name: "跨项目新名", session: { id: "sess-b", path: "/sessions/--work-projB--/sess-b.jsonl", cwd: "/work/projB", name: "跨项目新名", updatedAt: Date.now() } },
+  }));
+  const ackRn = await viewer.waitFor((f) => f.type === "ack" && f.id === "v-rn-1", "ack v-rn-1");
+  assert.equal(ackRn.ok, true);
+  assert.equal(relay.index.getSession("admin", DEV, "sess-b").name, "跨项目新名");
+});

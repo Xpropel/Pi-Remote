@@ -3,6 +3,8 @@ import { cn } from "@/lib/utils"
 import { ASearchField, ATextButton, PiSearchResults, type PiSearchSection } from "@/components/pi/shell"
 import { PiSpinner, PiTopBar, piSidebarRowData, usePiStatic, type PiSessionRowData } from "@/components/pi/shared"
 import { useNow } from "@/pi/hooks/useNow"
+import { usePiSettingsPrefs } from "@/pi/hooks/usePiSettingsPrefs"
+import { filterSessionsByRetention } from "@/pi/model/settingsHost"
 import { highlightPartOf } from "@/pi/model/highlightMatch"
 import { rowMarkerOf } from "@/pi/model/rowMarker"
 import { openSessionRow, sidebarDataOf, type PiDeviceListedSession, type PiSidebarData } from "@/pi/model/sidebarSource"
@@ -92,6 +94,10 @@ export function SearchContainer(props: PiContainerProps) {
   const phone = variant === "phone"
   const isStatic = usePiStatic()
   const now = useNow(30_000)
+  const settingsPrefs = usePiSettingsPrefs({
+    pollMs: isStatic ? 0 : 1000,
+    storage: isStatic ? null : undefined,
+  })
   const query = ui.search ?? ""
   const trimmed = query.trim()
   const tooShort = trimmed.length < BODY_SEARCH_QUERY_MIN
@@ -100,12 +106,16 @@ export function SearchContainer(props: PiContainerProps) {
     () => sidebarDataOf({ devices: rawDevices, rooms, sessionsByDevice, roomId, dialogs, uiPrompt, turnEnd, roomTurnEnds, selectedDevice }),
     [rawDevices, rooms, sessionsByDevice, roomId, dialogs, uiPrompt, turnEnd, roomTurnEnds, selectedDevice],
   )
+  const visibleSessions = useMemo(
+    () => filterSessionsByRetention(data.sessions, settingsPrefs.retention, now, roomId),
+    [data.sessions, settingsPrefs.retention, now, roomId],
+  )
   const titles = useMemo(
     () =>
       trimmed
-        ? searchSessions(data.sessions, trimmed).sort((a, b) => Number(b.online) - Number(a.online) || b.updatedAt - a.updatedAt)
+        ? searchSessions(visibleSessions, trimmed).sort((a, b) => Number(b.online) - Number(a.online) || b.updatedAt - a.updatedAt)
         : [],
-    [data.sessions, trimmed],
+    [visibleSessions, trimmed],
   )
   const deviceId = relay.selectedDeviceId
   const deviceName = relay.selectedDevice?.name ?? ""

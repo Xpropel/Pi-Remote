@@ -5,8 +5,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
   type ComponentProps,
-  type FocusEvent,
+  type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -21,6 +22,7 @@ import { cn } from "@/lib/utils"
 import { composerBlockOf, composerButtonLabel } from "@/pi/model/composerButton"
 import { useComposerEnter } from "@/pi/headless/useComposerEnter"
 import { PiMenuCloseContext } from "./menuClose"
+import { nextComposerTextOverflow } from "./options"
 import { PiCMenu } from "./PiCMenu"
 import { PiComposerAssistMenu } from "./PiComposerMenu"
 import type { CImage, SlashGroup, SlashRow } from "./types"
@@ -71,6 +73,11 @@ const MENU_GAP = 8
 const MENU_ENTER = "animate-[pi-overlay-in_var(--pi-motion-in)_var(--pi-ease-out)_both]"
 /** 按下时不抢输入框的焦点（手机：键盘不收，design §4.2 第 6、7 条） */
 const keepFocus = (event: { preventDefault(): void }) => event.preventDefault()
+/** 键盘浮层里只有非输入元素不抢焦点；浮层自带搜索框仍可正常聚焦输入 */
+const keepPopoverFocus = (event: { target: EventTarget | null; preventDefault(): void }) => {
+  if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']")) return
+  event.preventDefault()
+}
 /** 发出后等回执超过这么久，黑圆钮里的 ↑ 才换成转圈（和框下"发送中…"同一个门槛，快的发送不闪一下） */
 const SENDING_SPINNER_DELAY = 200
 
@@ -146,7 +153,13 @@ function KeyboardMenu({ kind, maxHeight, onClose, children }: { kind: "plus" | "
   useEffect(() => {
     const onDown = (event: PointerEvent) => {
       const target = event.target as Element | null
-      if (!target || ref.current?.contains(target) || target.closest('[data-cw-id="pi-composer-plus"],[data-cw-id="pi-composer-model"]')) return
+      if (
+        !target ||
+        ref.current?.contains(target) ||
+        target.closest('[data-cw-id="pi-composer-plus"],[data-cw-id="pi-composer-model"],[data-pi-sheet-card],[data-pi-overlay-layer]')
+      ) {
+        return
+      }
       close.current()
     }
     document.addEventListener("pointerdown", onDown, true)
@@ -159,8 +172,8 @@ function KeyboardMenu({ kind, maxHeight, onClose, children }: { kind: "plus" | "
         data-pi-composer-popover={kind}
         className="overflow-y-auto overscroll-contain rounded-[12px] bg-(--cw-surface) p-2 shadow-(--cw-shadow-menu) [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         style={maxHeight != null ? { maxHeight } : undefined}
-        onPointerDown={keepFocus}
-        onMouseDown={keepFocus}
+        onPointerDown={keepPopoverFocus}
+        onMouseDown={keepPopoverFocus}
       >
         <PiMenuCloseContext.Provider value={() => close.current()}>{children}</PiMenuCloseContext.Provider>
       </div>
@@ -187,6 +200,8 @@ export interface PiFollowUpComposerProps extends Omit<ComponentProps<"div">, "ch
   plusOpen?: boolean
   /** 替换模型选择器（例如外层包了菜单触发器） */
   modelSlot?: ReactNode
+  /** 听写等尾部辅助按钮（P4 可交互；不传时零 DOM 改动） */
+  voiceSlot?: ReactNode
   /** v1.2（D-08）：可答审批卡在等回答（见 PiComposerDock.blockedBy） */
   blockedBy?: "approval" | null
   /** v1.2（D-02）：键盘开着时的原因，放两层上层首行（13px、secondary、单行截断，在引用 chip 行之上） */
@@ -219,8 +234,16 @@ export interface PiFollowUpComposerProps extends Omit<ComponentProps<"div">, "ch
   mentionPool?: readonly string[]
   /** 改引用（选中 @ 候选、空输入框里退格删最后一个）；不给时自己记 */
   onMentionsChange?: (paths: string[]) => void
+  /** 点引用 chip 的移除钮（或退格删引用）；不给时退回 onMentionsChange */
+  onRemoveMention?: (path: string) => void
   /** 移除第 i 张待发图 */
   onRemoveImage?: (index: number) => void
+  /** 粘贴截图或拖拽文件到输入框时导入（图片、文本/代码文件等） */
+  onImportFiles?: (files: readonly File[]) => void
+  /** 拖拽文件到输入框时的可选回调（直接调用方使用；默认走 onImportFiles） */
+  onDropFiles?: (files: FileList | File[]) => void
+  /** 兼容其它调用方：只传 onAddFiles 时在拖入/粘贴文件后回调 */
+  onAddFiles?: (files: FileList) => void
   /**
    * P5 桌面 ↑ / ↓ 提示词历史（design K04）：只在桌面、不在输入法组字、没按修饰键、输入框可输入（不是 S7、不是审批只读）、
    * 斜杠 / @ 菜单没拦下时回调；返回 true = 已经换了草稿（拦掉默认的移动光标，光标放到末尾）。手机不回调。不给 = 方向键照常
@@ -261,6 +284,7 @@ export function PiFollowUpComposer({
   modelOpen,
   plusOpen,
   modelSlot,
+  voiceSlot,
   blockedBy,
   topNote,
   static: staticProp,
@@ -276,7 +300,11 @@ export function PiFollowUpComposer({
   onSlashCommand,
   mentionPool,
   onMentionsChange,
+  onRemoveMention,
   onRemoveImage,
+  onImportFiles,
+  onDropFiles,
+  onAddFiles,
   onHistoryKey,
   className,
   ...rest
@@ -291,6 +319,10 @@ export function PiFollowUpComposer({
   const [innerMentions, setInnerMentions] = useState(mentions)
   const mentionList = isStatic || onMentionsChange ? mentions : innerMentions
   const setMentions = (next: string[]) => (onMentionsChange ? onMentionsChange(next) : setInnerMentions(next))
+  const removeMention = (path: string) => {
+    if (onRemoveMention) onRemoveMention(path)
+    else setMentions(mentionList.filter((p) => p !== path))
+  }
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [caretAt, setCaretAt] = useState(value.length)
   const pendingCaret = useRef<number | null>(null)
@@ -359,60 +391,85 @@ export function PiFollowUpComposer({
   const popoverMenus = !isStatic && phone && !sheetMenus
   const plusPopover = popoverMenus && !assist.open && plusIsOpen && plusMenu != null && !disabled && !blocked
   const modelPopover = popoverMenus && !assist.open && !plusPopover && modelIsOpen && modelMenu != null && !disabled && !hideModel
-  // 键盘收起（浮层换成 sheet）、或键盘开着时斜杠 / @ 菜单打开（同一个位置）：开着的 + / 模型浮层关掉
-  const lastMode = useRef({ popover: popoverMenus, assist: assist.open })
+  // 键盘收起（浮层换成 sheet）、或键盘开着时斜杠 / @ 菜单打开（同一个位置）：只关真正开着过的 + / 模型浮层（不误关 sheet）
+  const lastMode = useRef({ popover: popoverMenus, assist: assist.open, plusPopover, modelPopover })
   useEffect(() => {
     const was = lastMode.current
-    lastMode.current = { popover: popoverMenus, assist: assist.open }
+    lastMode.current = { popover: popoverMenus, assist: assist.open, plusPopover, modelPopover }
     const leftPopover = was.popover && !popoverMenus
     const assistOpened = popoverMenus && assist.open && !was.assist
     if (!leftPopover && !assistOpened) return
-    if (plusIsOpen) setPlusOpen(false)
-    if (modelIsOpen) setModelOpen(false)
-  }, [popoverMenus, assist.open, plusIsOpen, modelIsOpen, setPlusOpen, setModelOpen])
+    if (was.plusPopover && plusIsOpen) setPlusOpen(false)
+    if (was.modelPopover && modelIsOpen) setModelOpen(false)
+  }, [popoverMenus, assist.open, plusPopover, modelPopover, plusIsOpen, modelIsOpen, setPlusOpen, setModelOpen])
 
-  /* ---------- 聚焦时两层（可交互） ---------- */
+  /* ---------- 文字溢出换两层（独立单行探针 + IME / 迟滞防抖动） ---------- */
   const rootRef = useRef<HTMLDivElement>(null)
   // 手机上 composer 上方的浮层（斜杠 / @、键盘开着时的 + / 模型）能用的高度：顶栏下沿 … composer 上沿 − 8
   const menuRoom = useMenuRoom(rootRef, !isStatic && phone && (assist.open || plusPopover || modelPopover))
-  // 输入框聚焦 → expanded；焦点留在框里（含 + / 模型钮）或菜单开着时保持两层；都不是了就收回单行。
-  // 菜单开着时焦点在 portal 出去的菜单里，焦点离开 composer 也不收；菜单关上、焦点没回来时按 focusLayer 收回。
-  const [focusWithin, setFocusWithin] = useState(false)
-  const [expanded, setExpanded] = useState(false)
-  const pointerInside = useRef(false)
-  // 指针此刻按着没有（document 捕获阶段记）：框外按下导致的失焦等抬起再收，见 onBlur
-  const pointerPressed = useRef(false)
-  useEffect(() => {
-    if (isStatic) return
-    const down = () => {
-      pointerPressed.current = true
-    }
-    const up = () => {
-      pointerPressed.current = false
-    }
-    document.addEventListener("pointerdown", down, true)
-    window.addEventListener("pointerup", up, true)
-    window.addEventListener("pointercancel", up, true)
-    return () => {
-      document.removeEventListener("pointerdown", down, true)
-      window.removeEventListener("pointerup", up, true)
-      window.removeEventListener("pointercancel", up, true)
-    }
-  }, [isStatic])
-  const anyMenuOpen = plusIsOpen || modelIsOpen || assist.open
-  const menuOpenRef = useRef(anyMenuOpen)
-  useLayoutEffect(() => {
-    menuOpenRef.current = anyMenuOpen
-  })
-  const focusLayer = !isStatic && expanded && (focusWithin || anyMenuOpen)
-  const leave = () => {
-    setFocusWithin(false)
-    if (!menuOpenRef.current) setExpanded(false)
-  }
-  // 桌面：两层只在聚焦、多行、有附件 / 引用或 layered 时出现。
+  const measureRef = useRef<HTMLSpanElement>(null)
+  const composingRef = useRef(false)
+  const singleControlsReserveRef = useRef(260)
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const [textOverflow, setTextOverflow] = useState(false)
+  const contentTwoLayer = value.includes("\n") || images.length > 0 || mentionList.length > 0
   // 手机一直两层（Cursor 手机端同一做法）：390 宽的单行胶囊放下"模型 · 思考级别"后，占位只剩两个字；
-  // 只有 S7 / 审批禁用（模型选择器隐藏，下层没东西）仍是单行
-  const twoLayer = (phone && !hideModel) || layered || value.includes("\n") || images.length > 0 || mentionList.length > 0 || focusLayer
+  // 只有 S7 / 审批禁用（模型选择器隐藏，下层没东西）仍是单行。
+  // 桌面只有在文字真正溢出单行可用宽度、含换行或带附件/引用时才长成两层，点击聚焦不会展开。
+  const twoLayer = (phone && !hideModel) || layered || contentTwoLayer || (!isStatic && textOverflow)
+  const twoLayerRef = useRef(twoLayer)
+  twoLayerRef.current = twoLayer
+
+  const syncOverflow = () => {
+    if (isStatic || phone) return
+    const root = rootRef.current
+    const el = inputRef.current
+    const probe = measureRef.current
+    if (!root || !el || !probe) {
+      setTextOverflow(false)
+      return
+    }
+    const rootWidth = root.clientWidth
+    if (!twoLayerRef.current && rootWidth > 0 && el.clientWidth > 0) {
+      singleControlsReserveRef.current = rootWidth - el.clientWidth
+    }
+    const singleSlotWidth =
+      !twoLayerRef.current && el.clientWidth > 0
+        ? el.clientWidth
+        : Math.max(80, rootWidth - singleControlsReserveRef.current)
+    const textWidth = probe.scrollWidth
+    setTextOverflow((prev) =>
+      nextComposerTextOverflow({
+        prev,
+        value: valueRef.current,
+        textWidth,
+        singleSlotWidth,
+        composing: composingRef.current,
+      }),
+    )
+  }
+
+  useLayoutEffect(() => {
+    syncOverflow()
+  }, [isStatic, phone, value, model.name, model.thinking, btn.ghostStop])
+
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    if (isStatic || phone || !root || typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(() => {
+      syncOverflow()
+      const el = inputRef.current
+      if (el && twoLayerRef.current) {
+        const prevScroll = el.scrollTop
+        el.style.height = ""
+        el.style.height = `${el.scrollHeight}px`
+        if (prevScroll) el.scrollTop = prevScroll
+      }
+    })
+    ro.observe(root)
+    return () => ro.disconnect()
+  }, [isStatic, phone])
 
   // 桌面 + / 模型锚定菜单和斜杠 / @ 菜单一样浮在框上沿以上 MENU_GAP，不压框边、不盖输入区：
   // Radix 从触发钮量 sideOffset，所以要加上触发钮上沿到框上沿的距离（两层时钮在下层），打开时量
@@ -431,56 +488,44 @@ export function PiFollowUpComposer({
   useLayoutEffect(() => {
     const el = inputRef.current
     if (isStatic || !el) return
+    const prevScroll = el.scrollTop
     el.style.height = ""
-    if (twoLayer) el.style.height = `${el.scrollHeight}px`
+    if (twoLayer) {
+      el.style.height = `${el.scrollHeight}px`
+      if (prevScroll) el.scrollTop = prevScroll
+    }
   }, [isStatic, twoLayer, value])
 
   const rootInteractive = isStatic
     ? {}
     : {
         ref: rootRef,
-        onFocus: (event: FocusEvent<HTMLDivElement>) => {
-          // 从外面直接聚焦到 + / 模型钮（不是输入框）：不长成两层（清掉上一轮遗留的 expanded）
-          if ((event.target as Element) !== inputRef.current && !focusWithin && !anyMenuOpen) setExpanded(false)
-          setFocusWithin(true)
-        },
-        onBlur: (event: FocusEvent<HTMLDivElement>) => {
-          const next = event.relatedTarget as Node | null
-          if ((next && event.currentTarget.contains(next)) || pointerInside.current) return
-          // 指针在框外按下（框上方的审批卡「允许」、tray 的 pill）：等这一下抬起、click 发完再收回单行。
-          // 按下就收的话框先变矮，上方的按钮跟着往下挪，抬起时已不在指针下，这一下点不中（L3 L09 / L25）
-          if (pointerPressed.current) {
-            const done = () => {
-              window.removeEventListener("pointerup", done)
-              window.removeEventListener("pointercancel", done)
-              window.setTimeout(() => {
-                if (!rootRef.current?.contains(document.activeElement)) leave()
-              }, 0)
-            }
-            window.addEventListener("pointerup", done)
-            window.addEventListener("pointercancel", done)
-            return
-          }
-          leave()
-        },
-        // 指针在框里按下的这一下（Safari 点按钮不给焦点）不算离开：等抬起后再看焦点在不在框里
-        onPointerDownCapture: () => {
-          pointerInside.current = true
-          window.addEventListener(
-            "pointerup",
-            () =>
-              window.setTimeout(() => {
-                pointerInside.current = false
-                if (!rootRef.current?.contains(document.activeElement)) leave()
-              }, 0),
-            { once: true },
-          )
-        },
         // 点框里的空白处 = 聚焦输入框
         onMouseDown: (event: MouseEvent<HTMLDivElement>) => {
           if ((event.target as HTMLElement).closest(INTERACTIVE_TARGET)) return
           event.preventDefault()
           inputRef.current?.focus()
+        },
+        onDragOver: (event: DragEvent<HTMLDivElement>) => {
+          const hasFiles = Boolean(event.dataTransfer?.types?.includes("Files")) || Boolean(event.dataTransfer?.files?.length)
+          if (!hasFiles) return
+          event.preventDefault()
+          event.stopPropagation()
+          if (event.dataTransfer) {
+            event.dataTransfer.dropEffect = disabled || blocked || (!onDropFiles && !onImportFiles && !onAddFiles) ? "none" : "copy"
+          }
+        },
+        onDrop: (event: DragEvent<HTMLDivElement>) => {
+          const rawFiles = event.dataTransfer?.files
+          const hasFiles = (rawFiles?.length ?? 0) > 0 || Boolean(event.dataTransfer?.types?.includes("Files"))
+          if (!hasFiles) return
+          event.preventDefault()
+          event.stopPropagation()
+          if (disabled || blocked || !rawFiles?.length) return
+          const files = Array.from(rawFiles)
+          if (onDropFiles) onDropFiles(files)
+          else if (onImportFiles) onImportFiles(files)
+          else if (onAddFiles) onAddFiles(rawFiles)
         },
       }
 
@@ -615,7 +660,7 @@ export function PiFollowUpComposer({
     // 空输入框（光标在最前）里退格：去掉最后一个引用 chip
     if (event.key === "Backspace" && plain && mentionList.length > 0 && el.selectionStart === 0 && el.selectionEnd === 0) {
       event.preventDefault()
-      setMentions(mentionList.slice(0, -1))
+      removeMention(mentionList[mentionList.length - 1]!)
     }
   }
 
@@ -687,11 +732,32 @@ export function PiFollowUpComposer({
         }}
         onSelect={(event) => setCaretAt(event.currentTarget.selectionStart ?? 0)}
         onFocus={(event) => {
-          setExpanded(true)
           // 草稿可能是外面改的（斜杠命令填进来、"命令…"）：聚焦时按输入框的真实光标对齐一次
           setCaretAt(event.currentTarget.selectionStart ?? value.length)
         }}
+        onCompositionStart={() => {
+          composingRef.current = true
+        }}
+        onCompositionEnd={() => {
+          composingRef.current = false
+          syncOverflow()
+        }}
         onKeyDown={onKeyDown}
+        onPaste={(event: ClipboardEvent<HTMLTextAreaElement>) => {
+          if (disabled || blocked || !onImportFiles) return
+          const items = event.clipboardData?.items
+          if (!items) return
+          const files: File[] = []
+          for (const item of Array.from(items)) {
+            if (item.kind !== "file") continue
+            if (item.type && !item.type.startsWith("image/")) continue
+            const file = item.getAsFile()
+            if (file && (!file.type || file.type.startsWith("image/"))) files.push(file)
+          }
+          if (files.length === 0) return
+          event.preventDefault()
+          onImportFiles(files)
+        }}
         onScroll={syncPills}
         {...assist.inputAria}
         className={cn(
@@ -705,6 +771,17 @@ export function PiFollowUpComposer({
         )}
         style={{ maxHeight: twoLayer ? (phone ? INPUT_MAX_PHONE : INPUT_MAX_DESKTOP) : undefined }}
       />
+      <span
+        ref={measureRef}
+        aria-hidden="true"
+        data-slot="pi-composer-measure"
+        className={cn(
+          "pointer-events-none invisible absolute top-0 left-0 block h-0 w-0 overflow-hidden p-0 whitespace-pre",
+          inputText(variant),
+        )}
+      >
+        {value}
+      </span>
     </div>
   )
 
@@ -722,11 +799,43 @@ export function PiFollowUpComposer({
       )}
       {twoLayer && mentionList.length > 0 && (
         <div data-slot="pi-composer-mentions" className={cn("flex min-w-0 flex-wrap items-center gap-1.5", phone && "isolate")}>
-          {mentionList.map((path) => (
-            <FileChip key={path} tone="blue" title={path} className={cn(phone && cn("text-[13px]", CHIP_TOUCH_44))}>
-              {path.split("/").pop()}
-            </FileChip>
-          ))}
+          {mentionList.map((path) => {
+            const name = path.split(/[\\/]/).pop() || path
+            if (isStatic || disabled) {
+              return (
+                <FileChip key={path} tone="blue" title={path} className={cn(phone && cn("text-[13px]", CHIP_TOUCH_44))}>
+                  {name}
+                </FileChip>
+              )
+            }
+            return (
+              <span
+                key={path}
+                data-slot="pi-composer-mention-chip"
+                className={cn(
+                  "inline-flex max-w-full items-center gap-0.5 rounded-(--cw-radius-xs) bg-(--cw-link-chip-bg) pr-1",
+                  phone && "text-[13px]",
+                )}
+              >
+                <FileChip tone="blue" title={path} className={cn("bg-transparent hover:no-underline", phone && "text-[13px]")}>
+                  {name}
+                </FileChip>
+                <button
+                  type="button"
+                  aria-label={`移除 ${name}`}
+                  className={cn(
+                    "inline-flex size-4 shrink-0 items-center justify-center rounded-full text-(--cw-link) opacity-70 hover:bg-(--cw-link)/10 hover:opacity-100",
+                    phone && CHIP_TOUCH_44,
+                  )}
+                  onPointerDown={keepFocus}
+                  onMouseDown={keepFocus}
+                  onClick={() => removeMention(path)}
+                >
+                  <X aria-hidden size={10} strokeWidth={2.5} />
+                </button>
+              </span>
+            )
+          })}
         </div>
       )}
       {twoLayer && images.length > 0 && (
@@ -736,7 +845,7 @@ export function PiFollowUpComposer({
               <MediaImage
                 placeholder="screenshot"
                 aria-label={`待发图片 ${i + 1}（${img.mimeType.replace("image/", "")}）`}
-                className="m-0 size-12 aspect-auto rounded-[8px] border-(--cw-border)"
+                className="m-0 size-12 aspect-auto rounded-[10px] border-(--cw-border)"
               >
                 {/* P5：有真实像素时画缩略图；没有（画廊屏、fixture）用占位 */}
                 {img.src ? <img src={img.src} alt="" className="absolute inset-0 size-full object-cover" /> : undefined}
@@ -806,6 +915,7 @@ export function PiFollowUpComposer({
           top,
           <div key="controls" className="flex shrink-0 items-center gap-2.5">
             {modelNode}
+            {voiceSlot}
             {ghostStop}
             {action}
           </div>,
@@ -822,8 +932,8 @@ export function PiFollowUpComposer({
       data-state={state}
       data-layered="true"
       className={cn(
-        "flex min-w-0 flex-col rounded-[20px] border border-solid border-(--cw-border) bg-(--cw-surface) shadow-(--cw-shadow-composer) focus-within:border-(--cw-pi-field-focus-border)",
-        phone ? "min-h-[92px]" : "min-h-(--cw-composer-new-min-h)",
+        "flex min-w-0 flex-col rounded-[22px] border border-solid border-(--cw-border) bg-(--cw-surface) shadow-(--cw-shadow-composer) focus-within:border-(--cw-pi-field-focus-border)",
+        phone ? "min-h-[92px]" : isStatic && "min-h-(--cw-composer-new-min-h)",
         disabled && "bg-(--cw-bg)",
         !isStatic && "relative",
         className,
@@ -838,6 +948,7 @@ export function PiFollowUpComposer({
         <div key="bottom" className={cn("mt-auto flex min-w-0 items-center gap-2.5 px-2 pt-2 pb-2", phone && "gap-3 px-2 pb-2")}>
           {plus}
           <div className="flex min-w-0 flex-1 items-center">{modelNode}</div>
+          {voiceSlot}
           {ghostStop}
           {action}
         </div>,

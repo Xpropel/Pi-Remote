@@ -1,7 +1,11 @@
 import { useEffect, useRef } from "react"
+import { usePiFrame, usePiStatic } from "@/components/pi/shared"
 import type { PiTheme } from "@/components/pi/shared/viewport"
+import { hasHubDeepLink, readDeviceHubPicked, shouldAutoOpenDeviceHub } from "@/pi/model/deviceHub"
+import { readPiSettingsPrefs } from "@/pi/model/settingsHost"
 import { purgeSignalDecision } from "./purgeSignal"
 import { DesktopApp } from "./DesktopApp"
+import { DeviceHubContainer } from "./DeviceHubContainer"
 import { LoginContainer } from "./LoginContainer"
 import { PhoneApp } from "./PhoneApp"
 import type { PiAppProps, PiVariant } from "./types"
@@ -40,6 +44,27 @@ export function PiAppBody(props: PiAppProps & { variant: PiVariant; theme?: PiTh
   // Room-scoped notice dismissal on leaving the session view lives in
   // PiApp (the one root every variant shares); this container only serves
   // the cursor tree and the dev gallery, so the hook is not repeated here.
+  const frame = usePiFrame()
+  const isStatic = usePiStatic()
+  const checkedAutoHub = useRef(false)
+  useEffect(() => {
+    if (!relay.token) {
+      checkedAutoHub.current = false
+      return
+    }
+    if (checkedAutoHub.current) return
+    checkedAutoHub.current = true
+    const search = typeof location === "undefined" ? "" : location.search
+    const picked = readDeviceHubPicked(typeof sessionStorage === "undefined" ? null : sessionStorage)
+    const startView = readPiSettingsPrefs(typeof localStorage === "undefined" ? null : localStorage).startView
+    if (shouldAutoOpenDeviceHub({ isProduct: frame.mode === "product", isStatic, token: relay.token, search, hubPicked: picked, startView })) {
+      act.openDeviceHub()
+    } else if (frame.mode === "product" && !isStatic && !hasHubDeepLink(search) && startView === "list") {
+      if (variant === "desktop") act.newSession()
+      else act.setPhonePage("list")
+    }
+  }, [relay.token, frame.mode, isStatic, variant, act])
   if (!app.relay.token) return <LoginContainer {...props} />
+  if (ui.deviceHub && !isStatic) return <DeviceHubContainer {...app} variant={variant} theme={theme} />
   return variant === "desktop" ? <DesktopApp {...app} theme={theme} /> : <PhoneApp {...app} theme={theme} />
 }

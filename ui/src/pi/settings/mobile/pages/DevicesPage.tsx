@@ -1,8 +1,7 @@
 /**
  * 手机端设置 · 设备（移动压缩版）。
  *
- *   ● 设备名册 / 在线状态：relay.devices 现成；配对新设备与撤销走现有配对流程（含管理员令牌），
- *     本页只开配对浮层，不自己直发 device_revoke；
+ *   ● 设备名册 / 在线状态：relay.devices 现成；配对开配对浮层，移除走二次确认 + relay.revokeDevice；
  *   ● 延迟：relay 心跳下发的 devices[].latencyMs；在线且有样本显示「延迟 <整数>ms」，否则「延迟 —」；
  *   ● 测试连接：点击时真的发一次命令往返（当前会话 get_state，其他在线设备 get_host_diag），
  *     显示「设备 ↔ 服务器 · xx ms」；设备离线时禁用；
@@ -10,15 +9,17 @@
  *   ● 系统操作：设备行「系统操作」点进单设备系统操作页（SystemOpsPage，与桌面
  *     展开区共用 useSystemOps / systemOpsLogic），返回行回设备列表；
  *   ○ 新会话自动连上默认设备：本机偏好，即时生效；
- *   ◌ 阻止睡眠 / 常驻托盘：设计预留，不可用。
+ *   ● 阻止设备睡眠：走设备级 get_prevent_sleep / set_prevent_sleep 命令。
  *   Viewer identity + authorized viewers: MobileIdentitySection, mounted
  *     between the device roster and the plaintext-room groups (same slot as
  *     the desktop devices page); it shares the desktop identity bridge.
  */
-import { useMemo, useState } from "react"
-import { deviceErrorText, ENC_FALLBACK_LABEL, ENC_REASON_LABELS, errorCode, type Device } from "@/relay/devices"
+import { useEffect, useMemo, useState } from "react"
+import { adminTokenErrorText, adminTokenReady, canRevoke, deviceErrorText, ENC_FALLBACK_LABEL, ENC_REASON_LABELS, errorCode, type Device } from "@/relay/devices"
 import { useReducedMotion } from "@/pi/hooks/useReducedMotion"
 import { useSettings } from "../../SettingsContext.tsx"
+import { usePreventSleepToggle } from "../../pages/deviceBehaviorHook.ts"
+import { hostCommandsReady, useHostCommand } from "../data.ts"
 import { SettingsStatusDot } from "../../ui.tsx"
 import {
   DEVICE_RTT_SCOPE,
@@ -36,7 +37,6 @@ import {
   MobileCard,
   MobileEmpty,
   MobileGroup,
-  MobileNote,
   MobilePageBody,
   MobileRow,
   MobileSwitch,
@@ -65,12 +65,15 @@ function clockLabel(timestamp: number, now = Date.now()): string {
   return `${date.getMonth() + 1}月${date.getDate()}日 ${time}`
 }
 
+const REVOKE_ARM_MS = 3000
+
 function deviceMetaOf(device: Device): string {
   if (!device.online) {
     const last = device.lastAttachAt ? ` · 上次在线 ${clockLabel(device.lastAttachAt)}` : ""
     return `离线${last}`
   }
-  return `在线 · ${deviceLatencyTextOf(device.latencyMs)}`
+  const status = device.bridgeOnline === false ? "仅远程窗口在线" : "在线"
+  return `${status} · ${deviceLatencyTextOf(device.latencyMs)}`
 }
 
 interface DeviceProbe {
@@ -79,14 +82,80 @@ interface DeviceProbe {
   text?: string
 }
 
+function MobilePreventSleepRow() {
+  const { p } = useSettings()
+  const { relay } = p
+  const ready = hostCommandsReady(relay) && relay.browserOnline
+  const query = useHostCommand(relay, "get_prevent_sleep", ready, relay.selectedDeviceId ?? "")
+  const sleep = usePreventSleepToggle(relay, ready, query)
+  const sleepDesc =
+    sleep.description === "在被控设备上生效，长任务过夜跑不会被系统睡眠打断" ? undefined : sleep.description
+  return (
+    <MobileRow
+      title="长任务运行时阻止设备睡眠"
+      tooltip="在被控设备上生效；开启后长任务过夜运行不会被系统睡眠打断"
+      description={sleepDesc}
+    >
+      <MobileSwitch
+        label="长任务运行时阻止设备睡眠"
+        checked={sleep.checked}
+        disabled={sleep.disabled}
+        onChange={(next) => {
+          void sleep.toggle(next)
+        }}
+      />
+    </MobileRow>
+  )
+}
+
 export function DevicesPage() {
   const { p, prefs, act } = useSettings()
   const { relay } = p
   const reducedMotion = useReducedMotion()
   const devices = relay.devices ?? []
+  const [armed, setArmed] = useState<string | null>(null)
+  const [revoking, setRevoking] = useState<string | null>(null)
   const [probes, setProbes] = useState<Record<string, DeviceProbe>>({})
   const [probingId, setProbingId] = useState<string | null>(null)
   const [opsDeviceId, setOpsDeviceId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!armed) return
+    const timer = window.setTimeout(() => setArmed(null), REVOKE_ARM_MS)
+    return () => window.clearTimeout(timer)
+  }, [armed])
+
+  /** 第一次点只武装，第二次才真的 device_revoke；缺令牌时转去配对弹窗填写。 */
+  const revoke = (device: Device) => {
+    if (revoking) return
+    if (armed !== device.id) {
+      setArmed(device.id)
+      return
+    }
+    if (!relay.canManageDevices) {
+      setArmed(null)
+      act.notify("当前服务端不支持撤销设备（需要协议 v4）", "warn")
+      return
+    }
+    if (!adminTokenReady(relay.adminToken)) {
+      setArmed(null)
+      act.notify("需要管理员令牌才能撤销设备，请先在配对里填写", "warn")
+      act.openPairing()
+      return
+    }
+    setRevoking(device.id)
+    void relay.revokeDevice(device.id, relay.adminToken).then(
+      () => {
+        setArmed(null)
+        setRevoking(null)
+        relay.pushNotice({ level: "success", title: `已撤销「${deviceNameOf(device)}」，它要重新配对才能再连` })
+      },
+      (error: unknown) => {
+        setRevoking(null)
+        act.notify(adminTokenErrorText(error), "bad")
+      },
+    )
+  }
 
   const makeDefault = (device: Device) => {
     if (prefs.defaultDeviceId === device.id) return
@@ -129,11 +198,14 @@ export function DevicesPage() {
   const probeDevice = (device: Device) => {
     if (!device.online || probingId) return
     const current = device.id === relay.selectedDeviceId
+    const room = relay.rooms.find((r) => r.id === relay.roomId)
+    const roomOwned = !room?.deviceId || room.deviceId === device.id
     const roomReady =
       relay.authed &&
       relay.browserOnline &&
       relay.online &&
       !!relay.roomId &&
+      roomOwned &&
       !(relay.lazySession && relay.lazySession.id === relay.roomId)
     const runDeviceCommand = typeof relay.runDeviceCommand === "function" ? relay.runDeviceCommand : null
     let command: Promise<unknown>
@@ -172,7 +244,11 @@ export function DevicesPage() {
 
   return (
     <MobilePageBody page="devices">
-      <MobileGroup label="我的设备" stacked>
+      <MobileGroup
+        label="我的设备"
+        tooltip={`延迟来自设备心跳（${DEVICE_RTT_SCOPE}）；「测试连接」会发一次只读命令实测往返耗时；「设为默认」只保存在本机浏览器，不改设备侧配置。`}
+        stacked
+      >
         {devices.length === 0 ? (
           <MobileCard>
             <MobileEmpty title="还没有设备" body="在另一台设备上打开 Pi-Remote 完成配对后，名册会出现在这里。" />
@@ -183,10 +259,11 @@ export function DevicesPage() {
               const selected = device.id === relay.selectedDeviceId
               const isDefault = prefs.defaultDeviceId === device.id
               const probe = probes[device.id]
+              const removeLabel = revoking === device.id ? "撤销中…" : armed === device.id ? "再点一次移除" : "移除"
               return (
                 <div key={device.id} className="sm-device" data-settings-device={device.id}>
                   <div className="sm-device-head">
-                    <SettingsStatusDot tone={device.online ? "online" : "offline"} />
+                    <SettingsStatusDot tone={device.online ? (device.bridgeOnline === false ? "waiting" : "online") : "offline"} />
                     <span className="sm-device-name">{device.name}</span>
                     {selected ? <MobileTag>当前设备</MobileTag> : null}
                     {isDefault ? <MobileTag>默认设备</MobileTag> : null}
@@ -228,7 +305,8 @@ export function DevicesPage() {
                     <button
                       type="button"
                       className="sm-device-action"
-                      title="版本、更新 Pi、重启 Pi、重启设备端、更新设备端组件"
+                      disabled={!device.online}
+                      title={device.online ? "版本、更新 Pi、重启 Pi、重启设备端、更新设备端组件" : "设备离线，无法执行系统操作"}
                       onClick={() => setOpsDeviceId(device.id)}
                     >
                       系统操作
@@ -240,14 +318,16 @@ export function DevicesPage() {
                         设为默认
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="sm-device-action sm-device-action--danger"
-                      title="在配对 / 设备管理浮层里撤销（需管理员令牌）"
-                      onClick={act.openPairing}
-                    >
-                      移除
-                    </button>
+                    {!selected && canRevoke(device) ? (
+                      <button
+                        type="button"
+                        className="sm-device-action sm-device-action--danger"
+                        disabled={revoking === device.id}
+                        onClick={() => revoke(device)}
+                      >
+                        {removeLabel}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               )
@@ -255,7 +335,7 @@ export function DevicesPage() {
           </MobileCard>
         )}
         <MobileCard>
-          <MobileActionRow title="添加设备" description="在新设备浏览器打开后，输入这里显示的配对码" onClick={act.openPairing} />
+          <MobileActionRow title="添加设备" onClick={act.openPairing} />
         </MobileCard>
       </MobileGroup>
 
@@ -297,19 +377,9 @@ export function DevicesPage() {
       ) : null}
 
       <MobileGroup label="主机行为">
-        <MobileRow title="长任务运行时阻止设备睡眠" description="在被控设备上生效，长任务过夜跑不会被系统睡眠打断" status="reserved">
-          <MobileSwitch label="阻止设备睡眠（设计预留）" checked disabled />
-        </MobileRow>
-        <MobileRow title="在设备上常驻托盘 / 菜单栏" description="Pi-Remote 的小图标常驻被控设备，随手看会话状态" status="reserved">
-          <MobileSwitch label="常驻托盘（设计预留）" checked={false} disabled />
-        </MobileRow>
+        <MobilePreventSleepRow />
         <MobileSwitchRowLocal checked={prefs.autoConnectDevice} onChange={(checked) => act.setPref("autoConnectDevice", checked)} />
       </MobileGroup>
-
-      <MobileNote>
-        在侧边栏顶部的设备选择器也可切换当前设备。延迟来自设备心跳；「测试连接」会发一次只读命令并显示「
-        {DEVICE_RTT_SCOPE}」往返时间；「设为默认」只保存在本机浏览器，不改设备侧配置；移除走现有配对 / 设备管理浮层（需管理员令牌）。
-      </MobileNote>
     </MobilePageBody>
   )
 }
@@ -317,7 +387,7 @@ export function DevicesPage() {
 /** 避免把长标题折叠成一行；单独抽出来只为让分组读起来紧凑。 */
 function MobileSwitchRowLocal({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
   return (
-    <MobileRow title="新会话自动连上默认设备" description="新建会话时自动归属默认设备">
+    <MobileRow title="新会话自动连上默认设备">
       <MobileSwitch label="新会话自动连上默认设备" checked={checked} onChange={onChange} />
     </MobileRow>
   )

@@ -31,8 +31,10 @@ export interface PiTranscriptActions {
   queueEdit?: (item: PiUserItem) => void
   /** 回合出错的"重新回答"、操作行的 ↻ */
   regenerate?: () => void
-  /** 操作行的"复制回复"：resolve true = 已复制（✓ 1.2 秒） */
+  /** 操作行的"复制回复"：resolve true = 已复制（✓ 1.5 秒） */
   copyReply?: (item: PiAssistantItem) => Promise<boolean>
+  /** 操作行的"Fork"：从该条助手回复所在回合分支出新会话 */
+  forkReply?: (item: PiAssistantItem) => Promise<void> | void
   /** 过大占位块的"加载原图" / 失败后的"重试" */
   loadImage?: (image: PiImagePart) => void
   /** 某张图的按需加载状态；没有加载过返回 undefined */

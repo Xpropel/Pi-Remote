@@ -669,3 +669,83 @@ export function operationErrorTextOf(error: unknown): string {
   if (code && OPERATION_ERROR_COPY[code]) return OPERATION_ERROR_COPY[code]
   return deviceErrorText(error)
 }
+
+/* ------------------------------ compact bar view-models ------------------------------ */
+
+const COMPACT_RUNNING_LABELS: Record<OperationKind, string> = {
+  update_pi: "更新 Pi 中…",
+  harness_restart: "重启 Pi 中…",
+  restart_host: "重启设备端中…",
+  update_components: "更新组件中…",
+}
+
+/** Compact single-line toolbar label for each system operation button. */
+export function compactSystemOpLabelOf(row: SystemOpRow): string {
+  if (row.phaseText) return COMPACT_RUNNING_LABELS[row.kind]
+  if (row.buttonAction === "retry") return `重试${OPERATION_TITLES[row.kind]}`
+  if (row.kind === "update_pi") {
+    if (row.buttonPrimary && row.buttonLabel) {
+      return `更新 Pi (${row.buttonLabel.replace(/^更新到\s*/, "")})`
+    }
+    if (row.buttonAction === "recheck") return "检查 Pi 更新"
+    if (row.buttonLabel === "已是最新") return "Pi 已是最新"
+    if (row.buttonLabel === "检查中…") return "检查更新中…"
+    return "更新 Pi"
+  }
+  return OPERATION_TITLES[row.kind]
+}
+
+export interface CompactSystemOpsSummary {
+  runningRow: SystemOpRow | null
+  failedRow: SystemOpRow | null
+  okText: string | null
+  warnText: string | null
+  mutedText: string | null
+}
+
+/** Deduplicated single-line summary rendered beneath the compact system-ops button strip. */
+export function compactSystemOpsSummaryOf(
+  rows: readonly SystemOpRow[],
+  result: OperationResult | null,
+): CompactSystemOpsSummary {
+  const runningRow = rows.find((row) => row.phaseText !== null) ?? null
+  const failedRow = rows.find((row) => row.failed) ?? null
+  const okText = result ? `${result.title} · ${result.text}` : null
+  const rawWarn = rows.map((row) => row.warningText).find((text): text is string => Boolean(text)) ?? null
+  const warnText = rawWarn ? rawWarn.replace(/[；;]+$/, "") : null
+
+  const byKind = new Map(rows.map((row) => [row.kind, row]))
+  const mutedParts: string[] = []
+  if (!runningRow) {
+    const updateRow = byKind.get("update_pi")
+    const harnessRow = byKind.get("harness_restart")
+    const hostRow = byKind.get("restart_host")
+    const compRow = byKind.get("update_components")
+
+    if (updateRow && updateRow.description && (!updateRow.buttonEnabled && updateRow.buttonLabel === "无法更新" || updateRow.buttonAction === "recheck")) {
+      mutedParts.push(updateRow.description)
+    }
+    if (harnessRow && !harnessRow.buttonEnabled && harnessRow.description) {
+      mutedParts.push(harnessRow.description)
+    }
+    const hostUnsup = hostRow && !hostRow.buttonEnabled && /不是常驻方式启动/.test(hostRow.description)
+    const compUnsup = compRow && !compRow.buttonEnabled && /不是常驻方式启动/.test(compRow.description)
+    if (hostUnsup && compUnsup) {
+      mutedParts.push("非守护模式启动，暂不支持远程重启或更新设备端组件")
+    } else {
+      for (const row of [hostRow, compRow]) {
+        if (row && !row.buttonEnabled && row.description && !mutedParts.includes(row.description)) {
+          mutedParts.push(row.description)
+        }
+      }
+    }
+  }
+
+  return {
+    runningRow,
+    failedRow,
+    okText,
+    warnText,
+    mutedText: mutedParts.length ? mutedParts.join(" · ") : null,
+  }
+}

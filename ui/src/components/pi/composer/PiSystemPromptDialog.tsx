@@ -39,10 +39,12 @@ export function PiSystemPromptDialog({ viewport, open, onOpenChange, static: sta
             </PiDialogNote>
           ) : view ? (
             <>
-              <PiDialogNote variant={v}>
-                {chars != null ? `共 ${chars.toLocaleString("zh-CN")} 字` : ""}
-                {view.truncated ? `${chars != null ? " · " : ""}已截断，这里只显示前面一部分` : ""}
-              </PiDialogNote>
+              {(chars != null || view.truncated) && (
+                <PiDialogNote variant={v}>
+                  {chars != null ? `共 ${chars.toLocaleString("zh-CN")} 字` : ""}
+                  {view.truncated ? `${chars != null ? " · " : ""}已截断` : ""}
+                </PiDialogNote>
+              )}
               <PiTextBlock variant={v} text={view.text} label="系统提示词全文" maxHeight={phone ? 480 : 380} />
             </>
           ) : null}

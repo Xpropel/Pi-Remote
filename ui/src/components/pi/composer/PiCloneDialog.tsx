@@ -33,11 +33,8 @@ export function PiCloneDialog({ viewport, open, onOpenChange, static: staticProp
         />
       }
     >
-      <div data-slot="pi-clone-dialog" className="flex flex-col gap-2 pt-1">
-        <PiDialogNote variant={v} tone="primary">
-          把当前分支复制成一个新会话，原会话不变。新会话会出现在左侧列表里。
-        </PiDialogNote>
-        {busy && <PiDialogNote variant={v}>pi 正在输出，等这轮结束再克隆。</PiDialogNote>}
+      <div data-slot="pi-clone-dialog" className="flex flex-col gap-2 pt-1 empty:hidden">
+        {busy && <PiDialogNote variant={v}>pi 输出中，结束后可克隆。</PiDialogNote>}
         {offline && <PiDialogNote variant={v}>{offline}</PiDialogNote>}
         <PiDialogError>{error}</PiDialogError>
       </div>

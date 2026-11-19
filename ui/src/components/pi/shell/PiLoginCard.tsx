@@ -52,13 +52,15 @@ export function PiLoginCard({ variant, relayHost, state = "empty", value = "", o
         if (live && ready && !connecting) onSubmit?.()
       }}
       className={cn(
-        "flex flex-col rounded-(--cw-radius-card) border border-solid border-(--cw-border) bg-(--cw-surface) shadow-(--cw-shadow-composer)",
-        phone ? "w-full px-5 pt-6 pb-5" : "w-[400px] px-8 pt-8 pb-6",
+        "flex flex-col rounded-[26px] border border-solid border-(--cw-border) bg-(--cw-surface) shadow-(--cw-shadow-palette)",
+        phone ? "w-full px-6 pt-7 pb-6" : "w-[416px] px-8 pt-8 pb-7",
         className,
       )}
     >
-      <PiMark size={40} />
-      <h1 className="mt-5 mb-0 text-(length:--cw-text-2xl) leading-[26px] font-semibold text-(--cw-text)">连接 Pi-Remote</h1>
+      <div className="flex size-12 items-center justify-center rounded-[16px] border border-(--cw-border) bg-(--cw-bg) shadow-(--cw-shadow-card)">
+        <PiMark size={28} />
+      </div>
+      <h1 className="mt-5 mb-0 text-(length:--cw-text-2xl) leading-[26px] font-semibold tracking-[-0.015em] text-(--cw-text)">连接 Pi-Remote</h1>
       <p className="mt-1.5 mb-0 text-(length:--cw-text-base) leading-[20px] text-(--cw-pi-text-secondary)">
         {/* 手机宽度放不下一行：两句分两行，免得末行只剩「里。」 */}
         输入查看端 token。{phone ? <br /> : null}token 只存在这个浏览器里。

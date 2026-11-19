@@ -51,7 +51,7 @@ describe("渲染窗与新消息计数（D01 / D21）", () => {
     assert.deepEqual([w.hidden, w.nextPage], [9700, 300])
     const tail = transcriptWindowOf(items(420), 300)
     assert.deepEqual([tail.hidden, tail.nextPage], [120, 120])
-    assert.equal(showEarlierText(tail.nextPage), "显示更早的 120 条")
+    assert.equal(showEarlierText(tail.nextPage), "Show 120 earlier messages")
     const more = transcriptWindowOf(items(420), 600)
     assert.deepEqual([more.visible.length, more.hidden, more.nextPage], [420, 0, 0])
   })

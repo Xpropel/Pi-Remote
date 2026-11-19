@@ -84,17 +84,14 @@ export function PiExportDialog({
     >
       <div data-slot="pi-export-dialog" className="flex flex-col gap-3 pt-1">
         {cold && (
-          <>
-            <PiSegments
-              variant={v}
-              label="导出格式"
-              options={FORMAT_OPTIONS}
-              value={format}
-              className={phone ? "w-full" : "w-[260px]"}
-              onValueChange={isStatic ? undefined : (value) => onFormatChange?.(value as "text" | "jsonl")}
-            />
-            <PiDialogNote variant={v}>直接读会话文件，不需要先载入；单次最多 512 KB，超限会报错而不是导出半份。</PiDialogNote>
-          </>
+          <PiSegments
+            variant={v}
+            label="导出格式"
+            options={FORMAT_OPTIONS}
+            value={format}
+            className={phone ? "w-full" : "w-[260px]"}
+            onValueChange={isStatic ? undefined : (value) => onFormatChange?.(value as "text" | "jsonl")}
+          />
         )}
         <PiDialogStatus variant={v} phase={phase} error={loadError} onRetry={onRetry} empty={phase === "ready" && !text ? "还没有可导出的内容" : null}>
           {truncated && <PiDialogNote variant={v}>导出已截断{chars != null ? `（全文 ${chars.toLocaleString("zh-CN")} 字符）` : ""}。</PiDialogNote>}

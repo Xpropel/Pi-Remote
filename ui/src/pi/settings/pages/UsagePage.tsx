@@ -15,6 +15,9 @@ import {
   formatPercent,
   formatTokenCount,
   heatmapScaleOf,
+  MONTHLY_BUDGET_PRESETS,
+  monthlyBudgetPresetLabel,
+  monthlyQuotaSummaryOf,
   usageCoverageText,
   usageDeltaOf,
   usageTodayDayKey,
@@ -26,7 +29,7 @@ import {
 import { settingsDeviceOfflineOf } from "../model"
 import { useSettings } from "../SettingsContext"
 import type { SettingsUsageMetric, SettingsUsageRange } from "../types"
-import { SettingsSegmented, SettingsStatusBadge } from "../ui"
+import { SettingsHoverTitle, SettingsSegmented } from "../ui"
 import "./usage.css"
 
 const HEAT_LABEL: Record<SettingsUsageMetric, string> = { tokens: "Token 活动", messages: "消息活动", sessions: "会话活动" }
@@ -81,12 +84,6 @@ function formatDayWeekday(dayKey: string): string {
   return WEEKDAY_LABEL[weekdayOfDayKey(dayKey)]
 }
 
-function formatRangeText(start: string, end: string): string {
-  const [sy, sm] = start.split("-").map(Number)
-  const [ey, em] = end.split("-").map(Number)
-  return `${sy} 年 ${sm} 月 — ${ey} 年 ${em} 月`
-}
-
 function tokenParts(tokens: number): { value: string; unit: string } {
   const text = formatTokenCount(tokens)
   const match = text.match(/^([\d.,]+)([KMB])$/)
@@ -124,8 +121,11 @@ export function UsagePage() {
   const header = (
     <header className="settings-usage-head">
       <div>
-        <h1 className="settings-page-title">使用活动</h1>
-        <p className="settings-usage-subtitle">你在这台机器上使用 pi 的情况 · 近一年</p>
+        <h1 className="settings-page-title">
+          <SettingsHoverTitle tooltip="由运行 pi 的设备在本地按自然日统计（Token 按 API 处理量计），经中转仅同步每日聚合计数；分天按设备本地时区，中转侧的镜像副本不重复计。">
+            使用活动
+          </SettingsHoverTitle>
+        </h1>
       </div>
       <div className="settings-usage-controls">
         <div className="settings-usage-control">
@@ -180,9 +180,6 @@ export function UsagePage() {
             </button>
           ) : null}
         </section>
-        <p className="settings-usage-footnote">
-          统计仅在本机聚合；经 relay 传输与缓存的只有每日聚合计数（tokens / 消息 / 会话 / 模型名），不含对话内容；金额不统计。
-        </p>
       </div>
     )
   }
@@ -190,6 +187,7 @@ export function UsagePage() {
   const days = snapshot.days
   const empty = days.length === 0
   const todayKey = usageTodayDayKey(snapshot)
+  const quotaSummary = monthlyQuotaSummaryOf(snapshot, todayKey, prefs.monthlyTokenBudget)
   // days 只含有记录的日子（稀疏）：按首个记录日算历史长短，不按条数——低频用户记录少不等于数据还在积累。
   const short = !empty && days[0].date > addDaysToDayKey(todayKey, -29)
   const totals = snapshot.summary.totals
@@ -240,11 +238,6 @@ export function UsagePage() {
     },
   ]
 
-  const yearStart = addDaysToDayKey(todayKey, -364)
-  const monthKey = todayKey.slice(0, 7)
-  const yearValue = days.filter((day) => day.date >= yearStart).reduce((sum, day) => sum + metricValueOf(day, metric), 0)
-  const monthValue = days.filter((day) => day.date.startsWith(monthKey)).reduce((sum, day) => sum + metricValueOf(day, metric), 0)
-  const monthShare = yearValue > 0 ? formatPercent(monthValue / yearValue) : "—"
   const currentSunday = addDaysToDayKey(todayKey, -weekdayOfDayKey(todayKey))
   const heatStart = addDaysToDayKey(currentSunday, -51 * 7)
   const byDate = new Map(days.map((day) => [day.date, day]))
@@ -272,7 +265,6 @@ export function UsagePage() {
     }
   }
   const heat = heatmapScaleOf(days.map((day) => metricValueOf(day, metric)))
-  const rangeText = formatRangeText(heatStart, todayKey)
   const coverage = usageCoverageText(snapshot)
   const coverageWarn =
     snapshot.coverage.truncated || snapshot.coverage.skippedFiles > 0 || snapshot.coverage.errors > 0
@@ -306,25 +298,6 @@ export function UsagePage() {
     .map((value, index) => `${index === 0 ? "M" : "L"}${(index * cumulativeStep).toFixed(2)},${(40 - (value / cumulativeMax) * 36).toFixed(2)}`)
     .join(" ")
   const cumulativeArea = `${cumulativeLine} L100,40 L0,40 Z`
-  const monthlyTotals = new Map<string, number>()
-  for (const day of days) {
-    monthlyTotals.set(day.date.slice(0, 7), (monthlyTotals.get(day.date.slice(0, 7)) ?? 0) + metricValueOf(day, metric))
-  }
-  const currentMonthValue = monthlyTotals.get(monthKey) ?? 0
-  const previousMonths = [...monthlyTotals.entries()].filter(([month]) => month < monthKey).map(([, value]) => value)
-  const previousMonthsSum = previousMonths.reduce((sum, value) => sum + value, 0)
-  const previousMonthsAverage = previousMonths.length > 0 ? previousMonthsSum / previousMonths.length : 0
-  const monthLabel = `${Number(monthKey.slice(5, 7))} 月`
-  const cumulativeInsight =
-    empty
-      ? ""
-      : currentMonthValue === 0
-        ? `${monthLabel}还没有新增${METRIC_UNIT[metric]}`
-        : previousMonths.length === 0
-          ? `本月新增 ${metricTextOf(currentMonthValue, metric)} ${METRIC_UNIT[metric]}`
-          : currentMonthValue > previousMonthsSum
-            ? `本月新增 ${metricTextOf(currentMonthValue, metric)} ${METRIC_UNIT[metric]}，超过此前 ${previousMonths.length} 个月总和`
-            : `本月新增 ${metricTextOf(currentMonthValue, metric)} ${METRIC_UNIT[metric]}，约为此前 ${previousMonths.length} 个月平均的 ${formatPercent(previousMonthsAverage > 0 ? currentMonthValue / previousMonthsAverage : 0)}`
 
   const mostActive = snapshot.summary.peaks.messages
   const tokenPeak = snapshot.summary.peaks.tokens
@@ -333,25 +306,6 @@ export function UsagePage() {
   const modelRows = snapshot.summary.models.slice(0, 4)
   const otherTokens = snapshot.summary.models.slice(4).reduce((sum, row) => sum + row.tokens, 0)
   const modelSum = snapshot.summary.models.reduce((sum, row) => sum + row.tokens, 0)
-  const topModel = modelRows[0] ?? null
-  const topShare = topModel && modelSum > 0 ? topModel.tokens / modelSum : 0
-  const modelNote =
-    topModel == null
-      ? ""
-      : topShare >= 2 / 3
-        ? `主力模型 ${topModel.model} 占了三分之二以上的用量。`
-        : `主力模型 ${topModel.model} 占 ${formatPercent(topShare)} 的用量。`
-
-  const todayText = `今天 · ${Number(todayKey.slice(5, 7))}月${Number(todayKey.slice(8, 10))}日`
-  const heatHint =
-    view === "daily"
-      ? `每格代表一天，颜色越深用量越高 · ${rangeText}`
-      : view === "weekly"
-        ? "近 14 周，按周一为一周起点"
-        : "有记录起累计 · 按天累加"
-  const yearText = empty
-    ? "近一年还没有使用记录"
-    : `近一年共使用 ${metricTextOf(yearValue, metric)} ${METRIC_UNIT[metric]} · 其中 ${Number(monthKey.slice(5, 7))} 月占 ${monthShare}`
 
   return (
     <div className="settings-page settings-usage" data-settings-page="usage">
@@ -379,36 +333,66 @@ export function UsagePage() {
         ))}
       </section>
 
-      <section className="settings-usage-card settings-usage-quota" data-settings-status="reserved" aria-label="供应商用量额度">
+      <section className="settings-usage-card settings-usage-quota" aria-label="本月用量与供应商预算">
         <div className="settings-usage-quota-head">
-          <span className="settings-usage-quota-title">本月用量 · 供应商</span>
-          <SettingsStatusBadge status="reserved" />
+          <span className="settings-usage-quota-title">
+            <SettingsHoverTitle tooltip="本地月度 Token 提醒阈值，仅保存在当前浏览器，不限制实际模型调用。">
+              本月用量 · 供应商
+            </SettingsHoverTitle>
+          </span>
+          <div className="settings-usage-quota-presets" role="group" aria-label="月度 Token 预算">
+            {MONTHLY_BUDGET_PRESETS.map((preset) => {
+              const active = prefs.monthlyTokenBudget === preset
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  aria-pressed={active}
+                  className={active ? "settings-usage-quota-preset is-active" : "settings-usage-quota-preset"}
+                  onClick={() => act.setPref("monthlyTokenBudget", preset)}
+                >
+                  {monthlyBudgetPresetLabel(preset)}
+                </button>
+              )
+            })}
+          </div>
         </div>
-        <p className="settings-usage-quota-sub">按供应商账户计 · 供应商额度接口接入后显示</p>
+        <p className="settings-usage-quota-sub">
+          {quotaSummary.budgetTokens > 0
+            ? `${quotaSummary.monthLabel}已用 ${formatTokenCount(quotaSummary.monthTokens)} / 预算 ${formatTokenCount(quotaSummary.budgetTokens)} Token（${formatPercent(quotaSummary.usageRatio ?? 0)}）`
+            : `${quotaSummary.monthLabel}累计 ${formatTokenCount(quotaSummary.monthTokens)} Token · ${quotaSummary.activeDays} 个活跃日`}
+        </p>
         <div className="settings-usage-quota-bar" aria-hidden="true">
-          <span />
+          <span
+            className={quotaSummary.overBudget ? "is-over" : undefined}
+            style={{
+              width: `${quotaSummary.budgetTokens > 0 ? Math.min(100, Math.round((quotaSummary.usageRatio ?? 0) * 100)) : quotaSummary.monthTokens > 0 ? 100 : 0}%`,
+            }}
+          />
         </div>
+        {quotaSummary.topProviders.length > 0 ? (
+          <div className="settings-usage-quota-providers">
+            {quotaSummary.topProviders.map((row) => (
+              <div key={row.provider} className="settings-usage-quota-provider">
+                <span className="settings-usage-quota-provider-name">{row.provider}</span>
+                <span className="settings-usage-quota-provider-val">
+                  {formatTokenCount(row.tokens)} · {formatPercent(row.share)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div className="settings-usage-quota-foot">
-          <span>本月已用 —</span>
-          <span>额度每月 1 日重置</span>
+          <span>
+            本月会话 {formatCount(quotaSummary.monthSessions)} · 消息 {formatCount(quotaSummary.monthMessages)}
+          </span>
+          <span>{quotaSummary.resetLabel}</span>
         </div>
       </section>
 
       <section className="settings-usage-card settings-usage-heat-card" aria-label={HEAT_LABEL[metric]}>
         <div className="settings-usage-heat-head">
-          <div>
-            <h2 className="settings-usage-card-title">{HEAT_LABEL[metric]}</h2>
-            <p className="settings-usage-hint">{heatHint}</p>
-          </div>
-          {view === "daily" ? (
-            <div className="settings-usage-legend" aria-hidden="true">
-              <span>少</span>
-              {[0, 1, 2, 3, 4].map((level) => (
-                <span key={level} className="settings-usage-legend-cell" data-level={level} />
-              ))}
-              <span>多</span>
-            </div>
-          ) : null}
+          <h2 className="settings-usage-card-title">{HEAT_LABEL[metric]}</h2>
         </div>
         {view === "daily" ? (
           empty ? (
@@ -482,10 +466,6 @@ export function UsagePage() {
                   ))}
                 </div>
               </div>
-              <div className="settings-usage-heat-foot">
-                <span>{yearText}</span>
-                <span>{todayText}</span>
-              </div>
             </div>
           )
         ) : view === "weekly" ? (
@@ -525,10 +505,9 @@ export function UsagePage() {
                   <path d={cumulativeLine} className="settings-usage-area-line" />
                 </svg>
                 <p className="settings-usage-chart-note">
-                  从 {days[0]?.date ?? "—"} 起累计到今天的 {METRIC_UNIT[metric]}总量：{metricTextOf(cumulativeValue, metric)}
+                  {days[0]?.date ?? "—"} 至 {todayKey} 累计 {metricTextOf(cumulativeValue, metric)} {METRIC_UNIT[metric]}
                   {short ? "（数据积累中）" : ""}
                 </p>
-                <p className="settings-usage-chart-note">{cumulativeInsight}</p>
               </>
             )}
           </div>
@@ -569,17 +548,18 @@ export function UsagePage() {
             </span>
           </div>
           <div className="settings-usage-detail-row">
-            <span>平均每日消息</span>
+            <SettingsHoverTitle tooltip="仅按近 30 天内有消息记录的活跃日折算平均值。">
+              平均每日消息
+            </SettingsHoverTitle>
             <span className="settings-usage-detail-value">
               {averageMessages > 0 ? `${averageMessages.toFixed(1)} 条` : "—"}
-              <small>按近 30 天活跃日计算</small>
             </span>
           </div>
         </section>
 
         <section className="settings-usage-card settings-usage-models" aria-label="按模型分布">
           <h2 className="settings-usage-card-title">
-            按模型分布 <span>近 30 天 · 按 Token 量</span>
+            <SettingsHoverTitle tooltip="按近 30 天各模型的 Token 处理量占比统计。">按模型分布</SettingsHoverTitle>
           </h2>
           {modelRows.length === 0 ? (
             <p className="settings-usage-empty-body">还没有模型使用数据。</p>
@@ -615,16 +595,10 @@ export function UsagePage() {
                   </span>
                 </div>
               ) : null}
-              <p className="settings-usage-model-note">{modelNote}</p>
             </>
           )}
         </section>
       </div>
-
-      <p className="settings-usage-footnote">
-        数据口径：以上数字由运行 pi 的这台机器在本地统计（按会话日志汇总消息与会话次数，Token 按 API 处理量计），只保存在本机、不上传到任何服务器；
-        换一台机器或清除本地数据后将重新计数。分天按设备本地时区，同一份会话记录只算一遍，中转侧的镜像副本不重复计。
-      </p>
 
       {tip ? (
         <div

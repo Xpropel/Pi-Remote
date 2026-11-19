@@ -47,6 +47,8 @@ export type PiSessionMenuInput = {
   deviceOnline: boolean
   /** 这一行在选中设备上 */
   onSelectedDevice: boolean
+  /** 是否同步删除设备磁盘文件（false 时只从当前列表移除） */
+  syncDeleteSession?: boolean
   /** 删除发给谁（sessionDeleteRouteOf 的结果） */
   deleteRoute: PiSessionDeleteRoute
 }
@@ -188,7 +190,7 @@ export function sessionMenuOf(input: PiSessionMenuInput): PiSessionMenuModel {
     return why ? off(why) : ok
   }
 
-  const open: PiSessionMenuItemState = current
+  const open: PiSessionMenuItemState = active
     ? off(PI_MENU_REASON.current)
     : row.openable || input.deviceOnline
       ? ok
@@ -196,18 +198,21 @@ export function sessionMenuOf(input: PiSessionMenuInput): PiSessionMenuModel {
 
   // P9 第 1 轮审查 B3：先判「会话正在运行」再判「没有文件路径」。运行中的会话是活动房间，
   // 列表行可能没有 path（正文在房间里），顺序反了会把「会话正在运行，不能删除」显示成「没有文件路径」。
-  // 连接断开（linkDown）仍排在运行中之前：断线时「服务器未连接」更准确。
+  // 连接断开（linkDown）仍排在运行中之前：断线时「服务器未连接」更准确；只从列表移除时无需设备在线或文件路径。
+  const syncDelete = input.syncDeleteSession !== false
   const del: PiSessionMenuItemState = current
     ? off(PI_MENU_REASON.deleteCurrent)
-    : !input.authed
+    : syncDelete && !input.authed
       ? off(PI_MENU_REASON.linkDown)
       : input.deleteRoute.running
         ? off(PI_MENU_REASON.deleteRunning)
-        : !row.path
-          ? off(PI_MENU_REASON.noPath)
-          : !input.deleteRoute.via
-            ? off(input.deleteRoute.reason ?? PI_MENU_REASON.deleteNoRoom)
-            : ok
+        : !syncDelete
+          ? ok
+          : !row.path
+            ? off(PI_MENU_REASON.noPath)
+            : !input.deleteRoute.via
+              ? off(input.deleteRoute.reason ?? PI_MENU_REASON.deleteNoRoom)
+              : ok
 
   return {
     current,

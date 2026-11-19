@@ -58,7 +58,7 @@ export const EMPTY_PLACEHOLDER = "要 pi 做什么？"
 
 /** 拿不到设备默认模型的名字时写这个 */
 export const EMPTY_MODEL_FALLBACK = "设备默认模型"
-export const EMPTY_MODEL_NOTE = "开始后可在输入框里切换"
+export const EMPTY_MODEL_NOTE = ""
 
 /** 框下沿和往下开的菜单之间的间距（同 follow-up composer 上方浮层的 8） */
 const MENU_GAP = 8
@@ -264,7 +264,7 @@ export function PiEmptyComposer({
               <span className="sr-only">新会话使用的模型：</span>
               {modelLabel}
             </span>
-            <span className={cn("truncate text-(--cw-text-3)", phone ? "text-(length:--cw-text-sm)" : "text-(length:--cw-text-xs)")}>{modelNote}</span>
+            {modelNote ? <span className={cn("truncate text-(--cw-text-3)", phone ? "text-(length:--cw-text-sm)" : "text-(length:--cw-text-xs)")}>{modelNote}</span> : null}
           </div>
           <RoundIconButton
             variant={canSend || sending ? "send" : "send-muted"}

@@ -15,6 +15,7 @@ import { loadSettingsLocal } from "../settings/model.ts"
 import { chordOf, chordSignature, SHORTCUT_ACTION_ROUTES } from "../settings/pages/shortcutsLogic.ts"
 import type {
   SettingsPrefs,
+  SettingsRetention,
   SettingsShortcutId,
   SettingsShortcutMap,
   SettingsStorage,
@@ -41,17 +42,21 @@ export interface PiDefaultDeviceInput {
   manual: boolean
   /** 已经自动应用过的默认设备 id（同一个 id 只应用一次）。 */
   appliedDefaultId: string | null
+  /** 关闭「启动时自动连接设备」时返回 null，仅记住手选，不自动抢切设备。 */
+  autoConnectDevice?: boolean
 }
 
 /**
  * 默认设备决策：返回要自动选中的设备 id，null = 不动。
  * 条件（与设置 › 设备「默认设备」一致）：
+ *   - 关闭「启动时自动连接设备」：返回 null；
  *   - 偏好里有 defaultDeviceId，且这台设备当前在线；
  *   - 当前没有选中设备，或选中的设备已离线 / 不在名册；
  *   - 用户本会话没有手动选过设备；同一个默认设备只自动应用一次。
  * 「新会话页优先级一致」由宿主自动选中后自然成立（NewSessionContainer 先看 selectedDeviceId）。
  */
 export function defaultDevicePickOf(input: PiDefaultDeviceInput): string | null {
+  if (input.autoConnectDevice === false) return null
   const want = String(input.defaultDeviceId || "").trim()
   if (!want || input.manual || input.appliedDefaultId === want) return null
   const target = input.devices.find((device) => device.id === want)
@@ -76,13 +81,14 @@ export interface PiNotificationGate {
   onlyWhenAway: boolean
   sound: boolean
   badge: boolean
+  system: boolean
   privacy: boolean
 }
 
 export type PiNotificationPrefs = Pick<
   SettingsPrefs,
   "notifyWaiting" | "notifyError" | "notifyComplete" | "notifyOnlyWhenAway" | "notifySound" | "notifyBadge" | "privacyMode"
->
+> & { notifySystem?: boolean }
 
 export function notificationGateOf(prefs: PiNotificationPrefs): PiNotificationGate {
   return {
@@ -92,6 +98,7 @@ export function notificationGateOf(prefs: PiNotificationPrefs): PiNotificationGa
     onlyWhenAway: prefs.notifyOnlyWhenAway,
     sound: prefs.notifySound,
     badge: prefs.notifyBadge,
+    system: prefs.notifySystem === true,
     privacy: prefs.privacyMode,
   }
 }
@@ -116,6 +123,11 @@ export function notificationBadgeVisible(gate: PiNotificationGate, kind: PiNotif
 /** 提示音是否该响。 */
 export function notificationSoundVisible(gate: PiNotificationGate, kind: PiNotificationKind, away: boolean): boolean {
   return gate.sound && notificationEventOn(gate, kind) && notificationAwayOk(gate, away)
+}
+
+/** 浏览器系统桌面通知：只在开启且用户不在当前页面时触发。 */
+export function notificationSystemVisible(gate: PiNotificationGate, kind: PiNotificationKind, away: boolean): boolean {
+  return gate.system && away && notificationEventOn(gate, kind)
 }
 
 export interface PiNotificationNotice {
@@ -389,4 +401,102 @@ export function appearanceAttrsOf(prefs: PiAppearancePrefs): Record<PiAppearance
     "data-pi-density": prefs.density === "compact" ? null : prefs.density,
     "data-pi-ui-font": prefs.uiFont === "system" ? null : prefs.uiFont,
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. 自动归档旧会话                                                    */
+/* ------------------------------------------------------------------ */
+
+const DAY_MS = 86_400_000
+
+/** 自动归档的时间截止点（毫秒时间戳）；"never" 或非法时间戳返回 null。 */
+export function autoArchiveCutoffMsOf(autoArchive: SettingsPrefs["autoArchive"], now: number): number | null {
+  const days = autoArchive === "7d" ? 7 : autoArchive === "30d" ? 30 : 0
+  if (days <= 0 || !Number.isFinite(now)) return null
+  return now - days * DAY_MS
+}
+
+export interface AutoArchiveSessionCandidate {
+  key: string
+  updatedAt?: number | null
+  active?: boolean
+  online?: boolean
+  pinned?: boolean
+}
+
+/**
+ * 合并用户手动归档列表 + 按「自动归档」策略归入归档的陈旧离线会话。
+ * 当前打开、在线运行、已置顶或缺少有效时间戳的会话绝不自动归档。
+ */
+export function effectiveSidebarArchivesOf(input: {
+  manualArchives: readonly string[]
+  autoArchive: SettingsPrefs["autoArchive"]
+  now: number
+  sessions: readonly AutoArchiveSessionCandidate[]
+  pins?: readonly string[]
+}): string[] {
+  const cutoff = autoArchiveCutoffMsOf(input.autoArchive, input.now)
+  if (cutoff == null) return [...input.manualArchives]
+  const seen = new Set(input.manualArchives)
+  const pinnedSet = new Set(input.pins ?? [])
+  const out = [...input.manualArchives]
+  for (const session of input.sessions) {
+    if (!session.key || seen.has(session.key)) continue
+    if (session.active || session.online || session.pinned || pinnedSet.has(session.key)) continue
+    const at = session.updatedAt
+    if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) continue
+    if (at < cutoff) {
+      seen.add(session.key)
+      out.push(session.key)
+    }
+  }
+  return out
+}
+
+/* ------------------------------------------------------------------ */
+/* 7. 会话历史保留时长过滤                                              */
+/* ------------------------------------------------------------------ */
+
+/** 返回「保留时长」的时间截止点（毫秒时间戳）；forever 或非法时间返回 null。 */
+export function retentionCutoffMsOf(retention: SettingsRetention | string, nowMs: number): number | null {
+  const days =
+    retention === "30d"
+      ? 30
+      : retention === "90d"
+        ? 90
+        : retention === "180d"
+          ? 180
+          : retention === "1y"
+            ? 365
+            : 0
+  if (days <= 0 || !Number.isFinite(nowMs)) return null
+  return nowMs - days * DAY_MS
+}
+
+export interface RetentionSessionCandidate {
+  id: string
+  online?: boolean
+  busy?: boolean
+  updatedAt?: number | null
+}
+
+/**
+ * 按设置 › 数据与隐私的保留时长过滤侧栏/搜索中的历史会话。
+ * 当前打开会话、在线/忙会话或无有效时间戳的条目一律保留，绝不删远端文件。
+ */
+export function filterSessionsByRetention<T extends RetentionSessionCandidate>(
+  sessions: readonly T[],
+  retention: SettingsRetention | string,
+  nowMs: number,
+  currentRoomId?: string,
+): T[] {
+  const cutoff = retentionCutoffMsOf(retention, nowMs)
+  if (cutoff === null) return [...sessions]
+  return sessions.filter((session) => {
+    if (currentRoomId && session.id === currentRoomId) return true
+    if (session.online === true || session.busy === true) return true
+    const at = session.updatedAt
+    if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) return true
+    return at >= cutoff
+  })
 }

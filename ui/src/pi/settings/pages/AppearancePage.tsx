@@ -15,17 +15,18 @@ import {
   SETTINGS_DENSITIES,
   SETTINGS_DENSITY_LABELS,
   SETTINGS_FONT_SIZES,
+  SETTINGS_MONO_FONTS,
   SETTINGS_UI_FONTS,
   type SettingsAccent,
   type SettingsDensity,
   type SettingsFontSize,
+  type SettingsMonoFont,
   type SettingsThemePref,
   type SettingsUiFont,
 } from "../types"
 import {
   SettingsColorDots,
   SettingsGroup,
-  SettingsNote,
   SettingsPageTitle,
   SettingsRow,
   SettingsSegmented,
@@ -57,6 +58,24 @@ const DENSITY_OPTIONS = SETTINGS_DENSITIES.map((value) => ({ value, label: SETTI
   value: SettingsDensity
   label: string
 }[]
+
+const CONTENT_WIDTH_PRESETS = [680, 768, 860, 980, 1120] as const
+
+function contentWidthOptions(current: number): { value: string; label: string }[] {
+  const values = new Set<number>(CONTENT_WIDTH_PRESETS)
+  if (Number.isFinite(current) && current > 0) values.add(Math.round(current))
+  return [...values]
+    .sort((a, b) => a - b)
+    .map((width) => ({
+      value: String(width),
+      label: width === 860 ? `${width} px（默认）` : `${width} px`,
+    }))
+}
+
+const MONO_FONT_OPTIONS = SETTINGS_MONO_FONTS.map((value) => ({
+  value,
+  label: value === "jetbrains-mono" ? "JetBrains Mono（默认）" : "系统等宽字体",
+})) as readonly { value: SettingsMonoFont; label: string }[]
 
 const UI_FONT_LABELS: Record<SettingsUiFont, string> = {
   system: "系统默认",
@@ -102,7 +121,7 @@ export function AppearancePage() {
       <SettingsPageTitle title="外观" />
 
       <SettingsGroup label="主题" first>
-        <SettingsRow title="明暗" description="跟随系统时，随电脑的浅色 / 深色自动切换">
+        <SettingsRow title="明暗">
           <div className="settings-segmented" role="radiogroup" aria-label="明暗">
             {THEME_OPTIONS.map((option) => {
               const Icon = option.icon
@@ -125,7 +144,7 @@ export function AppearancePage() {
             })}
           </div>
         </SettingsRow>
-        <SettingsRow title="强调色" description="用于运行状态点与少量强调">
+        <SettingsRow title="强调色">
           <SettingsColorDots
             value={prefs.accent}
             options={ACCENT_SWATCHES}
@@ -140,7 +159,7 @@ export function AppearancePage() {
           description={
             <span className="settings-appearance-preview">
               <span className="settings-appearance-preview-tag">预览</span>
-              <span className="settings-appearance-preview-text">会话标题与正文的显示大小</span>
+              <span className="settings-appearance-preview-text">Aa 正文与代码</span>
             </span>
           }
         >
@@ -151,7 +170,7 @@ export function AppearancePage() {
             onChange={(value) => act.setPref("fontSize", value)}
           />
         </SettingsRow>
-        <SettingsRow title="界面密度" description="影响列表与设置的行高">
+        <SettingsRow title="界面密度" tooltip="影响侧边栏、菜单与设置面板的行高和留白">
           <SettingsSegmented
             label="界面密度"
             value={prefs.density}
@@ -159,6 +178,13 @@ export function AppearancePage() {
             onChange={(value) => act.setPref("density", value)}
           />
         </SettingsRow>
+        <SettingsSelect
+          label="内容列宽"
+          tooltip="调整会话正文区域的最大宽度（默认 860 px）"
+          value={String(prefs.contentWidth)}
+          options={contentWidthOptions(prefs.contentWidth)}
+          onChange={(value) => act.setPref("contentWidth", Number(value))}
+        />
       </SettingsGroup>
 
       <SettingsGroup label="字体">
@@ -168,10 +194,16 @@ export function AppearancePage() {
           options={UI_FONT_OPTIONS}
           onChange={(value) => act.setPref("uiFont", value)}
         />
+        <SettingsSelect
+          label="等宽字体"
+          value={prefs.monoFont}
+          options={MONO_FONT_OPTIONS}
+          onChange={(value) => act.setPref("monoFont", value)}
+        />
       </SettingsGroup>
 
       <SettingsGroup label="动态效果">
-        <SettingsRow title="减少动态效果" description="关掉界面里的过渡与淡入动画">
+        <SettingsRow title="减少动态效果">
           <SettingsSwitch
             label="减少动态效果"
             checked={prefs.reducedMotion}
@@ -179,8 +211,6 @@ export function AppearancePage() {
           />
         </SettingsRow>
       </SettingsGroup>
-
-      <SettingsNote>切换立即应用到整个界面，只保存在这个浏览器里。</SettingsNote>
     </div>
   )
 }

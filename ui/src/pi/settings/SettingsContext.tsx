@@ -53,6 +53,11 @@ export function useSettings(): SettingsContextValue {
   return value
 }
 
+/** 共享反馈/工具组件的可选入口；允许在测试或独立渲染场景下无 Provider 降级。 */
+export function useOptionalSettings(): SettingsContextValue | null {
+  return useContext(SettingsContext)
+}
+
 function browserStorage(): SettingsStorage | null {
   try {
     return typeof window === "undefined" ? null : window.localStorage

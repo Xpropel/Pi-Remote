@@ -4,6 +4,7 @@ import { bodySearchTargetsOf, mergeBodySearchReplies, type BodySearchReply } fro
 import { CommandChannel } from "./commands"
 import {
   DELETED_SESSIONS_KEY,
+  HIDDEN_SESSION_TTL_MS,
   readDeletedSessions,
   rememberDeletedSession,
   withoutDeletedRooms,
@@ -138,13 +139,18 @@ import { useComposerUi } from "@/chat/composer/useComposerUi"
 import { useNotices } from "@/chat/composer/useNotices"
 import {
   LAZY_SESSION_STORAGE_KEY,
+  extractLazyCatalog,
   lazyRoomFromRow,
   lazySendCryptoBlocked,
   lazySendPhaseText,
   parseLazySelection,
   serializeLazySelection,
+  stageLazyModel,
+  stageLazyThinking,
   stepLazySend,
   withLazyRoom,
+  type LazyCatalogItem,
+  type LazyPendingModel,
   type LazySelection,
   type LazySend,
 } from "./lazySession"
@@ -495,6 +501,45 @@ function sessionFileRow(value: unknown): SessionEntry | null {
     updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0,
     active: false,
     online: false,
+  }
+}
+
+export type SessionRecordInput = {
+  id: string
+  deviceId?: string
+  path?: string
+  cwd?: string
+  name?: string | null
+  firstMessage?: string | null
+  messageCount?: number
+  sizeBytes?: number
+  updatedAt?: number
+}
+
+export function forkedSessionRow(data: unknown): (ListedSession & { deviceId?: string }) | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null
+  const rec = data as Record<string, unknown>
+  const nested = sessionFileRow(rec.session)
+  const id = nested?.id || (typeof rec.id === "string" ? rec.id.trim() : "")
+  const filePath = nested?.path || (typeof rec.sessionPath === "string" ? rec.sessionPath.trim() : "")
+  if (!id || !filePath) return null
+  const cwd = nested?.cwd || (typeof rec.cwd === "string" ? rec.cwd : "")
+  const firstMessage = nested?.firstMessage || (typeof rec.firstMessage === "string" ? rec.firstMessage : "")
+  const name = nested?.name || (typeof rec.name === "string" ? rec.name : "")
+  const deviceId = typeof rec.deviceId === "string" && rec.deviceId ? rec.deviceId : undefined
+  return {
+    id,
+    ...(deviceId ? { deviceId } : {}),
+    title: sessionTitleOf({ name, firstMessage, cwd }),
+    ...(firstMessage ? { firstMessage } : {}),
+    path: filePath,
+    cwd,
+    online: false,
+    busy: false,
+    viewers: 0,
+    messageCount: nested?.messageCount ?? 0,
+    updatedAt: nested?.updatedAt || Date.now(),
+    openable: false,
   }
 }
 
@@ -1498,10 +1543,11 @@ export function useRelay() {
       if (roomRef.current !== roomId) return
       if (roomsRef.current.find((room) => room.id === roomId)?.online) return
       // 换会话会先让旧房间离线，新房间随后才注册。这期间不判离线。
-      if (expectedSessionFile.current || pendingSwitchRef.current) {
+      if (expectedRoomId.current || expectedSessionFile.current || pendingSwitchRef.current) {
         setNotice({ text: "正在切换会话…", tone: "warn", codes: ["connectivity", "progress"] })
         return
       }
+      onlineRef.current = false
       setOnline(false)
       setBusy(false)
       setActivity("")
@@ -1523,14 +1569,23 @@ export function useRelay() {
 
   /** in-flight 会话操作的预期目标会话文件，用于换绑后校验 */
   const expectedSessionFile = useRef<string | null>(null)
+  /** in-flight 会话操作（new / switch / fork / clone）返回的目标房间 id，用于确定性切换 */
+  const expectedRoomId = useRef<string | null>(null)
   /** new / switch / fork / clone 已经发出，正在等新房间出现 */
   const pendingSwitchRef = useRef(false)
   const switchTicketRef = useRef(0)
   /** fork 回填：命令回包可能早于或晚于新房订阅。晚到时先挂起，等 subscribe 清完草稿再补上。 */
-  const pendingBackfillRef = useRef<{ text: string; notice: string } | null>(null)
+  const pendingBackfillRef = useRef<{ text: string; notice: string; targetRoomId?: string } | null>(null)
   // draft/online 的 ref 镜像：sendText 依赖改成 [] 后引用才稳定，
   // memo(TranscriptItem) 的 onRetry 才不会每次按键都失效（整条会话重渲）
   const draftRef = useRef("")
+  const shellListenersRef = useRef(new Set<(ev: ShellStreamEvent) => void>())
+  const subscribeShellEvents = useCallback((fn: (ev: ShellStreamEvent) => void) => {
+    shellListenersRef.current.add(fn)
+    return () => {
+      shellListenersRef.current.delete(fn)
+    }
+  }, [])
   /** 草稿落盘（P3-3）：内存草稿当前归属的房间键。切房点（subscribe / 点选未载入会话 /
    *  clearRoom）同步维护，落盘与恢复都以它为准，不靠 roomId 状态的事后推断。
    *  The initial guess mirrors the room restore: "pi_room" first, then the
@@ -1702,6 +1757,7 @@ export function useRelay() {
         const state = (await channel.command(roomId, "get_state", {}, "校验超时")) as { sessionFile?: string } | null
         const actual = state && state.sessionFile ? String(state.sessionFile).replace(/\\/g, "/") : ""
         expectedSessionFile.current = null
+        expectedRoomId.current = null
         // Windows 盘符大小写可能不同（pi 给 D:\Users\...，列表里是 d:\users\...）：按这台设备的平台比
         const switchedRoom = roomsRef.current.find((room) => room.id === roomId)
         const platform = switchedRoom ? devicePlatformOf(devicesRef.current, roomDeviceId(switchedRoom)) : undefined
@@ -1710,9 +1766,26 @@ export function useRelay() {
         }
       } catch {
         expectedSessionFile.current = null
+        expectedRoomId.current = null
       }
     },
     [channel],
+  )
+
+  const completeRoomSwitch = useCallback(
+    (switched: RoomInfo) => {
+      knownRoomIds.current.add(switched.id)
+      capGrowingSet(knownRoomIds.current, KNOWN_ROOM_IDS_MAX)
+      expectedRoomId.current = null
+      pendingSwitchRef.current = false
+      subscribeRef.current(switched.id)
+      // 请求校验成功后预期文件
+      if (expectedSessionFile.current) {
+        void checkSwitchedRoom(switched.id, expectedSessionFile.current)
+      }
+      setNotice({ text: `已切换到「${roomTitle(switched)}」`, tone: "warn", context: `room:${switched.id}` })
+    },
+    [checkSwitchedRoom, setNotice],
   )
   const roomsRef = useRef<RoomInfo[]>([])
   const devicesRef = useRef<Device[]>([])
@@ -1737,6 +1810,9 @@ export function useRelay() {
   const lastSessionsAtRef = useRef(0)
   const clearPendingRef = useRef<(deviceId: string, keepResolved?: boolean) => void>(() => {})
   const lazySessionRef = useRef<LazySelection | null>(safeStore.session.get("pi_room") ? null : readStoredLazySelection())
+  const thinkingLevelRef = useRef("")
+  const lazyPendingModelRef = useRef<LazyPendingModel | null>(null)
+  const lazyCatalogRef = useRef<{ deviceId: string; items: LazyCatalogItem[] } | null>(null)
   const lazySendRef = useRef<LazySend | null>(null)
   const lazyTokenSeq = useRef(0)
   /** beginHarness 已经受理的那次启动；取消/失败时只清自己这次，别误伤别的设备命令 */
@@ -1778,7 +1854,8 @@ export function useRelay() {
     draftRef.current = draft
     onlineRef.current = online
     transcriptRef.current = transcript
-  }, [token, roomId, rooms, devices, selectedDeviceId, deviceMode, busy, draft, online, lazySession, transcript])
+    thinkingLevelRef.current = thinkingLevel
+  }, [token, roomId, rooms, devices, selectedDeviceId, deviceMode, busy, draft, online, lazySession, transcript, thinkingLevel])
 
   /**
    * outbox 的唯一写口：先读存储再改再写（同一浏览器的别的标签页可能刚认领 / 取消过），
@@ -2243,6 +2320,27 @@ export function useRelay() {
           // relay 结束元数据：订阅/补发是全量 entries，live end 后单条。
           consumeToolEndMeta(event as TerminalEvent)
           break
+        case "shell_output": {
+          const ev: ShellStreamEvent = {
+            type: "shell_output",
+            roomId: roomRef.current,
+            shellId: String(event.shellId || ""),
+            data: typeof event.data === "string" ? event.data : "",
+          }
+          for (const fn of shellListenersRef.current) fn(ev)
+          break
+        }
+        case "shell_exit": {
+          const ev: ShellStreamEvent = {
+            type: "shell_exit",
+            roomId: roomRef.current,
+            shellId: String(event.shellId || ""),
+            code: typeof event.code === "number" ? event.code : null,
+            signal: typeof event.signal === "string" ? event.signal : null,
+          }
+          for (const fn of shellListenersRef.current) fn(ev)
+          break
+        }
         default:
           break
       }
@@ -2471,7 +2569,7 @@ export function useRelay() {
       const wrongDevice = !!open && !!selected && roomDeviceId(open) !== selected
       // 选中的设备掉线不再清房间：新界面要"设备离线仍能看历史、输入照写、发送进 outbox"（design C04、plan device-offline）。
       // 只在打开的房间不属于选中设备时清（换了设备）。设备回来时同一房间由 room_list 的 current.online 分支接上。
-      if (roomRef.current && !harnessing && !pendingSwitchRef.current && !expectedSessionFile.current && wrongDevice) {
+      if (roomRef.current && !harnessing && !pendingSwitchRef.current && !expectedRoomId.current && !expectedSessionFile.current && wrongDevice) {
         clearRoom()
       }
     }
@@ -2574,11 +2672,14 @@ export function useRelay() {
       // 快照落地后再发排队消息：此时乐观气泡不会再被 snapshot(reset) 擦掉。
       const lazyDeviceId = selectedDeviceRef.current
       if (lazyDeviceId && roomRef.current) lazyRoomReadyRef.current(roomRef.current, lazyDeviceId)
-      for (let k = messages.length - 1; k >= 0; k -= 1) {
-        const item = messages[k]
-        if (item?.role === "assistant" && typeof item.model === "string" && item.model) {
-          rememberModel(item)
-          break
+      const hasStagedModel = !!(lazyPendingModelRef.current?.sessionId === roomRef.current && lazyPendingModelRef.current.model)
+      if (!hasStagedModel) {
+        for (let k = messages.length - 1; k >= 0; k -= 1) {
+          const item = messages[k]
+          if (item?.role === "assistant" && typeof item.model === "string" && item.model) {
+            rememberModel(item)
+            break
+          }
         }
       }
     }
@@ -2916,7 +3017,10 @@ export function useRelay() {
             // click (selectListedSession sets online when the synthetic
             // room is shown): the device being online is what counts.
             const lazyDevice = devicesRef.current.find((item) => item.id === lazySessionRef.current?.deviceId)
-            if (lazyDevice?.online) setOnline(true)
+            if (lazyDevice?.online) {
+              onlineRef.current = true
+              setOnline(true)
+            }
           } else if (!deviceModeRef.current) {
             const saved = list.find((room) => room.id === roomRef.current)
             const pick = saved || list.find((room) => room.online) || list[0]
@@ -3150,6 +3254,13 @@ export function useRelay() {
           // 已经切走的旧启动：房间照样起来了，但不再自动打开/发送
           for (const item of started) suppressStartedRoomsRef.current.delete(`${item.deviceId}:${item.room.id}`)
         }
+        const expectedOnline = expectedRoomId.current
+          ? list.find((room) => room.online && room.id === expectedRoomId.current && room.id !== roomRef.current)
+          : undefined
+        if (expectedOnline) {
+          completeRoomSwitch(expectedOnline)
+          return
+        }
         const current = list.find((room) => room.id === roomRef.current)
         if (current?.online && socketRoomRef.current !== current.id && !lazySessionRef.current) {
           // 重连时这个房间还不在线，auth_result 没能重订阅：现在它上线了，带 since 接上（不清界面），
@@ -3158,6 +3269,7 @@ export function useRelay() {
         }
         if (current?.online) {
           cancelOffline()
+          onlineRef.current = true
           setOnline(true)
           setRoomDown(false)
           setNotice(clearConnectivity)
@@ -3172,7 +3284,7 @@ export function useRelay() {
           }
           return
         }
-        // 同 cwd 可能出现多个在线房间（同目录开两个 pi）。优先挑"上次列表里没有的新房间"，
+        // 同 cwd 可能出现多个在线房间（同目录开两个 pi）。优先挑预期 roomId，其次挑"上次列表里没有的新房间"，
         // 并在订阅后用 get_state.sessionFile 校验目标；不一致就提示让用户自己选，
         // 而不是静默展示一个错会话的历史。
         const cwd = current?.cwd || previous?.cwd
@@ -3180,24 +3292,31 @@ export function useRelay() {
         // 只有一个候选 = 没有"选错"风险：哪怕它是之前见过的房间（切回旧会话）也直接跟随。
         // knownRoomIds 只在"多个候选"时用于区分谁是真新房——否则切回旧会话永远跟不上，
         // 界面会卡在已离线的旧房间上（房间 id 就是 sessionId，会反复重现）。
-        const sole = candidates.length === 1 ? candidates[0] : undefined
+        if (pendingSwitchRef.current && expectedRoomId.current) {
+          if (current) scheduleOffline(current.id)
+          return
+        }
+        const allowKnownSole = !pendingSwitchRef.current || !!expectedSessionFile.current
+        const expected = expectedRoomId.current ? candidates.find((room) => room.id === expectedRoomId.current) : undefined
+        const sole = allowKnownSole && candidates.length === 1 ? candidates[0] : undefined
         const fresh = candidates.find((room) => !knownRoomIds.current.has(room.id))
-        const switched = sole || fresh || (expectedSessionFile.current ? candidates.find((room) => room.id !== roomRef.current) : undefined)
+        if (pendingSwitchRef.current && !expected && !fresh && !sole) {
+          if (current) scheduleOffline(current.id)
+          return
+        }
+        const switched = expected || sole || fresh || (expectedSessionFile.current ? candidates.find((room) => room.id !== roomRef.current) : undefined)
         if (switched) {
           knownRoomIds.current.add(switched.id)
           capGrowingSet(knownRoomIds.current, KNOWN_ROOM_IDS_MAX)
-          if (candidates.length > 1 && !fresh && !sole) {
+          if (candidates.length > 1 && !expected && !fresh && !sole) {
             // 这一步不订阅、不校验：把预期目标作废，否则 clearRoom 守卫会长期失效
             expectedSessionFile.current = null
+            expectedRoomId.current = null
+            pendingSwitchRef.current = false
             setNotice({ text: "检测到多个在线会话，请手动选择要看的那个。", tone: "warn" })
             return
           }
-          subscribeRef.current(switched.id)
-          // 请求校验成功后预期文件
-          if (expectedSessionFile.current) {
-            void checkSwitchedRoom(switched.id, expectedSessionFile.current)
-          }
-          setNotice({ text: `已切换到「${roomTitle(switched)}」`, tone: "warn", context: `room:${switched.id}` })
+          completeRoomSwitch(switched)
           return
         }
         if (current) {
@@ -3205,6 +3324,7 @@ export function useRelay() {
           return
         }
         if (roomRef.current) {
+          onlineRef.current = false
           setOnline(false)
           setBusy(false)
           setActivity("")
@@ -3217,7 +3337,7 @@ export function useRelay() {
           return
         }
         const anyOnline = list.find((room) => room.online)
-        if (anyOnline && !lazySessionRef.current && !(deviceModeRef.current && !pendingSwitchRef.current && !expectedSessionFile.current)) {
+        if (anyOnline && !lazySessionRef.current && !(deviceModeRef.current && !pendingSwitchRef.current && !expectedRoomId.current && !expectedSessionFile.current)) {
           subscribeRef.current(anyOnline.id)
         }
         return
@@ -3486,6 +3606,7 @@ export function useRelay() {
         if (offlineId && offlineId !== roomRef.current) return
         setBusy(false)
         setActivity("")
+        onlineRef.current = false
         setOnline(false)
         setUiPrompt(null)
         setDialogs([])
@@ -3505,9 +3626,11 @@ export function useRelay() {
       if (msg.room && msg.room !== roomRef.current) return
       if (type === "subscribed") {
         if (msg.online) cancelOffline()
+        onlineRef.current = !!msg.online
         setOnline(!!msg.online)
         // 订阅时就不在线是确定的状态（选了一个已结束的会话、重连时本机 pi 已经关了），红条直接出
         setRoomDown(!msg.online)
+        busyRef.current = !!msg.busy
         setBusy(!!msg.busy)
         // 重连时可能错过了 turn_stopped：relay 说最近一轮是用户停止的，就不补报完成/出错
         if (msg.turnStopped === true) {
@@ -3618,9 +3741,9 @@ export function useRelay() {
       setRetryAt(Date.now() + wait)
       reconnectRef.current = window.setTimeout(() => connect(), wait)
     }
-    // onmessage 闭包里用到 scheduleOffline / cancelOffline / checkSwitchedRoom / resync：
+    // onmessage 闭包里用到 scheduleOffline / cancelOffline / checkSwitchedRoom / completeRoomSwitch / resync：
     // 都是 useCallback 且依赖为空/稳定数组，显式声明不会引起重连抖动。
-  }, [scheduleOffline, cancelOffline, checkSwitchedRoom, resync, sendResync, channel, dispatch, finishTurn, resetTurn])
+  }, [scheduleOffline, cancelOffline, checkSwitchedRoom, completeRoomSwitch, resync, sendResync, channel, dispatch, finishTurn, resetTurn])
 
   function clearRoom() {
     // Room-scoped notices (e.g. the encrypted-room notice) belong to the
@@ -3631,6 +3754,7 @@ export function useRelay() {
     draftOwnerRef.current = ""
     draftHydratedRef.current = false
     expectedSessionFile.current = null
+    expectedRoomId.current = null
     pendingBackfillRef.current = null
     roomRef.current = ""
     syncRef.current = emptySync()
@@ -3649,6 +3773,7 @@ export function useRelay() {
     setRoomId("")
     safeStore.session.remove("pi_room")
     safeStore.session.remove(LAZY_SESSION_STORAGE_KEY)
+    onlineRef.current = false
     setOnline(false)
     setRoomDown(false)
     setBusy(false)
@@ -3686,6 +3811,7 @@ export function useRelay() {
     // 同一目标房间的 force 重订阅（重连）不取消，否则排队的消息永远发不出去。
     const queued = lazySendRef.current
     if (queued && queued.sessionId !== id) cancelLazySendRef.current(false)
+    if (lazyPendingModelRef.current && lazyPendingModelRef.current.sessionId !== id) lazyPendingModelRef.current = null
     const lazySelected = lazySessionRef.current
     if (lazySelected) {
       // 订阅的正是这个未载入会话（别的路径把它变成真实房间了）：保留队列，只撤掉合成项；
@@ -3706,6 +3832,7 @@ export function useRelay() {
     // 同一房间（重连 / 再点一次当前房间）且已有镜像：只要 seq 之后的增量，界面不清空不闪
     const resume = roomRef.current === id && sync.room === id && !!sync.rev
     if (roomRef.current && roomRef.current !== id) pendingSwitchRef.current = false
+    if (id === expectedRoomId.current) expectedRoomId.current = null
     roomRef.current = id
     // Opening an encrypted room re-arms the one-shot ACK request: if this
     // viewer still holds no ACK, resolving this room's key asks the
@@ -3720,6 +3847,7 @@ export function useRelay() {
     // 读 roomsRef 而不是闭包 rooms：connect 是 useCallback([])，闭包里的 rooms
     // 永远是首帧空数组，会让 online/busy 恒为 false（输入条被禁用、闪红条）。
     const room = roomsRef.current.find((item) => item.id === id)
+    onlineRef.current = !!room?.online
     setOnline(!!room?.online)
     setBusy(!!room?.busy)
     // 同步更新 ref：订阅确认帧可能在本轮 effect 之前到达，避免用旧房间的 busy 误判完成
@@ -3752,8 +3880,11 @@ export function useRelay() {
       setSnapshotPending(false)
       resetSendState()
       // 切房间/换设备时草稿和图不能跟着走：否则容易把写给 Mac 的话发到 Windows
+      const pendingBackfill = pendingBackfillRef.current
+      const backfillMismatch = !!(pendingBackfill?.targetRoomId && pendingBackfill.targetRoomId !== id)
+      if (backfillMismatch) pendingBackfillRef.current = null
       const backfill = pendingBackfillRef.current
-      pendingBackfillRef.current = null
+      pendingBackfillRef.current = backfillMismatch ? pendingBackfill : null
       // 草稿落盘（P3-3）：换到别的房间才存旧/恢复新；同房重订阅草稿原样保留
       // （刷新重连时内存草稿是空的，先存后恢复会把落盘草稿误删）。fork 回填优先于落盘恢复。
       if (draftOwnerRef.current !== id) {
@@ -4301,6 +4432,8 @@ export function useRelay() {
     setTrying(false)
     cancelLazySendRef.current(false)
     clearLazyTimers()
+    lazyPendingModelRef.current = null
+    lazyCatalogRef.current = null
     clearRoom()
     dispatch({ type: "reset" })
     roomsRef.current = []
@@ -4679,22 +4812,85 @@ export function useRelay() {
    * 这样命令回包和 room_list 无论谁先到，都不会把回填内容清掉。
    * notice 跟着回填一起出现；room_list 随后还会写“已切换到…”，所以订阅路径要等这一轮结束再压一次。
    */
-  const restoreDraftAfterSwitch = useCallback((originRoom: string, text: string, notice = "") => {
+  const restoreDraftAfterSwitch = useCallback((originRoom: string, text: string, notice = "", targetRoomId?: string) => {
     if (!text) return
     const show = () => {
       if (notice) setNotice({ text: notice, tone: "warn" })
     }
     if (roomRef.current !== originRoom) {
-      setDraft(text)
-      show()
-      return
+      if (!targetRoomId || roomRef.current === targetRoomId) {
+        setDraft(text)
+        show()
+        return
+      }
     }
-    pendingBackfillRef.current = { text, notice }
+    pendingBackfillRef.current = { text, notice, targetRoomId }
   }, [])
+
+  const runDeviceCommand = useCallback(async (deviceId: string, command: string, args?: Record<string, unknown>) => {
+    const harness = command === "harness_start"
+    const timeout = harness ? HARNESS_START_TIMEOUT_MS : DEVICE_COMMAND_TIMEOUT_MS
+    const lost = harness ? COPY.requestTimeout : "命令没有回应"
+    const data = await channel.deviceCommand(deviceId, command, args, timeout, lost)
+    if (command === "get_available_models") {
+      lazyCatalogRef.current = { deviceId, items: extractLazyCatalog(data) }
+    }
+    return data
+  }, [channel])
 
   const runCommand = useCallback(async (command: string, args?: Record<string, unknown>) => {
     const switchesRoom = SWITCH_COMMANDS.has(command)
-    if (lazySessionRef.current) throw new RelayError("not_loaded", "先发送一条消息载入这个会话")
+    const lazy = lazySessionRef.current
+    if (lazy) {
+      if (
+        command === "get_available_models" ||
+        command === "get_available_thinking_levels" ||
+        command === "set_model" ||
+        command === "set_thinking_level"
+      ) {
+        if (!authedRef.current) throw new RelayError("offline", "连接已断开，稍后再试")
+        if (rosterActive({ deviceMode: deviceModeRef.current, devices: devicesRef.current, rooms: roomsRef.current })) {
+          const lazyDevice = devicesRef.current.find((item) => item.id === lazy.deviceId)
+          if (!lazyDevice?.online) throw new RelayError("device_offline", COPY.deviceOffline)
+        }
+        if (command === "get_available_models") {
+          return runDeviceCommand(lazy.deviceId, "get_available_models", args)
+        }
+        if (command === "get_available_thinking_levels") {
+          if (lazyCatalogRef.current?.deviceId !== lazy.deviceId) {
+            await runDeviceCommand(lazy.deviceId, "get_available_models")
+          }
+          const items = lazyCatalogRef.current?.deviceId === lazy.deviceId ? lazyCatalogRef.current.items : []
+          const staged = lazyPendingModelRef.current?.sessionId === lazy.id ? lazyPendingModelRef.current.model : undefined
+          const hit =
+            (staged ? items.find((item) => item.provider === staged.provider && item.modelId === staged.modelId) : undefined) ??
+            items.find((item) => item.thinkingLevels?.length)
+          return { levels: hit?.thinkingLevels?.length ? hit.thinkingLevels : ["off", "minimal", "low", "medium", "high"] }
+        }
+        if (command === "set_model") {
+          const provider = typeof args?.provider === "string" ? args.provider.trim() : ""
+          const modelId = typeof args?.modelId === "string" ? args.modelId.trim() : ""
+          if (!provider || !modelId) throw new RelayError("bad_args", "set_model 需要 provider 与 modelId")
+          const catalog = lazyCatalogRef.current?.deviceId === lazy.deviceId ? lazyCatalogRef.current.items : []
+          const staged = stageLazyModel(lazyPendingModelRef.current, lazy.id, provider, modelId, catalog, thinkingLevelRef.current)
+          lazyPendingModelRef.current = staged.next
+          setModel(staged.name)
+          setModelMeta({ provider, modelId, name: staged.name })
+          if (staged.nextThinking !== thinkingLevelRef.current) {
+            thinkingLevelRef.current = staged.nextThinking
+            setThinkingLevel(staged.nextThinking)
+          }
+          return { ok: true, switched: true, staged: true, model: { id: modelId, modelId, provider, name: staged.name } }
+        }
+        const level = typeof args?.level === "string" ? args.level.trim() : ""
+        if (!level) throw new RelayError("bad_args", "set_thinking_level 需要 level")
+        lazyPendingModelRef.current = stageLazyThinking(lazyPendingModelRef.current, lazy.id, level)
+        thinkingLevelRef.current = level
+        setThinkingLevel(level)
+        return { ok: true, staged: true, level }
+      }
+      throw new RelayError("not_loaded", "先发送一条消息载入这个会话")
+    }
     if (rosterActive({ deviceMode: deviceModeRef.current, devices: devicesRef.current, rooms: roomsRef.current })) {
       const device = devicesRef.current.find((item) => item.id === selectedDeviceRef.current)
       if (!device?.online) throw new RelayError("device_offline", COPY.deviceOffline)
@@ -4703,10 +4899,10 @@ export function useRelay() {
     if (!onlineRef.current) throw new RelayError("room_offline", "这个会话已结束，无法执行")
     // 预期目标只对"会换房间"的命令有效，且必须在前置校验通过之后记录：
     // delete_session 也带 sessionPath，提前记下会让 clearRoom 守卫长期失效、界面卡在"正在切换会话…"
-    if (switchesRoom && args && typeof args.sessionPath === "string") {
-      expectedSessionFile.current = String(args.sessionPath).replace(/\\/g, "/")
-    }
     if (switchesRoom) {
+      expectedRoomId.current = null
+      expectedSessionFile.current =
+        args && typeof args.sessionPath === "string" ? String(args.sessionPath).replace(/\\/g, "/") : null
       const ticket = ++switchTicketRef.current
       pendingSwitchRef.current = true
       window.setTimeout(() => {
@@ -4725,9 +4921,35 @@ export function useRelay() {
       if (switchesRoom && !unknownOutcome) {
         pendingSwitchRef.current = false
         expectedSessionFile.current = null
+        expectedRoomId.current = null
       }
-      if (command === "navigate_tree" && !unknownOutcome) expectedSessionFile.current = null
+      if (command === "navigate_tree" && !unknownOutcome) {
+        expectedSessionFile.current = null
+        expectedRoomId.current = null
+      }
       throw error
+    }
+    if (switchesRoom) {
+      const res = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : null
+      if (res?.cancelled === true) {
+        pendingSwitchRef.current = false
+        expectedSessionFile.current = null
+        expectedRoomId.current = null
+      } else if (res) {
+        const nextFile = typeof res.sessionFile === "string" && res.sessionFile ? res.sessionFile.replace(/\\/g, "/") : ""
+        const nextRoomId = typeof res.sessionId === "string" && res.sessionId ? res.sessionId.trim() : ""
+        if (nextFile) expectedSessionFile.current = nextFile
+        if (nextRoomId) {
+          if (roomRef.current === nextRoomId) {
+            expectedRoomId.current = null
+            pendingSwitchRef.current = false
+          } else {
+            expectedRoomId.current = nextRoomId
+            const targetRoom = roomsRef.current.find((room) => room.online && room.id === nextRoomId)
+            if (targetRoom) completeRoomSwitch(targetRoom)
+          }
+        }
+      }
     }
     if (command === "set_model" && data && typeof data === "object") {
       const meta = modelMetaFrom((data as { model?: unknown }).model)
@@ -4742,12 +4964,15 @@ export function useRelay() {
     }
     if (command === "get_state" && data && typeof data === "object") {
       const st = data as { model?: unknown; thinkingLevel?: string }
+      const stagedForRoom = lazyPendingModelRef.current?.sessionId === roomRef.current ? lazyPendingModelRef.current : null
       const meta = modelMetaFrom(st.model)
-      if (meta) {
+      if (meta && !stagedForRoom?.model) {
         setModel(meta.name || meta.modelId || "")
         setModelMeta((prev) => mergeModelMeta(prev, meta))
       }
-      if (typeof st.thinkingLevel === "string" && st.thinkingLevel) setThinkingLevel(st.thinkingLevel)
+      if (typeof st.thinkingLevel === "string" && st.thinkingLevel && !stagedForRoom?.thinkingLevel) {
+        setThinkingLevel(st.thinkingLevel)
+      }
     }
     if (command === "delete_session" || command === "fork" || command === "clone" || command === "switch_session") {
       const deviceId = selectedDeviceRef.current
@@ -4760,7 +4985,7 @@ export function useRelay() {
       }
     }
     return data
-  }, [channel])
+  }, [channel, completeRoomSwitch, runDeviceCommand])
 
   useEffect(() => {
     commandSendRef.current = runCommand
@@ -4861,11 +5086,20 @@ export function useRelay() {
   }, [failLazySend, cancelLazySend])
 
   /** 点选未载入的会话：只换本地选择，不调用 harness_start、不订阅。 */
-  const selectListedSession = useCallback((row: ListedSession) => {
-    const device = devicesRef.current.find((item) => item.id === selectedDeviceRef.current)
+  const selectListedSession = useCallback((row: ListedSession | SessionRecordInput) => {
+    if (!row?.id) return
+    const targetDeviceId =
+      "deviceId" in row && typeof row.deviceId === "string" && row.deviceId ? row.deviceId : selectedDeviceRef.current
+    const device =
+      devicesRef.current.find((item) => item.id === targetDeviceId) ??
+      devicesRef.current.find((item) => item.id === selectedDeviceRef.current)
     if (!device?.online) {
       setNotice({ text: COPY.deviceOffline, tone: "bad" })
       return
+    }
+    if (selectedDeviceRef.current !== device.id) {
+      selectedDeviceRef.current = device.id
+      setSelectedDeviceId(device.id)
     }
     const selected = lazySessionRef.current
     // Never dereference `selected` after a `?.` comparison: with no lazy
@@ -4875,7 +5109,28 @@ export function useRelay() {
     if (selected && selected.id === row.id && selected.deviceId === device.id) return
     cancelLazySend(false)
     clearLazyTimers()
-    const selection: LazySelection = { ...row, deviceId: device.id }
+    if (lazyPendingModelRef.current?.sessionId !== row.id) lazyPendingModelRef.current = null
+    const known = (sessionsByDeviceRef.current[device.id] ?? []).find((s) => s.id === row.id)
+    const path = row.path || known?.path
+    const cwd = row.cwd || known?.cwd || ""
+    const firstMessage = row.firstMessage || known?.firstMessage || undefined
+    const listed: ListedSession =
+      "openable" in row && "title" in row
+        ? { ...row, ...(path ? { path } : {}), cwd, ...(firstMessage ? { firstMessage } : {}) }
+        : {
+            id: row.id,
+            title: sessionTitleOf({ name: row.name ?? known?.name, firstMessage, cwd }),
+            ...(firstMessage ? { firstMessage } : {}),
+            ...(path ? { path } : {}),
+            cwd,
+            online: false,
+            busy: false,
+            viewers: 0,
+            messageCount: row.messageCount ?? known?.messageCount ?? 0,
+            updatedAt: row.updatedAt ?? known?.updatedAt ?? Date.now(),
+            openable: false,
+          }
+    const selection: LazySelection = { ...listed, deviceId: device.id }
     setLazySelection(selection)
     setSelectionNonce((n) => n + 1)
     // 从真实房间切走：先退订，别让旧房间的事件继续进 onmessage
@@ -4887,10 +5142,12 @@ export function useRelay() {
     syncRef.current = emptySync()
     lastRoomRef.current = ""
     expectedSessionFile.current = null
+    expectedRoomId.current = null
     pendingSwitchRef.current = false
     safeStore.session.remove("pi_room")
     setRoomId(row.id)
     // 合成房间的 online：让输入条可用；真正的 device.online 由 composerGate 再校验一次
+    onlineRef.current = true
     setOnline(true)
     setRoomDown(false)
     setBusy(false)
@@ -4930,15 +5187,13 @@ export function useRelay() {
   const selectRoom = useCallback((id: string) => {
     // 点“未载入会话”的合成 tab/行时不要把它当成真实房间去订阅
     if (lazySessionRef.current?.id === id) return
+    if (id !== expectedRoomId.current) {
+      expectedRoomId.current = null
+      expectedSessionFile.current = null
+      pendingSwitchRef.current = false
+    }
     subscribeRef.current(id, true)
   }, [])
-
-  const runDeviceCommand = useCallback(async (deviceId: string, command: string, args?: Record<string, unknown>) => {
-    const harness = command === "harness_start"
-    const timeout = harness ? HARNESS_START_TIMEOUT_MS : DEVICE_COMMAND_TIMEOUT_MS
-    const lost = harness ? COPY.requestTimeout : "命令没有回应"
-    return channel.deviceCommand(deviceId, command, args, timeout, lost)
-  }, [channel])
 
   /** P9 C（spec §5.5）：列一台设备允许浏览范围内的子文件夹（命令 list_dirs，attach 声明 fs.browse 才支持）。
    *  只返回目录名和路径，不返回文件、也不传文件内容。不带 path 时用第一个浏览根目录（默认是设备用户的家目录）；
@@ -5042,6 +5297,38 @@ export function useRelay() {
     [channel, deleteSessionFile],
   )
 
+  /** 仅从当前浏览器侧边栏与清单中移除指定会话，保留设备上的会话文件与记录。 */
+  const hideSession = useCallback(
+    async ({ deviceId, sessionId }: { deviceId?: string; sessionId: string }) => {
+      const id = typeof sessionId === "string" ? sessionId.trim() : ""
+      if (!id) throw new RelayError("bad_args", "缺少会话 id")
+      const hidden = rememberDeletedSession(deletedStorage(), id, Date.now(), HIDDEN_SESSION_TTL_MS)
+      const rest = withoutDeletedRooms(roomsRef.current, hidden, roomRef.current || null)
+      if (rest !== roomsRef.current) {
+        roomsRef.current = rest
+        setRooms(rest)
+      }
+      setSessionsByDevice((prev) => {
+        if (deviceId) {
+          const list = prev[deviceId]
+          if (!list) return prev
+          const kept = withoutDeletedSessions(list, hidden)
+          return kept === list ? prev : { ...prev, [deviceId]: kept }
+        }
+        let changed = false
+        const next: typeof prev = {}
+        for (const [key, list] of Object.entries(prev)) {
+          const kept = list ? withoutDeletedSessions(list, hidden) : list
+          if (kept !== list) changed = true
+          next[key] = kept
+        }
+        return changed ? next : prev
+      })
+      return { status: "hidden" as const }
+    },
+    [],
+  )
+
   // 别的标签页删了会话（deletedSessions.ts 的记录变了）：这一页的名册和手里的会话清单马上跟着去掉，不等下一份 room_list / get_sessions
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
@@ -5102,11 +5389,14 @@ export function useRelay() {
   }, [requireFileDevice, runDeviceCommand])
 
   /** 冷 fork：本机无头打开目标文件并落一个新会话，不启动 pi 进程。 */
-  const forkSessionFile = useCallback(async (sessionPath: string) => {
+  const forkSessionFile = useCallback(async (sessionPath: string, options?: { entryId?: string; position?: "at" | "before" }) => {
     const target = typeof sessionPath === "string" ? sessionPath.trim() : ""
     if (!target) throw new RelayError("bad_args", "缺少会话路径")
     const deviceId = requireFileDevice()
-    const data = await runDeviceCommand(deviceId, "fork_session_file", { sessionPath: target })
+    const data =
+      options && (options.entryId || options.position)
+        ? await runDeviceCommand(deviceId, "fork_session_file", { sessionPath: target, ...options })
+        : await runDeviceCommand(deviceId, "fork_session_file", { sessionPath: target })
     const rec = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : {}
     upsertSessionRow(deviceId, sessionFileRow(rec.session))
     refreshSessionsSoon(deviceId)
@@ -5381,6 +5671,7 @@ export function useRelay() {
     if (selectedDeviceRef.current === id) return
     // 换设备前取消还没发出去的队列：草稿/图片本来就该跟着设备清掉
     cancelLazySendRef.current(false)
+    lazyPendingModelRef.current = null
     setLazySelection(null)
     selectedDeviceRef.current = id
     setSelectedDeviceId(id)
@@ -5437,6 +5728,12 @@ export function useRelay() {
       }
       if (suppressStartedRoomsRef.current.has(`${deviceId}:${roomId}`)) {
         suppressStartedRoomsRef.current.delete(`${deviceId}:${roomId}`)
+        return
+      }
+      if (lazySessionRef.current?.id === roomId) {
+        setLazySelection(null)
+        setSelectionNonce((n) => n + 1)
+        subscribeRef.current(roomId, true)
         return
       }
       selectRoom(roomId)
@@ -5516,7 +5813,7 @@ export function useRelay() {
       setNotice({ text: message, tone: "bad" })
       return { ok: false, error: message }
     }
-  }, [openLazyRoom, runDeviceCommand, selectRoom])
+  }, [openLazyRoom, runDeviceCommand, selectRoom, setLazySelection])
 
   const flushLazySend = useCallback(async (token: number) => {
     const send = lazySendRef.current
@@ -5541,7 +5838,26 @@ export function useRelay() {
       noteLocalEchoCid(send.cid)
       dispatch(images ? { type: "echo", text: send.text, images, cid: send.cid } : { type: "echo", text: send.text, cid: send.cid })
     }
+    let stagedWarning = ""
+    const pendingModel = lazyPendingModelRef.current?.sessionId === send.sessionId ? lazyPendingModelRef.current : null
+    if (lazyPendingModelRef.current?.sessionId === send.sessionId) lazyPendingModelRef.current = null
     try {
+      if (pendingModel?.model) {
+        try {
+          await commandSendRef.current("set_model", { provider: pendingModel.model.provider, modelId: pendingModel.model.modelId })
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message.trim() : ""
+          stagedWarning = `切换模型失败：${msg || "命令失败"}`
+        }
+      }
+      if (pendingModel?.thinkingLevel) {
+        try {
+          await commandSendRef.current("set_thinking_level", { level: pendingModel.thinkingLevel })
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message.trim() : ""
+          if (!stagedWarning) stagedWarning = `切换思考级别失败：${msg || "命令失败"}`
+        }
+      }
       // 刚载入的会话也走输入卡当前的投递方式：忙时按选择 steer / follow_up，空闲 prompt。
       const plan = deliveryPlan(sendModeRef.current, busyRef.current)
       const accepted = await commandSendRef.current(plan.command, args)
@@ -5552,8 +5868,9 @@ export function useRelay() {
       if (lazySendRef.current?.token === token) {
         clearLazyTimers()
         setLazySend(stepLazySend(lazySendRef.current, { type: "submitted" }).send)
-        // 只清这次发送的"正在发送…"；等待期间到达的错误/结果提示要保留
-        setNotice((prev) => clearNoticeCode(prev, "lazy-send"))
+        // 只清这次发送的"正在发送…"；等待期间到达的错误/结果提示要保留，若暂存模型应用失败则提醒
+        if (stagedWarning) setNotice({ text: stagedWarning, tone: "warn" })
+        else setNotice((prev) => clearNoticeCode(prev, "lazy-send"))
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "发送失败"
@@ -5568,10 +5885,42 @@ export function useRelay() {
     }
   }, [clearLazyTimers, noteLocalEchoCid, setLazySend, dispatch])
 
-  /** 目标房间确认在线：把 waiting 推进到 sending，并只安排一次提交。 */
+  /** 目标房间确认在线：把 waiting 推进到 sending，并只安排一次提交（无排队发送时也要应用暂存的模型/思考级别）。 */
   const markLazyRoomReady = useCallback((roomId: string, deviceId: string) => {
     const current = lazySendRef.current
-    if (!current) return
+    if (!current) {
+      const pending = lazyPendingModelRef.current
+      if (!pending || pending.sessionId !== roomId) return
+      if (lazyReadyTimerRef.current) window.clearTimeout(lazyReadyTimerRef.current)
+      lazyReadyTimerRef.current = window.setTimeout(() => {
+        lazyReadyTimerRef.current = null
+        if (roomRef.current !== roomId || lazySendRef.current) return
+        const target = lazyPendingModelRef.current?.sessionId === roomId ? lazyPendingModelRef.current : null
+        if (!target) return
+        lazyPendingModelRef.current = null
+        void (async () => {
+          let warning = ""
+          if (target.model) {
+            try {
+              await commandSendRef.current("set_model", { provider: target.model.provider, modelId: target.model.modelId })
+            } catch (error: unknown) {
+              const msg = error instanceof Error ? error.message.trim() : ""
+              warning = `切换模型失败：${msg || "命令失败"}`
+            }
+          }
+          if (target.thinkingLevel) {
+            try {
+              await commandSendRef.current("set_thinking_level", { level: target.thinkingLevel })
+            } catch (error: unknown) {
+              const msg = error instanceof Error ? error.message.trim() : ""
+              if (!warning) warning = `切换思考级别失败：${msg || "命令失败"}`
+            }
+          }
+          if (warning) setNotice({ text: warning, tone: "warn" })
+        })()
+      }, 30)
+      return
+    }
     const transition = stepLazySend(current, { type: "room-ready", roomId, deviceId })
     if (transition.action !== "submit" || !transition.send) return
     setLazySend(transition.send)
@@ -5662,6 +6011,7 @@ export function useRelay() {
   const createSession = useCallback((cwd: string) => {
     // 新建会话就是一次真实的打开动作：未载入选择/排队立即作废
     cancelLazySendRef.current(false)
+    lazyPendingModelRef.current = null
     setLazySelection(null)
     // 新建会话页要知道是不是撞上了已有会话（alreadyRunning）：那时不算启动失败，第一条也不发（联动测试 10）
     return beginHarness("cwd", cwd, { cwd })
@@ -5866,8 +6216,15 @@ export function useRelay() {
   )
   const sessionsTruncated = selectedDeviceId ? !!truncatedByDevice[selectedDeviceId] : false
   const pendingStart = selectedDeviceId ? pendingStarts[selectedDeviceId] ?? null : null
+  const resolvedLazySession = useMemo(() => {
+    if (!lazySession) return null
+    if (lazySession.path) return lazySession
+    const hit = (sessionsByDevice[lazySession.deviceId] ?? []).find((s) => s.id === lazySession.id)
+    if (!hit?.path) return lazySession
+    return { ...lazySession, path: hit.path, cwd: lazySession.cwd || hit.cwd }
+  }, [lazySession, sessionsByDevice])
   /** 只点选未载入会话时，给三套皮肤一个可显示的“合成房间”（不订阅、不启动） */
-  const lazyRoom = useMemo(() => (lazySession ? lazyRoomFromRow(lazySession) : null), [lazySession])
+  const lazyRoom = useMemo(() => (resolvedLazySession ? lazyRoomFromRow(resolvedLazySession) : null), [resolvedLazySession])
   const shownRooms = useMemo(() => withLazyRoom(previewRooms, lazyRoom), [previewRooms, lazyRoom])
 
   /** 输入卡唯一事实源：组件只读这个对象，不再自己拼 canSend/canType/placeholder。
@@ -5882,7 +6239,7 @@ export function useRelay() {
         online,
         deviceMode,
         selectedDevice,
-        lazySession,
+        lazySession: resolvedLazySession,
         busy,
         sendMode,
         sending: sendingSend || !!lazySend,
@@ -5891,7 +6248,7 @@ export function useRelay() {
         pendingImages: pendingImages.length,
         pendingFiles: pendingFiles.length,
       }),
-    [draft, authed, browserOnline, roomId, online, deviceMode, selectedDevice, lazySession, busy, sendMode, sendingSend, lazySend, failurePulse, lastFailure, pendingImages, pendingFiles],
+    [draft, authed, browserOnline, roomId, online, deviceMode, selectedDevice, resolvedLazySession, busy, sendMode, sendingSend, lazySend, failurePulse, lastFailure, pendingImages, pendingFiles],
   )
   const composer = useComposerUi(composerFacts)
   /** 失败气泡上的「重试」：只要连接和房间可用就能重发，与当前输入是否为空无关。 */
@@ -5946,7 +6303,7 @@ export function useRelay() {
     roomCryptoStatus: roomId ? roomCryptoStatuses[roomId] ?? null : null,
     decryptFailureCount: roomId ? decryptFailures[roomId] ?? 0 : 0,
     listedSessions,
-    lazySession,
+    lazySession: resolvedLazySession,
     /** 未载入会话的本机正文。设备连上后由 attach 读会话文件推过来。 */
     sessionArchive: (sessionId: string) => {
       if (archiveTick < 0) return null
@@ -6055,6 +6412,7 @@ export function useRelay() {
     sendText,
     abort,
     runCommand,
+    subscribeShellEvents,
     /** P10 使用活动：usage_get → usage_snapshot（无连接/超时/旧 relay 返回诚实空态）。 */
     getUsage,
     /** P11 身份行：relay 自定的中转服务器名（旧 relay null → UI 回退 hostname） */
@@ -6077,6 +6435,8 @@ export function useRelay() {
     deleteSessionFile,
     /** 删除会话（P9 B）：有 session.purge 走设备级命令 + session_removed；否则退回 deleteSessionFile。 */
     deleteSession,
+    /** 仅从当前浏览器列表移除会话（不删除设备磁盘文件）。 */
+    hideSession,
     /** 未载入会话：改名 / 导出 / 冷 fork（都走设备通道，不要求先载入）。 */
     renameSessionFile,
     exportSessionFile,
@@ -6114,6 +6474,10 @@ export function useRelay() {
     revokeViewer: (targetViewerId: string) => viewerIdentityFacade.revokeViewer(targetViewerId),
   }
 }
+
+export type ShellStreamEvent =
+  | { type: "shell_output"; roomId: string; shellId: string; data: string }
+  | { type: "shell_exit"; roomId: string; shellId: string; code: number | null; signal: string | null }
 
 /** usage_state 帧载荷（契约 §4.7.1）：pi 终端 footer 的实时数据。
  *  contextUsage.percent 是百分点（100 = 满）；usageByKind 如 cache_warm（非消息用量）；

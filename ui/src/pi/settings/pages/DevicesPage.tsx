@@ -16,7 +16,7 @@
  *     device.ops 能力位门控，命令走 runDeviceCommand，进度与结果读 diag 的
  *     operationStatus（轮询口径在 useSystemOps，可用性与文案在 systemOpsLogic）。
  *   ○ 新会话自动连上默认设备：本机偏好，改完立即写 pi_remote_pi_settings_v2。
- *   ◌ 阻止设备睡眠、常驻托盘/菜单栏：协议没有对应字段 / 概念，保留形态并标「设计预留」。
+ *   ● 阻止设备睡眠：走设备级 get_prevent_sleep / set_prevent_sleep 命令。
  *
  * 不伪造延迟数字；「默认设备」只表示本机偏好，不冒充 relay 的当前设备。
  *
@@ -29,15 +29,17 @@
  * options live on the room). Presentation only; nothing here writes room
  * data or changes any policy.
  */
-import { Fragment, useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronRight, Laptop, Monitor, Plus, Server } from "lucide-react"
 import { adminTokenErrorText, adminTokenReady, canRevoke, deviceErrorText, ENC_FALLBACK_LABEL, ENC_REASON_LABELS, errorCode, type Device } from "@/relay/devices"
 import { useNow } from "@/pi/hooks/useNow"
 import { useReducedMotion } from "@/pi/hooks/useReducedMotion"
 import { useSettings } from "../SettingsContext"
+import { usePreventSleepToggle } from "./deviceBehaviorHook"
+import { settingsCommandsReady } from "./settingsWrite.ts"
+import { useSettingsCommand, useSettingsPendingRestart } from "./settingsWriteHooks.ts"
 import {
   SettingsGroup,
-  SettingsNote,
   SettingsPageTitle,
   SettingsRow,
   SettingsStatusDot,
@@ -58,6 +60,7 @@ import {
 } from "./devicesLogic"
 import { DeviceSystemOps } from "./DeviceSystemOps"
 import { IdentitySection } from "./IdentitySection"
+import { deviceOpsSupportedOf } from "./systemOpsLogic"
 import "./devices.css"
 
 const REVOKE_ARM_MS = 3000
@@ -85,6 +88,32 @@ function DeviceGlyph({ device }: { device: Device }) {
   )
 }
 
+function PreventSleepRow() {
+  const { p } = useSettings()
+  const { relay } = p
+  const ready = settingsCommandsReady(relay) && relay.browserOnline
+  const query = useSettingsCommand(relay, "get_prevent_sleep", ready, relay.selectedDeviceId ?? "")
+  const sleep = usePreventSleepToggle(relay, ready, query)
+  const sleepDesc =
+    sleep.description === "在被控设备上生效，长任务过夜跑不会被系统睡眠打断" ? undefined : sleep.description
+  return (
+    <SettingsRow
+      title="长任务运行时阻止设备睡眠"
+      tooltip="在被控设备上生效；开启后长任务过夜运行不会被系统睡眠打断"
+      description={sleepDesc}
+    >
+      <SettingsSwitch
+        label="长任务运行时阻止设备睡眠"
+        checked={sleep.checked}
+        disabled={sleep.disabled}
+        onChange={(next) => {
+          void sleep.toggle(next)
+        }}
+      />
+    </SettingsRow>
+  )
+}
+
 export function DevicesPage() {
   const { p, prefs, act } = useSettings()
   const { relay } = p
@@ -100,6 +129,36 @@ export function DevicesPage() {
   const [probes, setProbes] = useState<Record<string, DeviceProbe>>({})
   const [probingId, setProbingId] = useState<string | null>(null)
   const [opsDeviceId, setOpsDeviceId] = useState<string | null>(null)
+  const pendingRestart = useSettingsPendingRestart(relay)
+  const initialAutoExpandedRef = useRef(false)
+  const autoExpandedRestartRef = useRef(false)
+
+  useEffect(() => {
+    if (initialAutoExpandedRef.current || opsDeviceId !== null) return
+    const onlineOps = devices.filter((d) => d.online && deviceOpsSupportedOf(d))
+    const target =
+      devices.find((d) => d.id === relay.selectedDeviceId && d.online && deviceOpsSupportedOf(d)) ??
+      (onlineOps.length === 1 ? onlineOps[0] : undefined)
+    if (target) {
+      initialAutoExpandedRef.current = true
+      setOpsDeviceId(target.id)
+    }
+  }, [opsDeviceId, devices, relay.selectedDeviceId])
+
+  useEffect(() => {
+    if (!pendingRestart) {
+      autoExpandedRestartRef.current = false
+      return
+    }
+    if (opsDeviceId !== null || autoExpandedRestartRef.current) return
+    const target =
+      devices.find((d) => d.id === relay.selectedDeviceId && d.online && deviceOpsSupportedOf(d)) ??
+      devices.find((d) => d.online && deviceOpsSupportedOf(d))
+    if (target) {
+      autoExpandedRestartRef.current = true
+      setOpsDeviceId(target.id)
+    }
+  }, [pendingRestart, opsDeviceId, devices, relay.selectedDeviceId])
 
   useEffect(() => {
     if (!armed) return
@@ -146,10 +205,13 @@ export function DevicesPage() {
    */
   const probeDevice = (device: Device) => {
     if (!device.online || probingId) return
+    const room = relay.rooms.find((r) => r.id === relay.roomId)
+    const roomOwned = !room?.deviceId || room.deviceId === device.id
     const roomReady =
       relay.authed &&
       relay.online &&
       !!relay.roomId &&
+      roomOwned &&
       !(relay.lazySession && relay.lazySession.id === relay.roomId)
     const current = device.id === relay.selectedDeviceId
     setProbingId(device.id)
@@ -215,7 +277,11 @@ export function DevicesPage() {
     <div className="settings-page settings-devices" data-settings-page="devices">
       <SettingsPageTitle title="设备" />
 
-      <SettingsGroup label="我的设备" first>
+      <SettingsGroup
+        label="我的设备"
+        tooltip={`延迟来自设备心跳（${DEVICE_RTT_SCOPE}）；「测试连接」会发一次只读命令实测往返耗时；「设为默认」只保存在本机浏览器，不改设备侧配置。`}
+        first
+      >
         {devices.length === 0 ? (
           <div className="settings-row">
             <span className="settings-device-empty">尚未连接任何设备</span>
@@ -283,8 +349,9 @@ export function DevicesPage() {
                   <button
                     type="button"
                     className="settings-device-action"
+                    disabled={!device.online && !opsOpen}
                     aria-expanded={opsOpen}
-                    title="版本、更新 Pi、重启 Pi、重启设备端、更新设备端组件"
+                    title={device.online || opsOpen ? "版本、更新 Pi、重启 Pi、重启设备端、更新设备端组件" : "设备离线，无法执行系统操作"}
                     onClick={() => setOpsDeviceId(opsOpen ? null : device.id)}
                   >
                     系统操作
@@ -362,26 +429,13 @@ export function DevicesPage() {
       ) : null}
 
       <SettingsGroup label="主机行为">
-        <SettingsRow
-          title="长任务运行时阻止设备睡眠"
-          description="在被控设备上生效，长任务过夜跑不会被系统睡眠打断"
-          status="reserved"
-        >
-          <SettingsSwitch label="长任务运行时阻止设备睡眠（设计预留）" checked disabled />
-        </SettingsRow>
-        <SettingsRow title="新会话自动连上默认设备" description="新建会话时自动归属默认设备">
+        <PreventSleepRow />
+        <SettingsRow title="新会话自动连上默认设备">
           <SettingsSwitch
             label="新会话自动连上默认设备"
             checked={prefs.autoConnectDevice}
             onChange={(checked) => act.setPref("autoConnectDevice", checked)}
           />
-        </SettingsRow>
-        <SettingsRow
-          title="在设备上常驻托盘/菜单栏"
-          description="Pi-Remote 的小图标常驻被控设备，随手看会话状态"
-          status="reserved"
-        >
-          <SettingsSwitch label="在设备上常驻托盘/菜单栏（设计预留）" checked disabled />
         </SettingsRow>
       </SettingsGroup>
 
@@ -392,16 +446,10 @@ export function DevicesPage() {
           </span>
           <span className="settings-device-meta">
             <span className="settings-device-name">添加设备</span>
-            <span className="settings-device-add-desc">在新设备浏览器打开后，输入这里显示的配对码</span>
           </span>
           <ChevronRight size={15} strokeWidth={2} aria-hidden="true" className="settings-device-chevron" />
         </button>
       </SettingsGroup>
-
-      <SettingsNote>
-        在侧边栏顶部的设备选择器也可切换当前设备。延迟来自设备心跳；「测试连接」会发一次只读命令并显示「
-        {DEVICE_RTT_SCOPE}」往返时间；「设为默认」只保存在本机浏览器，不改设备侧配置。
-      </SettingsNote>
     </div>
   )
 }

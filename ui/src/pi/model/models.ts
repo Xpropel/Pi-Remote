@@ -248,15 +248,15 @@ export function modelMenuListOf<T extends { unconfigured?: boolean }>(
   if (unconfigured <= PI_MODEL_MENU_UNCONFIGURED_MAX) return { list: [...rows], hiddenUnconfigured: 0 }
   return { list: rows.filter((r) => !r.unconfigured), hiddenUnconfigured: unconfigured }
 }
-/** 思考级别的中文标签（design c/model-menu：关 / 最少 / 低 / 中 / 高）；不认识的档位原样显示，不猜 */
+/** 思考级别的英文标签（Off / Minimal / Low / Medium / High / XHigh / Max）；不认识的档位原样显示，不猜 */
 const THINKING_LABEL: Record<string, string> = {
-  off: "关",
-  minimal: "最少",
-  low: "低",
-  medium: "中",
-  high: "高",
-  xhigh: "很高",
-  max: "最高",
+  off: "Off",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "XHigh",
+  max: "Max",
 }
 
 export function thinkingLevelZh(level: string): string {

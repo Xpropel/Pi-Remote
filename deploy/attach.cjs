@@ -18,10 +18,18 @@
 "use strict";
 
 const fs = require("node:fs");
-const { readArchive, listSessionFiles, manifestRow } = require("./session-library.cjs");
+const {
+  readArchive,
+  listSessionFiles,
+  manifestRow,
+  renameSessionFileOnDisk,
+  exportSessionFileOnDisk,
+  forkSessionFileOnDisk,
+} = require("./session-library.cjs");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const { fileURLToPath, pathToFileURL } = require("node:url");
 const net = require("node:net");
 const dgram = require("node:dgram");
 const http = require("node:http");
@@ -35,11 +43,12 @@ const PROTOCOL = require("../protocol/v4.json");
 const ATTACH_VERSION = "4.0.0";
 /**
  * attach 声明的能力位（随 auth 帧发出；relay 据此算 devices[].features）：
- *   session.files  P9 B：按 sessionId 在设备整个会话根目录里删除会话文件
- *   fs.browse      P9 C：列出浏览根目录内的子目录（只读目录名，不传文件内容）
- *   device.ops     System operations: device-level restart / update commands
+ *   session.files     P9 B：按 sessionId 在设备整个会话根目录里删除会话文件
+ *   fs.browse         P9 C：列出浏览根目录内的子目录（只读目录名，不传文件内容）
+ *   device.ops        System operations: device-level restart / update commands
+ *   session.file_ops  设备级未载入会话文件操作（跨项目目录 / 无活动房间也可执行改名/导出/冷分叉）
  */
-const CLIENT_CAPS = ["err.v4", "device.token", "session.files", "fs.browse", "device.ops"];
+const CLIENT_CAPS = ["err.v4", "device.token", "session.files", "fs.browse", "device.ops", "session.file_ops"];
 const PAIR_TIMEOUT_MS = 15000;
 /** 反向同步扫描本机会话目录的间隔（P9 B）：默认 30s，PI_REMOTE_LIBRARY_RESCAN_MS 可改，下限 5s */
 const LIBRARY_RESCAN_MS = 30000;
@@ -2056,6 +2065,819 @@ function removeQuiet(file) {
   } catch {}
 }
 
+/* ---------------- Device-level config & settings fallback helpers ---------------- */
+const ATTACH_SETTINGS_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const ATTACH_SETTINGS_TRUST = ["ask", "always", "never"];
+const ATTACH_SETTINGS_DELIVERY = ["one-at-a-time", "all"];
+const ATTACH_SETTINGS_TOP_LEVEL = new Set([
+  "steeringMode", "followUpMode", "hideThinkingBlock", "defaultProjectTrust",
+  "enableInstallTelemetry", "enableSkillCommands", "defaultThinkingLevel", "defaultModel", "defaultProvider",
+  "enabledModels", "modelThinkingLevels", "defaultTools",
+  "skills", "prompts", "extensions", "packages",
+]);
+const ATTACH_SETTINGS_NULLABLE_FIELDS = new Set([
+  "enabledModels", "modelThinkingLevels", "defaultTools", "defaultThinkingLevel",
+  "skills", "prompts", "extensions", "packages",
+]);
+const ATTACH_PACKAGE_FILTER_KEYS = ["extensions", "skills", "prompts", "themes"];
+const ATTACH_SETTINGS_NESTED = {
+  compaction: new Set(["enabled", "reserveTokens", "keepRecentTokens"]),
+  images: new Set(["blockImages", "autoResize"]),
+};
+const ATTACH_FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const ATTACH_SENSITIVE_KEY = /api[-_]?key|access[-_]?key|signing[-_]?key|private[-_]?key|session[-_]?key|client[-_]?secret|refresh[-_]?token|auth[-_]?token|jwt|passphrase|authorization|secret|password|passwd|credential|bearer|cookie|token$/i;
+const ATTACH_MCP_TRANSPORTS = new Set(["stdio", "http", "sse"]);
+const ATTACH_MCP_EXPOSURES = new Set(["codemode", "deferred", "direct", "hidden"]);
+
+class AttachCommandError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+function attachIsObject(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+function resolveConfigAgentDir(env = process.env, fallbackDir = "", preferFallback = false) {
+  if (preferFallback && fallbackDir) return fallbackDir;
+  const raw = String((env && env.PI_CODING_AGENT_DIR) || "").trim();
+  const home = os.homedir();
+  if (!raw) return fallbackDir || path.join(home, ".pi", "agent");
+  try {
+    if (raw === "~") return home;
+    if (/^~[\\/]/.test(raw)) return path.join(home, raw.slice(2));
+    if (/^file:\/\//i.test(raw)) return fileURLToPath(raw);
+    return path.resolve(raw);
+  } catch {
+    return fallbackDir || path.join(home, ".pi", "agent");
+  }
+}
+
+function attachReadJsonObjectFile(filePath, fileLabel) {
+  let st;
+  try {
+    st = fs.lstatSync(filePath);
+  } catch (e) {
+    if (e && e.code === "ENOENT") return { data: {}, existed: false };
+    throw new AttachCommandError("internal", `读取 ${fileLabel} 失败`);
+  }
+  if (typeof st.isSymbolicLink === "function" && st.isSymbolicLink()) {
+    throw new AttachCommandError("internal", `${fileLabel} 是符号链接；为不替换链接，本次未写入`);
+  }
+  if (!st.isFile()) {
+    throw new AttachCommandError("internal", `${fileLabel} 不是普通文件；本次未写入`);
+  }
+  if (Number(st.size) > 1024 * 1024) {
+    throw new AttachCommandError("internal", `${fileLabel} 过大；本次未写入`);
+  }
+  let text;
+  try {
+    text = fs.readFileSync(filePath, "utf8");
+  } catch {
+    throw new AttachCommandError("internal", `读取 ${fileLabel} 失败`);
+  }
+  const body = String(text || "").replace(/^\uFEFF/, "");
+  if (!body.trim()) return { data: {}, existed: true };
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new AttachCommandError("internal", `现有 ${fileLabel} 不是合法 JSON；为不破坏原文件，本次未写入`);
+  }
+  if (!attachIsObject(parsed)) {
+    throw new AttachCommandError("internal", `现有 ${fileLabel} 顶层不是对象；本次未写入`);
+  }
+  return { data: parsed, existed: true };
+}
+
+function attachAtomicWrite0600(filePath, obj) {
+  const dir = path.dirname(filePath);
+  const json = JSON.stringify(obj, null, 2) + "\n";
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    throw new AttachCommandError("internal", "创建配置目录失败");
+  }
+  const tmp = path.join(dir, `.${path.basename(filePath)}.tmp-${process.pid}-${crypto.randomBytes(6).toString("hex")}`);
+  let fd = null;
+  try {
+    fd = fs.openSync(tmp, "wx", 0o600);
+    fs.writeFileSync(fd, json, "utf8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, filePath);
+  } catch {
+    if (fd !== null) { try { fs.closeSync(fd); } catch {} }
+    try { fs.unlinkSync(tmp); } catch {}
+    throw new AttachCommandError("internal", "写入配置失败，原文件未改动");
+  }
+  try {
+    const dfd = fs.openSync(dir, "r");
+    try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); }
+  } catch {}
+}
+
+function attachRedactDeep(v) {
+  if (Array.isArray(v)) return v.map(attachRedactDeep);
+  if (v && typeof v === "object") {
+    const o = {};
+    for (const [k, val] of Object.entries(v)) {
+      if (ATTACH_SENSITIVE_KEY.test(k) && val !== null && val !== undefined) {
+        o[k] = "***";
+        continue;
+      }
+      o[k] = attachRedactDeep(val);
+    }
+    return o;
+  }
+  return v;
+}
+
+function attachSafeId(raw, label, maxLen = 120) {
+  if (typeof raw !== "string") throw new AttachCommandError("bad_args", `${label} 必须是字符串`);
+  const text = raw.trim();
+  if (!text || text.length > maxLen || /[\u0000-\u001f\u007f]/.test(text) || ATTACH_FORBIDDEN_KEYS.has(text)) {
+    throw new AttachCommandError("bad_args", `${label} 不合法`);
+  }
+  return text;
+}
+
+function attachSafeUrl(raw, label) {
+  if (typeof raw !== "string") throw new AttachCommandError("bad_args", `${label} 必须是字符串`);
+  const text = raw.trim();
+  if (!text || text.length > 1000 || /[\u0000-\u001f\u007f]/.test(text)) {
+    throw new AttachCommandError("bad_args", `${label} 格式不合法`);
+  }
+  let parsed;
+  try { parsed = new URL(text); } catch { throw new AttachCommandError("bad_args", `${label} 不是合法 URL`); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new AttachCommandError("bad_args", `${label} 仅支持 http/https`);
+  }
+  return text;
+}
+
+function attachRedactUrl(raw) {
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  try {
+    const u = new URL(raw.trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    return u.origin + (u.pathname && u.pathname !== "/" ? u.pathname : "");
+  } catch { return undefined; }
+}
+
+function attachValidateStringList(field, value, limit, maxLen) {
+  if (!Array.isArray(value)) throw new AttachCommandError("bad_args", `设置 ${field} 必须是数组或 null`);
+  if (value.length > limit) throw new AttachCommandError("bad_args", `设置 ${field} 条目过多`);
+  const out = [];
+  const seen = new Set();
+  for (const item of value) {
+    const clean = attachSafeId(item, `${field} 项`, maxLen);
+    if (!seen.has(clean)) { seen.add(clean); out.push(clean); }
+  }
+  return out;
+}
+
+function attachValidateSetting(field, value) {
+  switch (field) {
+    case "steeringMode":
+    case "followUpMode":
+      if (typeof value !== "string" || !ATTACH_SETTINGS_DELIVERY.includes(value)) {
+        throw new AttachCommandError("bad_args", `设置 ${field} 只能是 one-at-a-time 或 all`);
+      }
+      return value;
+    case "compaction.enabled":
+    case "hideThinkingBlock":
+    case "enableInstallTelemetry":
+    case "enableSkillCommands":
+    case "images.blockImages":
+    case "images.autoResize":
+      if (typeof value !== "boolean") throw new AttachCommandError("bad_args", `设置 ${field} 必须是布尔值`);
+      return value;
+    case "compaction.reserveTokens":
+    case "compaction.keepRecentTokens":
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+        throw new AttachCommandError("bad_args", `设置 ${field} 必须是非负安全整数`);
+      }
+      return value;
+    case "defaultProjectTrust":
+      if (typeof value !== "string" || !ATTACH_SETTINGS_TRUST.includes(value)) {
+        throw new AttachCommandError("bad_args", "设置 defaultProjectTrust 只能是 ask、always 或 never");
+      }
+      return value;
+    case "defaultThinkingLevel":
+      if (value === null) return null;
+      if (typeof value !== "string" || !ATTACH_SETTINGS_THINKING_LEVELS.includes(value)) {
+        throw new AttachCommandError("bad_args", "设置 defaultThinkingLevel 不合法");
+      }
+      return value;
+    case "defaultModel":
+    case "defaultProvider":
+      return attachSafeId(value, `设置 ${field}`, 200);
+    case "enabledModels":
+    case "defaultTools": {
+      if (value === null) return null;
+      return attachValidateStringList(field, value, field === "enabledModels" ? 200 : 100, 200);
+    }
+    case "skills":
+    case "prompts":
+    case "extensions": {
+      if (value === null) return null;
+      return attachValidateStringList(field, value, 200, 500);
+    }
+    case "packages": {
+      if (value === null) return null;
+      if (!Array.isArray(value)) throw new AttachCommandError("bad_args", "设置 packages 必须是数组或 null");
+      if (value.length > 200) throw new AttachCommandError("bad_args", "设置 packages 条目过多");
+      const out = [];
+      const seen = new Set();
+      for (const item of value) {
+        if (typeof item === "string") {
+          const clean = attachSafeId(item, "packages 项", 500);
+          if (!seen.has(clean)) { seen.add(clean); out.push(clean); }
+          continue;
+        }
+        if (!attachIsObject(item)) throw new AttachCommandError("bad_args", "设置 packages 项必须是字符串或对象");
+        for (const k of Object.keys(item)) {
+          if (ATTACH_FORBIDDEN_KEYS.has(k)) throw new AttachCommandError("bad_args", "设置 packages 包含禁用键名");
+        }
+        const src = attachSafeId(item.source, "packages.source", 500);
+        const normalizedObj = { source: src };
+        for (const fk of ATTACH_PACKAGE_FILTER_KEYS) {
+          if (item[fk] !== undefined) normalizedObj[fk] = attachValidateStringList(`packages.${fk}`, item[fk], 200, 500);
+        }
+        if (!seen.has(src)) { seen.add(src); out.push(normalizedObj); }
+      }
+      return out;
+    }
+    case "modelThinkingLevels": {
+      if (value === null) return null;
+      if (!attachIsObject(value)) throw new AttachCommandError("bad_args", "设置 modelThinkingLevels 必须是对象或 null");
+      const out = {};
+      const keys = Object.keys(value);
+      if (keys.length > 200) throw new AttachCommandError("bad_args", "modelThinkingLevels 条目过多");
+      for (const k of keys) {
+        const cleanKey = attachSafeId(k, "模型键", 200);
+        const lvl = value[k];
+        if (lvl === null || lvl === undefined) continue;
+        if (typeof lvl !== "string" || !ATTACH_SETTINGS_THINKING_LEVELS.includes(lvl)) {
+          throw new AttachCommandError("bad_args", "modelThinkingLevels 档位不合法");
+        }
+        out[cleanKey] = lvl;
+      }
+      return out;
+    }
+    default:
+      throw new AttachCommandError("bad_args", `设置 ${field} 不在写桥白名单`);
+  }
+}
+
+function attachSettingsPatchFromArgs(args) {
+  if (!attachIsObject(args)) throw new AttachCommandError("bad_args", "settings_set 需要对象参数");
+  const hasS = Object.prototype.hasOwnProperty.call(args, "settings");
+  const hasP = Object.prototype.hasOwnProperty.call(args, "patch");
+  if (hasS && hasP) throw new AttachCommandError("bad_args", "settings_set 不能同时带 settings 与 patch");
+  if (hasS) {
+    if (!attachIsObject(args.settings)) throw new AttachCommandError("bad_args", "settings 必须是对象");
+    return args.settings;
+  }
+  if (hasP) {
+    if (!attachIsObject(args.patch)) throw new AttachCommandError("bad_args", "patch 必须是对象");
+    return args.patch;
+  }
+  return args;
+}
+
+function attachWriteSettingsPatch(agentDir, args) {
+  const rawPatch = attachSettingsPatchFromArgs(args);
+  const keys = Object.keys(rawPatch);
+  if (!keys.length) throw new AttachCommandError("bad_args", "settings_set 至少要有一个设置项");
+  if (keys.length > 32) throw new AttachCommandError("bad_args", "settings_set 单次设置项过多");
+  const flat = Object.create(null);
+  const put = (field, val) => {
+    if (Object.prototype.hasOwnProperty.call(flat, field)) throw new AttachCommandError("bad_args", `设置 ${field} 重复出现`);
+    flat[field] = attachValidateSetting(field, val);
+  };
+  for (const key of keys) {
+    if (ATTACH_FORBIDDEN_KEYS.has(key)) throw new AttachCommandError("bad_args", `设置 ${key} 不合法`);
+    if (Object.prototype.hasOwnProperty.call(ATTACH_SETTINGS_NESTED, key)) {
+      const sub = rawPatch[key];
+      if (!attachIsObject(sub) || !Object.keys(sub).length) throw new AttachCommandError("bad_args", `设置 ${key} 必须是非空对象`);
+      for (const sKey of Object.keys(sub)) {
+        if (ATTACH_FORBIDDEN_KEYS.has(sKey) || !ATTACH_SETTINGS_NESTED[key].has(sKey)) {
+          throw new AttachCommandError("bad_args", `设置 ${key}.${sKey} 不在写桥白名单`);
+        }
+        put(`${key}.${sKey}`, sub[sKey]);
+      }
+      continue;
+    }
+    if (key.includes(".")) {
+      const parts = key.split(".");
+      if (parts.length !== 2 || !Object.prototype.hasOwnProperty.call(ATTACH_SETTINGS_NESTED, parts[0]) || !ATTACH_SETTINGS_NESTED[parts[0]].has(parts[1])) {
+        throw new AttachCommandError("bad_args", `设置 ${key} 不在写桥白名单`);
+      }
+      put(key, rawPatch[key]);
+      continue;
+    }
+    if (!ATTACH_SETTINGS_TOP_LEVEL.has(key)) throw new AttachCommandError("bad_args", `设置 ${key} 不在写桥白名单`);
+    put(key, rawPatch[key]);
+  }
+  if (Object.prototype.hasOwnProperty.call(flat, "defaultModel") !== Object.prototype.hasOwnProperty.call(flat, "defaultProvider")) {
+    throw new AttachCommandError("bad_args", "defaultModel 与 defaultProvider 必须成对提供");
+  }
+  const filePath = path.join(agentDir, "settings.json");
+  const cur = attachReadJsonObjectFile(filePath, "settings.json").data;
+  const next = { ...cur };
+  for (const field of Object.keys(flat)) {
+    const val = flat[field];
+    const dot = field.indexOf(".");
+    if (dot < 0) {
+      if (val === null && ATTACH_SETTINGS_NULLABLE_FIELDS.has(field)) delete next[field];
+      else next[field] = val;
+    } else {
+      const parent = field.slice(0, dot);
+      const child = field.slice(dot + 1);
+      const currParent = next[parent];
+      if (currParent === undefined) next[parent] = { [child]: val };
+      else if (attachIsObject(currParent)) next[parent] = { ...currParent, [child]: val };
+      else throw new AttachCommandError("internal", `现有 settings.json 的 ${parent} 不是对象；本次未写入`);
+    }
+  }
+  attachAtomicWrite0600(filePath, next);
+  const applied = {};
+  for (const k of Object.keys(flat)) applied[k] = flat[k];
+  return { applied };
+}
+
+function attachMaskApiKey(raw, source) {
+  if (typeof raw !== "string" || !raw.trim()) return { hasApiKey: false, apiKeySource: "none" };
+  const text = raw.trim();
+  if (/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(text)) return { hasApiKey: true, apiKeyHint: text, apiKeySource: "env" };
+  if (text.startsWith("!")) return { hasApiKey: true, apiKeyHint: "命令解析", apiKeySource: source };
+  const tail = text.length >= 8 ? text.slice(-4) : "";
+  return { hasApiKey: true, apiKeyHint: tail ? `已配置（****${tail}）` : "已配置", apiKeySource: source };
+}
+
+function attachModelsReadConfig(agentDir) {
+  const modelsData = attachReadJsonObjectFile(path.join(agentDir, "models.json"), "models.json").data;
+  const authData = attachReadJsonObjectFile(path.join(agentDir, "auth.json"), "auth.json").data;
+  const rawProviders = attachIsObject(modelsData.providers) ? modelsData.providers : {};
+  const ids = new Set([...Object.keys(rawProviders), ...Object.keys(authData)]);
+  const providers = [];
+  for (const id of [...ids].sort()) {
+    if (ATTACH_FORBIDDEN_KEYS.has(id)) continue;
+    const cfg = attachIsObject(rawProviders[id]) ? rawProviders[id] : {};
+    const authEntry = attachIsObject(authData[id]) ? authData[id] : null;
+    const keyInfo = typeof cfg.apiKey === "string" && cfg.apiKey.trim()
+      ? attachMaskApiKey(cfg.apiKey, "models.json")
+      : authEntry && authEntry.type === "api_key" && typeof authEntry.key === "string"
+        ? attachMaskApiKey(authEntry.key, "auth.json")
+        : authEntry && authEntry.type === "oauth"
+          ? { hasApiKey: true, apiKeyHint: "OAuth", apiKeySource: "auth.json" }
+          : { hasApiKey: false, apiKeySource: "none" };
+    const row = {
+      id,
+      inModelsJson: Object.prototype.hasOwnProperty.call(rawProviders, id),
+      inAuthJson: !!authEntry,
+      hasApiKey: keyInfo.hasApiKey,
+      apiKeySource: keyInfo.apiKeySource,
+      ...(keyInfo.apiKeyHint ? { apiKeyHint: keyInfo.apiKeyHint } : {}),
+      models: Array.isArray(cfg.models) ? cfg.models.filter((m) => attachIsObject(m) && typeof m.id === "string").map((m) => {
+        const entry = { id: String(m.id) };
+        if (typeof m.name === "string" && m.name) entry.name = m.name;
+        if (typeof m.api === "string" && m.api) entry.api = m.api;
+        if (typeof m.baseUrl === "string" && m.baseUrl) entry.baseUrl = m.baseUrl;
+        if (typeof m.reasoning === "boolean") entry.reasoning = m.reasoning;
+        if (Array.isArray(m.input)) entry.input = m.input.filter((x) => typeof x === "string");
+        if (typeof m.contextWindow === "number") entry.contextWindow = m.contextWindow;
+        if (typeof m.maxTokens === "number") entry.maxTokens = m.maxTokens;
+        if (attachIsObject(m.headers)) entry.headerKeys = Object.keys(m.headers);
+        return entry;
+      }) : [],
+    };
+    if (typeof cfg.name === "string" && cfg.name) row.name = cfg.name;
+    if (typeof cfg.baseUrl === "string" && cfg.baseUrl) row.baseUrl = cfg.baseUrl;
+    if (typeof cfg.api === "string" && cfg.api) row.api = cfg.api;
+    if (typeof cfg.authHeader === "boolean") row.authHeader = cfg.authHeader;
+    if (attachIsObject(cfg.headers)) row.headerKeys = Object.keys(cfg.headers);
+    providers.push(row);
+  }
+  return { providers };
+}
+
+const attachPiModuleCache = new Map();
+
+async function attachLoadPiModule(entry) {
+  if (attachPiModuleCache.has(entry)) {
+    return attachPiModuleCache.get(entry);
+  }
+  const promise = import(pathToFileURL(entry).href).catch((err) => {
+    attachPiModuleCache.delete(entry);
+    throw err;
+  });
+  attachPiModuleCache.set(entry, promise);
+  return promise;
+}
+
+function attachProjectRegistryModel(m) {
+  if (!attachIsObject(m) || typeof m.id !== "string" || !m.id || typeof m.provider !== "string" || !m.provider) {
+    return null;
+  }
+  const proj = {
+    id: m.id,
+    modelId: m.modelId || m.id,
+    name: m.name || m.id,
+    api: m.api,
+    provider: m.provider,
+    baseUrl: m.baseUrl,
+    reasoning: m.reasoning,
+    input: Array.isArray(m.input) ? m.input : ["text"],
+    contextWindow: m.contextWindow,
+    maxTokens: m.maxTokens,
+  };
+  if (m.cost !== undefined) proj.cost = m.cost;
+  if (m.type !== undefined) proj.type = m.type;
+  return proj;
+}
+
+function attachReadDefaultModel(agentDir) {
+  const settings = attachReadJsonObjectFile(path.join(agentDir, "settings.json"), "settings.json").data;
+  const defProv = typeof settings.defaultProvider === "string" && settings.defaultProvider.trim() ? settings.defaultProvider.trim() : "";
+  const defModel = typeof settings.defaultModel === "string" && settings.defaultModel.trim() ? settings.defaultModel.trim() : "";
+  return defProv && defModel ? { provider: defProv, id: defModel, modelId: defModel } : null;
+}
+
+function attachAvailableThinkingLevels(model) {
+  if (model && Array.isArray(model.thinkingLevels) && model.thinkingLevels.length) return model.thinkingLevels;
+  if (!model || model.reasoning === false) return ["off"];
+  const map = model.thinkingLevelMap;
+  const all = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  return all.filter((lvl) => {
+    const mapped = map && map[lvl];
+    if (mapped === null) return false;
+    if (lvl === "xhigh" || lvl === "max") return mapped !== undefined;
+    return true;
+  });
+}
+
+function attachGetAvailableModelsFallback(agentDir) {
+  const modelsData = attachReadJsonObjectFile(path.join(agentDir, "models.json"), "models.json").data;
+  const authData = attachReadJsonObjectFile(path.join(agentDir, "auth.json"), "auth.json").data;
+  const defaultModel = attachReadDefaultModel(agentDir);
+  const providers = attachIsObject(modelsData.providers) ? modelsData.providers : {};
+  const models = [];
+  const available = [];
+  for (const [provider, cfg] of Object.entries(providers)) {
+    if (!attachIsObject(cfg)) continue;
+    const authEntry = attachIsObject(authData[provider]) ? authData[provider] : null;
+    const hasAuth = (typeof cfg.apiKey === "string" && !!cfg.apiKey.trim()) ||
+      !!(authEntry && ((authEntry.type === "api_key" && authEntry.key) || authEntry.type === "oauth"));
+    const list = Array.isArray(cfg.models) ? cfg.models : [];
+    for (const m of list) {
+      if (!attachIsObject(m) || typeof m.id !== "string" || !m.id) continue;
+      const proj = attachProjectRegistryModel({
+        ...m,
+        api: m.api || cfg.api,
+        provider,
+        baseUrl: m.baseUrl || cfg.baseUrl,
+      });
+      if (!proj) continue;
+      models.push(proj);
+      if (hasAuth) {
+        available.push({ ...proj, thinkingLevels: attachAvailableThinkingLevels(m) });
+      }
+    }
+  }
+  return {
+    models,
+    available,
+    ...(defaultModel ? { defaultModel } : {}),
+  };
+}
+
+function attachGetProviderAuthFallback(agentDir) {
+  const cfg = attachModelsReadConfig(agentDir);
+  return {
+    providers: cfg.providers.map((p) => ({
+      id: p.id,
+      displayName: p.name || p.id,
+      registered: p.inModelsJson,
+      models: p.models.length,
+      configured: p.hasApiKey,
+      authSource: p.hasApiKey ? p.apiKeySource : null,
+      status: { configured: p.hasApiKey, source: p.hasApiKey ? p.apiKeySource : null },
+    })),
+  };
+}
+
+function attachUpsertModelProvider(agentDir, args) {
+  if (!attachIsObject(args)) throw new AttachCommandError("bad_args", "upsert_model_provider 需要对象参数");
+  const id = attachSafeId(args.id, "Provider ID", 120);
+  const modelsPath = path.join(agentDir, "models.json");
+  const authPath = path.join(agentDir, "auth.json");
+  const modelsData = { ...attachReadJsonObjectFile(modelsPath, "models.json").data };
+  const authData = attachReadJsonObjectFile(authPath, "auth.json").data;
+  const providers = attachIsObject(modelsData.providers) ? { ...modelsData.providers } : {};
+  const existing = attachIsObject(providers[id]) ? { ...providers[id] } : null;
+
+  const hasName = Object.prototype.hasOwnProperty.call(args, "name");
+  const hasBaseUrl = Object.prototype.hasOwnProperty.call(args, "baseUrl");
+  const hasApi = Object.prototype.hasOwnProperty.call(args, "api");
+  const hasAuthHeader = Object.prototype.hasOwnProperty.call(args, "authHeader");
+  const clearApiKey = args.clearApiKey === true;
+  const rawApiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : "";
+  if (rawApiKey && (rawApiKey.length > 2000 || /[\u0000-\u001f\u007f]/.test(rawApiKey))) {
+    throw new AttachCommandError("bad_args", "API Key 格式不合法");
+  }
+  const nextBaseUrl = hasBaseUrl ? (typeof args.baseUrl === "string" && args.baseUrl.trim() ? attachSafeUrl(args.baseUrl, "baseUrl") : "") : undefined;
+  const nextApi = hasApi ? (typeof args.api === "string" && args.api.trim() ? attachSafeId(args.api, "API 协议", 80) : "") : undefined;
+  const nextName = hasName ? (typeof args.name === "string" && args.name.trim() ? attachSafeId(args.name, "Provider 名称", 120) : "") : undefined;
+  const writeToModelsJson = !!(existing || nextBaseUrl || nextApi || nextName || hasAuthHeader || args.storage === "models");
+
+  if (writeToModelsJson) {
+    const entry = existing ? { ...existing } : {};
+    if (hasName) { if (nextName) entry.name = nextName; else delete entry.name; }
+    if (hasBaseUrl) { if (nextBaseUrl) entry.baseUrl = nextBaseUrl; else delete entry.baseUrl; }
+    if (hasApi) { if (nextApi) entry.api = nextApi; else delete entry.api; }
+    if (hasAuthHeader) { if (typeof args.authHeader === "boolean") entry.authHeader = args.authHeader; else delete entry.authHeader; }
+    if (clearApiKey) delete entry.apiKey;
+    else if (rawApiKey) entry.apiKey = rawApiKey;
+    providers[id] = entry;
+    modelsData.providers = providers;
+    attachAtomicWrite0600(modelsPath, modelsData);
+    if (clearApiKey && attachIsObject(authData[id])) {
+      const nextAuth = { ...authData };
+      delete nextAuth[id];
+      attachAtomicWrite0600(authPath, nextAuth);
+    }
+  } else {
+    const nextAuth = { ...authData };
+    if (clearApiKey) { delete nextAuth[id]; attachAtomicWrite0600(authPath, nextAuth); }
+    else if (rawApiKey) { nextAuth[id] = { type: "api_key", key: rawApiKey }; attachAtomicWrite0600(authPath, nextAuth); }
+    else throw new AttachCommandError("bad_args", "请提供 Base URL 或 API Key");
+  }
+  return { ok: true, id };
+}
+
+function attachDeleteModelProvider(agentDir, args) {
+  if (!attachIsObject(args)) throw new AttachCommandError("bad_args", "delete_model_provider 需要对象参数");
+  const id = attachSafeId(args.id, "Provider ID", 120);
+  const modelsPath = path.join(agentDir, "models.json");
+  const authPath = path.join(agentDir, "auth.json");
+  const modelsData = attachReadJsonObjectFile(modelsPath, "models.json").data;
+  const authData = attachReadJsonObjectFile(authPath, "auth.json").data;
+  let deleted = false;
+  if (attachIsObject(modelsData.providers) && Object.prototype.hasOwnProperty.call(modelsData.providers, id)) {
+    const nextProviders = { ...modelsData.providers };
+    delete nextProviders[id];
+    attachAtomicWrite0600(modelsPath, { ...modelsData, providers: nextProviders });
+    deleted = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(authData, id)) {
+    const nextAuth = { ...authData };
+    delete nextAuth[id];
+    attachAtomicWrite0600(authPath, nextAuth);
+    deleted = true;
+  }
+  return { ok: true, id, deleted };
+}
+
+function attachUpsertProviderModel(agentDir, args) {
+  if (!attachIsObject(args) || !attachIsObject(args.model)) throw new AttachCommandError("bad_args", "upsert_provider_model 参数不合法");
+  const provider = attachSafeId(args.provider, "Provider ID", 120);
+  const rawM = args.model;
+  const model = { id: attachSafeId(rawM.id, "模型 ID", 160) };
+  if (typeof rawM.name === "string" && rawM.name.trim()) model.name = attachSafeId(rawM.name, "模型名称", 160);
+  if (typeof rawM.api === "string" && rawM.api.trim()) model.api = attachSafeId(rawM.api, "模型 API", 80);
+  if (typeof rawM.baseUrl === "string" && rawM.baseUrl.trim()) model.baseUrl = attachSafeUrl(rawM.baseUrl, "模型 baseUrl");
+  if (typeof rawM.reasoning === "boolean") model.reasoning = rawM.reasoning;
+  if (rawM.contextWindow !== undefined && rawM.contextWindow !== null) {
+    const cw = Number(rawM.contextWindow);
+    if (!Number.isSafeInteger(cw) || cw <= 0 || cw > 10_000_000) throw new AttachCommandError("bad_args", "contextWindow 不合法");
+    model.contextWindow = cw;
+  }
+  if (rawM.maxTokens !== undefined && rawM.maxTokens !== null) {
+    const mt = Number(rawM.maxTokens);
+    if (!Number.isSafeInteger(mt) || mt <= 0 || mt > 2_000_000) throw new AttachCommandError("bad_args", "maxTokens 不合法");
+    model.maxTokens = mt;
+  }
+  if (Array.isArray(rawM.input)) {
+    const mods = rawM.input.filter((x) => x === "text" || x === "image");
+    if (mods.length) model.input = [...new Set(mods)];
+  }
+  const originalId = typeof args.originalId === "string" && args.originalId.trim() ? attachSafeId(args.originalId, "原模型 ID", 160) : model.id;
+  const modelsPath = path.join(agentDir, "models.json");
+  const modelsData = { ...attachReadJsonObjectFile(modelsPath, "models.json").data };
+  const providers = attachIsObject(modelsData.providers) ? { ...modelsData.providers } : {};
+  const existingProvider = attachIsObject(providers[provider]) ? { ...providers[provider] } : {};
+  const list = Array.isArray(existingProvider.models) ? existingProvider.models.map((m) => ({ ...m })) : [];
+  const idx = list.findIndex((m) => m && m.id === originalId);
+  if (idx >= 0) {
+    const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+    const merged = { ...list[idx], ...model };
+    if (hasOwn(rawM, "name") && !model.name) delete merged.name;
+    if (hasOwn(rawM, "api") && !model.api) delete merged.api;
+    if (hasOwn(rawM, "baseUrl") && !model.baseUrl) delete merged.baseUrl;
+    if (hasOwn(rawM, "input") && !model.input) delete merged.input;
+    if (hasOwn(rawM, "contextWindow") && (rawM.contextWindow === null || rawM.contextWindow === "")) delete merged.contextWindow;
+    if (hasOwn(rawM, "maxTokens") && (rawM.maxTokens === null || rawM.maxTokens === "")) delete merged.maxTokens;
+    list[idx] = merged;
+  } else {
+    list.push(model);
+  }
+  existingProvider.models = list;
+  providers[provider] = existingProvider;
+  modelsData.providers = providers;
+  attachAtomicWrite0600(modelsPath, modelsData);
+  return { ok: true, provider, modelId: model.id };
+}
+
+function attachDeleteProviderModel(agentDir, args) {
+  if (!attachIsObject(args)) throw new AttachCommandError("bad_args", "delete_provider_model 需要对象参数");
+  const provider = attachSafeId(args.provider, "Provider ID", 120);
+  const modelId = attachSafeId(args.modelId, "模型 ID", 160);
+  const modelsPath = path.join(agentDir, "models.json");
+  const modelsData = attachReadJsonObjectFile(modelsPath, "models.json").data;
+  const providers = attachIsObject(modelsData.providers) ? modelsData.providers : null;
+  if (!providers || !attachIsObject(providers[provider]) || !Array.isArray(providers[provider].models)) {
+    return { ok: true, provider, modelId, deleted: false };
+  }
+  const after = providers[provider].models.filter((m) => !m || m.id !== modelId);
+  if (after.length === providers[provider].models.length) return { ok: true, provider, modelId, deleted: false };
+  attachAtomicWrite0600(modelsPath, { ...modelsData, providers: { ...providers, [provider]: { ...providers[provider], models: after } } });
+  return { ok: true, provider, modelId, deleted: true };
+}
+
+function attachMcpReadConfigList(agentDir) {
+  const data = attachReadJsonObjectFile(path.join(agentDir, "mcp.json"), "mcp.json").data;
+  const servers = attachIsObject(data.mcpServers) ? data.mcpServers : {};
+  const out = [];
+  for (const name of Object.keys(servers).sort()) {
+    if (ATTACH_FORBIDDEN_KEYS.has(name)) continue;
+    const cfg = servers[name];
+    if (!attachIsObject(cfg)) continue;
+    const transport = typeof cfg.transport === "string" && cfg.transport ? cfg.transport : (typeof cfg.url === "string" && cfg.url ? "http" : "stdio");
+    const row = {
+      name,
+      id: name,
+      transport,
+      enabled: cfg.enabled !== false,
+      exposure: typeof cfg.exposure === "string" && cfg.exposure ? cfg.exposure : "codemode",
+      source: "config",
+      editable: true,
+      connected: false,
+      status: cfg.enabled === false ? "disabled" : "configured",
+    };
+    if (typeof cfg.command === "string" && cfg.command) row.command = cfg.command;
+    if (Array.isArray(cfg.args)) row.args = cfg.args.filter((a) => typeof a === "string").slice(0, 64);
+    const safeUrl = attachRedactUrl(cfg.url);
+    if (safeUrl) {
+      row.url = safeUrl;
+      try {
+        if (new URL(String(cfg.url)).search) row.hasUrlQuery = true;
+      } catch {}
+    }
+    if (typeof cfg.description === "string" && cfg.description) row.description = cfg.description;
+    if (typeof cfg.timeout === "number") row.timeout = cfg.timeout;
+    if (attachIsObject(cfg.env)) row.envKeys = Object.keys(cfg.env);
+    if (attachIsObject(cfg.headers)) row.headerKeys = Object.keys(cfg.headers);
+    out.push(row);
+  }
+  return out;
+}
+
+function attachValidateStringMap(raw, label) {
+  if (!attachIsObject(raw)) throw new AttachCommandError("bad_args", `${label} 必须是对象`);
+  const keys = Object.keys(raw);
+  if (keys.length > 64) throw new AttachCommandError("bad_args", `${label} 键过多`);
+  const out = {};
+  for (const k of keys) {
+    const cleanKey = attachSafeId(k, `${label} 键`, 120);
+    const val = raw[k];
+    if (typeof val !== "string" || val.length > 2000 || /[\u0000-\u001f\u007f]/.test(val)) {
+      throw new AttachCommandError("bad_args", `${label} 值不合法`);
+    }
+    out[cleanKey] = val;
+  }
+  return out;
+}
+
+function attachUpsertMcpServer(agentDir, args) {
+  if (!attachIsObject(args)) throw new AttachCommandError("bad_args", "upsert_mcp_server 需要对象参数");
+  const name = attachSafeId(args.name, "MCP 名称", 120);
+  const originalName = typeof args.originalName === "string" && args.originalName.trim() ? attachSafeId(args.originalName, "原 MCP 名称", 120) : name;
+  const mcpPath = path.join(agentDir, "mcp.json");
+  const root = { ...attachReadJsonObjectFile(mcpPath, "mcp.json").data };
+  const servers = attachIsObject(root.mcpServers) ? { ...root.mcpServers } : {};
+  const existing = attachIsObject(servers[originalName]) ? { ...servers[originalName] } : {};
+  let transport = typeof args.transport === "string" ? args.transport.trim().toLowerCase() : "";
+  if (!transport) transport = args.url ? "http" : args.command ? "stdio" : (existing.url ? "http" : "stdio");
+  if (!ATTACH_MCP_TRANSPORTS.has(transport)) throw new AttachCommandError("bad_args", "MCP transport 只能是 stdio、http 或 sse");
+  const nextEntry = { ...existing, transport };
+  if (transport === "stdio") {
+    const cmd = Object.prototype.hasOwnProperty.call(args, "command") ? args.command : existing.command;
+    if (typeof cmd !== "string" || !cmd.trim() || cmd.trim().length > 500 || /[\u0000-\u001f\u007f]/.test(cmd)) {
+      throw new AttachCommandError("bad_args", "stdio 类型 MCP 需要合法 command");
+    }
+    nextEntry.command = cmd.trim();
+    if (Object.prototype.hasOwnProperty.call(args, "args")) {
+      if (Array.isArray(args.args)) {
+        nextEntry.args = args.args.slice(0, 64).map((a) => {
+          if (typeof a !== "string" || a.length > 1000 || /[\u0000-\u001f\u007f]/.test(a)) throw new AttachCommandError("bad_args", "MCP args 不合法");
+          return a;
+        });
+      } else if (args.args == null) delete nextEntry.args;
+      else throw new AttachCommandError("bad_args", "MCP args 必须是字符串数组");
+    }
+    delete nextEntry.url;
+  } else {
+    const urlRaw = Object.prototype.hasOwnProperty.call(args, "url") ? args.url : existing.url;
+    nextEntry.url = attachSafeUrl(urlRaw, "MCP URL");
+    delete nextEntry.command;
+    delete nextEntry.args;
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "enabled")) {
+    if (typeof args.enabled !== "boolean") throw new AttachCommandError("bad_args", "enabled 必须是布尔值");
+    nextEntry.enabled = args.enabled;
+  } else if (nextEntry.enabled === undefined) nextEntry.enabled = true;
+  if (Object.prototype.hasOwnProperty.call(args, "exposure")) {
+    const exp = String(args.exposure || "").trim();
+    if (exp) {
+      if (!ATTACH_MCP_EXPOSURES.has(exp)) throw new AttachCommandError("bad_args", "exposure 不合法");
+      nextEntry.exposure = exp;
+    } else delete nextEntry.exposure;
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "description")) {
+    const desc = typeof args.description === "string" ? args.description.trim() : "";
+    if (desc) nextEntry.description = desc.slice(0, 500);
+    else delete nextEntry.description;
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "timeout")) {
+    if (args.timeout === null || args.timeout === "") delete nextEntry.timeout;
+    else {
+      const t = Number(args.timeout);
+      if (!Number.isSafeInteger(t) || t < 100 || t > 600000) throw new AttachCommandError("bad_args", "timeout 需为 100~600000 整数");
+      nextEntry.timeout = t;
+    }
+  }
+  if (args.clearEnv === true) delete nextEntry.env;
+  else if (Object.prototype.hasOwnProperty.call(args, "env") && args.env != null) nextEntry.env = attachValidateStringMap(args.env, "MCP env");
+  if (args.clearHeaders === true) delete nextEntry.headers;
+  else if (Object.prototype.hasOwnProperty.call(args, "headers") && args.headers != null) nextEntry.headers = attachValidateStringMap(args.headers, "MCP headers");
+  if (originalName !== name) delete servers[originalName];
+  servers[name] = nextEntry;
+  root.mcpServers = servers;
+  attachAtomicWrite0600(mcpPath, root);
+  return { ok: true, name };
+}
+
+function attachToggleMcpServer(agentDir, args) {
+  if (!attachIsObject(args)) throw new AttachCommandError("bad_args", "toggle_mcp_server 需要对象参数");
+  const name = attachSafeId(args.name, "MCP 名称", 120);
+  if (typeof args.enabled !== "boolean") throw new AttachCommandError("bad_args", "enabled 必须是布尔值");
+  const mcpPath = path.join(agentDir, "mcp.json");
+  const data = attachReadJsonObjectFile(mcpPath, "mcp.json").data;
+  const servers = attachIsObject(data.mcpServers) ? { ...data.mcpServers } : {};
+  if (!attachIsObject(servers[name])) throw new AttachCommandError("not_found", "mcp.json 中不存在该 MCP 服务");
+  servers[name] = { ...servers[name], enabled: args.enabled };
+  attachAtomicWrite0600(mcpPath, { ...data, mcpServers: servers });
+  return { ok: true, name, enabled: args.enabled };
+}
+
+function attachDeleteMcpServer(agentDir, args) {
+  if (!attachIsObject(args)) throw new AttachCommandError("bad_args", "delete_mcp_server 需要对象参数");
+  const name = attachSafeId(args.name, "MCP 名称", 120);
+  const mcpPath = path.join(agentDir, "mcp.json");
+  const data = attachReadJsonObjectFile(mcpPath, "mcp.json").data;
+  if (!attachIsObject(data.mcpServers) || !Object.prototype.hasOwnProperty.call(data.mcpServers, name)) {
+    return { ok: true, name, deleted: false };
+  }
+  const servers = { ...data.mcpServers };
+  delete servers[name];
+  attachAtomicWrite0600(mcpPath, { ...data, mcpServers: servers });
+  return { ok: true, name, deleted: true };
+}
+
+function readPreventSleepPref(agentDir) {
+  try {
+    const filePath = path.join(agentDir, "remote-prevent-sleep.json");
+    if (!fs.existsSync(filePath)) return null;
+    const data = attachReadJsonObjectFile(filePath, "remote-prevent-sleep.json").data;
+    if (typeof data.enabled === "boolean") return { enabled: data.enabled };
+    return null;
+  } catch { return null; }
+}
+
+function writePreventSleepPref(agentDir, enabled) {
+  try {
+    attachAtomicWrite0600(path.join(agentDir, "remote-prevent-sleep.json"), { enabled: !!enabled, updatedAt: Date.now() });
+    return true;
+  } catch { return false; }
+}
+
 /* ---------------- System operations (device-level restart / update) ----------------
  * The settings page drives these through device commands that reach attach
  * directly (no active session required). Mutating operations are
@@ -2377,6 +3199,7 @@ class AttachController {
     this.libraryRescanMs = Number.isFinite(rescanRaw) && rescanRaw > 0 ? Math.max(LIBRARY_RESCAN_MIN_MS, rescanRaw) : LIBRARY_RESCAN_MS;
     this.dirs = Array.isArray(options.dirs) ? options.dirs.slice() : [];
     this.attachFile = options.attachFile || defaultAttachFile();
+    this.explicitAgentDir = !!options.agentDir;
     // Env handed to every pi this window launches (piChildEnv); empty in the
     // default layout, where start-pi reads the same env file attach did.
     this.childEnv = options.childEnv && typeof options.childEnv === "object" ? { ...options.childEnv } : {};
@@ -2486,7 +3309,9 @@ class AttachController {
       projects: this.projects,
       // P9 B/C：网页要用 trash 写删除文案、用 browse 判断能不能浏览文件夹
       trash: hasTrashCommand(this.platform),
-      features: CLIENT_CAPS.filter((cap) => cap === "session.files" || cap === "fs.browse" || cap === "device.ops"),
+      features: CLIENT_CAPS.filter(
+        (cap) => cap === "session.files" || cap === "fs.browse" || cap === "device.ops" || cap === "session.file_ops",
+      ),
       browse: { roots: this.browseRoots },
       windowExpiresAt: this.expiresAt,
       platform: this.platform,
@@ -3204,6 +4029,9 @@ class AttachController {
       const name = String(frame.command || "");
       if (name === "harness_start") return void this.onHarness(frame);
       if (name === "delete_session") return void this.onDeleteSession(frame);
+      if (name === "rename_session_file") return void this.onRenameSessionFile(frame);
+      if (name === "export_session_file") return void this.onExportSessionFile(frame);
+      if (name === "fork_session_file") return void this.onForkSessionFile(frame);
       if (name === "list_dirs") return void this.onListDirs(frame);
       // System operations: device-level, reachable with no active session.
       if (name === "get_host_diag") return void this.onHostDiag(frame);
@@ -3213,6 +4041,22 @@ class AttachController {
       if (name === "update_pi") return void this.onUpdatePi(frame);
       if (name === "restart_host") return void this.onRestartHost(frame);
       if (name === "update_components") return void this.onUpdateComponents(frame);
+      // Device-level configuration fallback (reachable with no active session, and direct prevent-sleep control).
+      if (name === "get_settings") return void this.onGetSettings(frame);
+      if (name === "settings_set") return void this.onSettingsSet(frame);
+      if (name === "get_models_config") return void this.onGetModelsConfig(frame);
+      if (name === "get_available_models") return void this.onGetAvailableModels(frame);
+      if (name === "get_provider_auth") return void this.onGetProviderAuth(frame);
+      if (name === "upsert_model_provider") return void this.onUpsertModelProvider(frame);
+      if (name === "delete_model_provider") return void this.onDeleteModelProvider(frame);
+      if (name === "upsert_provider_model") return void this.onUpsertProviderModel(frame);
+      if (name === "delete_provider_model") return void this.onDeleteProviderModel(frame);
+      if (name === "get_mcp_servers") return void this.onGetMcpServers(frame);
+      if (name === "upsert_mcp_server") return void this.onUpsertMcpServer(frame);
+      if (name === "toggle_mcp_server") return void this.onToggleMcpServer(frame);
+      if (name === "delete_mcp_server") return void this.onDeleteMcpServer(frame);
+      if (name === "get_prevent_sleep") return void this.onGetPreventSleep(frame);
+      if (name === "set_prevent_sleep") return void this.onSetPreventSleep(frame);
       this.reply(frame.id, { ok: false, code: "unknown_command", error: "这台设备的连接窗口不支持 " + name });
       return;
     }
@@ -3447,6 +4291,156 @@ class AttachController {
     this.writeOut("已删除会话 " + sessionId + "（" + response.method + "）");
     this.sendRemoved([sessionId]);
     this.reply(frame.id, { ok: true, status: "deleted", data: { method: response.method } });
+  }
+
+  /** 解析并校验会话文件落在本设备 sessionRoot 内（先拦越界路径再 stat，最后 realpath 防符号链接逃逸）。 */
+  resolveSessionFileInRoot(rawPath) {
+    const raw = typeof rawPath === "string" ? rawPath.trim() : "";
+    if (!raw) return { ok: false, code: "bad_args", error: "缺少 sessionPath" };
+    if (unsafePath(raw, this.platform)) return { ok: false, code: "bad_args", error: "会话路径包含不允许的字符" };
+    const abs = path.resolve(raw);
+    if (!abs.toLowerCase().endsWith(".jsonl")) return { ok: false, code: "bad_args", error: "只支持 .jsonl 会话文件" };
+    const root = this.sessionRoot();
+    const rootAbs = path.resolve(root);
+    let realRoot;
+    try {
+      realRoot = fs.realpathSync.native(root);
+    } catch {
+      realRoot = rootAbs;
+    }
+    if (!insideDir(abs, rootAbs, this.platform) && !insideDir(abs, realRoot, this.platform)) {
+      return { ok: false, code: "bad_args", error: "会话路径越界" };
+    }
+    let st;
+    try {
+      st = fs.statSync(abs);
+    } catch (e) {
+      if (e && e.code === "ENOENT") return { ok: false, code: "not_found", error: "会话文件不存在：" + abs };
+      return { ok: false, code: "internal", error: "读取会话文件失败：" + (e && e.message ? e.message : e) };
+    }
+    if (!st.isFile()) return { ok: false, code: "bad_args", error: "不是普通会话文件：" + abs };
+    let realFile;
+    try {
+      realFile = fs.realpathSync.native(abs);
+    } catch (e) {
+      return { ok: false, code: "internal", error: "读取会话路径失败：" + (e && e.message ? e.message : e) };
+    }
+    if (!insideDir(realFile, realRoot, this.platform)) {
+      return { ok: false, code: "bad_args", error: "会话路径越界" };
+    }
+    return { ok: true, file: abs, realFile };
+  }
+
+  /** 文件操作改完会话后立刻向 relay 补一条增量清单+正文并调度全量重扫，避免 UI 等 30 秒。 */
+  pushSessionFileUpdate(res) {
+    if (!res) return null;
+    const wireSession = res.archive ? this.manifestWire(res.archive) : res.session;
+    if (wireSession) {
+      this.send({
+        type: "session_manifest",
+        deviceId: this.deviceId,
+        full: false,
+        updatedAt: Date.now(),
+        sessions: [wireSession],
+      });
+    }
+    if (res.archive) {
+      this.send({
+        type: "session_archive",
+        deviceId: this.deviceId,
+        session: this.archiveWire(res.archive),
+      });
+      this.archiveSentAt.set(String(res.archive.id), Date.now());
+    }
+    this.scheduleLibrary();
+    return wireSession;
+  }
+
+  async onRenameSessionFile(frame) {
+    const args = frame && frame.args && typeof frame.args === "object" ? frame.args : {};
+    const resolved = this.resolveSessionFileInRoot(args.sessionPath);
+    if (!resolved.ok) return this.reply(frame.id, { ok: false, code: resolved.code, error: resolved.error });
+    const header = readSessionHeader(resolved.realFile);
+    const idCandidates = new Set(
+      [args.sessionId, header && header.id, sessionIdFromFileName(resolved.file)]
+        .filter((v) => typeof v === "string" && v.trim())
+        .map((v) => String(v).trim()),
+    );
+    if ((this.onlineRooms || []).some((room) => room && idCandidates.has(String(room.id)))) {
+      return this.reply(frame.id, { ok: false, code: "session_running", error: "会话正在运行，不能直接改名" });
+    }
+    let res;
+    try {
+      res = renameSessionFileOnDisk(resolved.file, args.name);
+    } catch (e) {
+      return this.reply(frame.id, { ok: false, code: (e && e.code) || "internal", error: (e && e.message) || String(e) });
+    }
+    const wireSession = this.pushSessionFileUpdate(res);
+    this.reply(frame.id, {
+      ok: true,
+      status: "renamed",
+      data: {
+        id: res.id,
+        sessionPath: res.sessionPath,
+        name: res.name,
+        previousName: res.previousName,
+        entryId: res.entryId,
+        session: wireSession || res.session,
+      },
+    });
+  }
+
+  async onExportSessionFile(frame) {
+    const args = frame && frame.args && typeof frame.args === "object" ? frame.args : {};
+    const resolved = this.resolveSessionFileInRoot(args.sessionPath);
+    if (!resolved.ok) return this.reply(frame.id, { ok: false, code: resolved.code, error: resolved.error });
+    let res;
+    try {
+      res = exportSessionFileOnDisk(resolved.file, args.format, { maxBytes: args.maxBytes });
+    } catch (e) {
+      return this.reply(frame.id, { ok: false, code: (e && e.code) || "internal", error: (e && e.message) || String(e) });
+    }
+    this.reply(frame.id, {
+      ok: true,
+      status: "exported",
+      data: {
+        format: res.format,
+        sessionId: res.sessionId,
+        sessionPath: res.sessionPath,
+        text: res.text,
+        chars: res.chars,
+        bytes: res.bytes,
+        totalBytes: res.totalBytes,
+        truncated: res.truncated,
+      },
+    });
+  }
+
+  async onForkSessionFile(frame) {
+    const args = frame && frame.args && typeof frame.args === "object" ? frame.args : {};
+    const resolved = this.resolveSessionFileInRoot(args.sessionPath);
+    if (!resolved.ok) return this.reply(frame.id, { ok: false, code: resolved.code, error: resolved.error });
+    let res;
+    try {
+      res = forkSessionFileOnDisk(resolved.file, {
+        entryId: typeof args.entryId === "string" ? args.entryId : undefined,
+        position: args.position,
+      });
+    } catch (e) {
+      return this.reply(frame.id, { ok: false, code: (e && e.code) || "internal", error: (e && e.message) || String(e) });
+    }
+    const wireSession = this.pushSessionFileUpdate(res);
+    const data = {
+      id: res.id,
+      sessionPath: res.sessionPath,
+      parentSession: res.parentSession,
+      cwd: res.cwd,
+      name: res.name,
+      firstMessage: wireSession ? wireSession.firstMessage : res.firstMessage,
+      session: wireSession || res.session,
+    };
+    if (res.text) data.text = res.text;
+    this.reply(frame.id, { ok: true, status: "forked", data });
   }
 
   /**
@@ -4300,6 +5294,305 @@ class AttachController {
         supervised: this.supervised,
         operationStatus: { ...this.operationStatus },
         launchedPiCount: this.launchedPiTargets().length,
+      },
+    });
+  }
+
+  configAgentDir() {
+    return resolveConfigAgentDir(this.env, this.agentDir, this.explicitAgentDir);
+  }
+
+  runConfigCommand(frame, fn) {
+    const onError = (e) => {
+      if (e instanceof AttachCommandError) {
+        this.reply(frame.id, { ok: false, code: e.code, error: e.message });
+      } else {
+        this.reply(frame.id, { ok: false, code: "internal", error: "设备端执行配置命令失败" });
+      }
+    };
+    try {
+      const result = fn();
+      if (result && typeof result.then === "function") {
+        Promise.resolve(result).then(
+          (data) => this.reply(frame.id, { ok: true, status: "ok", data }),
+          onError,
+        );
+        return;
+      }
+      this.reply(frame.id, { ok: true, status: "ok", data: result });
+    } catch (e) {
+      onError(e);
+    }
+  }
+
+  async loadPiModelRegistry(agentDir) {
+    const detected = typeof this.detectPiInstallation === "function" ? this.detectPiInstallation() : null;
+    const pkgDir = detected && typeof detected.packageDir === "string" ? detected.packageDir : "";
+    if (!pkgDir) return null;
+    const entry = path.join(pkgDir, "dist", "index.js");
+    if (!fs.existsSync(entry)) return null;
+    const mod = await attachLoadPiModule(entry);
+    if (!mod || typeof mod.ModelRuntime?.create !== "function" || typeof mod.ModelRegistry !== "function") {
+      return null;
+    }
+    const runtime = await mod.ModelRuntime.create({
+      authPath: path.join(agentDir, "auth.json"),
+      modelsPath: path.join(agentDir, "models.json"),
+      modelsStorePath: path.join(agentDir, "models-store.json"),
+      allowModelNetwork: false,
+    });
+    const registry = new mod.ModelRegistry(runtime);
+    return { runtime, registry };
+  }
+
+  onGetSettings(frame) {
+    this.runConfigCommand(frame, () => {
+      const dir = this.configAgentDir();
+      const raw = attachReadJsonObjectFile(path.join(dir, "settings.json"), "settings.json").data;
+      return { settings: attachRedactDeep(raw), fallbackSource: "device" };
+    });
+  }
+
+  onSettingsSet(frame) {
+    this.runConfigCommand(frame, () => {
+      const dir = this.configAgentDir();
+      const res = attachWriteSettingsPatch(dir, frame.args || {});
+      const hasLiveRooms = this.activeSessionCount() > 0;
+      return {
+        ok: true,
+        applied: res.applied,
+        restartRequired: hasLiveRooms,
+        restartReason: hasLiveRooms
+          ? "运行中的 pi 从内存读取设置；写入 settings.json 将在下一次启动 pi 时生效"
+          : "当前无活动 pi 会话，新开启的会话会直接读取本次保存的设置",
+        reloadHint: "新会话生效；已有 pi 进程可在终端执行 /reload 或重启会话",
+      };
+    });
+  }
+
+  onGetModelsConfig(frame) {
+    this.runConfigCommand(frame, () => attachModelsReadConfig(this.configAgentDir()));
+  }
+
+  onGetAvailableModels(frame) {
+    this.runConfigCommand(frame, async () => {
+      const dir = this.configAgentDir();
+      const fb = attachGetAvailableModelsFallback(dir);
+      let loaded = null;
+      try {
+        loaded = await this.loadPiModelRegistry(dir);
+      } catch {
+        loaded = null;
+      }
+      if (!loaded || !loaded.registry) return fb;
+      const regAll = typeof loaded.registry.getAll === "function" ? loaded.registry.getAll() : [];
+      const regAvail = typeof loaded.registry.getAvailable === "function" ? loaded.registry.getAvailable() : [];
+      const allMap = new Map();
+      const availMap = new Map();
+      for (const raw of regAll) {
+        const proj = attachProjectRegistryModel(raw);
+        if (!proj) continue;
+        allMap.set(`${proj.provider}\0${proj.id}`, proj);
+      }
+      for (const proj of fb.models) {
+        const key = `${proj.provider}\0${proj.id}`;
+        if (!allMap.has(key)) allMap.set(key, proj);
+      }
+      for (const raw of regAvail) {
+        const proj = attachProjectRegistryModel(raw);
+        if (!proj) continue;
+        availMap.set(`${proj.provider}\0${proj.id}`, {
+          ...proj,
+          thinkingLevels: attachAvailableThinkingLevels(raw),
+        });
+      }
+      for (const proj of fb.available) {
+        const key = `${proj.provider}\0${proj.id}`;
+        if (!availMap.has(key)) availMap.set(key, proj);
+      }
+      const defaultModel = attachReadDefaultModel(dir) || fb.defaultModel || null;
+      return {
+        models: Array.from(allMap.values()),
+        available: Array.from(availMap.values()),
+        ...(defaultModel ? { defaultModel } : {}),
+      };
+    });
+  }
+
+  onGetProviderAuth(frame) {
+    this.runConfigCommand(frame, async () => {
+      const dir = this.configAgentDir();
+      const fb = attachGetProviderAuthFallback(dir);
+      let loaded = null;
+      try {
+        loaded = await this.loadPiModelRegistry(dir);
+      } catch {
+        loaded = null;
+      }
+      if (!loaded || !loaded.registry) return fb;
+      const reg = loaded.registry;
+      const rt = loaded.runtime;
+      const regAll = typeof reg.getAll === "function" ? reg.getAll() : [];
+      const registeredIds = new Set(typeof reg.getRegisteredProviderIds === "function" ? reg.getRegisteredProviderIds() : []);
+      const modelCounts = new Map();
+      for (const raw of regAll) {
+        if (!attachIsObject(raw) || typeof raw.provider !== "string" || !raw.provider) continue;
+        modelCounts.set(raw.provider, (modelCounts.get(raw.provider) || 0) + 1);
+      }
+      const fbById = new Map(fb.providers.map((p) => [p.id, p]));
+      const orderedIds = [];
+      const seen = new Set();
+      for (const p of fb.providers) {
+        if (!seen.has(p.id)) {
+          seen.add(p.id);
+          orderedIds.push(p.id);
+        }
+      }
+      for (const id of registeredIds) {
+        if (typeof id === "string" && id && !seen.has(id)) {
+          seen.add(id);
+          orderedIds.push(id);
+        }
+      }
+      for (const id of modelCounts.keys()) {
+        if (!seen.has(id)) {
+          seen.add(id);
+          orderedIds.push(id);
+        }
+      }
+      const providers = orderedIds.map((id) => {
+        const fbItem = fbById.get(id);
+        const rawStatus = typeof reg.getProviderAuthStatus === "function" ? reg.getProviderAuthStatus(id) : null;
+        const oauth = typeof reg.isUsingOAuth === "function" ? Boolean(reg.isUsingOAuth(id)) : false;
+        const subscription = typeof rt?.isUsingSubscription === "function" ? Boolean(rt.isUsingSubscription(id)) : false;
+        const regConfigured = Boolean(rawStatus && rawStatus.configured);
+        const regSource = rawStatus && typeof rawStatus.source === "string" ? rawStatus.source : null;
+        const configured = regConfigured || Boolean(fbItem && fbItem.configured);
+        const authSource = regConfigured ? regSource : (fbItem && fbItem.configured ? fbItem.authSource : null);
+        const displayName = (typeof reg.getProviderDisplayName === "function" && reg.getProviderDisplayName(id)) || (fbItem && fbItem.displayName) || id;
+        const models = Math.max(modelCounts.get(id) || 0, fbItem ? fbItem.models : 0);
+        const registered = Boolean((fbItem && fbItem.registered) || registeredIds.has(id));
+        const status = {
+          configured,
+          source: authSource,
+          ...(oauth ? { oauth: true } : {}),
+          ...(subscription ? { subscription: true } : {}),
+        };
+        return {
+          id,
+          displayName,
+          registered,
+          models,
+          configured,
+          authSource,
+          oauth,
+          subscription,
+          status,
+        };
+      });
+      return { providers };
+    });
+  }
+
+  onUpsertModelProvider(frame) {
+    this.runConfigCommand(frame, () => {
+      const dir = this.configAgentDir();
+      const res = attachUpsertModelProvider(dir, frame.args || {});
+      const restartRequired = this.activeSessionCount() > 0;
+      return { ...res, refreshed: false, restartRequired, config: attachModelsReadConfig(dir) };
+    });
+  }
+
+  onDeleteModelProvider(frame) {
+    this.runConfigCommand(frame, () => {
+      const dir = this.configAgentDir();
+      const res = attachDeleteModelProvider(dir, frame.args || {});
+      const restartRequired = this.activeSessionCount() > 0;
+      return { ...res, refreshed: false, restartRequired, config: attachModelsReadConfig(dir) };
+    });
+  }
+
+  onUpsertProviderModel(frame) {
+    this.runConfigCommand(frame, () => {
+      const dir = this.configAgentDir();
+      const res = attachUpsertProviderModel(dir, frame.args || {});
+      const restartRequired = this.activeSessionCount() > 0;
+      return { ...res, refreshed: false, restartRequired, config: attachModelsReadConfig(dir) };
+    });
+  }
+
+  onDeleteProviderModel(frame) {
+    this.runConfigCommand(frame, () => {
+      const dir = this.configAgentDir();
+      const res = attachDeleteProviderModel(dir, frame.args || {});
+      const restartRequired = this.activeSessionCount() > 0;
+      return { ...res, refreshed: false, restartRequired, config: attachModelsReadConfig(dir) };
+    });
+  }
+
+  onGetMcpServers(frame) {
+    this.runConfigCommand(frame, () => ({ servers: attachMcpReadConfigList(this.configAgentDir()) }));
+  }
+
+  onUpsertMcpServer(frame) {
+    this.runConfigCommand(frame, () => ({
+      ...attachUpsertMcpServer(this.configAgentDir(), frame.args || {}),
+      restartRequired: true,
+    }));
+  }
+
+  onToggleMcpServer(frame) {
+    this.runConfigCommand(frame, () => ({
+      ...attachToggleMcpServer(this.configAgentDir(), frame.args || {}),
+      restartRequired: true,
+    }));
+  }
+
+  onDeleteMcpServer(frame) {
+    this.runConfigCommand(frame, () => ({
+      ...attachDeleteMcpServer(this.configAgentDir(), frame.args || {}),
+      restartRequired: true,
+    }));
+  }
+
+  onGetPreventSleep(frame) {
+    const supported = this.platform === "darwin" || this.platform === "linux";
+    const tool = this.platform === "darwin" ? "caffeinate" : this.platform === "linux" ? "systemd-inhibit" : null;
+    this.reply(frame.id, {
+      ok: true,
+      status: "ok",
+      data: {
+        supported,
+        enabled: !!this.keepAwake,
+        active: !!this.awakeChild,
+        tool,
+      },
+    });
+  }
+
+  onSetPreventSleep(frame) {
+    const args = frame && attachIsObject(frame.args) ? frame.args : {};
+    if (typeof args.enabled !== "boolean") {
+      return this.reply(frame.id, { ok: false, code: "bad_args", error: "set_prevent_sleep 需要布尔参数 enabled" });
+    }
+    const supported = this.platform === "darwin" || this.platform === "linux";
+    if (!supported) {
+      return this.reply(frame.id, { ok: false, code: "unsupported", error: "当前系统暂不支持防休眠抑制" });
+    }
+    this.keepAwake = args.enabled;
+    if (this.keepAwake) this.armKeepAwake();
+    else this.releaseKeepAwake();
+    writePreventSleepPref(this.configAgentDir(), this.keepAwake);
+    this.paintStatus();
+    const tool = this.platform === "darwin" ? "caffeinate" : "systemd-inhibit";
+    this.reply(frame.id, {
+      ok: true,
+      status: "ok",
+      data: {
+        supported,
+        enabled: !!this.keepAwake,
+        active: !!this.awakeChild,
+        tool,
       },
     });
   }
@@ -5384,7 +6677,11 @@ async function main(argv) {
     libraryRescanMs: config.libraryRescanMs,
     launcher: config.launcher,
     terminalApp: config.terminalApp,
-    keepAwake: config.keepAwake,
+    keepAwake: (() => {
+      const prefDir = resolveConfigAgentDir(process.env, path.dirname(resolveAttachFile(envPath)), false);
+      const saved = readPreventSleepPref(prefDir);
+      return saved && typeof saved.enabled === "boolean" ? saved.enabled : config.keepAwake;
+    })(),
     launchWaitMs: config.launchWaitMs !== "" && Number.isFinite(Number(config.launchWaitMs)) ? Number(config.launchWaitMs) : undefined,
     dirs: args.dirs,
     maxHours: args.maxHours,
@@ -7607,6 +8904,13 @@ module.exports = {
   parseSha256Sums,
   pickReleaseAsset,
   extractZipArchive,
+  readPreventSleepPref,
+  attachModelsReadConfig,
+  attachMcpReadConfigList,
+  attachWriteSettingsPatch,
+  attachProjectRegistryModel,
+  attachGetAvailableModelsFallback,
+  attachGetProviderAuthFallback,
 };
 
 if (require.main === module) {

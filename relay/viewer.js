@@ -14,7 +14,7 @@ const { PrefsStore, cleanPrefsSubset } = require("./prefs");
 const { attachCommon, keepalive } = require("./conn");
 const { PAIR_CODES_MAX, newPairCode, formatPairCode, normalizePairCode, pairCheckDigits, pairCheckDigitsV2, pairSourceBlocked, notePairFailure, requestSource, b64buf, authPayload, p256PubKey, verifyP256, cleanViewerPubKeys, adminPayload } = require("./pairing");
 const { ackTrackerOf, isAckFp } = require("./acktrack");
-const { commandTimeoutMs, MESSAGE_COMMANDS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, DEVICE_OPERATION_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, pruneDedupe, dedupeKeyOf } = require("./commands");
+const { commandTimeoutMs, MESSAGE_COMMANDS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, DIRECT_DEVICE_COMMANDS, FALLBACK_DEVICE_COMMANDS, DEVICE_OPERATION_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, pruneDedupe, dedupeKeyOf } = require("./commands");
 const { MAX_DEVICE_NAME, UNREGISTERED_DEVICE, normPath, canonicalCwd, cwdAllowed, underRoots, boundAccount } = require("./devices");
 const { replaySessionArchives } = require("./sessionArchive");
 const { purgeSessions } = require("./purge");
@@ -520,7 +520,7 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
     // always goes to the device connection — with or without an active session —
     // and never to a room. This short-circuit must precede the active-room logic
     // below, which would otherwise hand the command to the extension.
-    if (DEVICE_OPERATION_COMMANDS.has(cmdName) || cmdName === "get_pi_update_info" || cmdName === "get_operation_status") {
+    if (DEVICE_OPERATION_COMMANDS.has(cmdName) || DIRECT_DEVICE_COMMANDS.has(cmdName) || cmdName === "get_pi_update_info" || cmdName === "get_operation_status") {
       runCommand(socket, frame, null, deviceRecord.conn, { dedupeScope: deviceId, deviceId });
       return;
     }
@@ -535,15 +535,22 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
       const targetId = typeof commandArgs.sessionId === "string" && commandArgs.sessionId.trim()
         ? commandArgs.sessionId.trim()
         : sessionIdFromPath(targetPath);
+      const targetAccountId = boundAccount(index, devices, deviceId, config.accountId);
       let row = null;
       if (targetId) {
-        try { row = index.getSession(boundAccount(index, devices, deviceId, config.accountId), deviceId, targetId); } catch { row = null; }
+        try { row = index.getSession(targetAccountId, deviceId, targetId); } catch { row = null; }
       }
       let local = null;
       let targetRoom = null;
       if (row && row.cwd) {
         targetRoom = onlineRoomByCwd(deviceId, row.cwd, dev.platform || "");
         if (targetRoom && targetRoom.local && targetRoom.local.readyState === 1) local = targetRoom.local;
+      }
+      const canDeviceFileOps = !!(hasCap(deviceRecord.conn, "session.file_ops") && deviceRecord.conn && deviceRecord.conn.readyState === 1);
+      if (!local && row && row.cwd && canDeviceFileOps) {
+        // 跨项目兜底：目标 cwd 没有在线扩展房间，但 attach 声明了 session.file_ops，直接交给设备连接
+        targetRoom = null;
+        local = deviceRecord.conn;
       }
       if (!local) {
         const active = dev.activeRoomId ? rooms.peek(dev.activeRoomId) : null;
@@ -561,6 +568,11 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
           }
         }
       }
+      if (!local && canDeviceFileOps) {
+        // 零在线房间兜底：attach 声明了 session.file_ops 时无需活跃房间即可执行文件操作
+        targetRoom = null;
+        local = deviceRecord.conn;
+      }
       if (!local) {
         // attach 窗口只认 harness_start；没有扩展房间连接时直接报“没有在跑的会话”，
         // 不让文件命令落到窗口连接上干等 30 秒超时。
@@ -568,18 +580,25 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
         return;
       }
       const extra = { dedupeScope: deviceId, deviceId };
-      // 改名成功后同步 deviceRecord.archives 里那一条的 name（P2-1）：设备在线时网页可能已经拿到过旧正文，
-      // 不更新的话正文区的标题会一直停在旧名字，直到 attach 下次重推。
-      if (cmdName === "rename_session_file") {
+      // 改名成功后同步 deviceRecord.archives 里那一条的 name（P2-1）与索引；
+      // fork_session_file 成功后也立即把新建 session 行写入索引，避免等待下一轮 manifest。
+      if (cmdName === "rename_session_file" || cmdName === "fork_session_file") {
         const archiveId = targetId;
         const fallbackName = typeof commandArgs.name === "string" ? commandArgs.name : "";
         extra.onResult = (result) => {
-          if (!result || !result.ok || !archiveId) return;
-          const archives = deviceRecord.archives;
-          const body = archives && archives.get(archiveId);
-          if (!body) return;
-          const name = (result.data && typeof result.data.name === "string" && result.data.name) || fallbackName;
-          if (name) body.name = String(name).slice(0, 200);
+          if (!result || !result.ok) return;
+          if (cmdName === "rename_session_file" && archiveId) {
+            const archives = deviceRecord.archives;
+            const body = archives && archives.get(archiveId);
+            const name = (result.data && typeof result.data.name === "string" && result.data.name) || fallbackName;
+            if (body && name) body.name = String(name).slice(0, 200);
+          }
+          const updatedSession = result.data && result.data.session;
+          if (updatedSession && typeof updatedSession.id === "string" && updatedSession.id) {
+            try {
+              index.applyManifest(targetAccountId, deviceId, { full: false, updatedAt: Date.now(), sessions: [updatedSession] }, Date.now(), null);
+            } catch {}
+          }
         };
       }
       // Body search routed at an enc room answers the same explicit unsupported
@@ -597,7 +616,7 @@ function startViewerServer(config, rooms, store, relayContext, onListening, onEr
       if (deviceRecord.activeRoomId) deviceRecord.activeRoomId = null;
       // B-4：只读设备命令不要求活动会话——诊断/文件回程正是没会话时最需要。
       // 仍受 DEVICE_COMMANDS 白名单和设备在线/连接检查约束；发消息类永远走房间。
-      if (READONLY_DEVICE_COMMANDS.has(cmdName) && DEVICE_COMMANDS.has(cmdName)) {
+      if ((READONLY_DEVICE_COMMANDS.has(cmdName) || FALLBACK_DEVICE_COMMANDS.has(cmdName)) && DEVICE_COMMANDS.has(cmdName)) {
         runCommand(socket, frame, null, deviceRecord.conn, { dedupeScope: deviceId, deviceId });
         return;
       }

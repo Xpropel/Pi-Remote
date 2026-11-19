@@ -14,7 +14,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import "@fontsource-variable/inter/wght.css"
 import "@fontsource-variable/geist/wght.css"
+import "@fontsource/jetbrains-mono/400.css"
+import "@fontsource/jetbrains-mono/500.css"
 import { PiPrivacyProvider, PiSendKeyProvider } from "@/pi/headless"
+import { PiSettingsShortcutsProvider } from "./usePiShellShortcuts.ts"
 import { modelRowsOf, thinkingSegmentsOf } from "@/pi/model/models"
 import { openSessionRow, sidebarSessionsOf } from "@/pi/model/sidebarSource"
 import {
@@ -45,7 +48,8 @@ import { useCompletionSound } from "@/chat/composer/sound"
 import type { PiUi, PiUiActions } from "@/pi/hooks/usePiUiState"
 import type { Relay } from "@/relay/useRelay"
 import { attentionItemsOf, attentionWaitingCountOf } from "@/relay/attention"
-import type { SettingsPrefs } from "@/pi/settings/types.ts"
+import { settingsRoomReady } from "@/pi/settings/pages/settingsWrite.ts"
+import { SETTINGS_CONTENT_WIDTH_DEFAULT, type SettingsPrefs } from "@/pi/settings/types.ts"
 
 /* ------------------------------------------------------------------ */
 /* 默认设备                                                             */
@@ -86,6 +90,7 @@ function useDefaultDeviceSelection(relay: Relay, prefs: SettingsPrefs, enabled: 
   const devices = relay.devices
   const selectedDeviceId = relay.selectedDeviceId
   const defaultDeviceId = prefs.defaultDeviceId
+  const autoConnectDevice = prefs.autoConnectDevice
   const authed = relay.authed
   useEffect(() => {
     if (!enabled || !authed) return
@@ -95,11 +100,12 @@ function useDefaultDeviceSelection(relay: Relay, prefs: SettingsPrefs, enabled: 
       defaultDeviceId,
       manual: manual.current,
       appliedDefaultId: applied.current,
+      autoConnectDevice,
     })
     if (!pick) return
     applied.current = pick
     selectDevice(pick)
-  }, [enabled, authed, devices, selectedDeviceId, defaultDeviceId, selectDevice])
+  }, [enabled, authed, devices, selectedDeviceId, defaultDeviceId, autoConnectDevice, selectDevice])
 }
 
 /* ------------------------------------------------------------------ */
@@ -423,6 +429,32 @@ function useAttentionState(relay: Relay): { waiting: number; waitingKeys: readon
 /* 宿主组件                                                             */
 /* ------------------------------------------------------------------ */
 
+function useApprovalPolicySync(relay: Relay, prefs: SettingsPrefs, enabled: boolean): void {
+  const effectiveScope =
+    prefs.approvalScope === "full" && !prefs.approvalUnlockHighRisk ? "workspace" : prefs.approvalScope
+  const allowlistKey = prefs.approvalUseAllowlist ? prefs.approvalAllowlist.join("\n") : ""
+  const canSync =
+    enabled &&
+    settingsRoomReady({
+      authed: relay.authed,
+      browserOnline: relay.browserOnline,
+      online: relay.online,
+      roomId: relay.roomId,
+      lazySession: relay.lazySession,
+    }) &&
+    typeof relay.runCommand === "function"
+
+  useEffect(() => {
+    if (!canSync) return
+    const allowlist = prefs.approvalUseAllowlist ? [...prefs.approvalAllowlist] : []
+    void relay
+      .runCommand("set_approval_policy", { scope: effectiveScope, allowlist })
+      .catch(() => {
+        /* 旧扩展不支持 set_approval_policy 时静默忽略 */
+      })
+  }, [canSync, relay, relay.roomId, effectiveScope, allowlistKey])
+}
+
 export interface PiSettingsHostProps {
   relay: Relay
   ui: PiUi
@@ -454,6 +486,7 @@ export function PiSettingsHost({
   const away = usePageAway()
 
   useDefaultDeviceSelection(relay, prefs, defaultDevice)
+  useApprovalPolicySync(relay, prefs, relay.authed)
   useShortcutDispatch({ relay, ui, act, prefs, enabled: shortcuts, keyboardOpen })
 
   // 通知四个消费者：偏好关闭时对应提醒不发；privacyMode 让标题不带会话正文。
@@ -488,6 +521,16 @@ export function PiSettingsHost({
     ready: relay.authed,
   })
 
+  // 偏好里的 appearanceTheme 变化（重置默认、导入或跨标签页同步）时同步宿主 theme。
+  const prevAppearanceTheme = useRef(prefs.appearanceTheme)
+  useEffect(() => {
+    if (prevAppearanceTheme.current === prefs.appearanceTheme) return
+    prevAppearanceTheme.current = prefs.appearanceTheme
+    if (ui.prefs.theme !== prefs.appearanceTheme) {
+      act.setPref("theme", prefs.appearanceTheme)
+    }
+  }, [prefs.appearanceTheme, ui.prefs.theme, act])
+
   // Reduce motion (settings v2 pref -> app root): mirror the pref onto <html> so the
   // pi-theme.css kill switch keyed on [data-pi-reduced-motion="on"] stills the whole app,
   // not just the settings subtree. prefs come from usePiSettingsPrefs above, so toggling
@@ -518,9 +561,31 @@ export function PiSettingsHost({
     }
   }, [accent, fontSize, density, uiFont])
 
+  // 等宽字体与内容列宽全局生效：默认 JetBrains Mono / 860px；改档后同步到 <html> 与自定义变量
+  const { monoFont, contentWidth } = prefs
+  useLayoutEffect(() => {
+    const el = document.documentElement
+    if (monoFont === "system") el.setAttribute("data-pi-mono-font", "system")
+    else el.removeAttribute("data-pi-mono-font")
+    if (contentWidth !== SETTINGS_CONTENT_WIDTH_DEFAULT) {
+      el.setAttribute("data-pi-content-width", "custom")
+      el.style.setProperty("--cw-pi-user-content-w", `${contentWidth}px`)
+    } else {
+      el.removeAttribute("data-pi-content-width")
+      el.style.removeProperty("--cw-pi-user-content-w")
+    }
+    return () => {
+      el.removeAttribute("data-pi-mono-font")
+      el.removeAttribute("data-pi-content-width")
+      el.style.removeProperty("--cw-pi-user-content-w")
+    }
+  }, [monoFont, contentWidth])
+
   return (
     <PiPrivacyProvider value={gate.privacy}>
-      <PiSendKeyProvider value={prefs.sendKey}>{children}</PiSendKeyProvider>
+      <PiSendKeyProvider value={prefs.sendKey}>
+        <PiSettingsShortcutsProvider value={shortcuts}>{children}</PiSettingsShortcutsProvider>
+      </PiSendKeyProvider>
     </PiPrivacyProvider>
   )
 }

@@ -153,7 +153,7 @@ export function PiSessionMenu({ variant, session, deleteArmed = false, highlight
   // 桌面上当前会话就开在主区，「打开会话」只会是一条灰掉的首项，不画
   const shown = groups.map((g) =>
     g
-      .filter((item) => !(phone && item.desktopOnly) && !(!phone && item.key === "open" && session.current))
+      .filter((item) => !(phone && item.desktopOnly) && !(!phone && item.key === "open" && session.current && session.openable))
       .map((item) => {
         const s = state?.[item.key]
         return s ? { ...item, disabled: s.disabled, reason: s.disabled ? s.reason : undefined } : item

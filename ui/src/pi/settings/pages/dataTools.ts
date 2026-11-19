@@ -107,14 +107,17 @@ export async function measureBrowserCacheBytes(): Promise<number> {
   }
 }
 
-/** 删掉本应用名下的 CacheStorage；失败静默（缓存不是核心功能）。 */
-export async function clearBrowserCaches(): Promise<void> {
+/** 删掉本应用名下的 CacheStorage；返回是否至少清掉了一个缓存箱。 */
+export async function clearBrowserCaches(): Promise<boolean> {
   try {
-    if (typeof caches === "undefined") return
+    if (typeof caches === "undefined") return false
     const names = (await caches.keys()).filter(isOwnedCacheName)
-    await Promise.all(names.map((name) => caches.delete(name)))
+    if (names.length === 0) return false
+    const results = await Promise.all(names.map((name) => caches.delete(name)))
+    return results.some(Boolean)
   } catch {
     // 隐私模式下没有 CacheStorage：忽略。
+    return false
   }
 }
 

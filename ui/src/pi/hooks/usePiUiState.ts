@@ -16,7 +16,7 @@ import { DEFAULT_PI_PREFS, LEGACY_STYLE_KEY, migratePiPrefs, PI_PREFS_KEY, setPi
 export type PiView = "session" | "new" | "settings" | "inbox"
 
 /** 右 pane（桌面）/ 推入页（手机）当前的视图 */
-export type PiPaneView = "changes" | "terminal" | "file"
+export type PiPaneView = "changes" | "terminal" | "shell" | "file"
 
 /** 菜单、sheet、弹窗的打开状态：id 带线名前缀（"a:session-menu"、"c:model"），arg 是它作用的对象（会话 id、文件路径……） */
 export interface PiUiOverlay {
@@ -50,6 +50,8 @@ export interface PiUi {
   prefs: PiPrefs
   /** 有可答的审批卡时是 "approval"：ApprovalContainer（b）写，ComposerContainer（c）读（D-08） */
   blockedBy: PiBlockedBy
+  /** 设备选择中心（登录后首屏 / 手动打开；不持久化，静态画廊默认 false） */
+  deviceHub: boolean
 }
 
 /** 起始状态（#/live 的 seed）：prefs 可以只给几项，其余用默认值 */
@@ -64,6 +66,10 @@ export interface PiUiActions {
   openSettings(): void
   /** 收件箱（设计 D §1：侧栏「待答」行进入） */
   openInbox(): void
+  /** 打开登录后设备选择中心 */
+  openDeviceHub(): void
+  /** 关闭设备选择中心，回到工作区 */
+  closeDeviceHub(): void
   setView(view: PiView): void
   /** ⌘B */
   toggleSidebar(): void
@@ -104,6 +110,7 @@ const DEFAULT_UI: PiUi = {
   expanded: [],
   prefs: DEFAULT_PI_PREFS,
   blockedBy: null,
+  deviceHub: false,
 }
 
 function storage(): Storage | null {
@@ -130,7 +137,7 @@ function write(key: string, value: string) {
   }
 }
 
-const PANES: readonly string[] = ["changes", "terminal", "file"]
+const PANES: readonly string[] = ["changes", "terminal", "shell", "file"]
 
 /** 存储 → 界面状态里能存的那几项；坏数据逐项丢掉 */
 function loadStored(): Partial<PiUi> {
@@ -204,13 +211,34 @@ export function usePiUiState(options: { seed?: PiUiSeed; persist?: boolean } = {
     return () => window.removeEventListener("storage", onStorage)
   }, [persist])
 
+  const returnToHubRef = useRef(false)
   const act = useMemo<PiUiActions>(() => {
     const patch = (next: (cur: PiUi) => Partial<PiUi>) => setUi((cur) => ({ ...cur, ...next(cur) }))
     return {
-      openSession: () => patch(() => ({ view: "session", phonePage: "chat" })),
-      newSession: () => patch(() => ({ view: "new", pane: null, phonePage: "chat", search: null })),
-      openSettings: () => patch(() => ({ view: "settings", pane: null })),
-      openInbox: () => patch(() => ({ view: "inbox", pane: null })),
+      openSession: () =>
+        patch((cur) => {
+          const restoreHub = cur.view === "settings" && returnToHubRef.current
+          returnToHubRef.current = false
+          return { view: "session", phonePage: "chat", deviceHub: restoreHub }
+        }),
+      newSession: () => {
+        returnToHubRef.current = false
+        patch(() => ({ view: "new", pane: null, phonePage: "chat", search: null, deviceHub: false }))
+      },
+      openSettings: () =>
+        patch((cur) => {
+          returnToHubRef.current = cur.deviceHub
+          return { view: "settings", pane: null, deviceHub: false }
+        }),
+      openInbox: () => {
+        returnToHubRef.current = false
+        patch(() => ({ view: "inbox", pane: null, deviceHub: false }))
+      },
+      openDeviceHub: () => patch(() => ({ deviceHub: true, menu: null, search: null })),
+      closeDeviceHub: () => {
+        returnToHubRef.current = false
+        patch(() => ({ deviceHub: false }))
+      },
       setView: (view) => patch(() => ({ view })),
       // P13：共享侧栏（桌面 / 手机）的折叠读 prefs.sidebarCollapsed；
       // 旧 ui.sidebar 继续保留（#/play 舞台用），两边一起翻，⌘B 才真的看得见效果。
@@ -222,9 +250,9 @@ export function usePiUiState(options: { seed?: PiUiSeed; persist?: boolean } = {
       setPane: (pane) => patch(() => ({ pane })),
       togglePane: () => patch((cur) => (cur.view !== "session" ? {} : { pane: cur.pane ? null : lastPane.current })),
       openFile: (path) => patch(() => ({ pane: "file", file: path })),
-      setPaletteOpen: (paletteOpen) => patch(() => ({ paletteOpen })),
+      setPaletteOpen: (paletteOpen) => patch(() => (paletteOpen ? { paletteOpen: true, search: null } : { paletteOpen: false })),
       setPhonePage: (phonePage) => patch(() => ({ phonePage })),
-      setSearch: (search) => patch(() => ({ search })),
+      setSearch: (search) => patch(() => (search !== null ? { search, paletteOpen: false } : { search: null })),
       openMenu: (menu) => patch(() => ({ menu })),
       closeMenu: () => patch(() => ({ menu: null })),
       openSheet: (sheet) => patch(() => ({ sheet })),

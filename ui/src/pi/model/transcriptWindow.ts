@@ -29,7 +29,7 @@ export function transcriptWindowOf<T>(items: readonly T[], limit: number, page: 
 
 /** 流顶那一行的文字（D01） */
 export function showEarlierText(nextPage: number): string {
-  return `显示更早的 ${nextPage} 条`
+  return `Show ${nextPage} earlier ${nextPage === 1 ? "message" : "messages"}`
 }
 
 /**

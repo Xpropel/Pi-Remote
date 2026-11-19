@@ -4,12 +4,13 @@
  * 视觉由 UnifiedSidebar 按 style="cursor" × data-pi-theme 的六套 --sb-* 渲染。旧 PiSidebar 仅保留给手机列表/静态态。
  */
 import { useEffect, useMemo, useState } from "react"
-import { usePiStatic } from "@/components/pi/shared"
+import { MenuItem, MenuSeparator, MenuSurface } from "@/components/kit"
+import { piCopyText } from "@/components/pi/conversation/clipboard"
+import { PiButton, PiDialog, PiMenu, usePiMenuSurface, usePiStatic } from "@/components/pi/shared"
 import type { PiTheme } from "@/components/pi/shared/viewport"
 import {
   clampSidebarWidth,
   fullTimeLabel,
-  PI_SIDEBAR_COPY,
   relativeTimeLabel,
   sidebarDeviceRows,
   sidebarGroupsWithOverlay,
@@ -27,10 +28,14 @@ import {
   type PiSidebarGroup,
   type PiSidebarSession,
 } from "@/pi/sidebar"
+import { MoreVerticalIcon } from "@/pi/sidebar/components/icons"
+import { presetNewSession, resetNewSessionSelection, syncActiveRelayRoom } from "./NewSessionContainer"
 import { useNow } from "@/pi/hooks/useNow"
+import { usePiSettingsPrefs } from "@/pi/hooks/usePiSettingsPrefs"
 import { bodySearchNoteOf, openBodySearchHit, useBodySearch } from "@/pi/hooks/useBodySearch"
 import type { SidebarDrawerControl } from "@/pi/hooks/useSidebarDrawer"
 import { paletteBodyHitsOf } from "@/pi/model/palette"
+import { effectiveSidebarArchivesOf, filterSessionsByRetention } from "@/pi/model/settingsHost"
 import { sessionStatusLineOf, sidebarDataOf, openSessionRow } from "@/pi/model/sidebarSource"
 import { sidebarGroups } from "@/pi/model/sidebarGroups"
 import { PI_SHORTCUT_KEYS, piPlatformOf } from "@/pi/model/shortcuts"
@@ -40,10 +45,58 @@ import { A_SESSION_MENU, SessionRowMenu } from "./SessionMenuContainer"
 import { PI_UI_IDS, type PiContainerProps } from "./types"
 
 const TICK_MS = 30_000
+const RENAME_FIELD_CLASS =
+  "h-(--cw-pi-field-h) w-full min-w-0 rounded-(--cw-radius-input) border border-solid border-(--cw-border-strong) bg-(--cw-surface) px-2.5 text-(length:--cw-text-md) text-(--cw-text) outline-none focus-visible:border-(--cw-pi-field-focus-border)"
+
+function WorkspaceMenuSurface({
+  group,
+  onNewSession,
+  onRename,
+  onResetName,
+  onCopyCwd,
+}: {
+  group: PiSidebarGroup
+  onNewSession: (group: PiSidebarGroup) => void
+  onRename: (group: PiSidebarGroup) => void
+  onResetName: (group: PiSidebarGroup) => void
+  onCopyCwd: (group: PiSidebarGroup) => void
+}) {
+  const surface = usePiMenuSurface()
+  return (
+    <MenuSurface {...surface} aria-label={`${group.label} 工作区操作`} elevation="menu" className="w-[184px]">
+      <MenuItem onSelect={() => onNewSession(group)}>在此目录新建会话</MenuItem>
+      <MenuItem onSelect={() => onRename(group)}>重命名工作区…</MenuItem>
+      {group.customLabel ? <MenuItem onSelect={() => onResetName(group)}>恢复默认名称</MenuItem> : null}
+      {group.cwd ? (
+        <>
+          <MenuSeparator />
+          <MenuItem onSelect={() => onCopyCwd(group)}>复制目录路径</MenuItem>
+        </>
+      ) : null}
+    </MenuSurface>
+  )
+}
 
 /** 宿主没传主题时的兜底：读 <html data-pi-theme>（根节点在 layout effect 里才写，所以优先用宿主传下来的值） */
 function themeOf(): "dark" | "light" {
   return typeof document !== "undefined" && document.documentElement.dataset.piTheme === "light" ? "light" : "dark"
+}
+
+function formatShortcutLabel(keys: readonly string[] | undefined, fallback: string): string {
+  if (!keys || keys.length === 0) return fallback
+  let out = ""
+  for (const raw of keys) {
+    const token = raw.trim()
+    if (!token) continue
+    if (!out) {
+      out = token
+    } else {
+      const prevWord = /[A-Za-z0-9]$/.test(out)
+      const nextWord = token.length > 1
+      out += prevWord || nextWord ? `+${token}` : token
+    }
+  }
+  return out || fallback
 }
 
 export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps; theme?: PiTheme; drawer?: SidebarDrawerControl }) {
@@ -53,6 +106,8 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
   const now = useNow(TICK_MS)
   const isStatic = usePiStatic()
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false)
+  const [renameGroup, setRenameGroup] = useState<PiSidebarGroup | null>(null)
+  const [renameDraft, setRenameDraft] = useState("")
   // 归档视图只是侧栏自己的列表切换（本机归档），不进路由
   const [archiveView, setArchiveView] = useState(false)
   // 静态态（#/live 对图）摆出来的会话菜单作用在哪一行：那一行所在的组要展开，行作为菜单锚点
@@ -62,6 +117,7 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
   const deviceId = relay.selectedDeviceId ?? ""
   const localStore = useSidebarLocalState(account, deviceId)
   const scopeState = localStore.scopeState
+  const settingsPrefs = usePiSettingsPrefs()
   // 正文搜索（A-3）：侧栏搜索打开时在选中设备上搜正文，结果进 data.search.body
   const bodySearch = useBodySearch(relay, ui.search ?? "", ui.search != null)
 
@@ -78,11 +134,27 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
       inbox: relay.inbox,
       selectedDevice: relay.selectedDevice,
     })
+    const sessions = filterSessionsByRetention(base.sessions, settingsPrefs.retention, now, relay.roomId)
+    const effectiveArchives = effectiveSidebarArchivesOf({
+      manualArchives: scopeState.archives,
+      autoArchive: settingsPrefs.autoArchive,
+      now,
+      sessions: sessions
+        .filter((s) => !relay.selectedDeviceId || !s.deviceId || s.deviceId === relay.selectedDeviceId)
+        .map((s) => ({
+          key: sidebarSessionKeyOf(s.deviceId ?? deviceId, s.id),
+          updatedAt: s.updatedAt,
+          active: s.id === relay.roomId,
+          online: s.online,
+        })),
+      pins: scopeState.pins,
+    })
+    const effectiveArchiveSet = new Set(effectiveArchives)
     const devices: PiSidebarDevice[] = sidebarDeviceRows(
       base.devices.map((d) => ({ id: d.id, name: d.name, online: d.online, platform: d.platform, current: d.id === relay.selectedDeviceId })),
       relay.selectedDeviceId ?? null,
     )
-    const sessionIds = new Map(base.sessions.map((s) => [s.id, s]))
+    const sessionIds = new Map(sessions.map((s) => [s.id, s]))
     // 设计 D §2.2：一行实时状态（roomStatusLine）的输入面——房间事实按 id 索引、未读落定按 roomId 索引
     const roomById = new Map(relay.rooms.map((r) => [r.id, r]))
     const turnEndByRoom = new Map(relay.roomTurnEnds.map((t) => [t.roomId, t]))
@@ -92,11 +164,14 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
     // listed, and group headers drop the device-name prefix (the device
     // is already named at the top of the sidebar). No selection yet ->
     // no filter, so every device shows until one is picked.
-    const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: ui.prefs.grouping, expanded: ui.expanded, filter: relay.selectedDeviceId ?? null, ...uncapped })
+    const legacy = sidebarGroups(sessions, base.devices, base.attention, { grouping: ui.prefs.grouping, expanded: ui.expanded, filter: relay.selectedDeviceId ?? null, ...uncapped })
     const groups: PiSidebarGroup[] = legacy.groups.map((group) => {
       const cwd = group.cwd ?? ""
+      const isFlat = group.flat === true
+      const defaultLabel = isFlat ? "" : group.label || sidebarWorkspaceLabel(cwd)
+      const customName = !isFlat ? localStore.workspaceName(group.key) : undefined
       // 归档视图里组全部展开（归档列表通常很短）；静态菜单的目标行所在组也展开
-      const collapsed = !archiveView && scopeState.folders[group.key] !== false && !group.rows.some((row) => row.id === menuTargetId)
+      const collapsed = !isFlat && !archiveView && scopeState.folders[group.key] !== false && !group.rows.some((row) => row.id === menuTargetId)
       const sessions: PiSidebarSession[] = group.rows.map((row) => {
         const session = sessionIds.get(row.id)
         const devId = row.deviceId ?? deviceId
@@ -118,15 +193,28 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
           deviceName: base.devices.find((d) => d.id === devId)?.name ?? "",
           selected: relay.roomId === row.id,
           pinned: scopeState.pins.includes(key),
-          archived: scopeState.archives.includes(key),
+          archived: effectiveArchiveSet.has(key),
           groupId: sidebarWorkspaceGroupId(cwd || session?.cwd),
           enc: session?.enc,
           encReason: session?.encReason,
         }
       })
-      return { id: group.key, kind: "workspace" as const, label: group.label || sidebarWorkspaceLabel(cwd), cwd, collapsed, sessions, count: sessions.length, more: group.more, expanded: group.expanded }
+      return {
+        id: group.key,
+        kind: isFlat ? ("flat" as const) : ("workspace" as const),
+        label: isFlat ? "" : (customName || defaultLabel),
+        defaultLabel: isFlat ? undefined : defaultLabel,
+        customLabel: Boolean(customName),
+        deviceId: group.deviceId || relay.selectedDeviceId || undefined,
+        cwd,
+        collapsed,
+        sessions,
+        count: sessions.length,
+        more: group.more,
+        expanded: group.expanded,
+      }
     })
-    const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: scopeState.archives, archiveView, folders: scopeState.folders })
+    const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: effectiveArchives, archiveView, folders: scopeState.folders })
     // 正文匹配块（A-3）：标题已命中的会话不重复列；状态行照 searchModel 诚实文案
     const bodyBlock = ((): PiSidebarData["search"]["body"] => {
       const { state, deviceId: bodyDeviceId, deviceName } = bodySearch
@@ -136,7 +224,7 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
       }
       if (state.phase === "error") return { deviceName, phase: "error", hits: [], note: state.text }
       const query = (ui.search ?? "").trim()
-      const titleMatched = searchSessions(base.sessions, query)
+      const titleMatched = searchSessions(sessions, query)
       const hits = paletteBodyHitsOf(state.page, { id: bodyDeviceId, name: deviceName }, titleMatched.map((s) => ({ id: s.id, path: s.path })))
       return {
         deviceName,
@@ -153,7 +241,7 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
       devices,
       selectedDeviceId: relay.selectedDeviceId ?? null,
       deviceMenuOpen,
-      groups: overlaid.filter((g) => g.sessions.length > 0 || g.kind === "pinned"),
+      groups: overlaid.filter((g) => g.sessions.length > 0 || g.kind === "pinned" || (!archiveView && g.kind === "workspace" && Boolean(g.cwd))),
       newSessionLabel: "新会话",
       width: clampSidebarWidth(ui.prefs.sidebarWidth),
       collapsed,
@@ -163,11 +251,14 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
       inboxCount: base.attention.filter((item) => item.kind === "waiting" || item.kind === "error" || item.kind === "done").length,
       now,
     }
-  }, [relay, ui.prefs.grouping, ui.prefs.sidebarWidth, collapsed, ui.expanded, ui.search, scopeState, now, deviceMenuOpen, account, deviceId, bodySearch, resolvedTheme, archiveView, menuTargetId])
+  }, [relay, ui.prefs.grouping, ui.prefs.sidebarWidth, collapsed, ui.expanded, ui.search, scopeState, localStore.workspaceName, settingsPrefs.autoArchive, settingsPrefs.retention, now, deviceMenuOpen, account, deviceId, bodySearch, resolvedTheme, archiveView, menuTargetId])
 
   // 新会话常落在默认折叠的组里，选中行看不见：当前会话所在的组没手动开合过就展开它
   const currentGroupId = data.groups.find((g) => g.kind === "workspace" && g.sessions.some((s) => s.selected))?.id
   const revealFolder = localStore.revealFolder
+  useEffect(() => {
+    syncActiveRelayRoom(relay.roomId)
+  }, [relay.roomId])
   useEffect(() => {
     if (!isStatic && !archiveView && currentGroupId) revealFolder(currentGroupId)
   }, [isStatic, archiveView, currentGroupId, revealFolder])
@@ -179,7 +270,10 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
       dialogs: relay.dialogs, uiPrompt: relay.uiPrompt, turnEnd: relay.turnEnd, roomTurnEnds: relay.roomTurnEnds, inbox: relay.inbox, selectedDevice: relay.selectedDevice,
     })
     const session = base.sessions.find((s) => s.id === id)
-    if (session) openSessionRow(relay, session, act.openSession)
+    if (session) {
+      act.setSearch(null)
+      openSessionRow(relay, session, act.openSession)
+    }
   }
 
   const openBodyHitById = (hitId: string) => {
@@ -190,10 +284,13 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
       dialogs: relay.dialogs, uiPrompt: relay.uiPrompt, turnEnd: relay.turnEnd, roomTurnEnds: relay.roomTurnEnds, inbox: relay.inbox, selectedDevice: relay.selectedDevice,
     })
     const query = (ui.search ?? "").trim()
-    const titleMatched = searchSessions(base.sessions, query)
+    const titleMatched = searchSessions(filterSessionsByRetention(base.sessions, settingsPrefs.retention, now, relay.roomId), query)
     const hits = paletteBodyHitsOf(state.page, { id: bodyDeviceId, name: deviceName }, titleMatched.map((s) => ({ id: s.id, path: s.path })))
     const hit = hits.find((h) => h.id === hitId)
-    if (hit) openBodySearchHit(relay, hit, () => act.openSession())
+    if (hit) {
+      act.setSearch(null)
+      openBodySearchHit(relay, hit, () => act.openSession())
+    }
   }
 
   // 平板档浮层里点了去处（会话、新会话、设置、待答）就先收起浮层
@@ -203,24 +300,24 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
       drawer?.close()
       run(...args)
     }
+  const newSessionInGroup = leave((group: PiSidebarGroup) => {
+    if (group.deviceId && group.cwd) presetNewSession(group.deviceId, group.cwd)
+    act.newSession()
+  })
   const actions: PiSidebarActions = {
     selectSession: leave(openRowByKey),
     selectBodyHit: leave(openBodyHitById),
-    newSession: leave(act.newSession),
+    newSession: leave(() => {
+      resetNewSessionSelection()
+      act.newSession()
+    }),
+    newSessionInGroup,
     selectDevice: (id) => { relay.selectDevice(id); act.openSession() },
     toggleDeviceMenu: (open) => setDeviceMenuOpen(open ?? !deviceMenuOpen),
     addDevice: () => act.openDialog({ id: PI_UI_IDS.pairing }),
-    // 置顶 / 归档只记在这台浏览器里：放上去时给一条普通提示（不是警告），取消时不提示
-    togglePin: (key) => {
-      const pinning = !scopeState.pins.includes(key)
-      localStore.togglePin(key)
-      if (pinning) relay.pushNotice({ level: "info", title: PI_SIDEBAR_COPY.pinHint, dedupeKey: "sidebar.pin-local" })
-    },
-    toggleArchive: (key) => {
-      const archiving = !scopeState.archives.includes(key)
-      localStore.toggleArchive(key)
-      if (archiving) relay.pushNotice({ level: "info", title: PI_SIDEBAR_COPY.archiveHint, dedupeKey: "sidebar.archive-local" })
-    },
+    openDeviceHub: leave(() => act.openDeviceHub()),
+    togglePin: localStore.togglePin,
+    toggleArchive: localStore.toggleArchive,
     // 按界面上的折叠态翻：待处理自动展开的组没存过值
     toggleGroup: (groupId) => localStore.toggleFolder(groupId, archiveView ? undefined : data.groups.find((g) => g.id === groupId && g.kind === "workspace")?.collapsed),
     toggleExpanded: (groupId) => act.toggleExpanded(groupId),
@@ -238,24 +335,109 @@ export function CursorUnifiedSidebar({ p, theme, drawer }: { p: PiContainerProps
   const shortcuts = useMemo(() => {
     const platform = piPlatformOf(typeof navigator === "undefined" ? null : navigator)
     return {
-      newSession: PI_SHORTCUT_KEYS["new-session"][platform],
-      toggleSidebar: PI_SHORTCUT_KEYS["toggle-sidebar"][platform],
-      settings: PI_SHORTCUT_KEYS.settings[platform],
+      search: formatShortcutLabel(settingsPrefs.shortcuts.globalSearch, PI_SHORTCUT_KEYS["command-palette"][platform]),
+      newSession: formatShortcutLabel(settingsPrefs.shortcuts.newSession, PI_SHORTCUT_KEYS["new-session"][platform]),
+      toggleSidebar: formatShortcutLabel(settingsPrefs.shortcuts.toggleSidebar, PI_SHORTCUT_KEYS["toggle-sidebar"][platform]),
+      settings: formatShortcutLabel(settingsPrefs.shortcuts.openSettings, PI_SHORTCUT_KEYS.settings[platform]),
     }
-  }, [])
+  }, [settingsPrefs.shortcuts])
+  const saveWorkspaceRename = () => {
+    if (!renameGroup) return
+    const next = renameDraft.trim()
+    if (!next) return
+    localStore.renameWorkspace(renameGroup.id, next)
+    setRenameGroup(null)
+  }
+  const renderWorkspaceMenu = (group: PiSidebarGroup) => (
+    <PiMenu
+      side="bottom"
+      align="end"
+      trigger={
+        <button
+          type="button"
+          className="sb-iconbtn sb-wsact"
+          aria-label={`${group.label} 工作区菜单`}
+          title="工作区操作"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <MoreVerticalIcon />
+        </button>
+      }
+    >
+      <WorkspaceMenuSurface
+        group={group}
+        onNewSession={newSessionInGroup}
+        onRename={(g) => {
+          setRenameDraft(g.label)
+          setRenameGroup(g)
+        }}
+        onResetName={(g) => localStore.renameWorkspace(g.id, "")}
+        onCopyCwd={(g) => {
+          if (!g.cwd) return
+          void piCopyText(g.cwd).then((ok) => {
+            if (ok) relay.pushNotice({ level: "info", title: "已复制目录路径", dedupeKey: "sidebar.copy-cwd" })
+          })
+        }}
+      />
+    </PiMenu>
+  )
   return (
-    <UnifiedSidebar
-      data={data}
-      actions={actions}
-      view={{
-        archiveView,
-        inboxActive: ui.view === "inbox",
-        rowMenu: isStatic ? undefined : (session) => <SessionRowMenu {...p} rowId={session.id} />,
-        menuTargetId,
-        shortcuts,
-        displayOptions: <DisplayOptionsContainer {...p} />,
-        displayOptionsOpen: isStatic && ui.menu?.id === PI_UI_IDS.displayOptions,
-      }}
-    />
+    <>
+      <UnifiedSidebar
+        className={drawer ? "sb-tablet" : undefined}
+        data={data}
+        actions={actions}
+        view={{
+          archiveView,
+          inboxActive: ui.view === "inbox",
+          persistentSearch: settingsPrefs.sidebarPersistentSearch,
+          rowMenu: isStatic ? undefined : (session) => <SessionRowMenu {...p} rowId={session.id} />,
+          workspaceMenu: isStatic ? undefined : renderWorkspaceMenu,
+          menuTargetId,
+          shortcuts,
+          displayOptions: <DisplayOptionsContainer {...p} />,
+          displayOptionsOpen: isStatic && ui.menu?.id === PI_UI_IDS.displayOptions,
+        }}
+      />
+      {renameGroup ? (
+        <PiDialog
+          key={renameGroup.id}
+          title="重命名工作区"
+          viewport="desktop"
+          width={360}
+          open
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) setRenameGroup(null)
+          }}
+          footer={
+            <>
+              <PiButton kind="outline" variant="desktop" onClick={() => setRenameGroup(null)}>
+                取消
+              </PiButton>
+              <PiButton variant="desktop" disabled={!renameDraft.trim()} onClick={saveWorkspaceRename}>
+                保存
+              </PiButton>
+            </>
+          }
+        >
+          <input
+            aria-label="工作区名称"
+            autoFocus
+            value={renameDraft}
+            placeholder={renameGroup.defaultLabel || renameGroup.label}
+            maxLength={80}
+            spellCheck={false}
+            onChange={(event) => setRenameDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.nativeEvent.isComposing) return
+              event.preventDefault()
+              saveWorkspaceRename()
+            }}
+            onFocus={(event) => event.currentTarget.select()}
+            className={RENAME_FIELD_CLASS}
+          />
+        </PiDialog>
+      ) : null}
+    </>
   )
 }

@@ -117,22 +117,34 @@ export function SidebarDeviceMenu({ data, actions }: { data: PiSidebarData; acti
               </button>
             )
           })}
+          {actions.openDeviceHub || actions.addDevice ? <div className="sb-devmenu-sep" role="separator" /> : null}
+          {actions.openDeviceHub ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="sb-devmenu-row sb-devmenu-add"
+              onClick={() => {
+                close(false)
+                actions.openDeviceHub?.()
+              }}
+            >
+              <MonitorIcon />
+              <span className="sb-devmenu-name">设备中心…</span>
+            </button>
+          ) : null}
           {actions.addDevice ? (
-            <>
-              <div className="sb-devmenu-sep" role="separator" />
-              <button
-                type="button"
-                role="menuitem"
-                className="sb-devmenu-row sb-devmenu-add"
-                onClick={() => {
-                  close(false)
-                  actions.addDevice?.()
-                }}
-              >
-                <PlusIcon />
-                <span className="sb-devmenu-name">添加设备…</span>
-              </button>
-            </>
+            <button
+              type="button"
+              role="menuitem"
+              className="sb-devmenu-row sb-devmenu-add"
+              onClick={() => {
+                close(false)
+                actions.addDevice?.()
+              }}
+            >
+              <PlusIcon />
+              <span className="sb-devmenu-name">添加设备…</span>
+            </button>
           ) : null}
         </div>
       ) : null}

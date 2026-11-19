@@ -2,20 +2,21 @@
  * 设置 › 通用（设计册第 3 节，v3 定稿）。
  *
  * 状态口径：
- *   ○ 本机项（打开时进入 / 常驻搜索 / 语言 / 发送键 / 自动滚底 / 自动归档 / 语音三项）
+ *   ○ 本机项（打开时进入 / 常驻搜索 / 语言 / 发送键 / 自动滚底 / 自动归档 / 语音两项）
  *     改完立即写入本机偏好并呈现；
  *   ● 插话投递 / 收尾投递 / 图片自动缩小：设备端 pi 设置，经 settings_set 写全局 settings.json；
  *     保存后需重启 pi 生效，成功提示带 reloadHint；
- *   ● 连接状态 / 服务器地址 / 自动重连 / 重新配对：接真实 relay；自动重连机制常开，不伪造可关。
+ *   ● 连接状态 / 服务器地址 / 连接诊断 / 重新配对：接真实 relay。
  *   ◌ 本页没有预留项。
  *   (Conversation group: local preferences, but not the v2 settings store —
  *    read/written via cShared useSettingsPrefs/usePrefsWriter, the same dual
  *    PiPrefs + legacy-style path the composer settings popover uses.)
  */
-import { useEffect, useMemo, useState } from "react"
+import { useState } from "react"
+import { commandErrorText, usePrefsWriter, useSettingsPrefs } from "@/pi/containers/cShared"
+import { useNow } from "@/pi/hooks/useNow"
 import { serverDisplayName } from "@/pi/model/serverName"
 import { switchDisplayStateOf } from "@/pi/model/switchSync"
-import { usePrefsWriter, useSettingsPrefs } from "@/pi/containers/cShared"
 import type { PiApprovalGateTier } from "@/pi/model/prefs"
 import { useSettings } from "../SettingsContext"
 import {
@@ -27,15 +28,23 @@ import {
   type SettingsStartView,
 } from "../types"
 import {
+  autoResizeImagesPatch,
   effectiveSettingsBoolOf,
   effectiveSettingsDeliveryModeOf,
   followUpModePatch,
-  autoResizeImagesPatch,
+  settingsCommandsReady,
+  settingsRunCommand,
   steeringModePatch,
 } from "./settingsWrite.ts"
 import { readOnlyHintOf, useSettingsDocument, useSettingsWriter } from "./settingsWriteHooks.ts"
 import { SettingsWriteNote } from "./settingsWriteFeedback.tsx"
+import { settingsPiRestartBannerOf } from "./settingsPiRestart.ts"
+import { settingsPiUpdateRowOf } from "./settingsPiUpdate.ts"
+import { SettingsPiRestartDialog, useSettingsPiRestart } from "./useSettingsPiRestart.tsx"
+import { SettingsPiUpdateDialog, useSettingsPiUpdate } from "./useSettingsPiUpdate.tsx"
 import {
+  SettingsActionBar,
+  SettingsActionButton,
   SettingsActionRow,
   SettingsGroup,
   SettingsInlineRadio,
@@ -51,7 +60,8 @@ import {
 
 const START_VIEW_OPTIONS = [
   { value: "last", label: "上次会话" },
-  { value: "list", label: "会话列表" },
+  { value: "list", label: "新建会话页" },
+  { value: "hub", label: "设备选择页" },
 ] as const satisfies readonly { value: SettingsStartView; label: string }[]
 
 const SEND_KEY_OPTIONS = [
@@ -80,52 +90,6 @@ const APPROVAL_TIER_OPTIONS = [
   { value: "all-non-readonly", label: "所有非只读操作都问" },
   { value: "list", label: "只问名单里的工具" },
 ] as const satisfies readonly { value: PiApprovalGateTier; label: string }[]
-
-const MICROPHONE_SYSTEM = "system"
-
-interface AudioInput {
-  id: string
-  label: string
-}
-
-/**
- * 麦克风清单（设计册 §3「语音输入 · 麦克风 ◯ 新建」）：浏览器侧列真实输入设备。
- * 不主动请求麦克风权限，所以未授权时拿不到设备名，用「麦克风 N」占位；
- * 设备热插拔靠 devicechange 事件刷新。
- */
-function useAudioInputs(): AudioInput[] {
-  const [inputs, setInputs] = useState<AudioInput[]>([])
-  useEffect(() => {
-    const media = typeof navigator === "undefined" ? undefined : navigator.mediaDevices
-    if (!media || typeof media.enumerateDevices !== "function") return
-    let alive = true
-    const refresh = () => {
-      media.enumerateDevices().then(
-        (devices) => {
-          if (!alive) return
-          const seen = new Set<string>()
-          const rows: AudioInput[] = []
-          for (const device of devices) {
-            if (device.kind !== "audioinput" || !device.deviceId || seen.has(device.deviceId)) continue
-            seen.add(device.deviceId)
-            rows.push({ id: device.deviceId, label: device.label || `麦克风 ${rows.length + 1}` })
-          }
-          setInputs(rows)
-        },
-        () => {
-          /* 隐私模式 / 设备不可用时静默降级：只留「系统默认」 */
-        },
-      )
-    }
-    refresh()
-    media.addEventListener?.("devicechange", refresh)
-    return () => {
-      alive = false
-      media.removeEventListener?.("devicechange", refresh)
-    }
-  }, [])
-  return inputs
-}
 
 function serverAddress(): string {
   try {
@@ -170,16 +134,6 @@ export function GeneralPage() {
   const identityRequired = switchDisplayStateOf(relay.switchSyncView, relay.viewerIdentity) === "identity-required"
   const document = useSettingsDocument(relay)
   const writer = useSettingsWriter(relay)
-  const audioInputs = useAudioInputs()
-  const microphoneOptions = useMemo(() => {
-    const options = [{ value: MICROPHONE_SYSTEM, label: "系统默认" }]
-    for (const input of audioInputs) options.push({ value: input.id, label: input.label })
-    // 换过设备后旧的 deviceId 可能已经不在清单里：保留它，别让选择框变成空值。
-    if (prefs.micDevice !== MICROPHONE_SYSTEM && !options.some((option) => option.value === prefs.micDevice)) {
-      options.push({ value: prefs.micDevice, label: "已保存的麦克风" })
-    }
-    return options
-  }, [audioInputs, prefs.micDevice])
   const connected = relay.authed && relay.browserOnline
   const connectionText = connected ? `已连接 · ${serverDisplayName(relay.serverName, hostname())}` : relay.browserOnline ? "未连接" : "浏览器离线"
   const dictationKeys = prefs.dictationShortcut.split(/\s+\+\s+/).filter(Boolean)
@@ -190,6 +144,33 @@ export function GeneralPage() {
   const steering = effectiveSettingsDeliveryModeOf(document.data, writer.applied, "steeringMode")
   const followUp = effectiveSettingsDeliveryModeOf(document.data, writer.applied, "followUpMode")
   const autoResize = effectiveSettingsBoolOf(document.data, writer.applied, "images.autoResize")
+
+  const [diag, setDiag] = useState<{ phase: "idle" | "probing" | "ok" | "error"; text?: string }>({ phase: "idle" })
+  const runDiag = async () => {
+    if (diag.phase === "probing") return
+    setDiag({ phase: "probing" })
+    const started = typeof performance !== "undefined" ? performance.now() : Date.now()
+    try {
+      if (settingsCommandsReady(relay) && relay.browserOnline) {
+        await settingsRunCommand(relay, "get_host_diag")
+        const ms = Math.max(1, Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - started))
+        const text = `设备与中转连通 · ${ms} ms`
+        setDiag({ phase: "ok", text })
+        act.notify(text)
+        return
+      }
+      const res = await fetch("/", { method: "HEAD", cache: "no-store" })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const ms = Math.max(1, Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - started))
+      const text = `中转服务器连通 · ${ms} ms`
+      setDiag({ phase: "ok", text })
+      act.notify(text)
+    } catch (error) {
+      const msg = commandErrorText(error)
+      setDiag({ phase: "error", text: `诊断失败：${msg}` })
+      act.notify(`连接诊断失败：${msg}`, "bad")
+    }
+  }
 
   return (
     <div className="settings-page" data-settings-page="general">
@@ -202,7 +183,7 @@ export function GeneralPage() {
           options={START_VIEW_OPTIONS}
           onChange={(value) => act.setPref("startView", value)}
         />
-        <SettingsRow title="侧边栏常驻搜索框" description="关闭时用功能键唤出搜索">
+        <SettingsRow title="侧边栏常驻搜索框">
           <SettingsSwitch
             label="侧边栏常驻搜索框"
             checked={prefs.sidebarPersistentSearch}
@@ -217,17 +198,14 @@ export function GeneralPage() {
         />
       </SettingsGroup>
 
-      <SettingsGroup
-        label="发送与会话"
-        description="插话 / 收尾投递与图片缩放是设备端 pi 设置（写入全局 settings.json），不是本机偏好；保存后需重启 pi 生效。"
-      >
+      <SettingsGroup label="发送与会话">
         <SettingsRadioGroup
           label="发送消息"
           value={prefs.sendKey}
           options={SEND_KEY_OPTIONS}
           onChange={(value) => act.setPref("sendKey", value)}
         />
-        <SettingsRow title="生成时自动滚到底部" description="回答生成时始终显示最新内容">
+        <SettingsRow title="生成时自动滚到底部">
           <SettingsSwitch
             label="生成时自动滚到底部"
             checked={prefs.autoScroll}
@@ -242,7 +220,7 @@ export function GeneralPage() {
         />
         <SettingsRadioGroup
           label="插话消息投递"
-          description="生成时排队的插话，怎么递给模型"
+          tooltip="模型生成期间发送新消息时的投递策略（逐条插入或合并发送）；写入设备 settings.json，重启 Pi 后生效。"
           value={steering}
           options={DELIVERY_OPTIONS}
           disabled={writeDisabled}
@@ -252,7 +230,7 @@ export function GeneralPage() {
         />
         <SettingsRadioGroup
           label="收尾消息投递"
-          description="生成结束后排队的消息，怎么递给模型"
+          tooltip="模型本轮生成结束后排队消息的投递策略；写入设备 settings.json，重启 Pi 后生效。"
           value={followUp}
           options={DELIVERY_OPTIONS}
           disabled={writeDisabled}
@@ -260,7 +238,10 @@ export function GeneralPage() {
             void writer.save("followUpMode", followUpModePatch(value))
           }}
         />
-        <SettingsRow title="发送图片前自动缩小" description="大图自动缩到 2000px 内再发给模型">
+        <SettingsRow
+          title="发送图片前自动缩小"
+          tooltip="发送前将超尺寸图片等比压缩至 2000px 以内以降低上下文占用；写入设备 settings.json，重启 Pi 后生效。"
+        >
           <SettingsSwitch
             label="发送图片前自动缩小"
             checked={autoResize === true}
@@ -278,7 +259,7 @@ export function GeneralPage() {
         description={
           identityRequired
             ? "这三项开关归设备所有。当前观看端没有可用的身份，读不到设备上的真实状态；本机保存的值不是设备状态，所以不在这里显示。"
-            : "本机偏好，改完立即生效；与输入框旁会话设置里的同名开关是同一组设置。"
+            : undefined
         }
       >
         {identityRequired ? (
@@ -288,7 +269,10 @@ export function GeneralPage() {
             onClick={() => setPage("devices")}
           />
         ) : null}
-        <SettingsRow title="允许智能体向我提问" description="开启后，智能体可以用 ask_user 工具发来选择题或填空，在网页上作答；关掉后它不会问你">
+        <SettingsRow
+          title="允许智能体向我提问"
+          tooltip="允许模型调用 ask_user 工具向当前网页发起单选、多选或填空提问。"
+        >
           {identityRequired ? (
             <span className="settings-value">需先启用身份</span>
           ) : (
@@ -300,7 +284,10 @@ export function GeneralPage() {
             />
           )}
         </SettingsRow>
-        <SettingsRow title="在网页上回答电脑上的确认框" description="关掉后，确认框只能在电脑终端里回答">
+        <SettingsRow
+          title="在网页上回答电脑上的确认框"
+          tooltip="将设备终端弹出的确认框转发到网页端作答；关闭后仅能在设备终端内确认。"
+        >
           {identityRequired ? (
             <span className="settings-value">需先启用身份</span>
           ) : (
@@ -312,7 +299,10 @@ export function GeneralPage() {
             />
           )}
         </SettingsRow>
-        <SettingsRow title="工具执行审批门" description="开启后，智能体执行工具前先弹窗等你批准；与上面的确认框应答是两个独立开关">
+        <SettingsRow
+          title="工具执行审批门"
+          tooltip="执行受控工具前先暂停并请求你的批准；与终端确认框转发相互独立。"
+        >
           {identityRequired ? (
             <span className="settings-value">需先启用身份</span>
           ) : (
@@ -325,13 +315,16 @@ export function GeneralPage() {
           )}
         </SettingsRow>
         {identityRequired ? (
-          <SettingsRow title="审批门问哪些工具" description="名单制时，名单在电脑端桥的配置里维护">
+          <SettingsRow
+            title="审批门问哪些工具"
+            tooltip="选择「只问名单里的工具」时，具体工具名单由设备端扩展配置维护。"
+          >
             <span className="settings-value">需先启用身份</span>
           </SettingsRow>
         ) : (
           <SettingsRadioGroup
             label="审批门问哪些工具"
-            description="名单制时，名单在电脑端桥的配置里维护"
+            tooltip="选择「只问名单里的工具」时，具体工具名单由设备端扩展配置维护。"
             disabled={switchesPending}
             value={conversation.approvalGateTier}
             options={APPROVAL_TIER_OPTIONS}
@@ -341,13 +334,7 @@ export function GeneralPage() {
       </SettingsGroup>
 
       <SettingsGroup label="语音输入">
-        <SettingsSelect
-          label="麦克风"
-          value={prefs.micDevice}
-          options={microphoneOptions}
-          onChange={(value) => act.setPref("micDevice", value)}
-        />
-        <SettingsRow title="语音转文字" description="在输入框旁显示麦克风按钮，说话直接转成文字">
+        <SettingsRow title="语音转文字">
           <SettingsSwitch
             label="语音转文字"
             checked={prefs.speechToText}
@@ -373,17 +360,97 @@ export function GeneralPage() {
         <SettingsRow title="服务器地址">
           <span className="settings-value">{serverAddress()}</span>
         </SettingsRow>
-        <SettingsRow title="断线后自动重连" description="现有断线重连机制，始终保持开启">
-          <SettingsSwitch label="断线后自动重连（现有机制）" checked disabled />
-        </SettingsRow>
-        <SettingsActionRow
-          title="连接诊断"
-          description="检查到中转服务器的连通性"
-          status="bridge"
-          disabled
-        />
-        <SettingsActionRow title="重新配对" onClick={act.openPairing} />
+        <SettingsActionBar
+          title="连接与配对"
+          description={diag.text}
+        >
+          <SettingsActionButton
+            title="连接诊断"
+            label={diag.phase === "probing" ? "检测中…" : diag.phase === "ok" ? "重新诊断" : "连接诊断"}
+            disabled={diag.phase === "probing"}
+            onClick={() => {
+              void runDiag()
+            }}
+          />
+          <SettingsActionButton title="重新配对" onClick={act.openPairing} />
+        </SettingsActionBar>
       </SettingsGroup>
+
+      <GeneralRestartGroup relay={relay} notify={act.notify} onOpenDevices={() => setPage("devices")} />
     </div>
+  )
+}
+
+function GeneralRestartGroup({
+  relay,
+  notify,
+  onOpenDevices,
+}: {
+  relay: Parameters<typeof useSettingsPiRestart>[0]
+  notify: Parameters<typeof useSettingsPiRestart>[1]
+  onOpenDevices: () => void
+}) {
+  const restart = useSettingsPiRestart(relay, notify)
+  const piUpdate = useSettingsPiUpdate(relay, notify)
+  const now = useNow(piUpdate.running ? 1000 : 60_000)
+  const updateRow = settingsPiUpdateRowOf({
+    target: piUpdate.target,
+    checking: piUpdate.checking,
+    update: piUpdate.update,
+    checkError: piUpdate.checkError,
+    status: piUpdate.status,
+    otherRunning: restart.running,
+    now,
+  })
+  const banner = settingsPiRestartBannerOf({
+    pendingRestart: restart.pendingRestart,
+    phase: restart.phase,
+    error: restart.error,
+    canRestart: restart.target.canRestart,
+    unsupportedReason: restart.target.reason,
+  })
+  const description = piUpdate.running
+    ? "正在更新 Pi，更新完成后会自动重启"
+    : banner.title !== "重启 Pi"
+      ? `${banner.title} · ${banner.description}`
+      : banner.description
+  const barSummary =
+    piUpdate.running || updateRow.canUpdate || piUpdate.checkError || (piUpdate.status.state === "failed" && piUpdate.status.kind === "update_pi")
+      ? updateRow.description
+      : restart.pendingRestart || restart.phase === "running" || restart.phase === "failed"
+        ? description
+        : undefined
+
+  return (
+    <>
+      <SettingsGroup label="运行与重启">
+        <SettingsActionBar description={barSummary}>
+          <SettingsActionButton
+            title="更新 Pi"
+            label={updateRow.canUpdate ? updateRow.actionLabel : piUpdate.checking ? "检查中…" : piUpdate.running ? "更新中…" : "检查更新"}
+            tone={updateRow.canUpdate ? "primary" : "default"}
+            hint={updateRow.description}
+            disabled={updateRow.disabled}
+            onClick={() => piUpdate.triggerPrimaryAction(restart.running)}
+          />
+          <SettingsActionButton
+            title="重启 Pi"
+            label={restart.running ? "重启中…" : banner.buttonLabel}
+            tone={restart.pendingRestart ? "primary" : "default"}
+            hint={description}
+            disabled={banner.buttonDisabled || piUpdate.running}
+            onClick={restart.requestRestart}
+          />
+          <SettingsActionButton
+            title="设备端更新与系统操作"
+            label="系统操作"
+            hint="查看 Pi / 扩展 / Attach 版本矩阵，或执行重启设备端、更新设备端组件"
+            onClick={onOpenDevices}
+          />
+        </SettingsActionBar>
+      </SettingsGroup>
+      <SettingsPiUpdateDialog viewport="desktop" piUpdate={piUpdate} />
+      <SettingsPiRestartDialog viewport="desktop" restart={restart} />
+    </>
   )
 }

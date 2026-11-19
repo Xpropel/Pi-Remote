@@ -85,7 +85,7 @@ export function ShortcutsPage() {
 
   return (
     <div className="settings-page settings-shortcuts" data-settings-page="shortcuts">
-      <SettingsPageTitle title="快捷键" />
+      <SettingsPageTitle title="快捷键" tooltip="点任意一行右侧的键位即可改键" />
 
       <div className="settings-shortcut-search">
         <Search size={15} strokeWidth={1.9} aria-hidden="true" className="settings-shortcut-search-icon" />
@@ -100,7 +100,6 @@ export function ShortcutsPage() {
           }}
         />
       </div>
-      <p className="settings-shortcut-hint">点任意一行右侧的键位即可改键。</p>
       {visible.length === 0 ? <p className="settings-shortcut-empty">没有匹配的快捷键</p> : null}
 
       {groupIds.map((groupId, index) => {

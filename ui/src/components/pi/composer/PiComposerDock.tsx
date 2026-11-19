@@ -39,6 +39,8 @@ export interface PiComposerDockProps extends Omit<ComponentProps<"div">, "childr
   caret?: boolean
   /** 状态行右端的附加内容（PiCopyField 等） */
   statusTrailing?: ReactNode
+  /** 输入框控制区尾部按钮（例如语音听写，可选） */
+  voiceSlot?: ReactNode
   /** 模型选择器 / + 呈打开态（可交互时 = 受控的打开状态，配 onModelOpenChange / onPlusOpenChange） */
   modelOpen?: boolean
   plusOpen?: boolean
@@ -64,6 +66,8 @@ export interface PiComposerDockProps extends Omit<ComponentProps<"div">, "childr
   mentionPool?: readonly string[]
   onMentionsChange?: (paths: string[]) => void
   onRemoveImage?: (index: number) => void
+  /** 粘贴截图或拖拽图片到输入框时导入图片 */
+  onImportFiles?: (files: readonly File[]) => void
   /** P5：桌面 ↑ / ↓ 提示词历史（K04），原样交给 PiFollowUpComposer.onHistoryKey；手机不回调 */
   onHistoryKey?: PiFollowUpComposerProps["onHistoryKey"]
   /** 点 tray 的 pill */
@@ -163,6 +167,7 @@ export function PiComposerDock({
   placeholder,
   caret,
   statusTrailing,
+  voiceSlot,
   modelOpen,
   plusOpen,
   blockedBy,
@@ -179,6 +184,7 @@ export function PiComposerDock({
   mentionPool,
   onMentionsChange,
   onRemoveImage,
+  onImportFiles,
   onHistoryKey,
   onTrayItem,
   onScrollDown,
@@ -226,7 +232,7 @@ export function PiComposerDock({
       {/* P6.3：手机限高时审批区可以收（min-h-0，卡是 overflow-hidden 的 flex 列，卡内滚动），其余各块不收 */}
       {approval != null && <div className={cn("mb-2 min-w-0 empty:hidden", limited && "flex min-h-0 flex-col")}>{approval}</div>}
       {showTray && (
-        <div className={cn("relative mb-2 min-w-0", limited && "shrink-0")}>
+        <div className={cn("relative mb-[7px] min-w-0", limited && "shrink-0")}>
           {panelNode}
           <PiTray
             variant={variant}
@@ -259,6 +265,7 @@ export function PiComposerDock({
           modelOpen={modelOpen}
           plusOpen={plusOpen}
           blockedBy={blockedBy}
+          voiceSlot={voiceSlot}
           topNote={topNote}
           static={isStatic}
           onDraftChange={onDraftChange}
@@ -274,6 +281,7 @@ export function PiComposerDock({
           mentionPool={mentionPool}
           onMentionsChange={onMentionsChange}
           onRemoveImage={onRemoveImage}
+          onImportFiles={onImportFiles}
           onHistoryKey={onHistoryKey}
         />
       </div>

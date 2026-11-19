@@ -189,8 +189,8 @@ describe("pi-theme.css 第 5 节", () => {
         assert.equal(px(varOf(body, name)), px(varOf(TOKENS, name)) + step, `${density} ${name}`)
       }
     }
-    assert.equal((SIDEBAR_CSS.match(/height: calc\(30px \+ var\(--cw-pi-density-step, 0px\)\);/g) ?? []).length, 3, "会话 / 工作区 / 普通行")
-    assert.equal((SIDEBAR_CSS.match(/height: calc\(28px \+ var\(--cw-pi-density-step, 0px\)\);/g) ?? []).length, 2, "分组头 / 更多")
+    assert.equal((SIDEBAR_CSS.match(/height: calc\(36px \+ var\(--cw-pi-density-step, 0px\)\);/g) ?? []).length, 3, "会话 / 工作区 / 普通行")
+    assert.equal((SIDEBAR_CSS.match(/height: calc\(30px \+ var\(--cw-pi-density-step, 0px\)\);/g) ?? []).length, 2, "分组头 / 更多")
     const settingsCss = css(read("src/pi/settings/pages/appearance.css"))
     assert.doesNotMatch(settingsCss, /\[data-density/, "不再只改外观页自己")
     const row = ".settings-row:not(.settings-row--stack, .settings-row--note, .settings-row--subhead)"
@@ -210,11 +210,14 @@ describe("pi-theme.css 第 5 节", () => {
   })
 })
 
-test("外观页：做不到全局的（内容列宽、等宽字体；手机的密度）不提供，文案说实话", () => {
+test("外观页：桌面提供内容列宽与等宽字体持久化；手机不提供密度", () => {
   const page = code(read("src/pi/settings/pages/AppearancePage.tsx"))
-  assert.doesNotMatch(page, /data-density=|pageStyle|SETTINGS_CONTENT_WIDTH|SETTINGS_MONO_FONTS|jetbrains-mono|contentWidth|monoFont/)
-  assert.match(page, /切换立即应用到整个界面，只保存在这个浏览器里。/)
-  for (const key of ["accent", "fontSize", "density", "uiFont"]) assert.match(page, new RegExp(`act\\.setPref\\("${key}", `), key)
+  assert.doesNotMatch(page, /data-density=|pageStyle/)
+  assert.match(page, /CONTENT_WIDTH_PRESETS/)
+  assert.match(page, /SETTINGS_MONO_FONTS/)
+  assert.match(page, /<SettingsPageTitle title="外观" \/>/)
+  assert.doesNotMatch(page, /切换立即应用到整个界面，只保存在这个浏览器里。/, "已去除底部冗余注释")
+  for (const key of ["accent", "fontSize", "density", "contentWidth", "uiFont", "monoFont"]) assert.match(page, new RegExp(`act\\.setPref\\("${key}", `), key)
   const mobile = code(read("src/pi/settings/mobile/pages/AppearancePage.tsx"))
   assert.doesNotMatch(mobile, /density|DENSIT/, "手机列表行是触控尺寸，不跟密度")
   assert.match(mobile, /<MobileGroup label="动态效果">/)

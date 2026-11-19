@@ -11,9 +11,15 @@
  * 第二阶段页面不要改这个文件：改对应 pages/*.tsx 即可。
  */
 import { useCallback, useMemo, useRef, useState, type ComponentType } from "react"
+import { ArrowUpCircle, RotateCw } from "lucide-react"
 import { openPiDialog, PI_UI_IDS, piDialogOf, type PiContainerProps } from "@/pi/containers/types"
+import { useNow } from "@/pi/hooks/useNow"
 import { useSettingsDialogFocus } from "./dialogFocus"
-import { SettingsProvider, useSettingsLocalState } from "./SettingsContext"
+import { SettingsProvider, useSettings, useSettingsLocalState } from "./SettingsContext"
+import { settingsPiRestartBannerOf } from "./pages/settingsPiRestart.ts"
+import { settingsPiUpdateRowOf } from "./pages/settingsPiUpdate.ts"
+import { SettingsPiRestartDialog, useSettingsPiRestart } from "./pages/useSettingsPiRestart.tsx"
+import { SettingsPiUpdateDialog, useSettingsPiUpdate } from "./pages/useSettingsPiUpdate.tsx"
 import {
   SETTINGS_PAGES,
   settingsPageIdOf,
@@ -187,6 +193,7 @@ export function SettingsPage({ p, theme, page, initialPage, onPageChange, onBack
               )
             })}
           </nav>
+          <SettingsRailRestart />
         </aside>
         <main className="settings-main">
           <div className={wide ? "settings-column settings-column--wide" : "settings-column"}>
@@ -196,6 +203,88 @@ export function SettingsPage({ p, theme, page, initialPage, onPageChange, onBack
         <SettingsToast toast={toast} prefix="settings-toast" />
       </div>
     </SettingsProvider>
+  )
+}
+
+function SettingsRailRestart() {
+  const { p, act } = useSettings()
+  const restart = useSettingsPiRestart(p.relay, act.notify)
+  const piUpdate = useSettingsPiUpdate(p.relay, act.notify, { autoCheck: false })
+  const now = useNow(piUpdate.running ? 1000 : 60_000)
+
+  const updateFailed = piUpdate.status.state === "failed" && piUpdate.status.kind === "update_pi"
+  const updateAvailable = Boolean(piUpdate.update?.canUpdate && piUpdate.update.latestVersion)
+  const showUpdateCard = piUpdate.running || updateFailed || updateAvailable
+  const showRestartCard = (restart.pendingRestart || restart.phase === "running" || restart.phase === "failed") && !piUpdate.running
+
+  if (!showUpdateCard && !showRestartCard && !restart.confirmOpen && !piUpdate.confirmOpen) return null
+
+  const updateRow = settingsPiUpdateRowOf({
+    target: piUpdate.target,
+    checking: piUpdate.checking,
+    update: piUpdate.update,
+    checkError: piUpdate.checkError,
+    status: piUpdate.status,
+    otherRunning: restart.running,
+    now,
+  })
+  const updateTone = updateFailed ? "bad" : "warn"
+  const updateTitle = piUpdate.running
+    ? "正在更新 Pi…"
+    : updateFailed
+      ? "更新 Pi 失败"
+      : `发现 Pi 新版本 ${piUpdate.update?.latestVersion ?? ""}`
+
+  const banner = settingsPiRestartBannerOf({
+    pendingRestart: restart.pendingRestart,
+    phase: restart.phase,
+    error: restart.error,
+    canRestart: restart.target.canRestart,
+    unsupportedReason: restart.target.reason,
+  })
+  return (
+    <>
+      {showUpdateCard ? (
+        <div className="settings-rail-restart" data-restart-tone={updateTone} role="status">
+          <div className="settings-rail-restart-head">
+            <ArrowUpCircle size={13} strokeWidth={2} aria-hidden="true" />
+            <span>{updateTitle}</span>
+          </div>
+          <p className="settings-rail-restart-desc">{updateRow.description}</p>
+          <button
+            type="button"
+            className="settings-rail-restart-btn"
+            data-settings-rail-update-btn=""
+            disabled={updateRow.disabled}
+            title={!piUpdate.target.canRestart ? piUpdate.target.reason : undefined}
+            onClick={() => piUpdate.triggerPrimaryAction(restart.running)}
+          >
+            {updateRow.actionLabel}
+          </button>
+        </div>
+      ) : null}
+      {showRestartCard ? (
+        <div className="settings-rail-restart" data-restart-tone={banner.tone} role="status">
+          <div className="settings-rail-restart-head">
+            <RotateCw size={13} strokeWidth={2} aria-hidden="true" />
+            <span>{banner.title}</span>
+          </div>
+          <p className="settings-rail-restart-desc">{banner.description}</p>
+          <button
+            type="button"
+            className="settings-rail-restart-btn"
+            data-settings-rail-restart-btn=""
+            disabled={banner.buttonDisabled}
+            title={!restart.target.canRestart ? restart.target.reason : undefined}
+            onClick={restart.requestRestart}
+          >
+            {banner.buttonLabel}
+          </button>
+        </div>
+      ) : null}
+      <SettingsPiUpdateDialog viewport="desktop" piUpdate={piUpdate} />
+      <SettingsPiRestartDialog viewport="desktop" restart={restart} />
+    </>
   )
 }
 

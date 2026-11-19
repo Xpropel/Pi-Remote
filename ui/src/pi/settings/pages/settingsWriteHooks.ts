@@ -11,25 +11,28 @@
  * 不写本机偏好（`pi_remote_pi_settings_v2`）；overlay 只存写桥白名单里的设置值，不打印正文 / token。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
-import type { Relay } from "@/pi/containers/types"
 import { useSettings } from "../SettingsContext.tsx"
 import {
   SETTINGS_OVERLAY_STORAGE_KEY,
+  SETTINGS_RESTART_APPLIED_TEXT,
   SETTINGS_WRITE_OFFLINE_TEXT,
   SETTINGS_WRITE_OK_TEXT,
   SETTINGS_WRITE_PENDING_RESTART_TEXT,
   SETTINGS_WRITE_RELOAD_FALLBACK,
+  effectiveSettingsBoolOf,
   flattenSettingsPatch,
   mergeSettingsApplied,
   recordSettingsOverlayApplied,
   reconcileSettingsOverlay,
   settingsCommandsReady,
+  settingsFallbackDeviceIdOf,
   settingsHostVersionOf,
   settingsOverlayAppliedOf,
   settingsOverlayBookOf,
   settingsOverlayEnvelopeOf,
   settingsOverlayTargetKey,
   settingsReadErrorOf,
+  settingsRunCommand,
   isSettingsDocumentResponse,
   settingsFailureOf,
   settingsReadOnlyHintOf,
@@ -37,6 +40,7 @@ import {
   settingsSetResultOf,
   type SettingsApplied,
   type SettingsOverlayBook,
+  type SettingsRelayLike,
   type SettingsSetSuccess,
   type SettingsWriteFailure,
 } from "./settingsWrite.ts"
@@ -99,9 +103,63 @@ function commitOverlayApplied(target: string, applied: SettingsApplied): void {
   commitOverlayBook(recordSettingsOverlayApplied(overlayBookSnapshot(), target, applied))
 }
 
+/* ------------------------------------------------------------------ */
+/* Pi 重启收敛信号：设置页触发 harness_restart 成功后，对齐状态与提示 */
+/* ------------------------------------------------------------------ */
+
+let restartEpoch = 0
+let lastRestartedDeviceId = ""
+const restartListeners = new Set<() => void>()
+const restartedDeviceIds = new Set<string>()
+
+function restartEpochSnapshot(): number {
+  return restartEpoch
+}
+
+function subscribeRestart(listener: () => void): () => void {
+  restartListeners.add(listener)
+  return () => {
+    restartListeners.delete(listener)
+  }
+}
+
+/** 清除某个目标键下尚未生效的 overlay（例如 Pi 已完成重启后）。 */
+export function clearSettingsOverlayTarget(target: string): void {
+  if (!target) return
+  const current = overlayBookSnapshot()
+  if (!current[target]) return
+  const next = { ...current }
+  delete next[target]
+  commitOverlayBook(next)
+}
+
+/** 通知所有设置 hook：指定设备上的 Pi 已完成重启，需要重新对齐运行态设置与提示。 */
+export function notifySettingsPiRestarted(deviceId: string | null | undefined, roomId?: string | null): void {
+  const id = (deviceId ?? "").trim()
+  const rid = (roomId ?? "").trim()
+  lastRestartedDeviceId = id
+  if (id) {
+    restartedDeviceIds.add(id)
+    clearSettingsOverlayTarget(settingsOverlayTargetKey({ deviceId: id, roomId: rid || null }))
+  }
+  if (rid) {
+    clearSettingsOverlayTarget(settingsOverlayTargetKey({ deviceId: null, roomId: rid }))
+  }
+  restartEpoch += 1
+  for (const listener of restartListeners) listener()
+}
+
+/** 跨页面查询当前设置目标是否仍有「已写入待重启」的未生效变更。 */
+export function useSettingsPendingRestart(relay: SettingsRelayLike): boolean {
+  const target = overlayTargetOf(relay)
+  const overlayBook = useSyncExternalStore(subscribeOverlay, overlayBookSnapshot, overlayBookSnapshot)
+  return Object.keys(settingsOverlayAppliedOf(overlayBook, target)).length > 0
+}
+
 /** 目标标识：设置文件是设备级全局文件，优先按设备隔离，没设备时退回房间。 */
-function overlayTargetOf(relay: Pick<Relay, "selectedDeviceId" | "roomId">): string {
-  return settingsOverlayTargetKey({ deviceId: relay.selectedDeviceId, roomId: relay.roomId })
+function overlayTargetOf(relay: SettingsRelayLike): string {
+  const deviceId = relay.selectedDeviceId || settingsFallbackDeviceIdOf(relay)
+  return settingsOverlayTargetKey({ deviceId, roomId: relay.roomId })
 }
 
 /**
@@ -154,14 +212,22 @@ export interface SettingsDocumentState {
 }
 
 /**
- * 读当前设备的全局设置。设备离线 / 会话未载入时保持 idle 且不发命令。
+ * 读当前设备的全局设置。设备离线 / 无可用设备与房间时保持 idle 且不发命令。
  * 换设备 / 换会话 / 手动 reload 都会重跑；卸载后晚到的回包丢弃。
  */
-export function useSettingsDocument(relay: Relay): SettingsDocumentState {
+export function useSettingsDocument(relay: SettingsRelayLike): SettingsDocumentState {
+  const relayRef = useRef(relay)
+  relayRef.current = relay
   const ready = settingsCommandsReady(relay)
-  const run = relay.runCommand
-  const key = `${relay.selectedDeviceId ?? ""}|${relay.roomId ?? ""}`
+  const fallbackDeviceId = settingsFallbackDeviceIdOf(relay)
+  const run = useCallback(
+    (command: string, args?: Record<string, unknown>) => settingsRunCommand(relayRef.current, command, args),
+    [],
+  )
+  const key = `${relay.selectedDeviceId ?? fallbackDeviceId ?? ""}|${relay.roomId ?? ""}`
   const target = overlayTargetOf(relay)
+  const restartedAt = useSyncExternalStore(subscribeRestart, restartEpochSnapshot, restartEpochSnapshot)
+  const relayOnline = Boolean((relay as { online?: boolean }).online)
   const [nonce, setNonce] = useState(0)
   const [state, setState] = useState<{
     phase: SettingsDocumentPhase
@@ -170,7 +236,7 @@ export function useSettingsDocument(relay: Relay): SettingsDocumentState {
     failure: SettingsWriteFailure | null
     sig: string
   }>({ phase: "loading", data: undefined, error: "", failure: null, sig: "" })
-  const sig = `${ready ? "on" : "off"}|${key}|${nonce}`
+  const sig = `${ready ? "on" : "off"}|${relayOnline ? "1" : "0"}|${key}|${nonce}|r${restartedAt}`
 
   useEffect(() => {
     if (!ready) return
@@ -194,6 +260,15 @@ export function useSettingsDocument(relay: Relay): SettingsDocumentState {
           // 读成功才收敛 overlay；扩展内部读失败（settings:{} + error）不能当成「运行值已变」。
           // 版本探测走同一条房间命令，与 get_settings / settings_set 命中同一个 pi 进程。
           if (!settingsReadErrorOf(data)) {
+            const resolvedDeviceId = (
+              relayRef.current.selectedDeviceId ||
+              settingsFallbackDeviceIdOf(relayRef.current) ||
+              ""
+            ).trim()
+            if (resolvedDeviceId && restartedDeviceIds.has(resolvedDeviceId)) {
+              clearSettingsOverlayTarget(target)
+              restartedDeviceIds.delete(resolvedDeviceId)
+            }
             reconcileOverlayAfterRead(target, data, () => alive, () => run("get_host_diag"))
           }
         },
@@ -218,6 +293,24 @@ export function useSettingsDocument(relay: Relay): SettingsDocumentState {
     failure: fresh ? state.failure : null,
     reload,
   }
+}
+
+/** 宿主组件读取某个布尔设置（合并 get_settings 与待重启 overlay），无需处于 SettingsProvider 内。 */
+export function useSettingsEffectiveBool(relay: SettingsRelayLike, path: string): boolean | null {
+  const doc = useSettingsDocument(relay)
+  const overlayBook = useSyncExternalStore(subscribeOverlay, overlayBookSnapshot, overlayBookSnapshot)
+  const applied = settingsOverlayAppliedOf(overlayBook, overlayTargetOf(relay))
+  return effectiveSettingsBoolOf(doc.data, applied, path)
+}
+
+/** 订阅当前设备最近一次已保存的默认模型键值，供新会话页在返回时即时重拉 get_available_models。 */
+export function useAppliedDefaultModelKey(relay: SettingsRelayLike): string {
+  const target = overlayTargetOf(relay)
+  const book = useSyncExternalStore(subscribeOverlay, overlayBookSnapshot, overlayBookSnapshot)
+  const applied = settingsOverlayAppliedOf(book, target)
+  const p = typeof applied.defaultProvider === "string" ? applied.defaultProvider : ""
+  const m = typeof applied.defaultModel === "string" ? applied.defaultModel : ""
+  return p && m ? `${p}/${m}` : ""
 }
 
 export interface SettingsWriteFeedback {
@@ -258,11 +351,13 @@ export interface SettingsWriter {
  * 写设备设置。`patch` 由 settingsWrite.ts 的映射函数生成；返回是否保存成功。
  * 失败一定回滚乐观值（不会把没写进去的值留在界面上，也不会写进 overlay）。
  */
-export function useSettingsWriter(relay: Relay): SettingsWriter {
+export function useSettingsWriter(relay: SettingsRelayLike): SettingsWriter {
   const { act } = useSettings()
-  const { runCommand } = relay
+  const relayRef = useRef(relay)
+  relayRef.current = relay
   const ready = settingsCommandsReady(relay)
-  const key = `${relay.selectedDeviceId ?? ""}|${relay.roomId ?? ""}`
+  const fallbackDeviceId = settingsFallbackDeviceIdOf(relay)
+  const key = `${relay.selectedDeviceId ?? fallbackDeviceId ?? ""}|${relay.roomId ?? ""}`
   const target = overlayTargetOf(relay)
   const overlayBook = useSyncExternalStore(subscribeOverlay, overlayBookSnapshot, overlayBookSnapshot)
   const overlayApplied = useMemo(() => settingsOverlayAppliedOf(overlayBook, target), [overlayBook, target])
@@ -274,6 +369,8 @@ export function useSettingsWriter(relay: Relay): SettingsWriter {
   const [offline, setOffline] = useState(false)
   // 同一 tick 的连点也要拦住：state 更新要等下一次渲染，不能用 saving 单独兜底。
   const busyRef = useRef(false)
+  const restartedAt = useSyncExternalStore(subscribeRestart, restartEpochSnapshot, restartEpochSnapshot)
+  const prevRestartRef = useRef(restartedAt)
   const applied = useMemo(() => mergeSettingsApplied(overlayApplied, optimistic), [overlayApplied, optimistic])
   const pendingRestart = Object.keys(overlayApplied).length > 0
 
@@ -285,6 +382,23 @@ export function useSettingsWriter(relay: Relay): SettingsWriter {
     setUnsupported(false)
     setOffline(false)
   }, [key])
+
+  // 设置页触发 Pi 重启并成功后，将原本的「待重启」成功提示收敛为「已生效」。
+  useEffect(() => {
+    if (restartedAt === prevRestartRef.current) return
+    prevRestartRef.current = restartedAt
+    const currentDeviceId = (relayRef.current.selectedDeviceId || settingsFallbackDeviceIdOf(relayRef.current) || "").trim()
+    if (lastRestartedDeviceId && currentDeviceId && lastRestartedDeviceId !== currentDeviceId) return
+    setFeedback((prev) =>
+      prev && prev.text === SETTINGS_WRITE_OK_TEXT
+        ? {
+            id: prev.id,
+            tone: "ok",
+            text: SETTINGS_RESTART_APPLIED_TEXT,
+          }
+        : prev,
+    )
+  }, [restartedAt])
 
   const save = useCallback(
     async (id: string, patch: Obj | null) => {
@@ -308,7 +422,7 @@ export function useSettingsWriter(relay: Relay): SettingsWriter {
 
       let result: SettingsSetSuccess | null = null
       try {
-        const data = await runCommand("settings_set", settingsSetArgs(patch))
+        const data = await settingsRunCommand(relayRef.current, "settings_set", settingsSetArgs(patch))
         result = settingsSetResultOf(data)
         if (!result) {
           setOptimistic(before)
@@ -350,7 +464,7 @@ export function useSettingsWriter(relay: Relay): SettingsWriter {
         setSaving(null)
       }
     },
-    [act, optimistic, ready, runCommand, saving, target],
+    [act, optimistic, ready, saving, target],
   )
 
   return useMemo(
@@ -381,4 +495,66 @@ export function readOnlyHintOf(document: SettingsDocumentState, writer: Settings
   })
   if (hint) return hint
   return writer.pendingRestart ? SETTINGS_WRITE_PENDING_RESTART_TEXT : null
+}
+
+export interface SettingsCommandState<T = unknown> {
+  phase: SettingsDocumentPhase
+  data: T | undefined
+  error: string
+  reload: () => void
+}
+
+/**
+ * 执行一条设置只读命令：优先走当前在线房间，无开放房间时自动回落到选中/在线设备的 attach 通道。
+ */
+export function useSettingsCommand<T = unknown>(
+  relay: SettingsRelayLike | null | undefined,
+  command: string | null,
+  enabled = true,
+  extraKey = "",
+): SettingsCommandState<T> {
+  const relayRef = useRef(relay)
+  relayRef.current = relay
+  const ready = Boolean(relay && enabled && command && settingsCommandsReady(relay))
+  const fallbackDeviceId = relay ? settingsFallbackDeviceIdOf(relay) : null
+  const key = `${relay?.selectedDeviceId ?? fallbackDeviceId ?? ""}|${relay?.roomId ?? ""}|${extraKey}`
+  const [nonce, setNonce] = useState(0)
+  const [state, setState] = useState<{ phase: SettingsDocumentPhase; data: T | undefined; error: string; sig: string }>({
+    phase: ready ? "loading" : "idle",
+    data: undefined,
+    error: "",
+    sig: "",
+  })
+  const sig = `${command ?? ""}|${ready ? "on" : "off"}|${key}|${nonce}`
+
+  useEffect(() => {
+    if (!ready || !command) return
+    const targetRelay = relayRef.current
+    if (!targetRelay) return
+    let alive = true
+    Promise.resolve()
+      .then(() => settingsRunCommand(targetRelay, command))
+      .then(
+        (data) => {
+          if (alive) setState({ phase: "ready", data: data as T, error: "", sig })
+        },
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message.trim() : ""
+          if (alive) setState({ phase: "error", data: undefined, error: message || "读取失败", sig })
+        },
+      )
+    return () => {
+      alive = false
+    }
+  }, [ready, command, sig])
+
+  const reload = useCallback(() => setNonce((value) => value + 1), [])
+  if (!ready || !command) return { phase: "idle", data: undefined, error: "", reload }
+  const fresh = state.sig === sig
+  return {
+    phase: fresh ? state.phase : "loading",
+    data: fresh ? state.data : undefined,
+    error: fresh ? state.error : "",
+    reload,
+  }
 }

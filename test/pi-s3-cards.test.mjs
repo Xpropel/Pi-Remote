@@ -17,6 +17,7 @@ import { APPROVAL_ANNOUNCE_IDLE, approvalAnnounceStep } from "../ui/src/pi/model
 import { APPROVAL_REASON_WAIT_MS, approvalEndedOf, endedReceiptView } from "../ui/src/pi/model/approvalReceipt.ts"
 import { dialogCardState } from "../ui/src/pi/model/dialogCard.ts"
 import { devicePlatformOf, findStartedRoom } from "../ui/src/relay/devices.ts"
+import { piAgo, piAgoEn, piThinkSeconds } from "../ui/src/components/pi/shared/format.ts"
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8")
@@ -42,6 +43,7 @@ describe("卡片几何：PiCard 一处定义，三种卡共用", () => {
     assert.match(card, /export const CARD_HEAD =\s*"flex min-w-0 items-center gap-2 pr-2 pl-2\.5 /)
     assert.match(card, /export const CARD_HEAD_H = "h-\[31px\]"/)
     assert.match(card, /export const CARD_HEAD_H_PHONE = "h-9"/)
+    assert.match(card, /export const CARD_TERMINAL_HEAD_H = "h-\[26px\]"/)
     assert.match(card, /export const CARD_DIVIDER = "border-b border-\(--cw-divider\)"/)
     assert.match(card, /export const CARD_ICON = 14\b/)
     assert.match(card, /export const CARD_PEEK = 10\b/)
@@ -59,8 +61,9 @@ describe("卡片几何：PiCard 一处定义，三种卡共用", () => {
     }
     assert.match(codeBlock, /cn\(CARD_HEAD, CARD_DIVIDER, CARD_HEAD_H,/)
     assert.match(diffCard, /cn\(CARD_HEAD, CARD_DIVIDER, phone \? CARD_HEAD_H_PHONE : CARD_HEAD_H\)/)
-    // 终端卡头是开关：手机至少 44 高，桌面同其他卡 31
-    assert.match(terminal, /wrap \? "min-h-11 py-\[3px\]" : CARD_HEAD_H/)
+    // 终端卡头始终保持紧凑单行高（全视口统一 CARD_TERMINAL_HEAD_H，不折成多行）
+    assert.match(terminal, /\bCARD_TERMINAL_HEAD_H\b/)
+    assert.doesNotMatch(terminal, /line-clamp-2/)
   })
 
   test("收起时的渐隐和卡底展开条共用（代码块、diff 卡）", () => {
@@ -104,7 +107,7 @@ describe("终端卡：跑完自动收起，失败的留着", () => {
   test("参数还在流时不露半截 JSON：命令 / 路径从已到的字段里取，取不到就空着；模型没报名字时写「工具」", () => {
     assert.match(tools, /function argsFallback\(b: PiToolBlock\): string \{\s*return b\.input == null && b\.argsText\.trimStart\(\)\.startsWith\("\{"\) \? "" : b\.argsText/)
     assert.match(tools, /return str\(b\.input\?\.command\) \?\? partialArg\(b, "command"\) \?\? argsFallback\(b\)/)
-    assert.match(transcript, /name == null \? "正在调用工具"/)
+    assert.match(transcript, /name == null \? "Calling tool"/)
   })
 })
 
@@ -211,7 +214,7 @@ describe("出错行写人话：状态码 → 简短原因，服务返回的原�
     assert.match(lines, /id=\{detailId\} hidden=\{!open\} data-pi-part="turn-error-detail"/)
     assert.match(lines, /<pre\s+tabIndex=\{0\}\s+className="[^"]*max-h-60 overflow-y-auto[^"]*font-\(family-name:--cw-font-mono\)[^"]*whitespace-pre-wrap/)
     assert.match(lines, /action\?: string \| null/)
-    assert.match(transcript, /<PiTurnError key="stop" detail=\{end\.detail\} action=\{retry \? "重新回答" : null\} onAction=\{retry \? actions\?\.regenerate : undefined\}>/)
+    assert.match(transcript, /<PiTurnError key="stop" detail=\{end\.detail\} action=\{retry \? "Regenerate" : null\} onAction=\{retry \? actions\?\.regenerate : undefined\}>/)
   })
 })
 
@@ -245,7 +248,7 @@ describe("出错回合的重试：pi 的 regenerate 是把上一条用户消息�
     assert.match(transcript, /turnViewsOf\(turns\)\.map\(\(\{ turn, index: ti, attempts \}, vi\) =>/)
     assert.match(transcript, /vi > 0 && "mt-\(--cw-space-6\)"/, "回合间距按渲染出来的位置算，第一轮被折掉时流顶不多空")
     assert.match(transcript, /attempts\.length > 0 && <RetriedAttempts attempts=\{attempts\} retrying=\{isRunningTurn\} renderItem=\{renderAttemptItem\} \/>/)
-    assert.match(transcript, /`\$\{attempts\.length > 1 \? `出错 \$\{attempts\.length\} 次` : "上次出错"\}，\$\{retrying \? "正在重试" : "已重试"\}`/)
+    assert.match(transcript, /`\$\{attempts\.length > 1 \? `Failed \$\{attempts\.length\} times` : "Previous attempt failed"\}, \$\{retrying \? "retrying" : "retried"\}`/)
     assert.match(transcript, /showRetry=\{ti === retryTurn\}/)
     assert.match(transcript, /const retry = showRetry && replyMeta != null/, "回合中途出错、pi 自动重试接着跑的那条不挂")
     assert.match(transcript, /replyMeta=\{null\}\s+showRetry=\{false\}/, "折叠里的过程不带操作行和「重新回答」")
@@ -262,8 +265,8 @@ describe("运行中 → 完成：行不跳、思考有计时、想完就收", ()
     assert.match(lines, /data-pi-shimmer=\{on \? "" : undefined\}/)
     assert.match(toolLine, /const shimmer = !!running && !isStatic/)
     assert.match(exploreRows, /<Shimmer on=\{r\.running && !isStatic\}>/)
-    // 探索明细的动词不写"正在"：运行中另外念出来
-    assert.match(exploreRows, /className="sr-only">（运行中）/)
+    // 探索明细的动词不写进行态：运行中另外念出来
+    assert.match(exploreRows, /className="sr-only">\(running\)/)
   })
 
   test("亮带只在没要求减少动效、也不是强制配色时画；颜色只取 currentColor 和令牌", () => {
@@ -479,7 +482,7 @@ describe("第四轮：终端视图", () => {
 
   test("没载入的会话（只点选了本机记录，正文里的工具调用只剩「调用 bash」字样）：终端 / 改动的空态写「会话还没载入」，不说没跑过 / 没改过", () => {
     assert.match(container, /const unloaded = !sessionLoaded\(relay\)/)
-    assert.match(container, /<PiChangesPane files=\{files\} total=\{total\} variant=\{variant\} unloaded=\{unloaded\} \/>/)
+    assert.match(container, /<PiChangesPane files=\{files\} total=\{total\} variant=\{variant\} unloaded=\{unloaded\}(?: onOpenFile=\{[^}]+\})? \/>/)
     assert.match(container, /actions=\{terminalActions\} unloaded=\{unloaded\} \/>/)
     assert.match(code(read(`${CONV}/PiChangesPane.tsx`)), /\{unloaded \? "会话还没载入" : "这个会话还没有编辑文件"\}/)
   })
@@ -595,8 +598,8 @@ describe("第五轮：回合用时（S4 报告：排队消息插进正在跑的�
 const approvalCard = code(read(`${CONV}/PiApprovalCard.tsx`))
 
 describe("第五轮：说法统一（工具审批「等你批准」，提问 / 弹窗「等你回答」）", () => {
-  test("终端卡卡在审批前写「等你批准」；对话流目录里不再有「等你确认」", () => {
-    assert.match(terminal, /case "waiting":\s*return \{ text: "等你批准", attention: true \}/)
+  test("终端卡卡在审批前写 Awaiting approval；对话流目录里不再有「等你确认」", () => {
+    assert.match(terminal, /case "waiting":\s*return \{ text: "Awaiting approval", attention: true \}/)
     for (const f of fs.readdirSync(path.join(ROOT, CONV))) {
       if (/\.tsx?$/.test(f)) assert.doesNotMatch(read(`${CONV}/${f}`), /等你确认/, f)
     }
@@ -766,9 +769,9 @@ describe("第五轮：长思考（想完以后展开：限高 +「展开全文�
   const prose = code(read(`${CONV}/PiProse.tsx`))
   const entry = prose.slice(prose.indexOf("export function PiThinkingText"), prose.indexOf("export interface PiProseProps"))
 
-  test("想完的思考（PiThinking 只在 !live 时给 fold）超过约 12 行收起：底部渐隐，下面一行灰字「展开全文 / 收起」", () => {
+  test("想完的思考（PiThinking 只在 !live 时给 fold）超过约 12 行收起：底部渐隐，下面一行灰字「Show more / Show less」", () => {
     assert.match(prose, /const THINKING_FOLD_PX = 240/)
-    assert.match(entry, /<PiFold maxHeight=\{THINKING_FOLD_PX\} auto toggle=\{\(open, onToggle\) => <ThinkingFoldToggle open=\{open\} onToggle=\{onToggle\} label=\{open \? "收起" : "展开全文"\} \/>\}>/)
+    assert.match(entry, /<PiFold maxHeight=\{THINKING_FOLD_PX\} auto toggle=\{\(open, onToggle\) => <ThinkingFoldToggle open=\{open\} onToggle=\{onToggle\} label=\{open \? "Show less" : "Show more"\} \/>\}>/)
     assert.match(entry, /<ThinkingFoldContext\.Provider value>/)
     const toggle = prose.slice(prose.indexOf("function ThinkingFoldToggle"), prose.indexOf("function ThinkingCode"))
     assert.match(toggle, /aria-expanded=\{open\}/)
@@ -781,7 +784,7 @@ describe("第五轮：长思考（想完以后展开：限高 +「展开全文�
     assert.match(fold, /useLayoutEffect\(/)
     assert.match(fold, /new ResizeObserver\(measure\)/)
     assert.match(prose, /<PiFold maxHeight=\{fold\.maxHeight\} auto=\{fold\.auto === true\} toggle=\{proseFoldToggle\}>/)
-    assert.match(prose, /aria-label=\{open \? "收起" : "展开全文"\}/)
+    assert.match(prose, /aria-label=\{open \? "Show less" : "Show more"\}/)
   })
 
   test("思考里的代码段：只在想完以后（ThinkingFoldContext）超过 12 行收起，流式中不收（新行要看得见，围栏闭合前后不跳）", () => {
@@ -789,7 +792,7 @@ describe("第五轮：长思考（想完以后展开：限高 +「展开全文�
     assert.match(prose, /const THINKING_CODE_FOLD = 12/)
     assert.match(thinkingCode, /const lines = fold \? text\.split\("\\n"\)\.length : 0/)
     assert.match(thinkingCode, /maxHeight: `calc\(\$\{THINKING_CODE_FOLD\}lh \+ 12px\)`/)
-    assert.match(thinkingCode, /label=\{open \? "收起代码" : `展开代码（\$\{lines\} 行）`\}/)
+    assert.match(thinkingCode, /label=\{open \? "Collapse code" : `Expand code \(\$\{lines\} lines\)`\}/)
   })
 })
 
@@ -874,12 +877,12 @@ describe("第六轮：被停止的写入 / 编辑卡标「已取消」", () => {
   test("接线：消息停在半路（用户停止）时没跑完的工具算已取消；diff 卡收 cancelled，读取 / 其他工具行尾灰字「已取消」，探查行不再转圈", () => {
     assert.match(transcript, /const stopped = !item\.live && stoppedEnd\(item\.stopReason, item\.errorMessage\)/)
     assert.match(transcript, /cancelled=\{status === "aborted"\}/)
-    assert.match(transcript, /trailing=\{status === "failed" \? "失败" : status === "aborted" \? "已取消" : undefined\}/)
-    assert.match(transcript, /status === "denied" \? "已拒绝" : status === "aborted" \? "已取消" : undefined/)
+    assert.match(transcript, /trailing=\{status === "failed" \? "Failed" : status === "aborted" \? "Cancelled" : undefined\}/)
+    assert.match(transcript, /status === "denied" \? "Denied" : status === "aborted" \? "Cancelled" : undefined/)
     assert.match(transcript, /group\.some\(\(g\) => streamToolStatus\(g, stopped\) === "running"\)/)
     assert.match(transcript, /group\.map\(\(g\) => exploreRowOf\(g, stopped\)\)/)
     assert.match(tools, /return stopReason === "aborted" \|\| \(stopReason === "error" && turnErrorOf\("error", errorMessage\)\?\.error === false\)/)
-    assert.match(diffCard, /\{failed \? "未生效" : "已取消"\}/)
+    assert.match(diffCard, /\{failed \? "Failed" : "Cancelled"\}/)
   })
 
   test("没有 patch 的 edit（失败 / 被停止 / 参数还在写）按参数画出要改的行；什么都画不出来时（停止时 pi 丢掉了半截参数）出一行字，不出空卡", () => {
@@ -942,5 +945,55 @@ describe("第六轮：未载入会话的第一条消息（名册先于 harness_s
     const begin = cut("const beginHarness = useCallback", /const flushLazySend = useCallback/)
     const resolved = begin.indexOf("if (resolvedArmingAt.current.has(at))")
     assert.ok(resolved > 0 && resolved < begin.indexOf('error: "启动已取消"'))
+  })
+})
+
+describe("对话流英文状态与紧凑终端卡回归", () => {
+  test("piAgoEn 输出英文相对时间、piAgo 仍保持中文（侧栏/设备列表不动）", () => {
+    const now = Date.UTC(2026, 9, 25, 12, 0, 0)
+    assert.equal(piAgoEn(now - 20_000, now), "just now")
+    assert.equal(piAgoEn(now - 5 * 60_000, now), "5m ago")
+    assert.equal(piAgoEn(now - 3 * 3600_000, now), "3h ago")
+    assert.equal(piAgoEn(now - 24 * 3600_000, now), "1d ago")
+    assert.equal(piAgoEn(now - 10 * 24 * 3600_000, now), "Oct 15")
+    assert.equal(piAgo(now - 20_000, now), "刚刚")
+    assert.equal(piAgo(now - 5 * 60_000, now), "5 分钟前")
+  })
+
+  test("piThinkSeconds 输出紧凑英文计时", () => {
+    assert.equal(piThinkSeconds(6_000), "6s")
+    assert.equal(piThinkSeconds(72_000), "1m 12s")
+    assert.equal(piThinkSeconds(120_000), "2m")
+  })
+
+  test("pi-theme.css 终端卡使用更紧凑的 10px 圆角与 6px 间距", () => {
+    const theme = read("ui/src/components/pi/shared/pi-theme.css")
+    assert.match(theme, /\[data-pi-part="terminal-card"\]\s*\{[^}]*margin-block:\s*6px;[^}]*border-radius:\s*10px;[^}]*corner-shape:\s*squircle;/s)
+    assert.match(theme, /\[data-pi-part="terminal-card"\]\s*>\s*button\s*\{[^}]*border-top-left-radius:\s*9px;[^}]*border-top-right-radius:\s*9px;[^}]*corner-shape:\s*squircle;/s)
+  })
+
+  test("pi-theme.css 对话流内终端卡 / diff 卡与正文最大行宽（--stream-inset）对齐且不缩小右侧面板", () => {
+    const theme = read("ui/src/components/pi/shared/pi-theme.css")
+    assert.match(
+      theme,
+      /\[data-pi-part="transcript"\]\s*:is\(\[data-pi-part="terminal-card"\],\s*\[data-pi-part="diff-card"\]\)\s*\{[^}]*width:\s*auto;[^}]*max-width:\s*calc\(100%\s*-\s*2\s*\*\s*var\(--stream-inset,\s*0px\)\);[^}]*margin-inline:\s*var\(--stream-inset,\s*0px\);/s,
+    )
+  })
+
+  test("终端卡命令头部不换行并在溢出悬停时提供横向滑动条", () => {
+    const theme = read("ui/src/components/pi/shared/pi-theme.css")
+    assert.match(terminal, /data-pi-part="terminal-cmd-scroll"/)
+    assert.match(terminal, /overflow-x-auto/)
+    assert.match(terminal, /whitespace-nowrap/)
+    assert.match(terminal, /data-pi-part="terminal-cmd-scrollbar"/)
+    assert.match(terminal, /data-pi-part="terminal-cmd-thumb"/)
+    assert.match(
+      theme,
+      /\[data-pi-root\]\s+\[data-pi-part="terminal-cmd-scrollbar"\]\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s,
+    )
+    assert.match(
+      theme,
+      /\[data-pi-root\]\s+\[data-pi-part="terminal-card"\]:hover\s+\[data-pi-part="terminal-cmd-scrollbar"\][^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s,
+    )
   })
 })

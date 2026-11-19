@@ -47,6 +47,7 @@
 .settings-usage-card {
   border: 1px solid var(--st-card-border);
   border-radius: var(--st-radius-card);
+  corner-shape: squircle;
   background: var(--st-card-bg);
   box-shadow: var(--st-card-shadow);
 }
@@ -55,6 +56,7 @@
   margin: 14px 0 0;
   padding: 8px 12px;
   border-radius: var(--st-radius-row);
+  corner-shape: squircle;
   background: var(--st-notice-warn-bg);
   color: var(--st-text-2);
   font-size: 12px;
@@ -145,6 +147,8 @@
 .settings-usage-quota-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -154,8 +158,37 @@
   font-weight: 600;
 }
 
+.settings-usage-quota-presets {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.settings-usage-quota-preset {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--st-tile-bg);
+  color: var(--st-text-3);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.settings-usage-quota-preset:hover {
+  color: var(--st-text-1);
+}
+
+.settings-usage-quota-preset.is-active {
+  background: color-mix(in srgb, var(--st-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--st-accent) 36%, transparent);
+  color: var(--st-text-1);
+  font-weight: 500;
+}
+
 .settings-usage-quota-sub {
-  margin: 3px 0 0;
+  margin: 4px 0 0;
   color: var(--st-text-4);
   font-size: 12px;
   line-height: 1.45;
@@ -163,7 +196,7 @@
 
 .settings-usage-quota-bar {
   height: 6px;
-  margin-top: 12px;
+  margin-top: 10px;
   overflow: hidden;
   border-radius: 99px;
   background: var(--st-tile-bg);
@@ -175,6 +208,41 @@
   width: 0;
   border-radius: 99px;
   background: var(--st-accent);
+  transition: width 0.2s ease;
+}
+
+.settings-usage-quota-bar span.is-over {
+  background: var(--su-highlight);
+}
+
+.settings-usage-quota-providers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px 14px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--st-tile-bg);
+}
+
+.settings-usage-quota-provider {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.settings-usage-quota-provider-name {
+  color: var(--st-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-usage-quota-provider-val {
+  color: var(--st-text-4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .settings-usage-quota-foot {
@@ -255,6 +323,7 @@
   padding: 0;
   border: 0;
   border-radius: 3px;
+  corner-shape: squircle;
   background: var(--st-tile-bg);
 }
 
@@ -289,6 +358,7 @@
   width: 10px;
   height: 10px;
   border-radius: 2px;
+  corner-shape: squircle;
   background: var(--st-tile-bg);
 }
 
@@ -379,6 +449,7 @@
   display: block;
   width: 100%;
   border-radius: 3px 3px 0 0;
+  corner-shape: squircle;
   background: linear-gradient(to top, var(--st-accent), color-mix(in srgb, var(--st-accent) 55%, var(--st-menu-bg)));
 }
 
@@ -584,6 +655,7 @@
   padding: 0 12px;
   border: 1px solid var(--st-control-border);
   border-radius: var(--st-radius-control);
+  corner-shape: squircle;
   background: var(--st-control-bg);
   color: var(--st-text-1);
   font-size: 12.5px;
@@ -606,6 +678,7 @@
   padding: 8px 12px;
   border: 1px solid var(--st-menu-border);
   border-radius: var(--st-radius-row);
+  corner-shape: squircle;
   background: var(--st-raised-bg);
   color: var(--st-text-1);
   box-shadow: var(--st-float-shadow);

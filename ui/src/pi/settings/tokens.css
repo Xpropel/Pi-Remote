@@ -18,9 +18,9 @@
   --st-nav-icon: 15px;
   --st-content-w: 692px;
   --st-content-w-wide: 880px;
-  --st-radius-card: 10px;
-  --st-radius-row: 8px;
-  --st-radius-control: 6px;
+  --st-radius-card: 18px;
+  --st-radius-row: 12px;
+  --st-radius-control: 12px;
 
   --st-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --st-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans CJK SC", monospace;

@@ -6,7 +6,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { TURN_ERROR_RAW_MAX, turnErrorKindOf, turnErrorOf } from "../ui/src/pi/model/turnError.ts"
+import { TURN_ERROR_RAW_MAX, turnErrorEnOf, turnErrorKindOf, turnErrorOf } from "../ui/src/pi/model/turnError.ts"
 import {
   archiveTopLinesOf,
   EMPTY_THINKING_CLOCK,
@@ -85,10 +85,19 @@ describe("model/turnError.ts：回合出错的原文对中文（stream-errors，
     assert.equal(turnErrorOf("toolUse"), null)
     assert.equal(turnErrorOf(undefined), null)
   })
-  test("流里的 PiTurnError 用的就是它（components/pi/conversation/tools.ts 的 stopReasonText 委托过来，一套口径）", () => {
+  test("流里的 PiTurnError 用的就是 turnErrorEnOf（components/pi/conversation/tools.ts 的 stopReasonText 委托过来）", () => {
     const src = code(read("ui/src/components/pi/conversation/tools.ts"))
-    assert.match(src, /return turnErrorOf\(stopReason, errorMessage\)/)
+    assert.match(src, /return turnErrorEnOf\(stopReason, errorMessage\)/)
     assert.doesNotMatch(src, /overloaded_error/)
+    assert.deepEqual(turnErrorEnOf("error", "529 overloaded_error"), {
+      text: "Error: Model service overloaded (529)",
+      error: true,
+      detail: "529 overloaded_error",
+    })
+    assert.equal(turnErrorEnOf("error", '401: {"message":"bad"}').text, "Error: Invalid or expired API key (401)")
+    assert.deepEqual(turnErrorEnOf("aborted"), { text: "Stopped", error: false })
+    assert.deepEqual(turnErrorEnOf("length"), { text: "Response truncated (length limit)", error: false })
+    assert.deepEqual(turnErrorEnOf("error", ""), { text: "Error: Unknown error", error: true })
   })
 })
 

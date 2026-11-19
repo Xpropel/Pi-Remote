@@ -10,7 +10,7 @@
 import type { ReactNode } from "react"
 import { Check, ChevronRight } from "lucide-react"
 import { settingsItemInert, type SettingsItemStatus } from "../types.ts"
-import { SettingsStatusBadge, SettingsStatusDot } from "../ui.tsx"
+import { SettingsHoverTitle, SettingsStatusBadge, SettingsStatusDot } from "../ui.tsx"
 
 /* ------------------------------------------------------------------ */
 /* 结构                                                                */
@@ -28,6 +28,7 @@ export function MobilePageBody({ children, page }: { children: ReactNode; page: 
 export function MobileGroup({
   label,
   description,
+  tooltip,
   footnote,
   badge,
   children,
@@ -35,6 +36,7 @@ export function MobileGroup({
 }: {
   label?: string
   description?: ReactNode
+  tooltip?: string
   footnote?: ReactNode
   /** 整组同一状态（如整组只读/预留）时，在分组标题旁标一次，避免每行重复。 */
   badge?: SettingsItemStatus
@@ -46,7 +48,7 @@ export function MobileGroup({
     <section className="sm-group">
       {label ? (
         <h2 className="sm-group-label">
-          <span>{label}</span>
+          <SettingsHoverTitle tooltip={tooltip}>{label}</SettingsHoverTitle>
           <SettingsStatusBadge status={badge} />
         </h2>
       ) : null}
@@ -75,19 +77,31 @@ export function MobileBanner({ children }: { children: ReactNode }) {
 /* 行                                                                  */
 /* ------------------------------------------------------------------ */
 
-function RowTitle({ title, status }: { title: ReactNode; status?: SettingsItemStatus }) {
+function RowTitle({ title, status, tooltip }: { title: ReactNode; status?: SettingsItemStatus; tooltip?: string }) {
   return (
     <span className="sm-row-title">
-      <span className="sm-row-title-text">{title}</span>
+      <SettingsHoverTitle tooltip={tooltip} className="sm-row-title-text">
+        {title}
+      </SettingsHoverTitle>
       <SettingsStatusBadge status={status} />
     </span>
   )
 }
 
-function RowCopy({ title, description, status }: { title: ReactNode; description?: ReactNode; status?: SettingsItemStatus }) {
+function RowCopy({
+  title,
+  description,
+  status,
+  tooltip,
+}: {
+  title: ReactNode
+  description?: ReactNode
+  status?: SettingsItemStatus
+  tooltip?: string
+}) {
   return (
     <span className="sm-row-copy">
-      <RowTitle title={title} status={status} />
+      <RowTitle title={title} status={status} tooltip={tooltip} />
       {description ? <span className="sm-row-description">{description}</span> : null}
     </span>
   )
@@ -96,6 +110,7 @@ function RowCopy({ title, description, status }: { title: ReactNode; description
 export interface MobileRowProps {
   title: ReactNode
   description?: ReactNode
+  tooltip?: string
   status?: SettingsItemStatus
   disabled?: boolean
   children?: ReactNode
@@ -103,7 +118,7 @@ export interface MobileRowProps {
 }
 
 /** 标准行：左标题/说明，右控件；◐ / ◌ 自动 inert 并加徽标。 */
-export function MobileRow({ title, description, status, disabled, children, className }: MobileRowProps) {
+export function MobileRow({ title, description, tooltip, status, disabled, children, className }: MobileRowProps) {
   const inert = settingsItemInert(status, disabled)
   return (
     <div
@@ -112,7 +127,7 @@ export function MobileRow({ title, description, status, disabled, children, clas
       data-settings-inert={inert ? "true" : undefined}
       aria-disabled={inert || undefined}
     >
-      <RowCopy title={title} description={description} status={status} />
+      <RowCopy title={title} description={description} status={status} tooltip={tooltip} />
       {children ? (
         <span className="sm-row-control" inert={inert || undefined}>
           {children}
@@ -126,16 +141,18 @@ export function MobileRow({ title, description, status, disabled, children, clas
 export function MobileReadOnlyRow({
   title,
   description,
+  tooltip,
   value,
   status,
 }: {
   title: ReactNode
   description?: ReactNode
+  tooltip?: string
   value: ReactNode
   status?: SettingsItemStatus
 }) {
   return (
-    <MobileRow title={title} description={description} status={status}>
+    <MobileRow title={title} description={description} tooltip={tooltip} status={status}>
       <span className="sm-value">{value}</span>
     </MobileRow>
   )
@@ -145,6 +162,7 @@ export function MobileReadOnlyRow({
 export function MobileActionRow({
   title,
   description,
+  tooltip,
   status,
   disabled,
   onClick,
@@ -154,6 +172,7 @@ export function MobileActionRow({
 }: {
   title: ReactNode
   description?: ReactNode
+  tooltip?: string
   status?: SettingsItemStatus
   disabled?: boolean
   onClick?: () => void
@@ -175,7 +194,7 @@ export function MobileActionRow({
       }}
     >
       {leading ? <span className="sm-row-leading">{leading}</span> : null}
-      <RowCopy title={title} description={description} status={status} />
+      <RowCopy title={title} description={description} status={status} tooltip={tooltip} />
       <span className="sm-row-control">
         {value ? <span className="sm-value">{value}</span> : null}
         <ChevronRight size={16} strokeWidth={2} aria-hidden="true" className="sm-chevron" />
@@ -184,10 +203,86 @@ export function MobileActionRow({
   )
 }
 
+export interface MobileActionButtonProps {
+  title: ReactNode
+  label?: ReactNode
+  hint?: string
+  disabled?: boolean
+  tone?: "default" | "primary" | "danger"
+  leading?: ReactNode
+  dataOp?: string
+  ariaExpanded?: boolean
+  onClick?: () => void
+}
+
+/** 手机端紧凑多按钮条里的单枚触控按钮（命中区仍满足 44px）。 */
+export function MobileActionButton({
+  title,
+  label,
+  hint,
+  disabled,
+  tone = "default",
+  leading,
+  dataOp,
+  ariaExpanded,
+  onClick,
+}: MobileActionButtonProps) {
+  const toneClass = tone === "primary" ? " is-primary" : tone === "danger" ? " is-danger" : ""
+  return (
+    <button
+      type="button"
+      className={`sm-device-action${toneClass}`}
+      disabled={disabled}
+      title={hint ?? (typeof title === "string" ? title : undefined)}
+      data-settings-op={dataOp}
+      aria-expanded={ariaExpanded}
+      onClick={() => {
+        if (!disabled) onClick?.()
+      }}
+    >
+      {leading}
+      <span>{label ?? title}</span>
+    </button>
+  )
+}
+
+/** 手机端紧凑多按钮条：一行收纳多个关联功能按钮。 */
+export function MobileActionBar({
+  title,
+  description,
+  tooltip,
+  children,
+}: {
+  title?: ReactNode
+  description?: ReactNode
+  tooltip?: string
+  children: ReactNode
+}) {
+  const hasCopy = title != null || description != null
+  return (
+    <div className="sm-action-bar">
+      {hasCopy ? (
+        <div className="sm-action-bar-copy">
+          {title ? (
+            <span className="sm-row-title">
+              <SettingsHoverTitle tooltip={tooltip} className="sm-row-title-text">
+                {title}
+              </SettingsHoverTitle>
+            </span>
+          ) : null}
+          {description ? <span className="sm-row-description">{description}</span> : null}
+        </div>
+      ) : null}
+      <div className="sm-action-bar-btns">{children}</div>
+    </div>
+  )
+}
+
 /** 整行可点的开关行（开关本身也保留 role=switch 语义）。 */
 export function MobileSwitchRow({
   title,
   description,
+  tooltip,
   checked,
   onChange,
   status,
@@ -196,6 +291,7 @@ export function MobileSwitchRow({
 }: {
   title: ReactNode
   description?: ReactNode
+  tooltip?: string
   checked: boolean
   onChange?: (checked: boolean) => void
   status?: SettingsItemStatus
@@ -204,7 +300,7 @@ export function MobileSwitchRow({
 }) {
   const inert = settingsItemInert(status, disabled)
   return (
-    <MobileRow title={title} description={description} status={status} disabled={disabled}>
+    <MobileRow title={title} description={description} tooltip={tooltip} status={status} disabled={disabled}>
       <MobileSwitch
         checked={checked}
         disabled={inert}
@@ -301,6 +397,7 @@ export function MobileSegmented<T extends string>({
 export function MobileField<T extends string>({
   title,
   description,
+  tooltip,
   status,
   disabled,
   value,
@@ -311,6 +408,7 @@ export function MobileField<T extends string>({
 }: {
   title: ReactNode
   description?: ReactNode
+  tooltip?: string
   status?: SettingsItemStatus
   disabled?: boolean
   value?: T
@@ -328,7 +426,7 @@ export function MobileField<T extends string>({
       data-settings-inert={inert ? "true" : undefined}
       aria-disabled={inert || undefined}
     >
-      <RowCopy title={title} description={description} status={status} />
+      <RowCopy title={title} description={description} status={status} tooltip={tooltip} />
       <div className="sm-field-control" inert={inert || undefined}>
         {children ??
           (value !== undefined && options ? (
@@ -404,6 +502,7 @@ export function MobileOptionList<T extends string>({
 /** 下拉选择（选项少的字段，保持设计稿的「值 + ›」形态）。 */
 export function MobileSelect<T extends string>({
   label,
+  tooltip,
   value,
   options,
   groups,
@@ -412,6 +511,7 @@ export function MobileSelect<T extends string>({
   status,
 }: {
   label: string
+  tooltip?: string
   value: T
   options: readonly { value: T; label: string }[]
   /** Optional grouped options, rendered as <optgroup> after the flat ones
@@ -423,7 +523,7 @@ export function MobileSelect<T extends string>({
 }) {
   const inert = settingsItemInert(status, disabled)
   return (
-    <MobileRow title={label} status={status}>
+    <MobileRow title={label} tooltip={tooltip} status={status}>
       <span className="sm-select-wrap">
         <select
           className="sm-select"

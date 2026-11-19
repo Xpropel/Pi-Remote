@@ -159,7 +159,7 @@ export interface MobileModelChoice {
 
 export function modelChoicesOf(data: unknown): MobileModelChoice[] {
   const record = recordOf(data)
-  const list = Array.isArray(record?.models) ? record.models : []
+  const list = Array.isArray(record?.available) ? record.available : Array.isArray(record?.models) ? record.models : []
   const seen = new Set<string>()
   const choices: MobileModelChoice[] = []
   for (const item of list) {
@@ -176,7 +176,8 @@ export function modelChoicesOf(data: unknown): MobileModelChoice[] {
     const key = `${provider}/${modelId}`
     if (seen.has(key)) continue
     seen.add(key)
-    choices.push({ key, provider, modelId, label: modelId })
+    const displayName = typeof row.name === "string" && row.name.trim() ? row.name.trim() : modelId
+    choices.push({ key, provider, modelId, label: displayName })
   }
   return choices
 }
@@ -187,21 +188,20 @@ export interface MobileModelGroup {
 }
 
 /**
- * Groups for the default-model select (F7, same fix as the desktop page):
- * one group per provider in first-seen order instead of one flat list
- * mixing every catalog; a provider the auth payload does not report as
- * configured is marked in its group label. Options stay selectable.
+ * 手机端默认模型下拉分组：只收纳已配置凭据的供应商模型（providers 表里明确 configured === false 的排除），
+ * 按供应商分组，不再把未配置的内置目录混入选项。
  */
 export function modelGroupsOf(choices: readonly MobileModelChoice[], providers: readonly MobileProviderRow[]): MobileModelGroup[] {
   const byId = new Map(providers.map((provider) => [provider.id, provider]))
   const groups: MobileModelGroup[] = []
   const index = new Map<string, MobileModelGroup>()
   for (const choice of choices) {
+    const row = byId.get(choice.provider)
+    if (row && !row.configured) continue
     let group = index.get(choice.provider)
     if (!group) {
-      const row = byId.get(choice.provider)
       const name = row?.name ?? choice.provider
-      group = { label: row && !row.configured ? `${name}（未配置凭据）` : name, options: [] }
+      group = { label: name, options: [] }
       index.set(choice.provider, group)
       groups.push(group)
     }
@@ -296,9 +296,10 @@ export interface MobileMcpRow {
   toolCount: number
 }
 
-/** `get_available_models` 的模型条目数（只用于刷新行右侧的「N 个模型」；缺失就是 0）。 */
+/** `get_available_models` 的可用模型条目数（优先读 available；缺少时回落 models）。 */
 export function availableModelCountOf(data: unknown): number {
   const record = recordOf(data)
+  if (Array.isArray(record?.available)) return record.available.length
   return Array.isArray(record?.models) ? record.models.length : 0
 }
 

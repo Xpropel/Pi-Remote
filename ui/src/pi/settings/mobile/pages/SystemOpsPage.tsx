@@ -11,6 +11,8 @@ import type { Device } from "@/relay/devices"
 import { useNow } from "@/pi/hooks/useNow"
 import { deviceNameOf } from "../../pages/devicesLogic.ts"
 import {
+  compactSystemOpLabelOf,
+  compactSystemOpsSummaryOf,
   deviceOpsSupportedOf,
   operationResultOf,
   operationRowsOf,
@@ -82,13 +84,9 @@ export function MobileSystemOpsPage({ relay, device, rooms, onBack }: MobileSyst
     const cells = versionCellsOf(ops.diag, ops.update)
     const rows = operationRowsOf(facts, ops.status, now)
     const result = operationResultOf(ops.status, now)
+    const summary = compactSystemOpsSummaryOf(rows, result)
     content = (
       <>
-        <div className="sm-ops-head">
-          <button type="button" className="sm-device-action" onClick={ops.reload}>
-            刷新
-          </button>
-        </div>
         <div className="sm-ops-ver">
           {cells.map((cell) => (
             <div className="sm-ops-ver-cell" key={cell.label}>
@@ -100,43 +98,46 @@ export function MobileSystemOpsPage({ relay, device, rooms, onBack }: MobileSyst
             </div>
           ))}
         </div>
-        {result ? (
-          <div className="sm-op-row is-result">
-            <span className="sm-op-main">
-              <span className="sm-op-name is-ok">✓ {result.title}</span>
-              <span className="sm-op-desc">{result.text}</span>
+        <div className="sm-ops-bar">
+          {rows.map((row) => (
+            <button
+              key={row.kind}
+              type="button"
+              data-settings-op={row.kind}
+              className={`sm-device-action${row.buttonPrimary ? " is-primary" : ""}`}
+              disabled={!row.buttonEnabled}
+              title={[row.warningText, row.description].filter(Boolean).join("") || undefined}
+              onClick={() => {
+                if (row.buttonAction === "recheck") ops.recheckUpdate()
+                else if (row.buttonAction === "run" || row.buttonAction === "retry") ops.setConfirmKind(row.kind)
+              }}
+            >
+              {row.phaseText ? <span className="sm-ops-spinner" aria-hidden="true" /> : null}
+              <span>{compactSystemOpLabelOf(row)}</span>
+            </button>
+          ))}
+          <button type="button" className="sm-device-action sm-ops-refresh" disabled={running} onClick={ops.reload}>
+            刷新
+          </button>
+        </div>
+        {summary.runningRow ? (
+          <div className="sm-ops-foot">
+            <span className="sm-ops-spinner" aria-hidden="true" />
+            <span>
+              {summary.runningRow.title} · {summary.runningRow.phaseText} · {summary.runningRow.description}
             </span>
+          </div>
+        ) : summary.failedRow ? (
+          <div className="sm-op-error">
+            {summary.failedRow.title}：{summary.failedRow.errorText || summary.failedRow.description}
+          </div>
+        ) : summary.okText || summary.warnText || summary.mutedText ? (
+          <div className="sm-ops-foot">
+            {summary.okText ? <span className="sm-ops-ok">✓ {summary.okText}</span> : null}
+            {summary.warnText ? <span className="sm-op-warn">{summary.warnText}</span> : null}
+            {summary.mutedText ? <span>{summary.mutedText}</span> : null}
           </div>
         ) : null}
-        {rows.map((row) => (
-          <div className="sm-op-row" key={row.kind} data-settings-op={row.kind}>
-            <span className="sm-op-main">
-              <span className={`sm-op-name${row.failed ? " is-error" : ""}`}>
-                {row.phaseText ? <span className="sm-ops-spinner" aria-hidden="true" /> : null}
-                {row.title}
-                {row.phaseText ? <span className="sm-op-phase">{row.phaseText}</span> : null}
-              </span>
-              <span className="sm-op-desc">
-                {row.warningText ? <span className="sm-op-warn">{row.warningText}</span> : null}
-                {row.description}
-              </span>
-              {row.errorText ? <span className="sm-op-error">{row.errorText}</span> : null}
-            </span>
-            {row.buttonLabel ? (
-              <button
-                type="button"
-                className={`sm-device-action${row.buttonPrimary ? " is-primary" : ""}`}
-                disabled={!row.buttonEnabled}
-                onClick={() => {
-                  if (row.buttonAction === "recheck") ops.recheckUpdate()
-                  else if (row.buttonAction === "run" || row.buttonAction === "retry") ops.setConfirmKind(row.kind)
-                }}
-              >
-                {row.buttonLabel}
-              </button>
-            ) : null}
-          </div>
-        ))}
       </>
     )
   }

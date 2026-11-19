@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react"
-import { IconMore } from "./icons"
+import { IconMore, IconTerminal } from "./icons"
 import { MobileDrawerNav } from "./MobileDrawerNav"
 import { MobileListHome } from "./MobileListHome"
 import { MobileSearchPage } from "./MobileSearchPage"
@@ -27,6 +27,7 @@ export function MobileNavShell({
   sessionSubtitle,
   sessionAttentionCount,
   onSessionInfo,
+  onSessionPane,
   onSessionMenu,
   onRowMenu,
   archiveView,
@@ -96,10 +97,27 @@ export function MobileNavShell({
         onOpenDrawer={mode === "drawer" ? () => setOpen(true) : undefined}
         onBack={mode === "list" ? onBackToList : undefined}
         actions={
-          onSessionMenu ? (
-            <button type="button" className="pm-icon-btn" aria-label="会话菜单" aria-haspopup="dialog" data-pi-session-more="" onClick={onSessionMenu}>
-              <IconMore size={20} />
-            </button>
+          onSessionPane || onSessionMenu ? (
+            <>
+              {onSessionPane ? (
+                <button
+                  type="button"
+                  className="pm-icon-btn"
+                  data-cw-id="pi-phone-pane-trigger"
+                  aria-label="面板与工具"
+                  title="打开 Shell / 改动 / 文件"
+                  aria-haspopup="dialog"
+                  onClick={onSessionPane}
+                >
+                  <IconTerminal size={19} />
+                </button>
+              ) : null}
+              {onSessionMenu ? (
+                <button type="button" className="pm-icon-btn" aria-label="会话菜单" aria-haspopup="dialog" data-pi-session-more="" onClick={onSessionMenu}>
+                  <IconMore size={20} />
+                </button>
+              ) : null}
+            </>
           ) : null
         }
       />

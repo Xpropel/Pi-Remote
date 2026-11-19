@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { noteSlashCommandUsed } from "@/chat/slashUsage"
+import { usePiStatic } from "@/components/pi/shared/layers"
 import { saveLegacyStyle, useLegacyPrefs, useLegacyStyle } from "@/pi/hooks/useLegacyStyle"
-import { modelDefaultOf, modelPillName, modelRowsOf, thinkingSegmentsOf, type PiModelRow } from "@/pi/model/models"
+import { modelDefaultOf, modelPillName, modelRowsOf, modelThinkingOptionsOf, thinkingSegmentsOf, type PiModelRow } from "@/pi/model/models"
+import { useAppliedDefaultModelKey } from "@/pi/settings/pages/settingsWriteHooks"
 import { settingsPrefsOf, settingsWritesOf, type PiSettingsPrefs } from "@/pi/model/settingsView"
 import { roomDeviceId } from "@/relay/devices"
 import { roomTitle } from "@/relay/useRelay"
@@ -127,19 +129,66 @@ function useRememberDeviceDefault(deviceId: string | null, data: unknown, ready:
   return name
 }
 
-/** 模型表与思考级别（菜单 / sheet 开着时才取） */
+/** 当前会话归属的设备 id（未载入会话取 lazySession.deviceId，否则取房间设备或当前选中设备） */
+function sessionDeviceIdOf(relay: Pick<Relay, "lazySession" | "rooms" | "roomId" | "selectedDeviceId">): string | null {
+  if (relay.lazySession && relay.lazySession.id === relay.roomId && relay.lazySession.deviceId) {
+    return relay.lazySession.deviceId
+  }
+  return currentRoomDeviceId(relay) ?? (relay.selectedDeviceId || null)
+}
+
+/** 模型表与思考级别（菜单 / sheet 开着时才取；已载入走房间命令，未载入走设备直连） */
 export function useModelData(relay: Relay, open: boolean) {
-  const ready = open && commandsReady(relay)
-  const models = useRelayCommand(relay.runCommand, ready ? "get_available_models" : null, undefined, relay.roomId)
-  const levels = useRelayCommand(relay.runCommand, ready ? "get_available_thinking_levels" : null, undefined, `${relay.roomId}|${relay.model}`)
+  const isStatic = usePiStatic()
+  const relayRef = useRef(relay)
+  relayRef.current = relay
+  const deviceId = sessionDeviceIdOf(relay)
+  const roomReady = commandsReady(relay)
+  const deviceOnline =
+    !!deviceId &&
+    relay.authed &&
+    relay.browserOnline !== false &&
+    relay.devices.some((d) => d.id === deviceId && d.online) &&
+    typeof relay.runDeviceCommand === "function"
+  const mode = roomReady ? "room" : deviceOnline ? "device" : "off"
+  const runModels = useCallback((command: string, args?: Record<string, unknown>) => {
+    const cur = relayRef.current
+    if (commandsReady(cur)) return cur.runCommand(command, args)
+    const targetDevice = sessionDeviceIdOf(cur)
+    if (targetDevice && typeof cur.runDeviceCommand === "function") {
+      return cur.runDeviceCommand(targetDevice, command, args)
+    }
+    return Promise.reject(new Error("设备未连接"))
+  }, [])
+  const models = useRelayCommand(runModels, open && mode !== "off" ? "get_available_models" : null, undefined, `${mode}|${relay.roomId}|${deviceId ?? ""}`)
+  const levels = useRelayCommand(relay.runCommand, open && mode === "room" ? "get_available_thinking_levels" : null, undefined, `${relay.roomId}|${relay.model}`)
   const model = relay.model
   const modelMeta = relay.modelMeta
-  useRememberDeviceDefault(currentRoomDeviceId(relay), models.data, models.phase === "ready")
+  useRememberDeviceDefault(deviceId, models.data, models.phase === "ready")
   const rows: PiModelRow[] = useMemo(() => (models.phase === "ready" ? modelRowsOf(models.data, { model, modelMeta }) : []), [models.phase, models.data, model, modelMeta])
-  const segments = useMemo(() => (levels.phase === "ready" ? thinkingSegmentsOf(levels.data) : []), [levels.phase, levels.data])
-  /** 菜单的读取行：每次打开都重新问，回包到之前是 loading（不冒充「还没有配置任何模型」） */
-  const listPhase = models.phase === "loading" || models.phase === "error" ? models.phase : undefined
-  return { rows, segments, raw: models.data, listPhase, listError: models.error, reload: models.reload }
+  const segments = useMemo(() => {
+    if (levels.phase === "ready") return thinkingSegmentsOf(levels.data)
+    const currentRow = rows.find((r) => r.current)
+    return modelThinkingOptionsOf(currentRow?.thinkingLevels)
+  }, [levels.phase, levels.data, rows])
+  /** 菜单的读取行：每次打开都重新问，回包到之前是 loading；离线时不冒充「还没有配置任何模型」 */
+  let listPhase: "loading" | "error" | undefined
+  let listError = ""
+  if (models.phase === "loading" || models.phase === "error") {
+    listPhase = models.phase
+    listError = models.error
+  } else if (open && !isStatic && mode === "off") {
+    listPhase = "error"
+    if (!relay.authed || relay.browserOnline === false) {
+      listError = "未连接服务器"
+    } else if (deviceId) {
+      const devName = relay.devices.find((d) => d.id === deviceId)?.name
+      listError = `${devName || "设备"}未连接`
+    } else {
+      listError = "先选一个会话或在线设备"
+    }
+  }
+  return { rows, segments, raw: models.data, listPhase, listError, reload: models.reload }
 }
 
 /**
@@ -148,9 +197,36 @@ export function useModelData(relay: Relay, open: boolean) {
  * 问不到（没有这台设备的房间、回包没带默认模型）返回 null，由页面写「设备默认模型」。
  */
 export function useDeviceDefaultModelName(relay: Relay, deviceId: string | null): string | null {
-  const ready = !!deviceId && currentRoomDeviceId(relay) === deviceId && commandsReady(relay)
-  const models = useRelayCommand(relay.runCommand, ready ? "get_available_models" : null, undefined, `${relay.roomId}|${deviceId ?? ""}`)
-  const fresh = useRememberDeviceDefault(ready ? deviceId : null, models.data, models.phase === "ready")
+  const relayRef = useRef(relay)
+  relayRef.current = relay
+  const appliedDefault = useAppliedDefaultModelKey(relay)
+  const roomReady = !!deviceId && currentRoomDeviceId(relay) === deviceId && commandsReady(relay)
+  const deviceOnline =
+    !!deviceId &&
+    relay.authed &&
+    relay.devices.some((d) => d.id === deviceId && d.online) &&
+    typeof relay.runDeviceCommand === "function"
+  const mode = roomReady ? "room" : deviceOnline ? "device" : "off"
+  const runModels = useCallback(
+    (command: string, args?: Record<string, unknown>) => {
+      const cur = relayRef.current
+      if (deviceId && currentRoomDeviceId(cur) === deviceId && commandsReady(cur)) {
+        return cur.runCommand(command, args)
+      }
+      if (deviceId && typeof cur.runDeviceCommand === "function") {
+        return cur.runDeviceCommand(deviceId, command, args)
+      }
+      return Promise.reject(new Error("设备离线"))
+    },
+    [deviceId],
+  )
+  const models = useRelayCommand(
+    runModels,
+    mode !== "off" ? "get_available_models" : null,
+    undefined,
+    `${mode}|${relay.roomId}|${deviceId ?? ""}|${appliedDefault}`,
+  )
+  const fresh = useRememberDeviceDefault(mode !== "off" ? deviceId : null, models.data, models.phase === "ready")
   const name = fresh !== undefined ? fresh : deviceId ? (deviceDefaultModelNames.get(deviceId) ?? null) : null
   return name ? modelPillName({ model: name }) : null
 }
@@ -163,16 +239,20 @@ export function modelPillOf(relay: Pick<Relay, "model" | "modelMeta" | "thinking
 /** 切模型 / 思考级别：失败时选择器回到原值（选择器读 relay，本来就没改），出 warning 通知 */
 export function useModelActions(relay: Relay) {
   return {
-    selectModel: (key: string, rows: readonly PiModelRow[]) => {
+    selectModel: async (key: string, rows: readonly PiModelRow[]): Promise<boolean> => {
       const row = rows.find((m) => m.key === key)
-      if (!row || row.unconfigured) return
-      void relay.runCommand("set_model", { provider: row.provider, modelId: row.modelId }).then(
-        () => noteSlashCommandUsed("/model"),
-        (error: unknown) => relay.notify(`切换模型失败：${commandErrorText(error)}`, "warn"),
-      )
+      if (!row || row.unconfigured) return false
+      try {
+        await relay.runCommand("set_model", { provider: row.provider, modelId: row.modelId })
+        noteSlashCommandUsed("/model")
+        return true
+      } catch (error: unknown) {
+        relay.notify(`切换模型失败：${commandErrorText(error)}`, "warn")
+        return false
+      }
     },
-    setThinking: (level: string) => {
-      if (level === relay.thinkingLevel) return
+    setThinking: (level: string, opts?: { force?: boolean }) => {
+      if (!opts?.force && level === relay.thinkingLevel) return
       void relay.runCommand("set_thinking_level", { level }).then(
         () => noteSlashCommandUsed("/thinking"),
         (error: unknown) => relay.notify(`切换思考级别失败：${commandErrorText(error)}`, "warn"),

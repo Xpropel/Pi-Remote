@@ -333,6 +333,7 @@ export function PlayDock({ ui, act, variant }: PlaySlotProps) {
       else set({ panel: c.panel === kind ? null : kind })
       return
     }
+    if (kind !== "terminal" && kind !== "changes") return
     // 终端 / 改动：开关右 pane（手机的推入页归 b 线）
     if (!phone) act.setPane(ui.pane === kind ? null : kind)
   }

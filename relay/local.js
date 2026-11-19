@@ -20,7 +20,7 @@ const { purgeSessions } = require("./purge");
 /** attach 声明的能力里 relay 关心的子集（P9 B/C）：决定设备级 session.files 命令与目录浏览是否可用 */
 /* device.ops joins the passthrough set: the roster entry's features are how the
  * UI learns that this device's attach can run system operations. */
-const DEVICE_FEATURES = ["session.files", "fs.browse", "device.ops"];
+const DEVICE_FEATURES = ["session.files", "fs.browse", "device.ops", "session.file_ops"];
 
 /** G2 approval-gate tiers (same values as the bridge's APPROVAL_GATE_TIERS):
  *  the ext_status cache only carries a switches block whose tier is legal. */

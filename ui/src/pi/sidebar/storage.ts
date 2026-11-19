@@ -13,12 +13,16 @@ export const PI_SIDEBAR_LOCAL_STORAGE_KEY = "pi_remote_pi_sidebar_local"
 export const PI_SIDEBAR_LOCAL_VERSION = 1
 const MAX_KEYS_PER_SCOPE = 2000
 const MAX_SCOPES = 64
+const MAX_WORKSPACE_NAME_LEN = 80
+const MAX_WORKSPACE_NAMES = 500
 
 export interface PiSidebarScopeState {
   pins: string[]
   archives: string[]
   /** 工作区分组折叠：groupId → collapsed */
   folders: Record<string, boolean>
+  /** 本机自定义工作区显示名：groupId → name（仅在非空时写入，不传给远端） */
+  workspaceNames?: Record<string, string>
   updatedAt: number
 }
 
@@ -74,15 +78,32 @@ function cleanFolders(raw: unknown): Record<string, boolean> {
   return out
 }
 
+function cleanWorkspaceNames(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+  let count = 0
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== "string") continue
+    const id = key.slice(0, 200)
+    const name = value.trim().slice(0, MAX_WORKSPACE_NAME_LEN)
+    if (!id || !name) continue
+    out[id] = name
+    if (++count >= MAX_WORKSPACE_NAMES) break
+  }
+  return out
+}
+
 function cleanScope(raw: unknown): PiSidebarScopeState | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
   const rec = raw as Record<string, unknown>
   const pins = cleanKeys(rec.pins)
   const archives = cleanKeys(rec.archives)
   const folders = cleanFolders(rec.folders)
+  const workspaceNames = cleanWorkspaceNames(rec.workspaceNames)
+  const hasNames = Object.keys(workspaceNames).length > 0
   const updatedAt = typeof rec.updatedAt === "number" && Number.isFinite(rec.updatedAt) ? rec.updatedAt : 0
-  if (!pins.length && !archives.length && !Object.keys(folders).length && !updatedAt) return null
-  return { pins, archives, folders, updatedAt }
+  if (!pins.length && !archives.length && !Object.keys(folders).length && !hasNames && !updatedAt) return null
+  return hasNames ? { pins, archives, folders, workspaceNames, updatedAt } : { pins, archives, folders, updatedAt }
 }
 
 /** 存储内容（JSON 字符串或对象）→ 合法状态；坏数据逐项丢弃，永不抛。 */
@@ -119,12 +140,18 @@ export function serializeSidebarLocalState(state: PiSidebarLocalState): string {
 
 export function sidebarScopeStateOf(state: PiSidebarLocalState, scope: string): PiSidebarScopeState {
   const rec = state.scopes[scope]
-  return rec ? { pins: [...rec.pins], archives: [...rec.archives], folders: { ...rec.folders }, updatedAt: rec.updatedAt } : { pins: [], archives: [], folders: {}, updatedAt: 0 }
+  if (!rec) return { pins: [], archives: [], folders: {}, updatedAt: 0 }
+  const next: PiSidebarScopeState = { pins: [...rec.pins], archives: [...rec.archives], folders: { ...rec.folders }, updatedAt: rec.updatedAt }
+  if (rec.workspaceNames && Object.keys(rec.workspaceNames).length > 0) next.workspaceNames = { ...rec.workspaceNames }
+  return next
 }
 
 function withScope(state: PiSidebarLocalState, scope: string, scopeState: PiSidebarScopeState): PiSidebarLocalState {
   const next = parseSidebarLocalState(state)
-  next.scopes[scope] = { pins: cleanKeys(scopeState.pins), archives: cleanKeys(scopeState.archives), folders: cleanFolders(scopeState.folders), updatedAt: scopeState.updatedAt || Date.now() }
+  const workspaceNames = cleanWorkspaceNames(scopeState.workspaceNames)
+  const rec: PiSidebarScopeState = { pins: cleanKeys(scopeState.pins), archives: cleanKeys(scopeState.archives), folders: cleanFolders(scopeState.folders), updatedAt: scopeState.updatedAt || Date.now() }
+  if (Object.keys(workspaceNames).length > 0) rec.workspaceNames = workspaceNames
+  next.scopes[scope] = rec
   return next
 }
 
@@ -158,6 +185,37 @@ export function setSidebarFolderCollapsed(state: PiSidebarLocalState, scope: str
   if (!id) return parseSidebarLocalState(state)
   const cur = sidebarScopeStateOf(state, scope)
   cur.folders[id] = collapsed === true
+  cur.updatedAt = now
+  return withScope(state, scope, cur)
+}
+
+/** 查询工作区自定义显示名；支持 exact id 或 workspace:<id> 键名。 */
+export function workspaceCustomName(state: PiSidebarLocalState, scope: string, groupKey: string): string | undefined {
+  const id = String(groupKey || "").trim().slice(0, 200)
+  if (!id) return undefined
+  const names = state.scopes[scope]?.workspaceNames
+  if (!names) return undefined
+  const direct = names[id]
+  if (direct) return direct
+  const prefixed = names[`workspace:${id}`.slice(0, 200)]
+  return prefixed || undefined
+}
+
+/** 工作区自定义显示名持久化；空串清除自定义名（恢复默认），并省略空的 workspaceNames。 */
+export function setWorkspaceCustomName(state: PiSidebarLocalState, scope: string, groupKey: string, name: string, now = Date.now()): PiSidebarLocalState {
+  const id = String(groupKey || "").trim().slice(0, 200)
+  if (!id) return parseSidebarLocalState(state)
+  const cur = sidebarScopeStateOf(state, scope)
+  const nextNames = { ...cur.workspaceNames }
+  const trimmed = String(name || "").trim().slice(0, MAX_WORKSPACE_NAME_LEN)
+  if (trimmed) {
+    nextNames[id] = trimmed
+    delete nextNames[`workspace:${id}`.slice(0, 200)]
+  } else {
+    delete nextNames[id]
+    delete nextNames[`workspace:${id}`.slice(0, 200)]
+  }
+  cur.workspaceNames = Object.keys(nextNames).length > 0 ? nextNames : undefined
   cur.updatedAt = now
   return withScope(state, scope, cur)
 }

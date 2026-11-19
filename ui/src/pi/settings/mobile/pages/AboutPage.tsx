@@ -11,11 +11,22 @@
  */
 import { useEffect, useState } from "react"
 import { PiMark } from "@/components/pi/shared"
+import { useNow } from "@/pi/hooks/useNow"
 import { normalizeHostDiag, type HostDiag } from "@/pi/model/hostDiag"
 import { serverDisplayName } from "@/pi/model/serverName"
 import { CLIENT_VERSION } from "@/relay/protocol"
 import { useSettings } from "../../SettingsContext.tsx"
-import { buildDiagnosticsExport, checkLatestRelease } from "../../pages/aboutData.ts"
+import {
+  OPEN_SOURCE_LICENSES,
+  buildDiagnosticsExport,
+  checkLatestRelease,
+  fetchRelayHealthVersion,
+  formatRelayVersionText,
+} from "../../pages/aboutData.ts"
+import { resolveSettingsPiRestartDevice, settingsPiRestartBannerOf } from "../../pages/settingsPiRestart.ts"
+import { settingsPiUpdateRowOf } from "../../pages/settingsPiUpdate.ts"
+import { SettingsPiRestartDialog, useSettingsPiRestart } from "../../pages/useSettingsPiRestart.tsx"
+import { SettingsPiUpdateDialog, useSettingsPiUpdate } from "../../pages/useSettingsPiUpdate.tsx"
 import {
   clearBrowserCaches,
   clearCacheStorage,
@@ -25,11 +36,12 @@ import {
   measureCacheBytes,
 } from "../../pages/dataTools.ts"
 import {
-  MobileActionRow,
+  MobileActionBar,
+  MobileActionButton,
   MobileCard,
   MobileGroup,
-  MobileNote,
   MobilePageBody,
+  MobileReadOnlyRow,
   MobileRow,
 } from "../atoms.tsx"
 
@@ -57,14 +69,12 @@ function sessionStore(): Storage | null {
   }
 }
 
-const LICENSE_TEXT = `Pi-Remote 个人远程会话工具
-
-本仓库为个人项目，仅供本人使用。第三方依赖与字体的许可文本分别见各自包内的 LICENSE 文件。
-本页不联网、不展示第三方版权全文，只提供本地静态说明入口。`
-
 export function AboutPage() {
-  const { p, act } = useSettings()
+  const { p, act, setPage } = useSettings()
   const { relay } = p
+  const restart = useSettingsPiRestart(relay, act.notify)
+  const piUpdate = useSettingsPiUpdate(relay, act.notify)
+  const now = useNow(piUpdate.running ? 1000 : 60_000)
   const [licensesOpen, setLicensesOpen] = useState(false)
   const [armedClear, setArmedClear] = useState(false)
   const [cacheBytes, setCacheBytes] = useState<number | null>(null)
@@ -73,7 +83,18 @@ export function AboutPage() {
   const [exporting, setExporting] = useState(false)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateText, setUpdateText] = useState("")
-  const relayVersion = relay.serverProto != null ? `v${relay.serverProto}` : "—"
+  const [relayHealthVersion, setRelayHealthVersion] = useState<string | null>(null)
+  const relayVersion = formatRelayVersionText(relayHealthVersion, relay.serverProto)
+
+  useEffect(() => {
+    let active = true
+    void fetchRelayHealthVersion().then((info) => {
+      if (active && info?.version) setRelayHealthVersion(info.version)
+    })
+    return () => {
+      active = false
+    }
+  }, [relay.serverProto, relay.authed])
   const cacheLabel = formatCacheSize(cacheBytes)
 
   useEffect(() => {
@@ -87,8 +108,9 @@ export function AboutPage() {
     }
   }, [])
 
-  // pi 版本只认 get_host_diag；设备离线 / 旧扩展不支持时保持 —。
-  const selectedDevice = relay.devices.find((device) => device.id === relay.selectedDeviceId) ?? null
+  // pi 版本只认 get_host_diag；未显式选设备时按同一目标解析规则锚定到在线设备。
+  const resolvedTarget = resolveSettingsPiRestartDevice(relay)
+  const selectedDevice = resolvedTarget ? (relay.devices.find((device) => device.id === resolvedTarget.id) ?? null) : null
   const diagDeviceId = selectedDevice?.online ? selectedDevice.id : null
   const sessionReady =
     relay.authed &&
@@ -170,13 +192,14 @@ export function AboutPage() {
       relay: {
         serverName: relay.serverName,
         serverProto: relay.serverProto,
+        relayVersion: relayHealthVersion,
         clientVersion: CLIENT_VERSION,
         browserOnline: relay.browserOnline,
         authed: relay.authed,
         deviceMode: relay.deviceMode,
       },
       devices: relay.devices,
-      selectedDeviceId: relay.selectedDeviceId,
+      selectedDeviceId: selectedDevice?.id ?? relay.selectedDeviceId,
       appVersion: CLIENT_VERSION,
     })
     const ok = downloadTextFile(file.fileName, file.text, file.mime)
@@ -194,7 +217,28 @@ export function AboutPage() {
     act.notify(result.text, result.status === "error" ? "warn" : undefined)
   }
 
-  const piVersion = effectiveDiag?.piVersion || "—"
+  const piVersion = effectiveDiag?.piVersion || piUpdate.update?.currentVersion || "—"
+  const updateRow = settingsPiUpdateRowOf({
+    target: piUpdate.target,
+    checking: piUpdate.checking,
+    update: piUpdate.update,
+    checkError: piUpdate.checkError,
+    status: piUpdate.status,
+    otherRunning: restart.running,
+    now,
+  })
+  const restartBanner = settingsPiRestartBannerOf({
+    pendingRestart: restart.pendingRestart,
+    phase: restart.phase,
+    error: restart.error,
+    canRestart: restart.target.canRestart,
+    unsupportedReason: restart.target.reason,
+  })
+  const restartDescription = piUpdate.running
+    ? "正在更新 Pi，更新完成后会自动重启"
+    : restartBanner.title !== "重启 Pi"
+      ? `${restartBanner.title} · ${restartBanner.description}`
+      : restartBanner.description
 
   return (
     <MobilePageBody page="about">
@@ -204,7 +248,6 @@ export function AboutPage() {
         </span>
         <span className="sm-identity-copy">
           <span className="sm-identity-name">Pi-Remote</span>
-          <span className="sm-identity-sub">个人远程会话 · 单用户</span>
         </span>
       </MobileCard>
 
@@ -218,16 +261,40 @@ export function AboutPage() {
         <MobileRow title="中继版本">
           <span className="sm-value">{relayVersion}</span>
         </MobileRow>
-        <MobileRow title="会话数据">
-          <span className="sm-value">来自设备上的 pi 会话记录</span>
-        </MobileRow>
         <MobileRow title="pi 版本">
-          <span className="sm-value">{!diagDeviceId ? "—" : diagPhase === "loading" ? "读取中…" : piVersion}</span>
+          <span className="sm-value">{!diagDeviceId ? "—" : diagPhase === "loading" && !piUpdate.update?.currentVersion ? "读取中…" : piVersion}</span>
         </MobileRow>
       </MobileGroup>
 
+      <MobileGroup label="设备运行与升级">
+        <MobileActionBar description={restartDescription}>
+          <MobileActionButton
+            title="更新 Pi"
+            label={updateRow.actionLabel}
+            hint={updateRow.description}
+            disabled={updateRow.disabled}
+            onClick={() => piUpdate.triggerPrimaryAction(restart.running)}
+          />
+          <MobileActionButton
+            title="重启 Pi"
+            label={restart.running ? "重启中…" : restartBanner.buttonLabel}
+            hint={restartDescription}
+            disabled={restartBanner.buttonDisabled || piUpdate.running}
+            onClick={restart.requestRestart}
+          />
+          <MobileActionButton
+            title="设备端更新与系统操作"
+            label="系统操作"
+            hint="前往「设备」查看完整版本矩阵，或执行重启设备端、更新设备端组件"
+            onClick={() => setPage("devices")}
+          />
+        </MobileActionBar>
+      </MobileGroup>
+      <SettingsPiUpdateDialog viewport="phone" piUpdate={piUpdate} />
+      <SettingsPiRestartDialog viewport="phone" restart={restart} />
+
       <MobileGroup label="数据">
-        <MobileRow title="本机缓存" description="不影响设备上的会话记录">
+        <MobileRow title="本机缓存" tooltip="清理后只移除本机浏览器缓存，不影响设备上的会话记录">
           <span className="sm-value">{cacheLabel}</span>
           <button type="button" className="sm-clear-button" onClick={clearCache}>
             {armedClear ? "再点清理" : "清理"}
@@ -235,39 +302,42 @@ export function AboutPage() {
         </MobileRow>
       </MobileGroup>
 
-      <MobileGroup label="支持">
-        <MobileActionRow
-          title="导出诊断信息"
-          description="下载 JSON：主机诊断 + 中继 / 设备 / 版本；不含令牌与会话正文"
-          value={exporting ? "导出中…" : undefined}
-          disabled={exporting}
-          onClick={() => {
-            void exportDiagnostics()
-          }}
-        />
-        <MobileActionRow title="开源许可" onClick={() => setLicensesOpen((open) => !open)} />
-        <MobileActionRow
-          title="检查更新"
-          description={updateText || "从 GitHub Releases 读取最新版本并与当前版本比较"}
-          value={checkingUpdate ? "检查中…" : undefined}
-          disabled={checkingUpdate}
-          onClick={() => {
-            void checkUpdate()
-          }}
-        />
+      <MobileGroup label="支持" tooltip="可导出脱敏诊断 JSON（不含令牌与会话正文）、检查 GitHub 新版本或查看开源许可">
+        <MobileActionBar description={updateText || undefined}>
+          <MobileActionButton
+            title="导出诊断信息"
+            label={exporting ? "导出中…" : "导出诊断信息"}
+            hint="下载 JSON：主机诊断 + 中继 / 设备 / 版本；不含令牌与会话正文"
+            disabled={exporting}
+            onClick={() => {
+              void exportDiagnostics()
+            }}
+          />
+          <MobileActionButton
+            title="检查更新"
+            label={checkingUpdate ? "检查中…" : "检查更新"}
+            hint="从 GitHub Releases 读取最新版本并与当前版本比较"
+            disabled={checkingUpdate}
+            onClick={() => {
+              void checkUpdate()
+            }}
+          />
+          <MobileActionButton
+            title="开源许可"
+            label={licensesOpen ? "收起许可" : "开源许可"}
+            ariaExpanded={licensesOpen}
+            onClick={() => setLicensesOpen((open) => !open)}
+          />
+        </MobileActionBar>
       </MobileGroup>
 
       {licensesOpen ? (
-        <MobileCard className="sm-license">
-          <div className="sm-license-title">开源许可</div>
-          <pre className="sm-license-text">{LICENSE_TEXT}</pre>
-          <button type="button" className="sm-license-close" onClick={() => setLicensesOpen(false)}>
-            收起
-          </button>
-        </MobileCard>
+        <MobileGroup label="开源许可">
+          {OPEN_SOURCE_LICENSES.map((item) => (
+            <MobileReadOnlyRow key={item.name} title={item.name} value={item.license} />
+          ))}
+        </MobileGroup>
       ) : null}
-
-      <MobileNote>Pi-Remote 为个人项目，仅供本人使用。</MobileNote>
     </MobilePageBody>
   )
 }

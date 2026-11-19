@@ -7,7 +7,7 @@
 import { useSettings } from "../../SettingsContext.tsx"
 import { SETTINGS_SHORTCUT_ACTIONS, SETTINGS_SHORTCUT_GROUP_LABELS, type SettingsShortcutId } from "../../types.ts"
 import { SettingsShortcutCapture } from "../../ui.tsx"
-import { MobileBanner, MobileGroup, MobilePageBody, MobileRow } from "../atoms.tsx"
+import { MobileGroup, MobilePageBody, MobileRow } from "../atoms.tsx"
 
 const GROUP_ORDER = ["session", "navigation", "send", "model", "queue"] as const
 
@@ -20,13 +20,15 @@ export function ShortcutsPage() {
 
   return (
     <MobilePageBody page="shortcuts">
-      <MobileBanner>以下键位在外接键盘时可用；点按任意一行即可改键。</MobileBanner>
-
-      {GROUP_ORDER.map((group) => {
+      {GROUP_ORDER.map((group, index) => {
         const actions = SETTINGS_SHORTCUT_ACTIONS.filter((action) => action.group === group)
         if (actions.length === 0) return null
         return (
-          <MobileGroup key={group} label={SETTINGS_SHORTCUT_GROUP_LABELS[group]}>
+          <MobileGroup
+            key={group}
+            label={SETTINGS_SHORTCUT_GROUP_LABELS[group]}
+            tooltip={index === 0 ? "以下键位在外接键盘时可用；点按任意一行即可改键。" : undefined}
+          >
             {actions.map((action) => (
               <MobileRow key={action.id} title={action.label} className="sm-shortcut-row">
                 <SettingsShortcutCapture

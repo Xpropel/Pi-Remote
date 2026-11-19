@@ -162,3 +162,12 @@ export function IconDot({ size = 8, ...rest }: SVGProps<SVGSVGElement> & { size?
     </svg>
   )
 }
+
+export function IconTerminal(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="m7.5 10 2.5 2-2.5 2M12.5 14h3.5" />
+    </Svg>
+  )
+}

@@ -1,36 +1,49 @@
 /**
  * 手机端设置 · 审批与执行（移动压缩版）。
  *
- * 口径框（设计册第 5 节）：pi 没有 Codex 式权限档位。
- *   ◌ 何时询问 / 能碰什么 / 高危解锁 / 免审名单：设计预留，只保留不可用形态；
- *   ● 项目信任默认：经 settings_set 写 defaultProjectTrust；当前项目信任状态仍经 get_state 读；
+ *   ● 何时询问 / 能碰什么（活动范围）/ 高危解锁 / 免审名单：实时同步到当前会话（set_approval_policy）；
+ *   ● 项目信任默认：经 settings_set 写 defaultProjectTrust；当前项目信任状态经 get_state 读；
  *   ● 可用工具：真实 `get_active_tools` / `get_all_tools` → `set_active_tools`，
- *     作用域 = 当前会话（与 ToolsDialog 同一桥，不是持久默认）。
- *     读不到工具表时显示空态 /「连接主机后显示」，不拿设计稿的 8 个工具冒充真实清单。
+ *     作用域 = 当前会话（与 ToolsDialog 同一桥）；无会话时可写设备默认 defaultTools。
+ *     读不到工具表时显示空态 /「连接主机后显示」。
  */
-import { useState } from "react"
+import { useMemo, useState } from "react"
+import { X } from "lucide-react"
+import { commandsReady, usePrefsWriter, useSettingsPrefs } from "@/pi/containers/cShared"
 import { toolRowsOf } from "@/pi/model/dialogsData"
+import { switchDisplayStateOf } from "@/pi/model/switchSync"
 import { useSettings } from "../../SettingsContext.tsx"
 import { hostCommandsReady, useHostCommand } from "../data.ts"
-import { defaultProjectTrustPatch, effectiveProjectTrustOf } from "../../pages/settingsWrite.ts"
+import {
+  APPROVAL_TOOLS_NOTE,
+  APPROVAL_TRUST_NOTE,
+  approvalAskModeOf,
+  approvalDefaultToolRowsOf,
+  toggledToolSet,
+  validateAllowlistCommand,
+} from "../../pages/approvalData.ts"
+import {
+  defaultProjectTrustPatch,
+  defaultToolsPatch,
+  effectiveProjectTrustOf,
+  effectiveSettingsArrayOf,
+} from "../../pages/settingsWrite.ts"
 import { readOnlyHintOf, useSettingsDocument, useSettingsWriter } from "../../pages/settingsWriteHooks.ts"
 import { MobileSettingsWriteNote } from "../../pages/settingsWriteFeedback.tsx"
 import {
   MobileActionRow,
-  MobileBanner,
   MobileEmpty,
   MobileGroup,
   MobileNote,
   MobileOptionList,
   MobilePageBody,
   MobileRow,
-  MobileSelect,
   MobileSwitch,
 } from "../atoms.tsx"
 
 const ASK_OPTIONS = [
   { value: "ask", title: "逐项询问", description: "命令与工具调用先经你确认" },
-  { value: "list", title: "名单内自动通过", description: "免审名单里的命令直接执行，其余仍询问" },
+  { value: "allowlist", title: "名单内自动通过", description: "免审名单里的命令直接执行，其余仍询问" },
   { value: "never", title: "永不询问", description: "全部直接执行，风险高，仅建议在可信环境开启" },
 ] as const
 
@@ -41,17 +54,10 @@ const TRUST_OPTIONS = [
 ] as const
 
 const SCOPE_OPTIONS = [
-  { value: "read", title: "仅查看", description: "只能读取，不能改动" },
+  { value: "read-only", title: "仅查看", description: "只能读取，不能改动" },
   { value: "workspace", title: "工作区内可改", description: "可改当前工作区内的文件" },
   { value: "full", title: "完全访问", description: "可改设备上任意文件 · 需先在下方解锁" },
 ] as const
-
-const WEB_SEARCH_OPTIONS = [
-  { value: "live", label: "实时" },
-  { value: "cached", label: "缓存" },
-] as const
-
-const DENY_LIST = ["git status", "cat *", "npm run test"] as const
 
 /** pi 常见内建工具 → 设计稿中文名；未知工具原样显示。 */
 const TOOL_LABEL: Record<string, string> = {
@@ -67,24 +73,38 @@ const TOOL_LABEL: Record<string, string> = {
 }
 
 export function ApprovalPage() {
-  const { p, act } = useSettings()
+  const { p, prefs, act } = useSettings()
   const { relay } = p
   const ready = hostCommandsReady(relay)
+  const roomReady = commandsReady(relay) && relay.browserOnline
   const settingsDoc = useSettingsDocument(relay)
   const writer = useSettingsWriter(relay)
-  const activeQuery = useHostCommand(relay, "get_active_tools", ready, relay.roomId)
-  const allQuery = useHostCommand(relay, "get_all_tools", ready, relay.roomId)
-  const stateQuery = useHostCommand(relay, "get_state", ready, relay.roomId)
+  const conversation = useSettingsPrefs(p)
+  const writeConversation = usePrefsWriter(p)
+  const switchesPending = relay.switchSyncView.mode === "pending" && Boolean(relay.roomId)
+  const identityRequired = switchDisplayStateOf(relay.switchSyncView, relay.viewerIdentity) === "identity-required"
+  const activeQuery = useHostCommand(relay, "get_active_tools", roomReady, relay.roomId)
+  const allQuery = useHostCommand(relay, "get_all_tools", roomReady, relay.roomId)
+  const stateQuery = useHostCommand(relay, "get_state", roomReady, relay.roomId)
   const state = stateQuery.data && typeof stateQuery.data === "object" ? (stateQuery.data as Record<string, unknown>) : {}
   const view = toolRowsOf(activeQuery.data, allQuery.phase === "ready" ? allQuery.data : null)
   const [picked, setPicked] = useState<string[] | null>(null)
   const [saving, setSaving] = useState(false)
+  const [addingCommand, setAddingCommand] = useState(false)
+  const [newCommand, setNewCommand] = useState("")
+  const [commandError, setCommandError] = useState<string | null>(null)
 
+  const defaultTools = useMemo(
+    () => effectiveSettingsArrayOf(settingsDoc.data, writer.applied, "defaultTools"),
+    [settingsDoc.data, writer.applied],
+  )
+  const defaultToolView = useMemo(() => approvalDefaultToolRowsOf(defaultTools), [defaultTools])
 
   const hostRows = view.rows
   const rows = hostRows.map((row) => row.name)
   const selected = picked ?? view.enabled
-  const live = hostRows.length > 0 && ready
+  const live = hostRows.length > 0 && roomReady
+  const defaultWritable = !live && writer.canWrite && settingsDoc.phase === "ready" && writer.saving === null
   const projectTrusted = typeof state.projectTrusted === "boolean" ? state.projectTrusted : null
   const defaultTrust = effectiveProjectTrustOf(settingsDoc.data, writer.applied)
   const defaultTrustLabel = TRUST_OPTIONS.find((option) => option.value === defaultTrust)?.title ?? "未知"
@@ -97,6 +117,63 @@ export function ApprovalPage() {
       : activeQuery.phase === "error" || allQuery.phase === "error"
         ? "可用工具读取失败，可稍后重新打开设置"
         : "当前没有可用工具"
+
+  const askMode = approvalAskModeOf(conversation.approvalGate, prefs.approvalUseAllowlist)
+  const askSwitchDisabled = switchesPending || identityRequired
+  const askOptions = useMemo(
+    () =>
+      ASK_OPTIONS.map((option) => ({
+        ...option,
+        disabled: option.value === "never" && !prefs.approvalUnlockHighRisk,
+      })),
+    [prefs.approvalUnlockHighRisk],
+  )
+  const effectiveScope = prefs.approvalScope === "full" && !prefs.approvalUnlockHighRisk ? "workspace" : prefs.approvalScope
+  const scopeOptions = useMemo(
+    () =>
+      SCOPE_OPTIONS.map((option) => ({
+        ...option,
+        disabled: option.value === "full" && !prefs.approvalUnlockHighRisk,
+      })),
+    [prefs.approvalUnlockHighRisk],
+  )
+
+  const handleAskChange = (value: "ask" | "allowlist" | "never") => {
+    if (askSwitchDisabled) return
+    if (value === "ask") {
+      act.setPref("approvalUseAllowlist", false)
+      if (!conversation.approvalGate) writeConversation({ approvalGate: true })
+    } else if (value === "allowlist") {
+      act.setPref("approvalUseAllowlist", true)
+      if (!conversation.approvalGate) writeConversation({ approvalGate: true })
+    } else if (value === "never") {
+      if (!prefs.approvalUnlockHighRisk) return
+      act.setPref("approvalUseAllowlist", false)
+      if (conversation.approvalGate) writeConversation({ approvalGate: false })
+    }
+  }
+
+  const handleUnlockChange = (checked: boolean) => {
+    act.setPref("approvalUnlockHighRisk", checked)
+    if (!checked) {
+      if (prefs.approvalScope === "full") act.setPref("approvalScope", "workspace")
+      if (!conversation.approvalGate && !askSwitchDisabled) writeConversation({ approvalGate: true })
+    }
+  }
+
+  const submitAddCommand = () => {
+    const checked = validateAllowlistCommand(newCommand)
+    if (!checked.ok) {
+      setCommandError(checked.error)
+      return
+    }
+    if (!prefs.approvalAllowlist.includes(checked.value)) {
+      act.setPref("approvalAllowlist", [...prefs.approvalAllowlist, checked.value])
+    }
+    setNewCommand("")
+    setCommandError(null)
+    setAddingCommand(false)
+  }
 
   const toggle = (name: string) => {
     if (!live || saving) return
@@ -120,21 +197,33 @@ export function ApprovalPage() {
 
   return (
     <MobilePageBody page="approval">
-      <MobileBanner>
-        本页「何时询问 / 能碰什么 / 高危解锁 / 免审名单」为设计预留；pi 侧真实现状是扩展的
-        tool_call 权限门 + 项目信任，落地形态待定。
-      </MobileBanner>
-
-      <MobileGroup label="何时询问" badge="reserved">
-        <MobileOptionList label="何时询问" value="ask" options={ASK_OPTIONS} status="reserved" />
+      <MobileGroup
+        label="何时询问"
+        tooltip="实时控制当前会话工具调用的拦截策略；切换至「永不询问」需先开启下方高危解锁。"
+        footnote={
+          identityRequired
+            ? "需先在「设备」启用浏览器身份，才能远程切换审批门开关。"
+            : switchesPending
+              ? "正在与设备同步当前会话审批门状态…"
+              : undefined
+        }
+      >
+        <MobileOptionList
+          label="何时询问"
+          value={askMode}
+          options={askOptions}
+          disabled={askSwitchDisabled}
+          onChange={handleAskChange}
+        />
       </MobileGroup>
 
       <MobileGroup
         label="项目信任"
+        tooltip={APPROVAL_TRUST_NOTE}
         footnote={
           projectTrusted === null
-            ? `项目级配置、扩展与 MCP 服务器都要信任后才加载。新项目默认策略：${defaultTrustLabel}。`
-            : `项目级配置、扩展与 MCP 服务器都要信任后才加载。当前项目${projectTrusted ? "已信任" : "未信任"}；新项目默认策略：${defaultTrustLabel}。`
+            ? `新项目默认策略：${defaultTrustLabel}`
+            : `当前项目：${projectTrusted ? "已信任" : "未信任"} · 默认：${defaultTrustLabel}`
         }
       >
         <MobileOptionList
@@ -149,46 +238,118 @@ export function ApprovalPage() {
       </MobileGroup>
       <MobileSettingsWriteNote feedback={writer.feedback} fallback={writeHint} />
 
-      <MobileGroup label="能碰什么" badge="reserved">
-        <MobileOptionList label="活动范围" value="workspace" options={SCOPE_OPTIONS} status="reserved" />
-        <MobileRow title="允许联网" description="沙盒内命令可访问网络" status="reserved">
-          <MobileSwitch label="允许联网（设计预留）" checked={false} disabled />
-        </MobileRow>
-        <MobileSelect
-          label="网页搜索"
-          value="live"
-          options={WEB_SEARCH_OPTIONS}
-          status="reserved"
-          disabled
+      <MobileGroup
+        label="能碰什么"
+        tooltip="限制当前会话允许读写的文件范围；切换至「完全访问」需先开启下方高危解锁。"
+      >
+        <MobileOptionList
+          label="活动范围"
+          value={effectiveScope}
+          options={scopeOptions}
+          onChange={(value) => {
+            if (value === "read-only" || value === "workspace" || (value === "full" && prefs.approvalUnlockHighRisk)) {
+              act.setPref("approvalScope", value)
+            }
+          }}
         />
       </MobileGroup>
 
-      <MobileGroup label="高危解锁" badge="reserved">
-        <MobileRow title="允许「完全访问」与「永不询问」" description="打开后上面两组的高危档位才可选，防误触" status="reserved">
-          <MobileSwitch label="高危解锁（设计预留）" checked={false} disabled />
+      <MobileGroup label="高危解锁">
+        <MobileRow
+          title="允许「完全访问」与「永不询问」"
+          tooltip="防误触安全锁：开启后才允许在上方选择「完全访问」或「永不询问」高危档位。"
+        >
+          <MobileSwitch label="高危解锁" checked={prefs.approvalUnlockHighRisk} onChange={handleUnlockChange} />
         </MobileRow>
       </MobileGroup>
 
-      <MobileGroup label="免审命令名单" badge="reserved" footnote="名单内命令按上方策略自动通过，仍会记录在会话里。">
-        {DENY_LIST.map((command) => (
-          <MobileRow key={command} title={command} status="reserved">
-            <span className="sm-value">已预留</span>
+      <MobileGroup
+        label="免审命令名单"
+        tooltip="上方选择「名单内自动通过」时匹配的命令直接放行；仅支持单条命令或通配前缀，禁止管道与串接符。"
+      >
+        {prefs.approvalAllowlist.length === 0 ? (
+          <MobileRow title="尚未添加免审命令" description="仅在上方选「名单内自动通过」时生效" />
+        ) : (
+          prefs.approvalAllowlist.map((command) => (
+            <MobileRow key={command} title={command}>
+              <button
+                type="button"
+                className="sm-inline-btn"
+                aria-label={`移除 ${command}`}
+                onClick={() =>
+                  act.setPref(
+                    "approvalAllowlist",
+                    prefs.approvalAllowlist.filter((item) => item !== command),
+                  )
+                }
+              >
+                <X size={14} strokeWidth={2} aria-hidden="true" />
+              </button>
+            </MobileRow>
+          ))
+        )}
+        {addingCommand ? (
+          <MobileRow
+            title="新增命令"
+            description={commandError ?? "输入命令前缀或通配格式，如 git status 或 npm run *"}
+          >
+            <span className="sm-inline-controls">
+              <input
+                type="text"
+                className="settings-modal-input"
+                style={{ width: 150 }}
+                value={newCommand}
+                onChange={(event) => {
+                  setNewCommand(event.target.value)
+                  setCommandError(null)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    submitAddCommand()
+                  }
+                }}
+                placeholder="git status"
+                aria-label="新增免审命令"
+              />
+              <button type="button" className="sm-inline-btn" onClick={submitAddCommand}>
+                添加
+              </button>
+              <button
+                type="button"
+                className="sm-inline-btn"
+                onClick={() => {
+                  setAddingCommand(false)
+                  setNewCommand("")
+                  setCommandError(null)
+                }}
+              >
+                关闭
+              </button>
+            </span>
           </MobileRow>
-        ))}
-        <MobileActionRow title="添加命令" status="reserved" disabled />
+        ) : (
+          <MobileActionRow
+            title="添加命令"
+            onClick={() => {
+              setAddingCommand(true)
+              setCommandError(null)
+            }}
+          />
+        )}
       </MobileGroup>
 
       <MobileGroup
         label="可用工具"
-        footnote={
+        tooltip={
           live
-            ? "作用域 = 当前会话；关掉的工具不会递到模型手里，与上面的「能碰什么」是两回事。"
-            : "打开一个已连接的会话后可改；关掉的工具不会递到模型手里，与上面的「能碰什么」是两回事。"
+            ? APPROVAL_TOOLS_NOTE
+            : defaultWritable
+              ? "当前未打开会话，开关将写入新会话默认可用工具（defaultTools）。"
+              : APPROVAL_TOOLS_NOTE
         }
       >
-        {rows.length === 0 ? (
-          <MobileEmpty title="可用工具" body={toolsEmpty} />
-        ) : (
+        {live ? (
           rows.map((name) => (
             <MobileRow key={name} title={TOOL_LABEL[name] ?? name} status="existing">
               <MobileSwitch
@@ -199,11 +360,26 @@ export function ApprovalPage() {
               />
             </MobileRow>
           ))
+        ) : defaultWritable ? (
+          defaultToolView.rows.map((row) => (
+            <MobileRow key={row.id} title={row.label} status="existing">
+              <MobileSwitch
+                label={`${row.label}（新会话默认）`}
+                checked={row.enabled}
+                disabled={!defaultWritable}
+                onChange={() => {
+                  if (!row.toolName) return
+                  const next = toggledToolSet(defaultToolView.enabled, row.toolName, !row.enabled)
+                  void writer.save("defaultTools", defaultToolsPatch(next))
+                }}
+              />
+            </MobileRow>
+          ))
+        ) : (
+          <MobileEmpty title="可用工具" body={toolsEmpty} />
         )}
       </MobileGroup>
 
-      <MobileNote>可用工具的开关立即写入当前会话（现有 set_active_tools 桥），不需要「确定 / 取消」。</MobileNote>
-      <MobileNote>仍只读：何时询问 / 能碰什么 / 高危解锁 / 免审命令名单没有对应的 pi 设置字段（设计预留）；写桥只开放了「项目信任默认」。</MobileNote>
       {activeQuery.phase === "error" && activeQuery.error ? <MobileNote>工具读取失败：{activeQuery.error}</MobileNote> : null}
     </MobilePageBody>
   )

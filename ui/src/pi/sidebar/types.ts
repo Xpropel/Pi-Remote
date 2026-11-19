@@ -145,12 +145,18 @@ export interface PiSidebarSession {
   encReason?: RoomEncReason
 }
 
-export type PiSidebarGroupKind = "pinned" | "workspace" | "archive" | "custom"
+export type PiSidebarGroupKind = "pinned" | "workspace" | "flat" | "archive" | "custom"
 
 export interface PiSidebarGroup {
   id: string
   kind: PiSidebarGroupKind
   label: string
+  /** 工作区默认展示名（重命名后保留用于占位与恢复默认） */
+  defaultLabel?: string
+  /** 是否使用了本机自定义工作区名 */
+  customLabel?: boolean
+  /** 所属设备 id（用于工作区快捷新建会话） */
+  deviceId?: string
   /** 工作区组 = 项目文件夹；无 cwd 组用 "未分组" */
   cwd?: string
   collapsed: boolean
@@ -249,11 +255,14 @@ export interface PiSidebarActions {
   selectDevice: (deviceId: string) => void
   toggleDeviceMenu?: (open?: boolean) => void
   addDevice?: () => void
+  openDeviceHub?: () => void
   back?: () => void
   forward?: () => void
   /** 置顶/归档（本机状态；诚实提示见 PI_SIDEBAR_COPY） */
   togglePin: (sessionKey: string) => void
   toggleArchive: (sessionKey: string) => void
+  /** 在工作区组目录新建会话（组头 + / 工作区菜单） */
+  newSessionInGroup?: (group: PiSidebarGroup) => void
   /** 分组折叠；plain 行「工作区」=全部展开/收起 */
   toggleGroup: (groupId: string) => void
   /** Expand/collapse a group's capped row list ("更多 N" / "收起"); groupId is
@@ -303,9 +312,9 @@ export type UnifiedSidebarProps = PiSidebarProps
 
 /** 逐字诚实提示（spec §6.4/§6.5；设置脚注/行 title/归档空态共用）。 */
 export const PI_SIDEBAR_COPY = {
-  pinHint: "仅本机记忆，尚未写入 pi",
+  pinHint: "已置顶",
   pinTitle: "置顶仅保存在本机浏览器，不同步到其他设备",
-  archiveHint: "归档仅保存在本机浏览器，不会删除会话文件",
+  archiveHint: "已归档",
   archiveTitle: "归档仅在本机隐藏，不会修改或同步到其他设备",
   archiveEmpty: "本机暂无归档",
   archiveViewTitle: "归档的会话会显示在这里（仅本机）",

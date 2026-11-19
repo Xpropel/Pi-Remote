@@ -35,3 +35,11 @@
   align-items: center;
   gap: 6px;
 }
+
+.settings-model-row-controls {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}

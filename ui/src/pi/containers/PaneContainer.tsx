@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import type { DiffRow, FileKind } from "@/components/kit"
 import { InlineLink } from "@/components/kit"
+import { cn } from "@/lib/utils"
 import { piCopyText } from "@/components/pi/conversation/clipboard"
+import { changesOfSessionCached, createChangesCache } from "@/components/pi/composer/sessionChanges"
 import { PiChangesPane, type PiChangedFile } from "@/components/pi/conversation/PiChangesPane"
 import { PiFileOpenRow, PiFilePane, PiFileToolbar } from "@/components/pi/conversation/PiFilePane"
-import { PiPaneTabs, PiPaneTitle, type PiPaneKind } from "@/components/pi/conversation/PiPaneTabs"
+import { PiPaneRail, PiPaneTabs, PiPaneTitle, type PiPaneKind } from "@/components/pi/conversation/PiPaneTabs"
+import { PiShellPane } from "@/components/pi/conversation/PiShellPane"
 import { PiTerminalPane, PiTerminalToolbar, type PiTerminalActions } from "@/components/pi/conversation/PiTerminalPane"
 import { PiCenteredState, PiPhonePage, PiTopBar } from "@/components/pi/shared"
 import { piBaseName } from "@/components/pi/shared/format"
@@ -34,9 +37,15 @@ export function PaneContainer(props: PiContainerProps) {
   const { relay, ui, act, variant } = props
   const phone = variant === "phone"
   const view: PiPaneKind = ui.pane ?? "changes"
+  const showShell = !isRoomEncrypted(relay)
   const now = useNow(1000)
   const items: Item[] = relay.roomId ? relay.transcript.items : EMPTY_ITEMS
   const unloaded = !sessionLoaded(relay)
+
+  const [openedShellRoom, setOpenedShellRoom] = useState<string | null>(null)
+  const nextShellRoom = showShell && relay.roomId && view === "shell" ? relay.roomId : openedShellRoom === relay.roomId && showShell ? openedShellRoom : null
+  if (nextShellRoom !== openedShellRoom) setOpenedShellRoom(nextShellRoom)
+  const shellMounted = showShell && !!relay.roomId && (view === "shell" || openedShellRoom === relay.roomId)
 
   const changes = useMemo(() => changesViewOf(items), [items])
   const files = useMemo<PiChangedFile[]>(
@@ -58,19 +67,26 @@ export function PaneContainer(props: PiContainerProps) {
       onToggleLineNumbers: () => setLineNumbers(!numbers),
       onCopyOutput: () => void piCopyText(terminalsText(terminals)),
       onJumpLatest: () => jumpToLatest(phone),
+      onOpenShell: showShell ? () => act.setPane("shell") : undefined,
     }),
-    [numbers, terminals, phone],
+    [numbers, terminals, phone, showShell, act],
   )
 
   const file = useFileView(relay.getFile, view === "file" ? ui.file : null, relay.roomId)
 
-  let body: ReactNode
+  let body: ReactNode = null
   let subHeader: ReactNode = undefined
   if (view === "changes") {
-    body = <PiChangesPane files={files} total={total} variant={variant} unloaded={unloaded} />
+    body = <PiChangesPane files={files} total={total} variant={variant} unloaded={unloaded} onOpenFile={(path) => act.openFile(path)} />
   } else if (view === "terminal") {
-    body = <PiTerminalPane items={terminals} now={now} variant={variant} toolbar={!phone} lineNumbers={numbers} actions={terminalActions} unloaded={unloaded} />
+    body = <PiTerminalPane items={terminals} now={now} key={relay.roomId} variant={variant} toolbar={!phone} lineNumbers={numbers} actions={terminalActions} unloaded={unloaded} />
     if (phone && terminals.length > 0) subHeader = <PiTerminalToolbar items={terminals} variant="phone" lineNumbers={numbers} actions={terminalActions} />
+  } else if (view === "shell") {
+    if (!showShell) {
+      body = <PaneState title="加密房间不支持 Shell" body="端到端加密会话无法开启明文交互终端" />
+    } else if (!relay.roomId) {
+      body = <PaneState title="还没有选择会话" body="先打开一个会话再使用 Shell" />
+    }
   } else if (!ui.file) {
     // 手动打开（B09）：顶部"打开文件…"输入行，回车 = act.openFile（之后同从流里点文件名）
     body = (
@@ -83,18 +99,21 @@ export function PaneContainer(props: PiContainerProps) {
     body = <PaneState spinner title="正在读取文件…" body={ui.file} />
   } else if (file.status === "error") {
     body = (
-      <PaneState
-        title="读取失败"
-        body={
-          <>
-            {file.error} · <InlineLink onClick={file.retry}>重试</InlineLink>
-          </>
-        }
-      />
+      <>
+        <PiFileOpenRow variant={variant} onOpen={act.openFile} />
+        <PaneState
+          title="读取失败"
+          body={
+            <>
+              {file.error} · <InlineLink onClick={file.retry}>重试</InlineLink>
+            </>
+          }
+        />
+      </>
     )
   } else {
     const result = fileResultOf(file.payload, ui.file)
-    const download = () => downloadFile(file.payload, ui.file ?? "")
+    const download = () => downloadFile(file.payload, ui.file ?? "", relay.notify)
     body = (
       <PiFilePane
         file={result}
@@ -102,18 +121,56 @@ export function PaneContainer(props: PiContainerProps) {
         toolbar={!phone}
         truncatedNote="文件太大，只显示前 5 MB"
         onDownload={download}
+        onOpenPath={act.openFile}
       />
     )
-    if (phone) subHeader = <PiFileToolbar file={result} variant="phone" onDownload={download} />
+    if (phone) subHeader = <PiFileToolbar file={result} variant="phone" onDownload={download} onOpenPath={act.openFile} />
   }
 
+  const content = (
+    <>
+      {shellMounted && (
+        <div className={cn("min-h-0 flex-1 flex-col", view === "shell" ? "flex" : "hidden")}>
+          <PiShellPane
+            roomId={relay.roomId}
+            variant={variant}
+            online={relay.authed && relay.online && (relay.selectedDevice?.online ?? true)}
+            unloaded={unloaded}
+            runCommand={relay.runCommand}
+            subscribeShellEvents={relay.subscribeShellEvents}
+            onNotify={relay.notify}
+          />
+        </div>
+      )}
+      {body}
+    </>
+  )
+
   if (phone) {
+    const shellActive = view === "shell" && shellMounted
     return (
       <PiPhonePage
-        topBar={<PiTopBar variant="phone-page" title={<PiPaneTitle active={view} />} onBack={() => act.setPane(null)} className="border-b border-(--cw-divider)" />}
+        topBar={
+          <PiTopBar
+            variant="phone-page"
+            title={
+              <PiPaneTitle
+                active={view}
+                changes={total}
+                showShell={showShell}
+                file={ui.file ? { name: piBaseName(ui.file), kind: fileKindOfPath(ui.file) } : undefined}
+                onSelect={(kind) => act.setPane(kind)}
+              />
+            }
+            onBack={() => act.setPane(null)}
+            className="border-b border-(--cw-divider)"
+          />
+        }
         subHeader={subHeader}
+        selfScroll={shellActive}
+        contentClassName={shellActive ? "flex flex-col" : undefined}
       >
-        {body}
+        {content}
       </PiPhonePage>
     )
   }
@@ -123,16 +180,48 @@ export function PaneContainer(props: PiContainerProps) {
         active={view}
         changes={total}
         terminalRunning={terminals.some((t) => t.state === "running")}
+        showShell={showShell}
         file={ui.file ? { name: piBaseName(ui.file), kind: fileKindOfPath(ui.file) } : undefined}
         onSelect={(kind) => act.setPane(kind)}
         onClose={() => act.setPane(null)}
       />
-      {body}
+      {content}
     </>
   )
 }
 
 const EMPTY_ITEMS: Item[] = []
+
+function isRoomEncrypted(relay: PiContainerProps["relay"]): boolean {
+  const room = relay.rooms.find((r) => r.id === relay.roomId)
+  return room?.enc === true || relay.roomCryptoStatus != null
+}
+
+/** 桌面对话右上角悬浮操作栏：右面板收起时提供直达 展开 / Changes / Terminal / Shell / Files 的入口 */
+export function PaneRailContainer(props: PiContainerProps) {
+  const { relay, ui, act } = props
+  const items: Item[] = relay.roomId ? relay.transcript.items : EMPTY_ITEMS
+  const [changesCache] = useState(createChangesCache)
+  const changes = useMemo(() => changesOfSessionCached(items, changesCache), [items, changesCache])
+  const hasChanges = changes != null && changes.files.length > 0
+  const showShell = !isRoomEncrypted(relay)
+  const terminalRunning =
+    relay.authed &&
+    relay.browserOnline &&
+    (relay.selectedDevice?.online ?? true) &&
+    relay.terminalItems.some((t) => t.state === "running")
+  return (
+    <PiPaneRail
+      hasChanges={hasChanges}
+      changesStat={hasChanges ? { added: changes.added, removed: changes.removed } : undefined}
+      terminalRunning={terminalRunning}
+      showShell={showShell}
+      fileName={ui.file ? piBaseName(ui.file) : undefined}
+      onExpand={act.togglePane}
+      onSelect={(kind) => act.setPane(kind)}
+    />
+  )
+}
 
 /** pane 里的居中状态（没打开文件 / 读取中 / 读取失败） */
 function PaneState({ spinner, title, body }: { spinner?: boolean; title: ReactNode; body?: ReactNode }) {
@@ -205,16 +294,21 @@ function fileResultOf(payload: PiFilePayload, path: string): PiFileResult {
 }
 
 /** 下载：用拿到的内容在浏览器本地生成文件（不把内容再发回服务端）；文件名只取名字部分 */
-function downloadFile(payload: PiFilePayload, path: string) {
+function downloadFile(payload: PiFilePayload, path: string, onNotify?: (text: string, tone?: "warn" | "bad") => void) {
   // 控制字符和路径 / 系统保留字符换成下划线（防目录穿越，同旧界面 fileDownloadName）
   const name = [...(payload.name || piBaseName(path) || "download")].map((ch) => (ch.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(ch) ? "_" : ch)).join("")
   let blob: Blob
   if (payload.encoding === "utf8") blob = new Blob([payload.data], { type: payload.mimeType || "text/plain" })
   else {
-    const bin = atob(payload.data)
-    const bytes = new Uint8Array(bin.length)
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    blob = new Blob([bytes], { type: payload.mimeType || "application/octet-stream" })
+    try {
+      const bin = atob(payload.data.replace(/\s+/g, ""))
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      blob = new Blob([bytes], { type: payload.mimeType || "application/octet-stream" })
+    } catch {
+      onNotify?.("下载失败：文件内容解码出错", "bad")
+      return
+    }
   }
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")

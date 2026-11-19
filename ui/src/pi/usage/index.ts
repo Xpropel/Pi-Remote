@@ -2,6 +2,7 @@
 export * from "./types"
 export * from "./validate"
 export * from "./format"
+export * from "./monthlyQuota"
 export { useUsageActivity } from "./useUsage"
 export type { UsageActivityRelayLike, UseUsageActivityOptions, UseUsageActivityState } from "./useUsage"
 export { UsageActivityPage } from "./UsageActivityPage"

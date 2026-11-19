@@ -168,9 +168,10 @@ test("类型/范围按 pi 1.3 schema 校验：枚举、布尔、非负安全整�
   for (const value of ["sometimes", "ALWAYS", "", 1, null]) {
     badArgs(() => ext.validateSettingsPatch({ defaultProjectTrust: value }), /defaultProjectTrust/)
   }
-  for (const value of ["none", "HIGH", "", 1, null]) {
+  for (const value of ["none", "HIGH", "", 1]) {
     badArgs(() => ext.validateSettingsPatch({ defaultThinkingLevel: value }), /defaultThinkingLevel/)
   }
+  assert.deepEqual({ ...ext.validateSettingsPatch({ defaultThinkingLevel: null }) }, { defaultThinkingLevel: null })
   for (const field of ["defaultModel", "defaultProvider"]) {
     for (const value of ["", "   ", "a".repeat(201), "a\nb", 5, null, {}]) {
       badArgs(() => ext.validateSettingsPatch({ defaultModel: "m", defaultProvider: "p", [field]: value }), new RegExp(field))
@@ -549,4 +550,267 @@ test("RPC_UNSUPPORTED 文案指向 settings_set，并保留 retry 未开放的�
     (e) => e.code === "unsupported" && /settings_set/.test(e.message) && /compaction\.enabled/.test(e.message))
   await assert.rejects(bridge.executeCommand("set_auto_retry", { enabled: true }),
     (e) => e.code === "unsupported" && /retry\.enabled/.test(e.message))
+})
+
+test("upsert_provider_model：编辑保留省略的 baseUrl/input，仅在显式传入空串时清除", async () => {
+  const agentDir = tempDir()
+  const modelsPath = path.join(agentDir, "models.json")
+  writeJson(modelsPath, {
+    providers: {
+      deepseek: {
+        models: [
+          {
+            id: "deepseek-v4.1-flash-1017",
+            name: "DeepSeek V4.1 Flash 1017",
+            baseUrl: "https://39api.cn",
+            api: "openai-completions",
+            reasoning: true,
+            input: ["text", "image"],
+          },
+        ],
+      },
+    },
+  })
+  const restore = useAgentDir(agentDir)
+  try {
+    const bridge = new ext.Bridge()
+    // 1. 省略 baseUrl 与 input 时不得误删已有配置
+    await bridge.executeCommand("upsert_provider_model", {
+      provider: "deepseek",
+      originalId: "deepseek-v4.1-flash-1017",
+      model: { id: "deepseek-v4.1-flash-1017", reasoning: false },
+    })
+    let saved = readJson(modelsPath).providers.deepseek.models[0]
+    assert.equal(saved.baseUrl, "https://39api.cn")
+    assert.equal(saved.api, "openai-completions")
+    assert.deepEqual(saved.input, ["text", "image"])
+    assert.equal(saved.reasoning, false)
+
+    // 2. 更新 input 与显式清空 baseUrl/name
+    await bridge.executeCommand("upsert_provider_model", {
+      provider: "deepseek",
+      originalId: "deepseek-v4.1-flash-1017",
+      model: {
+        id: "deepseek-v4.1-flash-1017",
+        baseUrl: "",
+        name: "",
+        input: ["text"],
+        reasoning: true,
+      },
+    })
+    saved = readJson(modelsPath).providers.deepseek.models[0]
+    assert.equal("baseUrl" in saved, false)
+    assert.equal("name" in saved, false)
+    assert.deepEqual(saved.input, ["text"])
+    assert.equal(saved.reasoning, true)
+  } finally {
+    restore()
+  }
+})
+
+test("Bridge settings_set 写入 defaultProvider/defaultModel 后，cmdGetModels 立刻返回新默认模型而 cmdGetSettings 保持内存快照", async () => {
+  const agentDir = tempDir()
+  writeJson(path.join(agentDir, "models.json"), {
+    providers: {
+      deepseek: {
+        models: [{ id: "deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash 1017", baseUrl: "https://39api.cn" }],
+      },
+    },
+  })
+  const restore = useAgentDir(agentDir)
+  try {
+    const bridge = new ext.Bridge()
+    bridge.pi = { getSettings: () => ({ steeringMode: "one-at-a-time" }) }
+    bridge.ctx = {
+      modelRegistry: {
+        getAll: () => [{ id: "deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash 1017", provider: "deepseek", reasoning: true }],
+        getAvailable: () => [{ id: "deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash 1017", provider: "deepseek", reasoning: true }],
+      },
+    }
+    assert.equal("defaultModel" in bridge.cmdGetModels(), false)
+
+    await bridge.executeCommand("settings_set", {
+      settings: { defaultProvider: "deepseek", defaultModel: "deepseek-v4.1-flash-1017" },
+    })
+    assert.deepEqual(bridge.cmdGetModels().defaultModel, {
+      provider: "deepseek",
+      id: "deepseek-v4.1-flash-1017",
+    })
+    assert.equal(bridge.cmdGetSettings().settings.defaultModel, undefined)
+  } finally {
+    restore()
+  }
+})
+
+const { createRequire: createNodeRequire } = await import("node:module")
+const { attachWriteSettingsPatch } = createNodeRequire(import.meta.url)("../deploy/attach.cjs")
+
+test("settings_set 与 attachWriteSettingsPatch 对等支持 skills/prompts/extensions/packages 读写、删除与校验", async () => {
+  const agentDir = tempDir()
+  const file = path.join(agentDir, "settings.json")
+  writeJson(file, { keepUnknown: true }, 0o644)
+  const restore = useAgentDir(agentDir)
+  try {
+    const bridge = new ext.Bridge()
+    bridge.pi = { getSettings: () => ({ skills: ["running-only"] }) }
+
+    const resBridge = await bridge.executeCommand("settings_set", {
+      settings: {
+        skills: ["  ~/my-skill  ", "skills/a", "skills/a"],
+        prompts: [" prompts/review.md "],
+        extensions: ["./ext/local.ts"],
+        packages: [
+          " npm:pi-foo ",
+          "npm:pi-foo",
+          { source: " npm:pi-bar ", skills: [" s1 ", "s1"], extensions: [] },
+        ],
+      },
+    })
+    assert.equal(resBridge.ok, true)
+    assert.deepEqual(resBridge.applied.skills, ["~/my-skill", "skills/a"])
+    assert.deepEqual(resBridge.applied.prompts, ["prompts/review.md"])
+    assert.deepEqual(resBridge.applied.extensions, ["./ext/local.ts"])
+    assert.deepEqual(resBridge.applied.packages, [
+      "npm:pi-foo",
+      { source: "npm:pi-bar", skills: ["s1"], extensions: [] },
+    ])
+    assert.deepEqual(bridge.cmdGetSettings().settings.skills, ["running-only"])
+
+    let saved = readJson(file)
+    assert.equal(saved.keepUnknown, true)
+    assert.deepEqual(saved.skills, ["~/my-skill", "skills/a"])
+    assert.deepEqual(saved.packages, [
+      "npm:pi-foo",
+      { source: "npm:pi-bar", skills: ["s1"], extensions: [] },
+    ])
+
+    // attachWriteSettingsPatch 与 Bridge 行为保持对等（先写再传 null 删除）
+    const attachWrite = attachWriteSettingsPatch(agentDir, {
+      patch: {
+        skills: ["  attach/skill  "],
+        prompts: null,
+      },
+    })
+    assert.deepEqual(attachWrite.applied, {
+      skills: ["attach/skill"],
+      prompts: null,
+    })
+    saved = readJson(file)
+    assert.deepEqual(saved.skills, ["attach/skill"])
+    assert.equal("prompts" in saved, false, "传 null 时删除该字段")
+
+    const delBridge = await bridge.executeCommand("settings_set", {
+      settings: { skills: null, extensions: null, packages: null },
+    })
+    assert.equal(delBridge.ok, true)
+    saved = readJson(file)
+    assert.equal("skills" in saved, false)
+    assert.equal("extensions" in saved, false)
+    assert.equal("packages" in saved, false)
+
+    // 校验非法入参 / 原型污染在 Bridge 与 attach 两侧都被拒绝
+    const pollutedPkg = JSON.parse('{"source":"npm:x","__proto__":{"polluted":true}}')
+    await assert.rejects(
+      () => bridge.executeCommand("settings_set", { settings: { skills: ["   "] } }),
+      (e) => e.code === "bad_args",
+    )
+    await assert.rejects(
+      () => bridge.executeCommand("settings_set", { settings: { packages: [pollutedPkg] } }),
+      (e) => e.code === "bad_args",
+    )
+    await assert.rejects(
+      () => bridge.executeCommand("settings_set", { settings: { packages: [{ source: "npm:x", constructor: "bad" }] } }),
+      (e) => e.code === "bad_args",
+    )
+    badArgs(() => attachWriteSettingsPatch(agentDir, { patch: { prompts: ["   "] } }))
+    badArgs(() => attachWriteSettingsPatch(agentDir, { patch: { packages: [pollutedPkg] } }))
+    badArgs(() => attachWriteSettingsPatch(agentDir, { patch: { packages: [{ source: "npm:x", constructor: "bad" }] } }))
+  } finally {
+    restore()
+  }
+})
+
+test("Bridge 审批策略命令（get/set_approval_policy）与 checkToolCallApproval 运行时执行", async () => {
+  const ws = tempDir()
+  const outside = tempDir()
+  const bridge = new ext.Bridge()
+  bridge.approvalGateEnabled = false
+  bridge.pi = {
+    getAllTools: () => [
+      { name: "read", annotations: { readOnlyHint: true } },
+      { name: "write", annotations: { readOnlyHint: false, destructiveHint: true } },
+      { name: "bash", annotations: { readOnlyHint: false, destructiveHint: true } },
+    ],
+  }
+  const ctxNoUi = { cwd: ws, hasUI: false }
+
+  // 1. 默认策略
+  assert.deepEqual(await bridge.executeCommand("get_approval_policy", {}), {
+    scope: "workspace",
+    allowlist: [],
+  })
+
+  // 2. read-only 档位放行只读工具，拦截写入/执行工具（即便审批门总开关关闭）
+  const roRes = await bridge.executeCommand("set_approval_policy", {
+    scope: "read-only",
+    allowlist: ["git status", "npm test *"],
+  })
+  assert.deepEqual(roRes, {
+    ok: true,
+    scope: "read-only",
+    allowlist: ["git status", "npm test *"],
+  })
+  assert.equal(await bridge.checkToolCallApproval({ toolName: "read", input: { path: "README.md" } }, ctxNoUi), undefined)
+  const roBlockWrite = await bridge.checkToolCallApproval({ toolName: "write", input: { path: "a.txt" } }, ctxNoUi)
+  assert.equal(roBlockWrite?.block, true)
+  const roBlockBash = await bridge.checkToolCallApproval({ toolName: "bash", input: { command: "git status" } }, ctxNoUi)
+  assert.equal(roBlockBash?.block, true, "read-only 下 bash 仍被拦截")
+
+  // 3. workspace 档位允许工作区内写入，fail-closed 拦截越界写入
+  await bridge.executeCommand("set_approval_policy", { scope: "workspace" })
+  assert.equal(
+    await bridge.checkToolCallApproval({ toolName: "write", input: { path: path.join(ws, "ok.txt") } }, ctxNoUi),
+    undefined,
+  )
+  const wsBlockRel = await bridge.checkToolCallApproval({ toolName: "write", input: { path: "../escape.txt" } }, ctxNoUi)
+  assert.equal(wsBlockRel?.block, true, "相对路径越出 cwd 必须拦截")
+  const wsBlockAbs = await bridge.checkToolCallApproval(
+    { toolName: "edit", input: { path: path.join(outside, "evil.txt") } },
+    ctxNoUi,
+  )
+  assert.equal(wsBlockAbs?.block, true, "工作区外绝对路径必须 fail-closed 拦截")
+
+  // 4. 开启审批门后：allowlist 仅放行匹配的单条命令，复合壳注入旁路仍被拦截
+  bridge.approvalGateEnabled = true
+  bridge.approvalGateTier = "high-risk"
+  assert.equal(
+    await bridge.checkToolCallApproval({ toolName: "bash", input: { command: "git status" } }, ctxNoUi),
+    undefined,
+  )
+  assert.equal(
+    await bridge.checkToolCallApproval({ toolName: "bash", input: { command: "npm test -- --grep foo" } }, ctxNoUi),
+    undefined,
+  )
+  for (const bypass of [
+    "git status && rm -rf /",
+    "git status; whoami",
+    "git status | cat",
+    "git status\nwhoami",
+    "ls -la",
+  ]) {
+    const blocked = await bridge.checkToolCallApproval({ toolName: "bash", input: { command: bypass } }, ctxNoUi)
+    assert.equal(blocked?.block, true, `必须拦截旁路或未授权命令：${bypass}`)
+  }
+
+  // 5. full 档位放行工作区外写入（若门禁关闭）并拒绝非法策略参数
+  bridge.approvalGateEnabled = false
+  await bridge.executeCommand("set_approval_policy", { scope: "full" })
+  assert.equal(
+    await bridge.checkToolCallApproval({ toolName: "write", input: { path: path.join(outside, "ok.txt") } }, ctxNoUi),
+    undefined,
+  )
+  await assert.rejects(
+    () => bridge.executeCommand("set_approval_policy", { scope: "invalid-scope" }),
+    (e) => e.code === "bad_args",
+  )
 })

@@ -57,6 +57,19 @@ type ElementLike = {
   closest?: (selector: string) => unknown
 }
 
+function hasXtermAncestor(node: unknown): boolean {
+  if (!node || typeof node !== "object") return false
+  if (typeof Element !== "undefined" && !(node instanceof Element)) return false
+  const el = node as ElementLike
+  return typeof el.closest === "function" && Boolean(el.closest(".xterm"))
+}
+
+/** 目标元素或当前焦点是否在交互式终端（.xterm）内。 */
+export function isXtermTarget(target: EventTarget | null): boolean {
+  if (hasXtermAncestor(target)) return true
+  return typeof document !== "undefined" && hasXtermAncestor(document.activeElement)
+}
+
 /** 焦点元素是否可输入（input / textarea / select / contenteditable）。只用鸭子类型，方便 Node 单测。 */
 export function isEditableTarget(target: unknown): boolean {
   if (!target || typeof target !== "object") return false
@@ -95,6 +108,9 @@ export function usePiShortcuts(options: UsePiShortcutsOptions): void {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       const current = latest.current
+      const inXterm = isXtermTarget(event.target)
+      // 焦点在 .xterm 内时：不抢占 Ctrl 组合键（如 Ctrl+B tmux 前缀、Ctrl+K 删行、Ctrl+. 等 shell/emacs 热键）
+      if (inXterm && event.ctrlKey && !event.metaKey && !event.altKey) return
       const action = piShortcutOf(
         {
           key: event.key,
@@ -113,6 +129,8 @@ export function usePiShortcuts(options: UsePiShortcutsOptions): void {
 
       let handler: (() => void) | undefined
       if (action === "escape") {
+        // 焦点在 .xterm 内且没有菜单 / 浮层打开时，让 Escape 落到 vim / htop / readline，不顺手中止生成
+        if (inXterm && !current.escState.menuOpen && !current.escState.overlayOpen) return
         const target = escTargetOf({
           ...current.escState,
           focus: focusKindOf(event.target, current.isComposerElement),
@@ -136,6 +154,13 @@ export function usePiShortcuts(options: UsePiShortcutsOptions): void {
       }
       if (!handler) return
       event.preventDefault()
+      if (action === "new-session") {
+        void import("@/pi/containers/NewSessionContainer")
+          .then(({ resetNewSessionSelection }) => resetNewSessionSelection())
+          .catch(() => {})
+          .finally(() => handler())
+        return
+      }
       handler()
     }
 

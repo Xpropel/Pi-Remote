@@ -1,7 +1,7 @@
 import type { FocusEvent, ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { GhostIconButton, TitleBar } from "@/components/kit"
-import { ChevronLeft, Ellipsis, PanelRight, Plus, Search } from "@/components/kit/icons"
+import { ChevronLeft, Ellipsis, PanelRight, Plus, Search, SquareTerminal } from "@/components/kit/icons"
 import { PiIconButton, PiMark, PiPlatformIcon } from "./PiMark"
 import { usePiControllableOpen, usePiLayer, usePiStatic } from "./layers"
 
@@ -40,6 +40,8 @@ export interface PiTopBarProps {
   onBack?: () => void
   /** phone-chat：点标题（打开会话信息 sheet，design B06）。可交互时标题渲染成按钮 */
   onTitleClick?: () => void
+  /** phone-chat：打开面板与工具（Shell / 终端 / 改动 / 文件） */
+  onOpenPane?: () => void
   /** P4 契约：静态态（画廊截图）。不传时取 PiStaticContext */
   static?: boolean
   className?: string
@@ -105,6 +107,7 @@ export function PiTopBar({
   onNewSession,
   onBack,
   onTitleClick,
+  onOpenPane,
   static: staticProp,
   className,
 }: PiTopBarProps) {
@@ -208,7 +211,22 @@ export function PiTopBar({
           )}
           {platform && <PiPlatformIcon platform={platform} size={15} className="ml-1.5 text-(--cw-pi-text-secondary)" />}
         </span>
-        <span className="flex items-center justify-end">{actions ?? <PiIconButton label="会话菜单" icon={<Ellipsis />} />}</span>
+        <span className="flex items-center justify-end">
+          {actions ?? (
+            <>
+              {onOpenPane && (
+                <PiIconButton
+                  data-cw-id="pi-topbar-pane"
+                  label="面板与工具"
+                  title="打开 Shell / 改动 / 文件"
+                  icon={<SquareTerminal />}
+                  onClick={onOpenPane}
+                />
+              )}
+              <PiIconButton label="会话菜单" icon={<Ellipsis />} />
+            </>
+          )}
+        </span>
       </div>
     )
   }

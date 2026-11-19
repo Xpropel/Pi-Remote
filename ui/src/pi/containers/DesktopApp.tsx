@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import type { PiTheme } from "@/components/pi/shared/viewport"
 import { PiDesktopShell, usePiFrame, usePiLayer, usePiLayerState } from "@/components/pi/shared"
 import { composerBlockOf } from "@/pi/model/composerButton"
+import { isXtermTarget } from "@/pi/hooks/usePiShortcuts"
 import { usePiShellShortcuts } from "@/pi/hooks/usePiShellShortcuts"
 import { usePiAddressSync } from "@/pi/hooks/usePiAddressSync"
 import {
@@ -21,11 +22,11 @@ import { ComposerContainer } from "./ComposerContainer"
 import { useDeviceOfflineExtras } from "./DeviceOfflineContainer"
 import { DialogsContainer } from "./DialogsContainer"
 import { LinkStatusContainer } from "./LinkStatusContainer"
-import { NewSessionContainer } from "./NewSessionContainer"
+import { NewSessionContainer, resetNewSessionSelection } from "./NewSessionContainer"
 import { InboxContainer } from "./InboxContainer"
 import { NoticeContainer } from "./NoticeContainer"
 import { PairingContainer } from "./PairingContainer"
-import { PaneContainer } from "./PaneContainer"
+import { PaneContainer, PaneRailContainer } from "./PaneContainer"
 import { SessionInfoContainer } from "./SessionInfoContainer"
 import { SessionMenuContainer } from "./SessionMenuContainer"
 import { SettingsRoute } from "./SettingsRoute"
@@ -96,6 +97,7 @@ export function DesktopApp(props: PiAppProps & { theme?: PiTheme }) {
   useEffect(() => {
     if (!paneFloating || layerOpen) return
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isXtermTarget(event.target)) return
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return
       event.preventDefault()
       closePane()
@@ -116,7 +118,10 @@ export function DesktopApp(props: PiAppProps & { theme?: PiTheme }) {
     enabled: true,
     canStop: session && ready && (block.button.variant === "stop" || block.button.ghostStop),
     onStop: () => void relay.abort(),
-    onNewSession: act.newSession,
+    onNewSession: () => {
+      resetNewSessionSelection()
+      act.newSession()
+    },
     onCommandPalette: () => act.setPaletteOpen(true),
     onToggleSidebar: act.toggleSidebar,
     onTogglePane: act.togglePane,
@@ -151,6 +156,7 @@ export function DesktopApp(props: PiAppProps & { theme?: PiTheme }) {
       notice={relay.notices.length > 0 ? <NoticeContainer {...p} /> : undefined}
       dock={session && ready ? <ComposerContainer {...p} extras={extras} /> : undefined}
       pane={session && ready && ui.pane ? <PaneContainer {...p} /> : undefined}
+      paneRail={frame.mode === "product" && session && ready && !ui.pane ? <PaneRailContainer {...p} /> : undefined}
       overlay={
         <>
           <SessionMenuContainer {...p} />

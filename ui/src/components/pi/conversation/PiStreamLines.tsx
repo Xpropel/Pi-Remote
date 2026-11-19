@@ -59,7 +59,7 @@ export function PiReceipt({
         className,
       )}
     >
-      {spinner && <PiSpinner size={12} tone="muted" label="正在工作" />}
+      {spinner && <PiSpinner size={12} tone="muted" label="Working" />}
       <span className="min-w-0">
         {children}
         {more && <PiMore />}
@@ -76,8 +76,8 @@ export function PiReceipt({
   )
 }
 
-/** 流末尾的运行行（F01；compose from kit: Spinner, ReceiptLine）："正在工作 42s"；不知道回合几时开始（没有时间戳）时不写用时 */
-export function PiRunningLine({ label = "正在工作", elapsed }: { label?: string; elapsed?: string }) {
+/** 流末尾的运行行（F01；compose from kit: Spinner, ReceiptLine）："Working 42s"；不知道回合几时开始（没有时间戳）时不写用时 */
+export function PiRunningLine({ label = "Working", elapsed }: { label?: string; elapsed?: string }) {
   return (
     <PiReceipt spinner>
       {elapsed != null ? `${label} ${elapsed}` : label}
@@ -92,7 +92,7 @@ export function PiRunningLine({ label = "正在工作", elapsed }: { label?: str
 export function PiTurnError({
   children,
   detail,
-  action = "重新回答",
+  action = "Regenerate",
   onAction,
 }: {
   children: ReactNode
@@ -118,7 +118,7 @@ export function PiTurnError({
                 onClick={() => setOpen((v) => !v)}
                 className={cn("group/detail cursor-pointer whitespace-nowrap hover:text-(--cw-text-2)", T_SECONDARY, TOUCH_44_TEXT)}
               >
-                详情
+                Details
                 <PiDisclosure open={open} className="ml-0.5 inline-block align-[-2px] group-hover/detail:text-(--cw-text-2)" />
               </button>
             </>
@@ -201,7 +201,7 @@ export function PiThinking({
 }) {
   const isStatic = usePiStatic()
   const live = status === "live"
-  const label = live ? <Shimmer on={!isStatic}>思考中</Shimmer> : duration ? "思考" : "已思考"
+  const label = live ? <Shimmer on={!isStatic}>Thinking</Shimmer> : duration ? "Thought for" : "Thought"
   // 可交互（P5.4）：标题行点了能开合。open 是容器 / 部件给的默认（思考中展开、结束收起）；用户点过以后听用户的，
   // 直到状态变了（思考中 → 结束）再回到默认。静态态没人点，和冻结版一样
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
@@ -344,8 +344,8 @@ export function PiExploreRows({ rows, onOpenFile }: { rows: readonly ExploreRow[
           <div key={r.id} data-pi-part="explore-row" className="flex min-w-0 items-center gap-1.5">
             <span className="shrink-0 text-(--cw-text-2)">
               <Shimmer on={r.running && !isStatic}>{r.verb}</Shimmer>
-              {/* 这里的动词不写"正在"，运行中另外念出来 */}
-              {r.running && <span className="sr-only">（运行中）</span>}
+              {/* 这里的动词不写进行态，运行中另外念出来 */}
+              {r.running && <span className="sr-only">(running)</span>}
             </span>
             {open ? (
               <button
@@ -361,7 +361,7 @@ export function PiExploreRows({ rows, onOpenFile }: { rows: readonly ExploreRow[
             {r.scope && <span className={cn("min-w-0 shrink-[2] truncate", T_SECONDARY)}>{r.scope}</span>}
             {(r.count || r.failed) && (
               <span className={cn("shrink-0 tabular-nums", T_SECONDARY)}>
-                ·<span className={cn("ml-1.5", r.failed && T_ERROR)}>{r.failed ? "失败" : r.count}</span>
+                ·<span className={cn("ml-1.5", r.failed && T_ERROR)}>{r.failed ? "Failed" : r.count}</span>
               </span>
             )}
           </div>

@@ -1,16 +1,23 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react"
 import type { PiTheme } from "@/components/pi/shared/viewport"
+import { MenuItem, MenuSurface } from "@/components/kit"
+import { File, GitCompareArrows, SquareTerminal, Terminal } from "@/components/kit/icons"
+import { changesOfSessionCached, createChangesCache } from "@/components/pi/composer/sessionChanges"
 import { MobileInboxPage, MobileNavShell, PI_MOBILE_METRICS, useMobileSidebarData, type MobileInboxGroup } from "@/pi/mobile"
 import { PI_SIDEBAR_COPY, type PiSidebarActions } from "@/pi/sidebar"
 import { useNow } from "@/pi/hooks/useNow"
+import { usePiSettingsPrefs } from "@/pi/hooks/usePiSettingsPrefs"
+import { filterSessionsByRetention } from "@/pi/model/settingsHost"
 import { inboxViewOf, openInboxEntry, type InboxViewRow } from "@/pi/model/inboxView"
 import {
   PiButton,
   PiCenteredState,
   PiHomeIndicator,
   PiPhonePage,
+  PiSheet,
   PiStatusBarPlaceholder,
   PiTopBar,
+  piBaseName,
   usePiFrame,
   usePiStatic,
 } from "@/components/pi/shared"
@@ -28,7 +35,7 @@ import { useDeviceOfflineExtras } from "./DeviceOfflineContainer"
 import { DialogsContainer } from "./DialogsContainer"
 import { DisplayOptionsSheet } from "./DisplayOptionsContainer"
 import { LinkStatusContainer } from "./LinkStatusContainer"
-import { NewSessionContainer } from "./NewSessionContainer"
+import { NewSessionContainer, resetNewSessionSelection } from "./NewSessionContainer"
 import { NoticeContainer } from "./NoticeContainer"
 import { PairingContainer } from "./PairingContainer"
 import { PaneContainer } from "./PaneContainer"
@@ -101,6 +108,71 @@ function mobileThemeOf(theme: PiTheme | undefined): "light" | "dark" {
   return theme ?? (typeof document !== "undefined" && document.documentElement.getAttribute("data-pi-theme") === "light" ? "light" : "dark")
 }
 
+const A_PHONE_PANE_SHEET = "a:phone-pane"
+const EMPTY_ITEMS: PiContainerProps["relay"]["transcript"]["items"] = []
+
+function PhonePaneSwitcherSheet({ relay, ui, act }: PiContainerProps) {
+  const [changesCache] = useState(createChangesCache)
+  const items = relay.roomId ? relay.transcript.items : EMPTY_ITEMS
+  const changes = useMemo(() => changesOfSessionCached(items, changesCache), [items, changesCache])
+  if (ui.sheet?.id !== A_PHONE_PANE_SHEET) return null
+  const currentRoom = relay.rooms.find((r) => r.id === relay.roomId)
+  const roomEncrypted = currentRoom?.enc === true || relay.roomCryptoStatus != null
+  const runningTerminals = relay.terminalItems.filter((t) => t.state === "running").length
+  const selectPane = (kind: "shell" | "terminal" | "changes" | "file") => {
+    act.closeSheet()
+    act.setPane(kind)
+  }
+  return (
+    <PiSheet
+      title="面板与工具"
+      returnFocus={() => document.querySelector<HTMLElement>('[data-cw-id="pi-phone-pane-trigger"]')}
+      onOpenChange={(open) => {
+        if (!open) act.closeSheet()
+      }}
+    >
+      <MenuSurface kind="static" aria-label="面板与工具" className="w-full bg-transparent p-0 shadow-none">
+        {!roomEncrypted && (
+          <MenuItem
+            tabIndex={0}
+            icon={<Terminal />}
+            detail="交互终端"
+            onSelect={() => selectPane("shell")}
+            className="min-h-12 [&_[data-slot=menu-item-icon]>svg]:size-5"
+          >
+            Shell
+          </MenuItem>
+        )}
+        <MenuItem
+          tabIndex={roomEncrypted ? 0 : undefined}
+          icon={<SquareTerminal />}
+          detail={runningTerminals > 0 ? `${runningTerminals} 条运行中` : undefined}
+          onSelect={() => selectPane("terminal")}
+          className="min-h-12 [&_[data-slot=menu-item-icon]>svg]:size-5"
+        >
+          终端
+        </MenuItem>
+        <MenuItem
+          icon={<GitCompareArrows />}
+          detail={changes && (changes.added > 0 || changes.removed > 0) ? `+${changes.added} −${changes.removed}` : undefined}
+          onSelect={() => selectPane("changes")}
+          className="min-h-12 [&_[data-slot=menu-item-icon]>svg]:size-5"
+        >
+          改动
+        </MenuItem>
+        <MenuItem
+          icon={<File />}
+          detail={ui.file ? piBaseName(ui.file) : undefined}
+          onSelect={() => selectPane("file")}
+          className="min-h-12 [&_[data-slot=menu-item-icon]>svg]:size-5"
+        >
+          {ui.file ? piBaseName(ui.file) : "文件"}
+        </MenuItem>
+      </MenuSurface>
+    </PiSheet>
+  )
+}
+
 function CursorMobileShell({
   p,
   page,
@@ -108,6 +180,7 @@ function CursorMobileShell({
   sheets,
   extras,
   theme,
+  bootReady,
 }: {
   p: PiContainerProps
   page: "list" | "chat"
@@ -115,10 +188,16 @@ function CursorMobileShell({
   sheets: React.ReactNode
   extras: PiSessionExtras | undefined
   theme?: PiTheme
+  bootReady: boolean
 }) {
   const { relay, ui, act } = p
   const head = useSessionHead(p)
   const isStatic = usePiStatic()
+  const now = useNow(30_000)
+  const settingsPrefs = usePiSettingsPrefs({
+    pollMs: isStatic ? 0 : 1000,
+    storage: isStatic ? null : undefined,
+  })
   const stage = usePiFrame().mode !== "product"
   // 归档视图只是列表自己的切换（本机归档），不进路由；同桌面侧栏
   const [archiveView, setArchiveView] = useState(false)
@@ -133,7 +212,13 @@ function CursorMobileShell({
     }
     if (state.phase === "error") return { deviceName, phase: "error", hits: [], note: state.text }
     const query = (ui.search ?? "").trim()
-    const titleMatched = searchSessions(sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice), query)
+    const visibleSessions = filterSessionsByRetention(
+      sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice),
+      settingsPrefs.retention,
+      now,
+      relay.roomId,
+    )
+    const titleMatched = searchSessions(visibleSessions, query)
     const hits = paletteBodyHitsOf(state.page, { id: bodyDeviceId, name: deviceName }, titleMatched.map((s) => ({ id: s.id, path: s.path })))
     return {
       deviceName,
@@ -183,9 +268,13 @@ function CursorMobileShell({
   const mobileActions: PiSidebarActions = {
     selectSession,
     selectBodyHit,
-    newSession: act.newSession,
+    newSession: () => {
+      resetNewSessionSelection()
+      act.newSession()
+    },
     selectDevice: (deviceId) => relay.selectDevice(deviceId),
     addDevice: () => act.openSheet({ id: "a:pairing" }),
+    openDeviceHub: () => act.openDeviceHub(),
     // 同桌面侧栏：置顶 / 归档只记在这台浏览器里，放上去时给一条普通通知卡，取消时不提示
     togglePin: (key) => {
       const pinning = !mobileSide.pins.includes(key)
@@ -215,27 +304,26 @@ function CursorMobileShell({
     resize: () => undefined,
     toggleCollapse: () => undefined,
   }
+  const roomId = relay.roomId
+  const showPaneTrigger = page === "chat" && bootReady && !!roomId && !isStatic
   // 会话区复用 PiPhonePage（唯一滚动区 [data-pi-scroller]、贴底、键盘让位、dock 高度上限、底部安全区）；顶栏由 MobileNavShell 给
   const chatBody =
     page === "chat" ? (
-      <div className="relative min-h-0 flex-1">
-        <PiPhonePage
-          page="chat"
-          embedded
-          statusLine={<LinkStatusContainer {...p} />}
-          dock={
-            <div className="px-4 pt-2">
-              <ComposerContainer {...p} extras={extras} />
-            </div>
-          }
-          keyboardOpen={p.keyboardOpen}
-          scrollTop="bottom"
-        >
-          <TranscriptContainer {...p} extras={extras} />
-        </PiPhonePage>
-      </div>
+      <PiPhonePage
+        page="chat"
+        embedded
+        statusLine={<LinkStatusContainer {...p} />}
+        dock={
+          <div className="px-4 pt-2">
+            <ComposerContainer {...p} extras={extras} />
+          </div>
+        }
+        keyboardOpen={p.keyboardOpen}
+        scrollTop="bottom"
+      >
+        <TranscriptContainer {...p} extras={extras} />
+      </PiPhonePage>
     ) : null
-  const roomId = relay.roomId
   return (
     <>
       <div className="relative h-full" style={MOBILE_HOST_VARS}>
@@ -250,6 +338,7 @@ function CursorMobileShell({
           sessionSubtitle={head.device?.name}
           sessionAttentionCount={otherAttentionCount(head.data.attention, roomId, head.device?.id ?? null)}
           onSessionInfo={roomId ? () => act.openSheet({ id: A_SESSION_INFO }) : undefined}
+          onSessionPane={showPaneTrigger ? () => act.openSheet({ id: A_PHONE_PANE_SHEET }) : undefined}
           onSessionMenu={roomId && head.row ? () => act.openSheet({ id: A_SESSION_MENU, arg: roomId }) : undefined}
           onRowMenu={isStatic ? undefined : (session) => act.openSheet({ id: A_SESSION_MENU, arg: session.id })}
           archiveView={archiveView}
@@ -279,7 +368,7 @@ function PhoneShell({ nav, theme, ...app }: PiAppProps & { nav?: Omit<PiPhoneNav
   const opening = page === "chat" ? (nav?.opening ?? null) : null
   return (
     <>
-      <PhonePage p={p} page={page} nav={nav} opening={opening} theme={theme} />
+      <PhonePage p={p} page={page} nav={nav} opening={opening} theme={theme} bootReady={boot === "ready"} />
       <PhoneNoticeOutlet p={p} page={page} piTopBar={page === "new" || page === "pane" || opening != null} />
     </>
   )
@@ -323,11 +412,17 @@ function PhoneInboxPage({ p, theme }: { p: PiContainerProps; theme?: PiTheme }) 
   const { relay, act } = p
   const [answering, setAnswering] = useState<string | null>(null)
   const now = useNow(30_000)
+  const settingsPrefs = usePiSettingsPrefs()
   const stage = usePiFrame().mode !== "product"
   const sections = inboxViewOf({
     entries: relay.inbox,
     rooms: relay.rooms,
-    sessions: sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice),
+    sessions: filterSessionsByRetention(
+      sidebarSessionsOf(relay.devices, relay.rooms, relay.sessionsByDevice),
+      settingsPrefs.retention,
+      now,
+      relay.roomId,
+    ),
     devices: relay.devices,
     now,
   })
@@ -373,12 +468,14 @@ function PhonePage({
   nav,
   opening,
   theme,
+  bootReady,
 }: {
   p: PiContainerProps
   page: PiPhonePageKey
   nav?: Omit<PiPhoneNav, "anchorRef">
   opening: { unavailable: boolean } | null
   theme?: PiTheme
+  bootReady: boolean
 }) {
   const extras = useDeviceOfflineExtras(p) ?? undefined
   if (page === "new") return <NewSessionContainer {...p} />
@@ -389,6 +486,7 @@ function PhonePage({
     <>
       <SessionMenuContainer {...p} />
       <SessionInfoSheet {...p} />
+      <PhonePaneSwitcherSheet {...p} />
       <PairingContainer {...p} />
       <TaskPanelContainer {...p} />
       <ComposerSheets {...p} />
@@ -428,5 +526,5 @@ function PhonePage({
     )
   }
   // P11 B3：列表/会话页接共享移动框架（子组件保证 hooks 无条件调用）
-  return <CursorMobileShell p={p} page={page} nav={nav} sheets={sheets} extras={extras} theme={theme} />
+  return <CursorMobileShell p={p} page={page} nav={nav} sheets={sheets} extras={extras} theme={theme} bootReady={bootReady} />
 }

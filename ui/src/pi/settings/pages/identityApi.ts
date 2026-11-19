@@ -60,6 +60,14 @@ function fnOf(source: Record<string, unknown> | null, names: readonly string[]):
   return null
 }
 
+function webCryptoSupportedNow(): boolean {
+  try {
+    return typeof globalThis !== "undefined" && Boolean(globalThis.crypto?.subtle)
+  } catch {
+    return false
+  }
+}
+
 function recordOf(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null
 }
@@ -140,7 +148,12 @@ export async function loadIdentityBridge(relayLike?: unknown): Promise<IdentityB
     fnOf(source, ["revokeViewer", "revokeAuthorizedViewer"]) ?? fnOf(relayRecord, ["revokeViewer", "revokeAuthorizedViewer"])
 
   return {
-    getState: async () => getState(),
+    getState: async () => {
+      const raw = await getState()
+      const webCryptoSupported = webCryptoSupportedNow()
+      const record = recordOf(raw)
+      return record ? { webCryptoSupported, ...record } : { webCryptoSupported }
+    },
     enable: async () => enable(),
     forget: forgetFn
       ? async () => {

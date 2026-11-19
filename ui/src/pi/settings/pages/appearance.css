@@ -27,6 +27,7 @@
   padding: 0 5px;
   border: 1px solid var(--st-divider);
   border-radius: 4px;
+  corner-shape: squircle;
   color: var(--st-text-4);
   font-size: 10.5px;
   line-height: 15px;

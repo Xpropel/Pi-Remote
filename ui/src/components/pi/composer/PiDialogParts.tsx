@@ -113,7 +113,7 @@ export function PiTextBlock({ variant, text, clipped, clippedNote, label, maxHei
     <div className="flex min-w-0 flex-col gap-2">
       {clipped && (
         <p className={cn("m-0", variant === "phone" ? "text-[13px] leading-[18px]" : "text-(length:--cw-text-sm) leading-(--cw-leading-sm)", C_SECONDARY)}>
-          {clippedNote ?? "内容很长，这里只显示前面一部分。"}
+          {clippedNote ?? "内容已截断，仅显示前段。"}
         </p>
       )}
       <pre

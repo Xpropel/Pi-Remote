@@ -12,6 +12,8 @@ import { useNow } from "@/pi/hooks/useNow"
 import type { Device } from "@/relay/devices"
 import { deviceNameOf } from "./devicesLogic"
 import {
+  compactSystemOpLabelOf,
+  compactSystemOpsSummaryOf,
   deviceOpsSupportedOf,
   operationResultOf,
   operationRowsOf,
@@ -94,14 +96,10 @@ export function DeviceSystemOps({ relay, device, rooms }: DeviceSystemOpsProps) 
   const cells = versionCellsOf(ops.diag, ops.update)
   const rows = operationRowsOf(facts, ops.status, now)
   const result = operationResultOf(ops.status, now)
+  const summary = compactSystemOpsSummaryOf(rows, result)
 
   return (
     <div className="settings-device-ops" data-settings-device-ops={device.id}>
-      <div className="settings-ops-head">
-        <button type="button" className="settings-device-action" onClick={ops.reload}>
-          刷新
-        </button>
-      </div>
       <div className="settings-ops-ver">
         {cells.map((cell) => (
           <div className="settings-ops-ver-cell" key={cell.label}>
@@ -113,43 +111,46 @@ export function DeviceSystemOps({ relay, device, rooms }: DeviceSystemOpsProps) 
           </div>
         ))}
       </div>
-      {result ? (
-        <div className="settings-op-row is-result">
-          <span className="settings-op-main">
-            <span className="settings-op-name is-ok">✓ {result.title}</span>
-            <span className="settings-op-desc">{result.text}</span>
+      <div className="settings-ops-bar">
+        {rows.map((row) => (
+          <button
+            key={row.kind}
+            type="button"
+            data-settings-op={row.kind}
+            className={`settings-device-action${row.buttonPrimary ? " is-primary" : ""}`}
+            disabled={!row.buttonEnabled}
+            title={[row.warningText, row.description].filter(Boolean).join("") || undefined}
+            onClick={() => {
+              if (row.buttonAction === "recheck") ops.recheckUpdate()
+              else if (row.buttonAction === "run" || row.buttonAction === "retry") ops.setConfirmKind(row.kind)
+            }}
+          >
+            {row.phaseText ? <span className="settings-ops-spinner" aria-hidden="true" /> : null}
+            <span>{compactSystemOpLabelOf(row)}</span>
+          </button>
+        ))}
+        <button type="button" className="settings-device-action settings-ops-refresh" disabled={running} onClick={ops.reload}>
+          刷新
+        </button>
+      </div>
+      {summary.runningRow ? (
+        <div className="settings-ops-foot">
+          <span className="settings-ops-spinner" aria-hidden="true" />
+          <span>
+            {summary.runningRow.title} · {summary.runningRow.phaseText} · {summary.runningRow.description}
           </span>
+        </div>
+      ) : summary.failedRow ? (
+        <div className="settings-op-error">
+          {summary.failedRow.title}：{summary.failedRow.errorText || summary.failedRow.description}
+        </div>
+      ) : summary.okText || summary.warnText || summary.mutedText ? (
+        <div className="settings-ops-foot">
+          {summary.okText ? <span className="settings-ops-ok">✓ {summary.okText}</span> : null}
+          {summary.warnText ? <span className="settings-op-warn">{summary.warnText}</span> : null}
+          {summary.mutedText ? <span>{summary.mutedText}</span> : null}
         </div>
       ) : null}
-      {rows.map((row) => (
-        <div className="settings-op-row" key={row.kind} data-settings-op={row.kind}>
-          <span className="settings-op-main">
-            <span className={`settings-op-name${row.failed ? " is-error" : ""}`}>
-              {row.phaseText ? <span className="settings-ops-spinner" aria-hidden="true" /> : null}
-              {row.title}
-              {row.phaseText ? <span className="settings-op-phase">{row.phaseText}</span> : null}
-            </span>
-            <span className="settings-op-desc">
-              {row.warningText ? <span className="settings-op-warn">{row.warningText}</span> : null}
-              {row.description}
-            </span>
-            {row.errorText ? <span className="settings-op-error">{row.errorText}</span> : null}
-          </span>
-          {row.buttonLabel ? (
-            <button
-              type="button"
-              className={`settings-device-action${row.buttonPrimary ? " is-primary" : ""}`}
-              disabled={!row.buttonEnabled}
-              onClick={() => {
-                if (row.buttonAction === "recheck") ops.recheckUpdate()
-                else if (row.buttonAction === "run" || row.buttonAction === "retry") ops.setConfirmKind(row.kind)
-              }}
-            >
-              {row.buttonLabel}
-            </button>
-          ) : null}
-        </div>
-      ))}
       {confirmDialog}
     </div>
   )

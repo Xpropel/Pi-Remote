@@ -108,11 +108,11 @@ export const GEMINI_EXPLAINER = {
 
 /** get_available_thinking_levels 的结果（当前 medium） */
 export const THINKING_LEVELS = [
-  { value: "off", label: "关" },
-  { value: "minimal", label: "最少" },
-  { value: "low", label: "低" },
-  { value: "medium", label: "中" },
-  { value: "high", label: "高" },
+  { value: "off", label: "Off" },
+  { value: "minimal", label: "Minimal" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
 ]
 export const THINKING_CURRENT = "medium"
 

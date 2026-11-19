@@ -3,6 +3,7 @@ import { AAnchored, PiDeleteDialog, PiRenameDialog, PiSessionMenu, type PiSessio
 import { PiButton, PiDialog, PiSheet, piBaseName, usePiStatic, type PiReturnFocus } from "@/components/pi/shared"
 import { cn } from "@/lib/utils"
 import { mobileRouteUrl } from "@/mobile/model"
+import { usePiSettingsPrefs } from "@/pi/hooks/usePiSettingsPrefs"
 import { sessionDeleteErrorText, sessionDeleteRouteOf, sessionMenuCrossDeviceOf, sessionMenuOf, sessionMenuSubtitleOf, type PiSessionDeleteRoute, type PiSessionMenuModel } from "@/pi/model/sessionMenu"
 import { openSessionRow, sidebarDataOf, type PiDeviceListedSession, type PiSidebarData } from "@/pi/model/sidebarSource"
 import { deviceErrorText, type Device } from "@/relay/devices"
@@ -26,7 +27,7 @@ interface MenuTarget {
 }
 
 /** 菜单作用的那一行 → PiSessionMenu 的 session / state（规则在 model/sessionMenu.ts，照 chat/sessionMenu.tsx） */
-function targetOf(p: PiContainerProps, data: PiSidebarData, rowId: string | undefined): MenuTarget | null {
+function targetOf(p: PiContainerProps, data: PiSidebarData, rowId: string | undefined, syncDeleteSession = true): MenuTarget | null {
   const { relay } = p
   const row = rowId ? data.sessions.find((x) => x.id === rowId) : undefined
   if (!row) return null
@@ -34,8 +35,12 @@ function targetOf(p: PiContainerProps, data: PiSidebarData, rowId: string | unde
   // P9 B：relay 声明了 session.purge 才能走设备级删除（服务器会清副本并广播 session_removed）
   const serverPurge = relay.serverCaps.includes("session.purge")
   const deleteRoute = sessionDeleteRouteOf(row, relay.rooms, relay.roomId, device, serverPurge)
+  const isLazySelected = relay.lazySession?.id === row.id
+  const effectiveRow = isLazySelected
+    ? { ...row, openable: false, path: row.path || relay.lazySession?.path }
+    : row
   const model = sessionMenuOf({
-    row: { id: row.id, openable: row.openable, path: row.path, cwd: row.cwd },
+    row: { id: effectiveRow.id, openable: effectiveRow.openable, path: effectiveRow.path, cwd: effectiveRow.cwd },
     currentRoomId: relay.roomId,
     lazySessionId: relay.lazySession?.id ?? null,
     authed: relay.authed,
@@ -44,27 +49,28 @@ function targetOf(p: PiContainerProps, data: PiSidebarData, rowId: string | unde
     deviceMode: relay.deviceMode,
     deviceOnline: !!device?.online,
     onSelectedDevice: row.deviceId === relay.selectedDeviceId,
+    syncDeleteSession,
     deleteRoute,
   })
   // 定时消息计数（D-§3.7）：排期副本按房间分桶（relay.schedulesByRoom），只数 armed
   const scheduleCount = relay.serverCaps.includes("room.schedule")
-    ? (relay.schedulesByRoom[row.id] ?? []).filter((s) => s.state === "armed").length
+    ? (relay.schedulesByRoom[effectiveRow.id] ?? []).filter((s) => s.state === "armed").length
     : undefined
   return {
-    row,
+    row: effectiveRow,
     device,
     model,
     deleteRoute,
     crossDevice: sessionMenuCrossDeviceOf(row.deviceId, relay.selectedDeviceId),
     scheduleCount,
     session: {
-      title: row.title,
-      messageCount: row.messageCount,
+      title: effectiveRow.title,
+      messageCount: effectiveRow.messageCount,
       // relay 里房间 id 就是会话 id（"复制会话 ID" 复制的就是它）
-      sessionId: row.id,
-      openable: row.openable,
+      sessionId: effectiveRow.id,
+      openable: effectiveRow.openable,
       current: model.current,
-      busy: model.active ? relay.busy : row.busy,
+      busy: model.active ? relay.busy : effectiveRow.busy,
     },
   }
 }
@@ -211,7 +217,8 @@ function ScheduleListDialog(props: PiContainerProps & { t: MenuTarget; onClose: 
 export function SessionRowMenu(props: PiContainerProps & { rowId: string; copyCwd?: boolean }) {
   const { rowId, copyCwd, ...p } = props
   const data = useMenuData(p)
-  const t = targetOf(p, data, rowId)
+  const piSettings = usePiSettingsPrefs()
+  const t = targetOf(p, data, rowId, piSettings.syncDeleteSession)
   if (!t) return null
   return <PiSessionMenu variant="desktop" session={t.session} state={t.model.items} copyCwd={copyCwd} scheduleCount={t.scheduleCount} onSelect={(action) => runAction(p, t, action)} />
 }
@@ -228,17 +235,19 @@ export function SessionMenuContainer(props: PiContainerProps) {
   const phone = variant === "phone"
   const isStatic = usePiStatic()
   const data = useMenuData(props)
+  const piSettings = usePiSettingsPrefs()
+  const syncDeleteSession = piSettings.syncDeleteSession
   const viewport = piLayoutOf(variant)
   const dialog = piDialogOf(props)
   const close = () => closePiDialog(props)
 
   if (dialog?.id === PI_UI_IDS.schedules) {
-    const t = targetOf(props, data, dialog.arg)
+    const t = targetOf(props, data, dialog.arg, syncDeleteSession)
     if (!t) return null
     return <ScheduleListDialog key={t.row.id} {...props} t={t} onClose={close} />
   }
   if (dialog?.id === PI_UI_IDS.rename) {
-    const t = targetOf(props, data, dialog.arg)
+    const t = targetOf(props, data, dialog.arg, syncDeleteSession)
     if (!t) return null
     const active = t.model.active
     return (
@@ -246,7 +255,6 @@ export function SessionMenuContainer(props: PiContainerProps) {
         key={t.row.id}
         viewport={viewport}
         title={t.row.title}
-        note={active ? undefined : "直接写入这个会话文件，不需要先载入、也不会切换当前会话。"}
         returnFocus={returnTo(t.row.id)}
         onOpenChange={(open) => {
           if (!open) close()
@@ -266,9 +274,10 @@ export function SessionMenuContainer(props: PiContainerProps) {
     )
   }
   if (dialog?.id === PI_UI_IDS.delete) {
-    const t = targetOf(props, data, dialog.arg)
+    const t = targetOf(props, data, dialog.arg, syncDeleteSession)
     if (!t) return null
     const serverPurge = relay.serverCaps.includes("session.purge")
+    const localOnly = !syncDeleteSession
     // Single-device context: the quoted title identifies the target, so the
     // dialog and the success notice fall back to "这台设备"; cross-device
     // keeps the real device name so the target stays identifiable.
@@ -281,11 +290,22 @@ export function SessionMenuContainer(props: PiContainerProps) {
         deviceName={t.crossDevice ? t.device?.name : undefined}
         serverPurge={serverPurge}
         trash={!!t.device?.trash}
+        localOnly={localOnly}
         returnFocus={returnTo(t.row.id)}
         onOpenChange={(open) => {
           if (!open) close()
         }}
         onConfirm={async () => {
+          if (localOnly) {
+            if (t.model.items.delete.disabled) throw new Error(t.model.items.delete.reason ?? "这个会话现在不能移除")
+            await relay.hideSession({ deviceId: t.row.deviceId, sessionId: t.row.id })
+            relay.pushNotice({
+              level: "success",
+              title: "已从当前列表移除（保留设备上的会话文件）",
+            })
+            close()
+            return
+          }
           const route = t.deleteRoute
           if (t.model.items.delete.disabled || !t.row.path || !route.via) throw new Error(t.model.items.delete.reason ?? "这个会话现在不能删除")
           let data: { status?: string; method?: string | null } | null = null
@@ -308,7 +328,7 @@ export function SessionMenuContainer(props: PiContainerProps) {
   }
 
   if (phone && ui.sheet?.id === A_SESSION_MENU) {
-    const t = targetOf(props, data, ui.sheet.arg)
+    const t = targetOf(props, data, ui.sheet.arg, syncDeleteSession)
     if (!t) return null
     const subtitle = sessionMenuSubtitleOf({
       deviceName: t.device?.name,
@@ -332,7 +352,7 @@ export function SessionMenuContainer(props: PiContainerProps) {
 
   // 桌面静态态：按画廊屏 a/session-menu 的摆法，菜单从目标行（保持选中底）旁边展开
   if (!phone && isStatic && ui.menu?.id === A_SESSION_MENU) {
-    const t = targetOf(props, data, ui.menu.arg)
+    const t = targetOf(props, data, ui.menu.arg, syncDeleteSession)
     if (!t) return null
     return (
       <AAnchored selector={`[data-pi-row="${t.row.id}"][data-context-target]`} place={(r) => ({ left: r.left + 128, top: r.top + 17 })}>

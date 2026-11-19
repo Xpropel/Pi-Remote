@@ -1,65 +1,80 @@
 /**
- * 设置 › 模型与会话（设计册第 4 节，v3 定稿）。
+ * 设置 › 模型与会话。
  *
- * 分组与文案逐条照设计图：默认模型 / 供应商 / 上下文压缩 / 新会话。
- * 落地状态（设计册 §4）：
- *   ● 默认模型、默认思考等级、显示思考过程：经 settings_set 写全局 settings.json；
- *     默认模型成对写 defaultProvider + defaultModel，保存后提示重启 pi；
- *   ● 自动压缩长对话、给回复预留、近期原文保留：compaction.enabled / reserveTokens / keepRecentTokens；
- *   ◐ 卡内模型开关、每模型默认思考、添加模型 / 添加供应商 / 密钥管理、新会话默认模式与自动生成标题：
- *     继续只读（写桥白名单未包含 enabledModels / modelThinkingLevels，pi 1.3 也没有新会话字段）；
- *   ● 供应商清单、登录状态、接口地址、密钥是否配置：读 get_provider_auth + 模型清单，只读；
- *   ● 刷新模型目录：真的重发 get_available_models（重新向 pi 读取，不联网下载）；
- *     读取中显示状态、失败保留上次成功读到的清单并提示。
- *
- * 本页没有任何本机偏好（没有 ○ 项），所以不写 localStorage、不调 act.setPref。
- * 读不到的值写「—」，不拿当前会话的模型 / 思考档冒充持久默认值。
+ *   ● 默认模型、默认思考等级、显示思考过程、enabledModels、modelThinkingLevels、compaction.*：
+ *     经 settings_set 写全局 settings.json（有会话走房间命令，无会话走设备直连命令）；
+ *   ● 供应商与自定义模型（get_models_config / upsert_model_provider / delete_model_provider /
+ *     upsert_provider_model / delete_provider_model）：直写所连设备 models.json / auth.json；
+ *   ○ 新会话默认模式、新会话自动生成标题：本机偏好（立即持久化并在新建会话首条消息生效）。
  */
 import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "react"
-import { Plus } from "lucide-react"
-import { commandsReady, useRelayCommand } from "@/pi/containers/cShared"
+import { ChevronDown, Plus } from "lucide-react"
+import { commandErrorText } from "@/pi/containers/cShared"
 import { settingsDeviceOfflineOf } from "../model"
 import { useSettings } from "../SettingsContext"
 import {
-  MODEL_NEW_SESSION_DEFAULT,
   MODEL_NEW_SESSION_MODES,
   MODEL_PROVIDER_MODEL_LIMIT,
   MODEL_THINKING_LEVELS,
   MODEL_THINKING_LEVEL_LABELS,
   MODEL_THINKING_LEVELS_COPY,
+  configuredModelChoicesOf,
   defaultModelGroupsOf,
-  modelSettingsOf,
-  providerFoldOf,
+  isBuiltInUnconfiguredProvider,
   providerModelOverflowOf,
   providerRowsOf,
+  splitSettingsProviders,
+  thinkingLevelLabelOf,
   tokenCountLabel,
-  type ModelNewSessionMode,
+  toggledEnabledModelsOf,
   type ProviderRow,
 } from "./modelData"
 import {
-  SETTINGS_WRITE_REMAINING_READONLY_NOTE,
+  SETTINGS_WRITE_PENDING_RESTART_TEXT,
   compactionEnabledPatch,
   defaultModelPatch,
   defaultThinkingLevelPatch,
+  effectiveModelThinkingLevelsOf,
+  effectiveSettingsArrayOf,
   effectiveSettingsBoolOf,
   effectiveSettingsIntOf,
   effectiveSettingsStringOf,
+  enabledModelsPatch,
   hideThinkingBlockPatch,
+  modelThinkingLevelsPatch,
+  settingsCommandsReady,
+  settingsRunCommand,
   thinkingLevelOf,
   tokenBudgetPatch,
+  type SettingsThinkingLevel,
 } from "./settingsWrite.ts"
-import { readOnlyHintOf, settingsFeedbackFor, useSettingsDocument, useSettingsWriter } from "./settingsWriteHooks.ts"
-import { SettingsWriteNote } from "./settingsWriteFeedback.tsx"
 import {
+  readOnlyHintOf,
+  settingsFeedbackFor,
+  useSettingsCommand,
+  useSettingsDocument,
+  useSettingsWriter,
+} from "./settingsWriteHooks.ts"
+import { SettingsWriteNote } from "./settingsWriteFeedback.tsx"
+import { settingsPiRestartBannerOf } from "./settingsPiRestart.ts"
+import { SettingsPiRestartDialog, useSettingsPiRestart } from "./useSettingsPiRestart.tsx"
+import {
+  ModelConfigModal,
+  ProviderConfigModal,
+  SettingsActionBar,
+  SettingsActionButton,
   SettingsActionRow,
   SettingsGroup,
-  SettingsNote,
   SettingsPageTitle,
   SettingsRadioGroup,
   SettingsRow,
   SettingsSelect,
   SettingsStatusDot,
   SettingsSwitch,
+  type ModelConfigModel,
+  type ModelConfigProvider,
+  type UpsertModelPayload,
+  type UpsertProviderPayload,
 } from "../ui"
 import "./model.css"
 
@@ -88,6 +103,7 @@ function tokenOptions(current: number | null): { value: string; label: string }[
 }
 
 const DEFAULT_MODEL_WRITE_IDS = ["defaultModel", "defaultThinkingLevel", "hideThinkingBlock"] as const
+const PROVIDER_WRITE_IDS = ["enabledModels", "modelThinkingLevels"] as const
 const COMPACTION_WRITE_IDS = ["compaction.enabled", "compaction.reserveTokens", "compaction.keepRecentTokens"] as const
 
 function providerStateText(provider: ProviderRow): string {
@@ -132,25 +148,25 @@ function ProviderMeta({ provider }: { provider: ProviderRow }) {
 }
 
 export function ModelPage() {
-  const { p } = useSettings()
+  const { p, prefs, act } = useSettings()
   const { relay } = p
-  const ready = commandsReady(relay) && relay.browserOnline
-  // 设备心跳离线时命令发不出去：刷新模型目录必须禁用并说清原因，不能点了没反应。
+  const ready = settingsCommandsReady(relay) && relay.browserOnline
   const deviceOffline = settingsDeviceOfflineOf(relay)
   const refreshReady = ready && !deviceOffline
-  const roomKey = relay.roomId ?? ""
+  const targetKey = `${relay.selectedDeviceId ?? ""}:${relay.roomId ?? ""}`
 
   const settingsDoc = useSettingsDocument(relay)
   const writer = useSettingsWriter(relay)
-  const providersQuery = useRelayCommand(relay.runCommand, ready ? "get_provider_auth" : null, undefined, roomKey)
-  const modelsQuery = useRelayCommand(relay.runCommand, ready ? "get_available_models" : null, undefined, roomKey)
+  const providersQuery = useSettingsCommand(relay, "get_provider_auth", ready, targetKey)
+  const modelsQuery = useSettingsCommand(relay, "get_available_models", ready, targetKey)
+  const modelsConfigQuery = useSettingsCommand(relay, "get_models_config", ready, targetKey)
 
   // 刷新时保留上一次成功读到的模型清单（loading / error 不把旧数据清空）。
-  const [lastModels, setLastModels] = useState<{ room: string; data: unknown } | null>(null)
+  const [lastModels, setLastModels] = useState<{ key: string; data: unknown } | null>(null)
   useEffect(() => {
-    if (modelsQuery.phase === "ready") setLastModels({ room: roomKey, data: modelsQuery.data })
-  }, [modelsQuery.phase, modelsQuery.data, roomKey])
-  const lastModelsData = lastModels?.room === roomKey ? lastModels.data : undefined
+    if (modelsQuery.phase === "ready") setLastModels({ key: targetKey, data: modelsQuery.data })
+  }, [modelsQuery.phase, modelsQuery.data, targetKey])
+  const lastModelsData = lastModels?.key === targetKey ? lastModels.data : undefined
   const modelsData = modelsQuery.phase === "ready" ? modelsQuery.data : lastModelsData
   const modelsLoading = modelsQuery.phase === "loading"
   const modelsHint = deviceOffline
@@ -161,27 +177,51 @@ export function ModelPage() {
         ? "正在读取模型清单…"
         : modelsQuery.phase === "error"
           ? `读取失败：${modelsQuery.error}${lastModelsData != null ? "；仍显示上次读取的清单" : ""}`
-          : "重新向 pi 读取模型清单"
+          : undefined
 
-  const settingsView = useMemo(() => modelSettingsOf(settingsDoc.data), [settingsDoc.data])
+  const configuredEnabledModels = useMemo(
+    () => effectiveSettingsArrayOf(settingsDoc.data, writer.applied, "enabledModels"),
+    [settingsDoc.data, writer.applied],
+  )
+  const effectiveThinkingMap = useMemo(
+    () => effectiveModelThinkingLevelsOf(settingsDoc.data, writer.applied),
+    [settingsDoc.data, writer.applied],
+  )
+  const thinkingLabelMap = useMemo(() => {
+    const out: Record<string, string> = {}
+    for (const [key, level] of Object.entries(effectiveThinkingMap)) {
+      const label = thinkingLevelLabelOf(level)
+      if (label) out[key] = label
+    }
+    return out
+  }, [effectiveThinkingMap])
+
   const providers = useMemo(
-    () => providerRowsOf(providersQuery.data, modelsData, settingsView.modelThinkingLevels),
-    [providersQuery.data, modelsData, settingsView.modelThinkingLevels],
-  )
-  // 登录状态还没读回来时，一个可用模型都没有的也先收起，免得页面先拉长几十屏再缩回。
-  const providerFold = useMemo(
     () =>
-      providerFoldOf(
-        providers,
-        (provider) =>
-          provider.state === "disconnected" ||
-          (provider.state === "unknown" && provider.models.length > 0 && provider.models.every((model) => !model.enabled)),
+      providerRowsOf(
+        providersQuery.data,
+        modelsData,
+        thinkingLabelMap,
+        modelsConfigQuery.data,
+        configuredEnabledModels,
       ),
-    [providers],
+    [providersQuery.data, modelsData, thinkingLabelMap, modelsConfigQuery.data, configuredEnabledModels],
   )
+  const providerFold = useMemo(() => splitSettingsProviders(providers), [providers])
   const [providersExpanded, setProvidersExpanded] = useState(false)
+  const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({})
+  const [providerModal, setProviderModal] = useState<{ open: boolean; initial: ModelConfigProvider | null }>({
+    open: false,
+    initial: null,
+  })
+  const [modelModal, setModelModal] = useState<{
+    open: boolean
+    providerId: string
+    providerLabel?: string
+    initial: ModelConfigModel | null
+  }>({ open: false, providerId: "", initial: null })
+
   const visibleProviders = providersExpanded ? [...providerFold.primary, ...providerFold.folded] : providerFold.primary
-  const newSessionMode: ModelNewSessionMode = MODEL_NEW_SESSION_DEFAULT
 
   // 写侧：值优先用本次保存成功的 applied（不回读旧 get_settings）。
   const writeHint = readOnlyHintOf(settingsDoc, writer)
@@ -196,54 +236,113 @@ export function ModelPage() {
   const reserveTokens = effectiveSettingsIntOf(settingsDoc.data, writer.applied, "compaction.reserveTokens")
   const keepRecentTokens = effectiveSettingsIntOf(settingsDoc.data, writer.applied, "compaction.keepRecentTokens")
 
-  // Default-model select (F7): options are grouped by provider instead of
-  // one flat list mixing every catalog; a provider without credentials is
-  // marked in its group label. A stored value missing from the catalog
-  // keeps its own group (defaultModelGroupsOf) so it stays selectable.
-  const modelChoices = useMemo(() => {
-    const choices: { key: string; provider: string; modelId: string; label: string }[] = []
-    for (const provider of providers) {
-      for (const model of provider.models) {
-        choices.push({ key: model.key, provider: model.provider, modelId: model.modelId, label: model.label })
-      }
-    }
-    if (defaultProvider && defaultModel && !choices.some((choice) => choice.key === defaultModelKey)) {
-      choices.unshift({ key: defaultModelKey, provider: defaultProvider, modelId: defaultModel, label: defaultModelKey })
-    }
-    return choices
-  }, [providers, defaultProvider, defaultModel, defaultModelKey])
-  const modelGroups = useMemo(() => defaultModelGroupsOf(providers, defaultModelKey), [providers, defaultModelKey])
-  const defaultModelOptions = modelChoices.length
-    ? [...(defaultModelKey ? [] : [{ value: "", label: "未设置（按 pi 兜底）" }])]
-    : [{ value: "", label: "读不到可选模型" }]
-  const defaultModelFeedback = settingsFeedbackFor(writer.feedback, DEFAULT_MODEL_WRITE_IDS)
-  const compactionFeedback = settingsFeedbackFor(writer.feedback, COMPACTION_WRITE_IDS)
-
   const providersSettled =
     providersQuery.phase === "ready" ||
     providersQuery.phase === "error" ||
     modelsQuery.phase === "ready" ||
-    modelsQuery.phase === "error"
-  const providersFailed = providersQuery.phase === "error" && (modelsQuery.phase === "error" || modelsQuery.phase === "idle")
+    modelsQuery.phase === "error" ||
+    modelsConfigQuery.phase === "ready" ||
+    modelsConfigQuery.phase === "error"
+  const providersFailed =
+    providersQuery.phase === "error" &&
+    (modelsQuery.phase === "error" || modelsQuery.phase === "idle") &&
+    (modelsConfigQuery.phase === "error" || modelsConfigQuery.phase === "idle")
+
+  const modelChoices = useMemo(
+    () => configuredModelChoicesOf(providers, defaultProvider, defaultModel),
+    [providers, defaultProvider, defaultModel],
+  )
+  const modelGroups = useMemo(() => defaultModelGroupsOf(providers, defaultModelKey), [providers, defaultModelKey])
+  const emptyModelOptionLabel = !ready
+    ? "未连上主机"
+    : modelsLoading || (!providersSettled && !providersFailed)
+      ? "正在读取已配置模型…"
+      : providersFailed
+        ? "读不到可选模型"
+        : "暂无已配置模型（请先在下方配置供应商）"
+  const defaultModelOptions = modelChoices.length
+    ? [...(defaultModelKey ? [] : [{ value: "", label: "未设置（按 pi 兜底）" }])]
+    : [{ value: "", label: emptyModelOptionLabel }]
+  const defaultModelFeedback = settingsFeedbackFor(writer.feedback, DEFAULT_MODEL_WRITE_IDS)
+  const providerFeedback = settingsFeedbackFor(writer.feedback, PROVIDER_WRITE_IDS)
+  const compactionFeedback = settingsFeedbackFor(writer.feedback, COMPACTION_WRITE_IDS)
+  const topWriteHint =
+    writeHint === SETTINGS_WRITE_PENDING_RESTART_TEXT && writer.feedback ? null : writeHint
+  const restart = useSettingsPiRestart(relay, act.notify)
+  const restartBanner = settingsPiRestartBannerOf({
+    pendingRestart: restart.pendingRestart,
+    phase: restart.phase,
+    error: restart.error,
+    canRestart: restart.target.canRestart,
+    unsupportedReason: restart.target.reason,
+  })
+
   const noProviderHint = !ready
     ? "未连上主机，读不到供应商与登录状态"
     : providersFailed && providers.length === 0
-      ? "读不到供应商与登录状态（只读命令不可用）"
+      ? "读不到供应商与登录状态（命令不可用）"
       : !providersSettled
         ? "正在读取供应商与登录状态…"
         : providers.length === 0
           ? "本机没有已配置的供应商"
           : ""
 
+  const reloadAllCatalog = () => {
+    providersQuery.reload()
+    modelsQuery.reload()
+    modelsConfigQuery.reload()
+  }
+
+  const handleSaveProvider = async (payload: UpsertProviderPayload) => {
+    try {
+      await settingsRunCommand(relay, "upsert_model_provider", payload)
+      reloadAllCatalog()
+      act.notify(`已保存供应商「${payload.id}」`)
+    } catch (error) {
+      throw new Error(commandErrorText(error))
+    }
+  }
+
+  const handleDeleteProvider = async (providerId: string) => {
+    try {
+      const res = (await settingsRunCommand(relay, "delete_model_provider", { id: providerId })) as { deleted?: boolean } | undefined
+      reloadAllCatalog()
+      if (res?.deleted === false) act.notify("该供应商来自环境变量或内置目录，无法从配置文件删除", "warn")
+      else act.notify(`已删除供应商「${providerId}」`)
+    } catch (error) {
+      throw new Error(commandErrorText(error))
+    }
+  }
+
+  const handleSaveModel = async (payload: UpsertModelPayload) => {
+    try {
+      await settingsRunCommand(relay, "upsert_provider_model", payload)
+      reloadAllCatalog()
+      act.notify(`已保存模型「${payload.model.id}」`)
+    } catch (error) {
+      throw new Error(commandErrorText(error))
+    }
+  }
+
+  const handleDeleteModel = async (providerId: string, modelId: string) => {
+    try {
+      await settingsRunCommand(relay, "delete_provider_model", { provider: providerId, modelId })
+      reloadAllCatalog()
+      act.notify(`已删除模型「${modelId}」`)
+    } catch (error) {
+      throw new Error(commandErrorText(error))
+    }
+  }
+
   return (
     <div className="settings-page" data-settings-page="model">
       <SettingsPageTitle title="模型与会话" />
 
-      {/* 组 1：默认模型（写 settings_set；默认模型成对写 provider + model） */}
+      {/* 组 1：默认模型 */}
       <SettingsGroup label="默认模型" first>
         <SettingsSelect
           label="默认模型"
-          description="成对保存 defaultProvider + defaultModel；只影响新会话"
+          tooltip="成对写入设备 settings.json 的 defaultProvider 与 defaultModel，仅对新建会话生效。"
           value={defaultModelKey}
           options={defaultModelOptions}
           groups={modelChoices.length ? modelGroups : undefined}
@@ -255,15 +354,18 @@ export function ModelPage() {
         />
         <SettingsSelect
           label="默认思考等级"
-          description={MODEL_THINKING_LEVELS_COPY}
+          tooltip={MODEL_THINKING_LEVELS_COPY}
           value={thinking ?? ""}
           options={[THINKING_UNSET, ...THINKING_OPTIONS]}
           disabled={writeDisabled}
           onChange={(value) => {
-            if (value) void writer.save("defaultThinkingLevel", defaultThinkingLevelPatch(value))
+            void writer.save("defaultThinkingLevel", defaultThinkingLevelPatch(value || null))
           }}
         />
-        <SettingsRow title="显示思考过程" description="关闭后不显示模型的思考过程；保存后需重启 pi 生效">
+        <SettingsRow
+          title="显示思考过程"
+          tooltip="控制是否在对话流中展示模型的推理思考块；修改后需重启 Pi 生效。"
+        >
           <SettingsSwitch
             label="显示思考过程"
             checked={hideThinking === false}
@@ -274,106 +376,220 @@ export function ModelPage() {
           />
         </SettingsRow>
       </SettingsGroup>
-      <SettingsWriteNote feedback={defaultModelFeedback} fallback={writeHint} />
+      <SettingsWriteNote feedback={defaultModelFeedback} fallback={topWriteHint} />
 
-      {/* 组 2：供应商 */}
+      {/* 组 2：供应商与模型管理 */}
       <SettingsGroup label="供应商">
         {providers.length === 0 ? (
           <SettingsRow title="供应商清单" description={noProviderHint} status="existing">
             <span className="settings-value">—</span>
           </SettingsRow>
         ) : (
-          visibleProviders.map((provider) => {
-            const shown = provider.models.slice(0, MODEL_PROVIDER_MODEL_LIMIT)
-            const overflow = providerModelOverflowOf(provider)
-            return (
-              <Fragment key={provider.id}>
-                {/* 登录状态 ● 只读；「管理」（密钥管理）是 ◐，所以整行按只读动作呈现。 */}
-                <SettingsActionRow
-                  title={<ProviderTitle provider={provider} />}
-                  description={<ProviderMeta provider={provider} />}
-                  status="bridge"
-                  value="管理"
-                />
-                {shown.map((model) => (
-                  // No per-row bridge badge: the provider header above
-                  // already carries it for the whole block (audit U3).
-                  // The row stays inert via disabled, exactly as the
-                  // bridge status made it before.
-                  <SettingsRow key={model.key} title={<span style={MONO}>{model.label}</span>} disabled>
-                    {model.thinking ? <span className="settings-value">思考·{model.thinking}</span> : null}
-                    {/* 只读：开关反映 pi 的「认证可用」清单；持久启停名单（enabledModels）要扩展桥才读得到。 */}
-                    <SettingsSwitch
-                      label={`${model.label}（只读，反映认证可用；精确启停需扩展桥）`}
-                      checked={model.enabled}
-                      disabled
-                    />
-                  </SettingsRow>
-                ))}
-                {overflow > 0 ? (
-                  <SettingsRow
-                    title={`另有 ${overflow} 个模型`}
-                    description={`本页只列前 ${MODEL_PROVIDER_MODEL_LIMIT} 个；完整清单在会话内的模型选择器里`}
-                    status="existing"
+          <>
+            {visibleProviders.length === 0 ? (
+              <SettingsRow
+                title="尚未配置模型供应商"
+                description="点击下方「添加供应商」配置自定义接口，或展开内置目录填入 API 密钥"
+              />
+            ) : null}
+            {visibleProviders.map((provider) => {
+              const compactUnconfigured = isBuiltInUnconfiguredProvider(provider)
+              if (compactUnconfigured) {
+                return (
+                  <SettingsActionRow
+                    key={provider.id}
+                    title={<ProviderTitle provider={provider} />}
+                    description={
+                      <>
+                        <ProviderMeta provider={provider} />
+                        {provider.models.length > 0 ? ` · 内置 ${provider.models.length} 个模型` : null}
+                      </>
+                    }
+                    disabled={!ready}
+                    value="配置"
+                    onClick={() =>
+                      setProviderModal({
+                        open: true,
+                        initial: provider.customConfig ?? {
+                          id: provider.id,
+                          name: provider.name,
+                          inModelsJson: false,
+                          inAuthJson: false,
+                          hasApiKey: provider.configured === true,
+                          models: [],
+                        },
+                      })
+                    }
                   />
-                ) : null}
-                {/* In-card model switches / add-model are bridge-only:
-                    not editable, design shape kept. Badge follows the
-                    model-row rule (provider header only); this row stays
-                    inert via disabled. */}
-                <SettingsRow
-                  title={
-                    <span className="settings-model-add">
-                      <Plus size={13} strokeWidth={2} aria-hidden="true" />
-                      添加模型
-                    </span>
-                  }
-                  disabled
-                >
-                  <span className="settings-value">手动填入模型名</span>
-                </SettingsRow>
-              </Fragment>
-            )
-          })
+                )
+              }
+              const overflow = providerModelOverflowOf(provider)
+              const isExpanded = expandedProviders[provider.id] === true
+              const shown = isExpanded ? provider.models : provider.models.slice(0, MODEL_PROVIDER_MODEL_LIMIT)
+              return (
+                <Fragment key={provider.id}>
+                  <SettingsActionRow
+                    title={<ProviderTitle provider={provider} />}
+                    description={<ProviderMeta provider={provider} />}
+                    disabled={!ready}
+                    value="配置"
+                    onClick={() =>
+                      setProviderModal({
+                        open: true,
+                        initial: provider.customConfig ?? {
+                          id: provider.id,
+                          name: provider.name,
+                          inModelsJson: false,
+                          inAuthJson: false,
+                          hasApiKey: provider.configured === true,
+                          models: [],
+                        },
+                      })
+                    }
+                  />
+                  {provider.models.length === 0 && !modelsLoading && modelsConfigQuery.phase !== "loading" ? (
+                    <SettingsRow
+                      title="尚未添加模型"
+                      description="点击下方「添加模型」填入模型 ID（如 deepseek-chat、gpt-4o）后即可在对话与默认模型中使用"
+                    />
+                  ) : null}
+                  {shown.map((model) => {
+                    const perModelLevel = effectiveThinkingMap[model.key] ?? ""
+                    return (
+                      <SettingsRow key={model.key} title={<span style={MONO}>{model.label}</span>}>
+                        <span className="settings-model-row-controls">
+                          <span className="settings-select-wrap">
+                            <select
+                              aria-label={`${model.label} 思考等级`}
+                              className="settings-inline-select"
+                              value={perModelLevel}
+                              disabled={writeDisabled}
+                              onChange={(event) => {
+                                const nextVal = event.target.value as SettingsThinkingLevel | ""
+                                const nextMap: Record<string, SettingsThinkingLevel | null> = { ...effectiveThinkingMap }
+                                nextMap[model.key] = nextVal || null
+                                void writer.save("modelThinkingLevels", modelThinkingLevelsPatch(nextMap))
+                              }}
+                            >
+                              <option value="">Thinking · Default</option>
+                              {THINKING_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  Thinking · {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown size={13} strokeWidth={2} aria-hidden="true" className="settings-select-chevron" />
+                          </span>
+                          {model.customModel ? (
+                            <button
+                              type="button"
+                              className="settings-inline-btn"
+                              disabled={!ready}
+                              onClick={() =>
+                                setModelModal({
+                                  open: true,
+                                  providerId: provider.id,
+                                  providerLabel: provider.name,
+                                  initial: model.customModel ?? null,
+                                })
+                              }
+                            >
+                              编辑
+                            </button>
+                          ) : null}
+                          <SettingsSwitch
+                            label={`启用 ${model.label}`}
+                            checked={model.enabled}
+                            disabled={writeDisabled}
+                            onChange={(checked) => {
+                              const next = toggledEnabledModelsOf(providers, configuredEnabledModels, model.key, checked)
+                              void writer.save("enabledModels", enabledModelsPatch(next))
+                            }}
+                          />
+                        </span>
+                      </SettingsRow>
+                    )
+                  })}
+                  <SettingsActionBar>
+                    {overflow > 0 ? (
+                      <SettingsActionButton
+                        title={isExpanded ? "收起模型列表" : `展开另外 ${overflow} 个模型`}
+                        hint={isExpanded ? undefined : `共 ${provider.models.length} 个模型，点击查看并逐个配置`}
+                        ariaExpanded={isExpanded}
+                        onClick={() =>
+                          setExpandedProviders((prev) => ({
+                            ...prev,
+                            [provider.id]: !prev[provider.id],
+                          }))
+                        }
+                      />
+                    ) : null}
+                    <SettingsActionButton
+                      title="添加模型"
+                      leading={<Plus size={13} strokeWidth={2} aria-hidden="true" />}
+                      disabled={!ready}
+                      onClick={() =>
+                        setModelModal({
+                          open: true,
+                          providerId: provider.id,
+                          providerLabel: provider.name,
+                          initial: null,
+                        })
+                      }
+                    />
+                  </SettingsActionBar>
+                </Fragment>
+              )
+            })}
+          </>
         )}
         {providerFold.folded.length > 0 ? (
           <SettingsActionRow
             title={providersExpanded ? "收起未配置的供应商" : `另有 ${providerFold.folded.length} 个未配置的供应商`}
-            description={providersExpanded ? undefined : "pi 内置目录里暂无可用模型的供应商；配置密钥后会排到上面"}
             value={providersExpanded ? "收起" : "展开"}
             onClick={() => setProvidersExpanded((open) => !open)}
           />
         ) : null}
       </SettingsGroup>
+      <SettingsWriteNote feedback={providerFeedback} />
 
-      {/* 添加供应商 / 刷新模型目录：设计稿里各占一张独立卡 */}
       <SettingsGroup>
-        <SettingsActionRow
-          title={
-            <span className="settings-model-add">
-              <Plus size={13} strokeWidth={1.8} aria-hidden="true" />
-              添加供应商
-            </span>
+        <SettingsActionBar
+          description={
+            restartBanner.title !== "重启 Pi"
+              ? `${restartBanner.title} · ${restartBanner.description}`
+              : modelsHint
           }
-          description="填入名称、接口地址与 API 密钥；支持 OpenAI 兼容端点"
-          status="bridge"
-        />
+        >
+          <SettingsActionButton
+            title="添加供应商"
+            leading={<Plus size={13} strokeWidth={1.8} aria-hidden="true" />}
+            disabled={!ready}
+            onClick={() => setProviderModal({ open: true, initial: null })}
+          />
+          <SettingsActionButton
+            title="刷新模型目录"
+            label={modelsLoading ? "正在读取…" : undefined}
+            hint={modelsHint}
+            disabled={!refreshReady || modelsLoading}
+            onClick={reloadAllCatalog}
+          />
+          <SettingsActionButton
+            title="重启 Pi"
+            label={restart.running ? "重启中…" : restartBanner.buttonLabel}
+            hint={restartBanner.description}
+            disabled={restartBanner.buttonDisabled}
+            onClick={restart.requestRestart}
+          />
+        </SettingsActionBar>
       </SettingsGroup>
-      <SettingsGroup>
-        <SettingsActionRow
-          title="刷新模型目录"
-          description={modelsHint}
-          disabled={!refreshReady || modelsLoading}
-          value={modelsLoading ? "正在读取…" : undefined}
-          onClick={() => modelsQuery.reload()}
-        />
-      </SettingsGroup>
+      <SettingsPiRestartDialog viewport="desktop" restart={restart} />
 
       {/* 组 3：上下文压缩（写 compaction.*） */}
       <SettingsGroup label="上下文压缩">
         <SettingsRow
           title="自动压缩长对话"
-          description="对话太长时自动把旧消息总结成摘要，腾出空间"
+          tooltip="上下文接近模型窗口上限时，自动将早期历史消息归纳为摘要以释放窗口空间。"
         >
           <SettingsSwitch
             label="自动压缩长对话"
@@ -386,7 +602,7 @@ export function ModelPage() {
         </SettingsRow>
         <SettingsSelect
           label="给回复预留"
-          description="压缩时为模型回复预留的 token 预算"
+          tooltip="触发上下文压缩时为模型下一轮输出与工具调用预留的安全缓冲 Token 数（上下文超「窗口上限 − 预留值」即触发压缩）。"
           value={reserveTokens === null ? "" : String(reserveTokens)}
           options={tokenOptions(reserveTokens)}
           disabled={writeDisabled}
@@ -396,7 +612,7 @@ export function ModelPage() {
         />
         <SettingsSelect
           label="近期原文保留"
-          description="压缩时保留最近多少 token 的原文"
+          tooltip="执行上下文压缩时在末尾完整保留最近多少 Token 的原始对话不参与摘要，避免丢失近期细节。"
           value={keepRecentTokens === null ? "" : String(keepRecentTokens)}
           options={tokenOptions(keepRecentTokens)}
           disabled={writeDisabled}
@@ -407,23 +623,44 @@ export function ModelPage() {
       </SettingsGroup>
       <SettingsWriteNote feedback={compactionFeedback} />
 
-      {/* 组 4：新会话（pi 1.3 没有持久字段 / 写桥白名单未开放，保持只读） */}
-      <SettingsGroup
-        label="新会话"
-        description="仍只读：pi 1.3 的 settings 没有新会话默认模式 / 自动生成标题字段，写桥白名单也未开放这两项。"
-      >
+      {/* 组 4：新会话（本机偏好，写入 localStorage 并应用于新建会话首条消息） */}
+      <SettingsGroup label="新会话">
         <SettingsRadioGroup
           label="默认模式"
-          description="新会话默认使用 Agent 还是仅提问"
-          value={newSessionMode}
+          tooltip="选择「仅提问」时，会在新会话发送首条消息时自动切换为只读工具集。"
+          value={prefs.newSessionMode}
           options={NEW_SESSION_OPTIONS}
-          status="bridge"
+          onChange={(value) => act.setPref("newSessionMode", value)}
         />
-        <SettingsRow title="新会话自动生成标题" description="按首条消息内容命名" status="bridge">
-          <SettingsSwitch label="新会话自动生成标题（只读，无对应字段）" checked disabled />
+        <SettingsRow title="新会话自动生成标题">
+          <SettingsSwitch
+            label="新会话自动生成标题"
+            checked={prefs.newSessionAutoTitle}
+            onChange={(checked) => act.setPref("newSessionAutoTitle", checked)}
+          />
         </SettingsRow>
       </SettingsGroup>
-      <SettingsNote>{SETTINGS_WRITE_REMAINING_READONLY_NOTE}</SettingsNote>
+
+      <ProviderConfigModal
+        open={providerModal.open}
+        initialProvider={providerModal.initial}
+        onClose={() => setProviderModal({ open: false, initial: null })}
+        onSave={handleSaveProvider}
+        onDelete={
+          providerModal.initial && (providerModal.initial.inModelsJson || providerModal.initial.inAuthJson)
+            ? handleDeleteProvider
+            : undefined
+        }
+      />
+      <ModelConfigModal
+        open={modelModal.open}
+        providerId={modelModal.providerId}
+        providerLabel={modelModal.providerLabel}
+        initialModel={modelModal.initial}
+        onClose={() => setModelModal({ open: false, providerId: "", initial: null })}
+        onSave={handleSaveModel}
+        onDelete={modelModal.initial ? handleDeleteModel : undefined}
+      />
     </div>
   )
 }

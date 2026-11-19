@@ -34,6 +34,21 @@ export function piAgo(ts: number | null | undefined, now: number): string {
   return `${d.getMonth() + 1} 月 ${d.getDate()} 日`
 }
 
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+/** English relative timestamp for conversation reply metadata: just now / 5m ago / 3h ago / 1d ago / Oct 21. */
+export function piAgoEn(ts: number | null | undefined, now: number): string {
+  const at = Number(ts) || 0
+  if (!at) return ""
+  const diff = now - at
+  if (diff < MIN) return "just now"
+  if (diff < HOUR) return `${Math.floor(diff / MIN)}m ago`
+  if (diff < DAY) return `${Math.floor(diff / HOUR)}h ago`
+  if (diff < 7 * DAY) return `${Math.floor(diff / DAY)}d ago`
+  const d = new Date(at)
+  return `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}`
+}
+
 /**
  * 时长："42s" / "2m 14s" / "5h 12m"（秒以下按 1s）；整点省掉零的第二个单位："21h"、"3m"（v1.2 M-09）。
  * opts.zero：从 0 起算的计时（流里的"用时"、运行中、已等），0 写 "0s"（原 b/format.ts bDuration，P3.2 并入）
@@ -89,11 +104,12 @@ export function piShortId(id: string, head = 4, tail = 3): string {
   return `${id.slice(0, head)}…${id.slice(-tail)}`
 }
 
-/** 思考时长："6 秒"、"1 分 12 秒"（原 b/format.ts bThinkSeconds） */
+/** Thinking duration: "6s", "1m 12s", "2m" */
 export function piThinkSeconds(ms: number): string {
   const s = Math.max(1, Math.round(ms / SEC))
-  if (s < 60) return `${s} 秒`
-  return `${Math.floor(s / 60)} 分 ${s % 60} 秒`
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return s % 60 ? `${m}m ${s % 60}s` : `${m}m`
 }
 
 /** 模型短名（回复操作行）："claude-sonnet-4-5" → "sonnet-4.5"（原 b/format.ts bModelShort） */

@@ -23,6 +23,7 @@ type RowProps = Pick<
   | "onCheckedChange"
   | "forced"
   | "labels"
+  | "onOpen"
 >
 
 export interface DiffFileSectionProps extends RowProps, Omit<ComponentPropsWithoutRef<"div">, "children"> {
@@ -71,6 +72,7 @@ export function DiffFileSection({
   onCheckedChange,
   forced,
   labels,
+  onOpen,
   className,
   ...rest
 }: DiffFileSectionProps) {
@@ -128,6 +130,7 @@ export function DiffFileSection({
         onCheckedChange={onCheckedChange}
         forced={forced}
         labels={labels}
+        onOpen={onOpen}
       />
       {open && <UnifiedDiff rows={rows} lang={lang} data-cw-id={subId(rest, "diff")} {...diffProps} />}
     </div>

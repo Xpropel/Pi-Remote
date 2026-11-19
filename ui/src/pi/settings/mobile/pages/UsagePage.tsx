@@ -12,18 +12,19 @@ import { useMemo, useState } from "react"
 import {
   addDaysToDayKey,
   formatCount,
+  formatPercent,
   formatTokenCount,
   heatmapScaleOf,
   usageDeltaOf,
   usageTodayDayKey,
   weekdayOfDayKey,
 } from "@/pi/usage/format"
+import { MONTHLY_BUDGET_PRESETS, monthlyBudgetPresetLabel, monthlyQuotaSummaryOf } from "@/pi/usage/monthlyQuota"
 import { useUsageActivity } from "@/pi/usage/useUsage"
 import type { UsageDay, UsageSnapshotV1 } from "@/pi/usage/types"
 import { settingsDeviceOfflineOf } from "../../model.ts"
 import { useSettings } from "../../SettingsContext.tsx"
 import { heatmapWeekDates } from "../model.ts"
-import { MOBILE_SETTINGS_COPY } from "../types.ts"
 import {
   MobileActionRow,
   MobileCard,
@@ -132,18 +133,6 @@ function Heatmap({ snapshot, metric }: { snapshot: UsageSnapshotV1; metric: stri
           </div>
         ))}
       </div>
-      <div className="sm-heat-foot">
-        <span className="sm-heat-legend">
-          少
-          <i data-level="0" />
-          <i data-level="1" />
-          <i data-level="2" />
-          <i data-level="3" />
-          <i data-level="4" />
-          多
-        </span>
-        <span className="sm-heat-note">{MOBILE_SETTINGS_COPY.heatmapWeeksNote}</span>
-      </div>
     </div>
   )
 }
@@ -175,6 +164,7 @@ export function UsagePage() {
   const range = prefs.usageRange
   const [retrying, setRetrying] = useState(false)
   const todayKey = snapshot ? usageTodayDayKey(snapshot) : usageTodayDayKey(null)
+  const quotaSummary = monthlyQuotaSummaryOf(snapshot, todayKey, prefs.monthlyTokenBudget)
   const totals = snapshot?.summary.totals
   const activeDays = totals?.activeDays ?? 0
   const activeRatio = Math.min(100, Math.round((activeDays / 30) * 100))
@@ -245,11 +235,63 @@ export function UsagePage() {
             />
           </div>
 
-          <MobileGroup label="供应商用量" stacked>
+          <MobileGroup
+            label="本月用量 · 供应商"
+            tooltip="本地月度 Token 提醒阈值，仅保存在当前浏览器，不限制实际模型调用。"
+            stacked
+          >
             <MobileCard>
-              <MobileRow title="供应商用量额度" description="本月用量 · 按供应商账户计" status="reserved">
-                <span className="sm-value">暂不可用</span>
+              <MobileRow
+                title={`${quotaSummary.monthLabel}已用 · ${formatTokenCount(quotaSummary.monthTokens)} Token`}
+                description={
+                  quotaSummary.budgetTokens > 0
+                    ? `预算 ${formatTokenCount(quotaSummary.budgetTokens)} Token（${formatPercent(quotaSummary.usageRatio ?? 0)}）· ${quotaSummary.resetLabel}`
+                    : `${quotaSummary.activeDays} 个活跃日 · ${quotaSummary.resetLabel}`
+                }
+              >
+                <span className="sm-value">
+                  {quotaSummary.budgetTokens > 0 ? formatPercent(quotaSummary.usageRatio ?? 0) : "未设上限"}
+                </span>
               </MobileRow>
+              <div className="sm-models">
+                <div className="sm-model-row">
+                  <span className="sm-week-track">
+                    <span
+                      className="sm-week-fill"
+                      style={{
+                        width: `${
+                          quotaSummary.budgetTokens > 0
+                            ? Math.min(100, Math.round((quotaSummary.usageRatio ?? 0) * 100))
+                            : quotaSummary.monthTokens > 0
+                              ? 100
+                              : 0
+                        }%`,
+                      }}
+                    />
+                  </span>
+                  <span className="sm-model-percent">
+                    {quotaSummary.budgetTokens > 0 ? formatPercent(quotaSummary.usageRatio ?? 0) : formatTokenCount(quotaSummary.monthTokens)}
+                  </span>
+                </div>
+                <MobileSegmented
+                  label="月度 Token 预算"
+                  value={String(prefs.monthlyTokenBudget)}
+                  options={MONTHLY_BUDGET_PRESETS.map((preset) => ({
+                    value: String(preset),
+                    label: monthlyBudgetPresetLabel(preset),
+                  }))}
+                  onChange={(value) => act.setPref("monthlyTokenBudget", Number(value))}
+                />
+                {quotaSummary.topProviders.map((row) => (
+                  <div className="sm-model-row" key={row.provider}>
+                    <span className="sm-model-name">{row.provider}</span>
+                    <span className="sm-model-track">
+                      <span className="sm-model-fill" style={{ width: `${Math.max(2, row.share * 100)}%` }} />
+                    </span>
+                    <span className="sm-model-percent">{formatPercent(row.share)}</span>
+                  </div>
+                ))}
+              </div>
             </MobileCard>
           </MobileGroup>
 
@@ -258,12 +300,7 @@ export function UsagePage() {
               {range === "daily" ? (
                 <Heatmap snapshot={snapshot} metric={metric} />
               ) : range === "weekly" ? (
-                <>
-                  <WeeklyBars days={snapshot.days} todayKey={todayKey} metric={metric} />
-                  <div className="sm-heat-foot">
-                    <span className="sm-heat-note">近 8 周 · 每周从周日开始</span>
-                  </div>
-                </>
+                <WeeklyBars days={snapshot.days} todayKey={todayKey} metric={metric} />
               ) : (
                 <div className="sm-cumulative">
                   <div className="sm-cumulative-label">累计总量</div>
@@ -298,7 +335,10 @@ export function UsagePage() {
                 )}
               </span>
             </MobileRow>
-            <MobileRow title="平均每日消息">
+            <MobileRow
+              title="平均每日消息"
+              tooltip="仅按近 30 天内有消息记录的活跃日折算平均值。"
+            >
               <span className="sm-value">
                 {activeDays > 0 ? `${formatCount((totals?.messagesUser ?? 0) / activeDays)} 条 · 近 30 天` : "—"}
               </span>
@@ -349,10 +389,6 @@ export function UsagePage() {
         </MobileGroup>
       )}
 
-      <MobileNote>
-        数据口径：Token 按 API 处理量计；分天按设备本地时区；同一份会话记录只算一遍，中转侧的镜像副本不重复计。
-        供应商用量额度卡暂无数据源，保留「设计预留」形态。
-      </MobileNote>
       {usage.error && !usage.loading ? <MobileNote>读取提示：{usage.error}</MobileNote> : null}
     </MobilePageBody>
   )

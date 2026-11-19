@@ -77,6 +77,10 @@ export const VIEWERS_UNSUPPORTED_TEXT = "当前连接没有提供观看端名册
 /** 名册只对管理员开放：普通观看端被拒是预期结果，不当读取失败。 */
 export const VIEWERS_ADMIN_ONLY_TEXT = "只有管理员能查看已授权的观看端名单。"
 
+/** HTTP 非安全上下文下 WebCrypto 不可用时的温和提示（禁用生成密钥而不报错）。 */
+export const IDENTITY_INSECURE_CONTEXT_NOTE =
+  "当前通过非安全上下文（HTTP）访问，浏览器已禁用 WebCrypto 密钥接口；请改用 HTTPS 或 localhost 访问后再启用观看端身份。"
+
 /** 中转的拒绝只经名册通道带回文案（「需要管理员令牌」），没有错误码可认，所以两种都认。 */
 export function viewerRosterAdminOnlyOf(error: unknown): boolean {
   if (error && typeof error === "object" && (error as { code?: unknown }).code === "admin_required") return true
@@ -118,6 +122,8 @@ export interface IdentityStateView {
   /** True once a passphrase backup has been created from this browser. */
   backedUp: boolean
   backedUpAt: number | null
+  /** True unless the host explicitly reports an insecure context without WebCrypto. */
+  webCryptoSupported: boolean
 }
 
 function recordOf(value: unknown): Record<string, unknown> | null {
@@ -162,6 +168,7 @@ export function identityStateViewOf(raw: unknown): IdentityStateView {
     lastError: state ? stringOf(state.lastError) : null,
     backedUp: state ? state.backedUp === true || backedUpAt !== null : false,
     backedUpAt,
+    webCryptoSupported: state ? state.webCryptoSupported !== false : true,
   }
 }
 

@@ -9,6 +9,19 @@ relay 新增 Docker 一键部署（部署方式补充，不改运行时行为）
 - **Docker Compose 一条命令启动** — 新增 `deploy/docker/`：Dockerfile（`node:22-bookworm-slim`、仅生产依赖、非 root 运行，只含 relay 与预构建网页）、docker-compose.yml（数据存命名卷、`restart: unless-stopped`、`/healthz` 健康检查；7001 默认只发布到宿主机回环）与 `.env.example`（token 经 `.env` 注入，缺必填 token 时 compose 拒绝启动）。说明见 `deploy/docker/README.md`，运维手册新增第 3.1 节索引。
 - **升级前只读自检** — 新增 `deploy/docker/pre-upgrade-check.cjs`：升级换镜像前校验账号索引与房间文件可读、JSONL 索引逐行可解析、目录可写；只读不改数据，不过（退出码 1）就先停下处理。个别坏行只告警，与 relay 加载时跳过坏行的口径一致。
 
+## 2.1.27 — 2026-11-19
+
+合入 Mac 本地完成的一批更新：
+
+- **macOS 设备端补齐** — 新增 `deploy/darwin/` 设备套件（device.cjs / device.sh / supervise-attach.sh）：连接窗口在 tmux 会话中受监督运行，Mac 设备的「重启设备端」「更新设备端组件」自此可用（此前仅 Linux 支持）；Pi 查找路径、doctor 提示按 macOS 口径适配（Homebrew 前缀、brew install tmux）。
+- **防休眠** — 设备端新增防休眠控制（macOS 用 caffeinate、Linux 用 systemd-inhibit），网页可查看与开关；该命令直达设备端，不依赖打开的会话。
+- **设备中枢** — 新增设备总览界面，集中查看各设备状态并快速切换。
+- **终端窗格** — 对话页新增终端窗格（xterm.js），带自定义滚动条。
+- **设置页深化** — 没有打开的会话时，设置、模型供应商与 MCP 服务器等配置命令也可直达设备端执行；设置页内的 Pi 更新 / 重启流程与结果反馈补齐，默认模型选择体验修整。
+- **会话懒加载与工作区动作** — 会话按需载入、恢复时的呈现修整；会话 fork / 复制与工作区动作补齐。
+- **语音输入** — 输入框新增语音听写。
+- **视觉打磨** — squircle 圆角、托盘与窗格导轨、使用量页等细节修整。
+
 ## 2.1.26 — 2026-11-14
 
 两处界面清理：

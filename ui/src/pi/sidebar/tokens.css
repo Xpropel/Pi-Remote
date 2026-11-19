@@ -33,9 +33,9 @@
   --sb-archive-time-gap: 4px;
   --sb-menu-offset: 6px;
   --sb-menu-row-h: 32px;
-  --sb-radius-row: 8px;
-  --sb-radius-menu: 12px;
-  --sb-radius-bubble: 10px;
+  --sb-radius-row: 12px;
+  --sb-radius-menu: 20px;
+  --sb-radius-bubble: 18px;
   --sb-font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --sb-font-title: var(--sb-font-sans);
   --sb-font-workspace: var(--sb-font-sans);

@@ -41,7 +41,7 @@ export function PiComposerMenu({ variant, header, footer, maxHeight, className, 
       {...surface}
       data-slot="pi-composer-menu"
       elevation="menu"
-      className={cn("w-full overflow-hidden p-0", phone && "rounded-[12px]", className)}
+      className={cn("w-full overflow-hidden p-0", phone && "rounded-[16px]", className)}
       aria-describedby={describedBy}
       {...rest}
     >
@@ -62,7 +62,7 @@ export function PiComposerMenu({ variant, header, footer, maxHeight, className, 
       )}
       <div
         data-slot="pi-composer-menu-list"
-        className="flex min-h-0 flex-col overflow-y-auto p-1 [scrollbar-width:none]"
+        className="flex min-h-0 flex-col overflow-y-auto p-1.5 [scrollbar-width:none]"
         style={maxHeight ? { maxHeight } : undefined}
       >
         {children}
@@ -307,12 +307,11 @@ export function PiMentionMenu({ variant, pool, query, selected = [], activeIndex
       aria-label="引用文件"
       aria-activedescendant={self && rows.length > 0 ? rowId(active) : undefined}
       tabIndex={self ? -1 : undefined}
-      header="发送时附上路径，模型按路径读取，不是上传"
       {...rest}
     >
       {rows.length === 0 ? (
         <div role="option" aria-selected={false} aria-disabled className={cn("px-3 py-2", rowText(variant).sub, C_SECONDARY)}>
-          这个会话里还没出现过匹配的文件
+          没有匹配文件
         </div>
       ) : (
         rows.map((path, i) => (
@@ -379,8 +378,8 @@ export interface PiAttachMenuProps extends Omit<PiComposerMenuProps, "children">
 }
 
 const ATTACH_ROWS = [
-  { key: "image", icon: <ImageIcon />, name: "图片…", desc: "png / jpeg / gif / webp，最多 5 张" },
-  { key: "text", icon: <FileText />, name: "文本文件…", desc: "64 KB 以内的 UTF-8 文本，插进输入框" },
+  { key: "image", icon: <ImageIcon />, name: "图片…" },
+  { key: "text", icon: <FileText />, name: "文本文件…" },
 ] as const
 
 /** "+" menu (E05 E06 E07): image... / text file... -- commands... / usage -- footnote. (Fees are not shown anywhere, per the owner's rule.) */
@@ -426,8 +425,6 @@ export function PiAttachMenu({ variant, commandsDisabled, bare, onPick, classNam
             variant={variant}
             icon={r.icon}
             name={r.name}
-            desc={r.desc}
-            twoLine
             highlighted={i === 0 && !bare && !radix && onPick == null}
             {...pickProps(r.key)}
           />,
@@ -451,14 +448,10 @@ export function PiAttachMenu({ variant, commandsDisabled, bare, onPick, classNam
       {item("usage", <PiMenuRow key="usage" tabIndex={-1} variant={variant} icon={<ChartColumn />} name="用量" {...pickProps("usage")} />)}
     </>
   )
-  const footer = "@ 可以引用这个会话里出现过的文件"
   if (bare) {
     return (
       <div data-slot="pi-attach-menu" data-cw-id="pi-attach-menu" role="menu" aria-label="添加" className={cn("flex flex-col", className)}>
         {body}
-        <div className={cn("mt-1 border-t border-solid px-3 pt-3 pb-1", MENU_DIVIDER_BORDER, rowText(variant).sub, C_SECONDARY)}>
-          {footer}
-        </div>
       </div>
     )
   }
@@ -467,7 +460,6 @@ export function PiAttachMenu({ variant, commandsDisabled, bare, onPick, classNam
       variant={variant}
       data-cw-id="pi-attach-menu"
       aria-label="添加"
-      footer={footer}
       className={className}
       {...rest}
     >

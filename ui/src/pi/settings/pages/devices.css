@@ -19,6 +19,7 @@
   height: 36px;
   flex: none;
   border-radius: 9px;
+  corner-shape: squircle;
   background: var(--st-tile-bg);
   color: var(--st-text-2);
 }
@@ -83,6 +84,7 @@
   height: 18px;
   padding: 0 6px;
   border-radius: 4px;
+  corner-shape: squircle;
   background: color-mix(in srgb, var(--st-accent) 12%, transparent);
   color: var(--st-accent);
   font-size: 11px;
@@ -118,6 +120,7 @@
   padding: 0 10px;
   border: 1px solid var(--st-control-border);
   border-radius: var(--st-radius-control);
+  corner-shape: squircle;
   background: var(--st-control-bg);
   color: var(--st-text-1);
   font-size: 12px;
@@ -239,6 +242,7 @@
   padding: 0 8px;
   border: 1px solid var(--st-control-border);
   border-radius: var(--st-radius-control);
+  corner-shape: squircle;
   background: var(--st-control-bg);
   color: var(--st-text-1);
   font-size: 12.5px;
@@ -339,8 +343,9 @@
 .settings-device-ops {
   display: flex;
   flex-direction: column;
+  gap: 8px;
   border-top: 1px solid var(--st-divider);
-  padding: 10px 0 6px;
+  padding: 10px 0 8px;
 }
 
 .settings-device-ops > .settings-device-action {
@@ -351,24 +356,17 @@
   color: var(--st-text-3);
   font-size: 12.5px;
   line-height: 1.5;
-  padding: 2px 0 6px;
+  padding: 2px 0 4px;
 }
 
 .settings-ops-note.is-error {
   color: var(--st-error);
 }
 
-.settings-ops-head {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 10px;
-}
-
 .settings-ops-ver {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
-  gap: 8px;
-  margin-bottom: 4px;
+  gap: 6px;
 }
 
 .settings-ops-ver-cell {
@@ -376,8 +374,9 @@
   flex-direction: column;
   gap: 2px;
   border-radius: 9px;
+  corner-shape: squircle;
   background: var(--st-tile-bg);
-  padding: 8px 10px;
+  padding: 6px 9px;
 }
 
 .settings-ops-ver-k {
@@ -388,7 +387,7 @@
 
 .settings-ops-ver-v {
   color: var(--st-text-1);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   line-height: 1.35;
 }
@@ -396,54 +395,39 @@
 .settings-ops-ver-tag {
   margin-left: 5px;
   color: var(--st-wait);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
-.settings-op-row {
+.settings-ops-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  border-top: 1px solid var(--st-divider);
-  padding: 10px 0;
+  gap: 6px;
+  padding-top: 2px;
 }
 
-.settings-op-main {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
+.settings-ops-bar .settings-device-action {
+  gap: 5px;
 }
 
-.settings-op-name {
+.settings-root .settings-ops-refresh {
+  margin-left: auto;
+}
+
+.settings-ops-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 7px;
-  color: var(--st-text-1);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-.settings-op-name.is-ok {
-  color: var(--st-online);
-}
-
-.settings-op-name.is-error {
-  color: var(--st-error);
-}
-
-.settings-op-phase {
-  color: var(--st-accent);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.settings-op-desc {
+  gap: 4px 8px;
   color: var(--st-text-3);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.45;
+}
+
+.settings-ops-ok {
+  color: var(--st-online);
+  font-weight: 500;
 }
 
 .settings-op-warn {
@@ -451,8 +435,9 @@
 }
 
 .settings-op-error {
-  margin-top: 6px;
+  margin-top: 2px;
   border-radius: 8px;
+  corner-shape: squircle;
   background: var(--st-notice-bad-bg);
   padding: 7px 10px;
   color: var(--st-error);

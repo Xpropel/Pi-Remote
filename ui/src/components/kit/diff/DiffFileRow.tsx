@@ -42,6 +42,8 @@ export interface DiffFileRowProps extends Omit<ComponentPropsWithoutRef<"div">, 
   forced?: Forced
   /** 图标钮的无障碍名；不传 = 现在的英文（Open file / Copy path / Revert file / Include file；kit-requests pi b） */
   labels?: Partial<Record<"open" | "copy" | "revert" | "include", string>>
+  /** 点行内 trailingIcon（如 ↗ 打开文件）时的回调 */
+  onOpen?: () => void
 }
 
 const stop = (e: MouseEvent) => e.stopPropagation()
@@ -70,6 +72,7 @@ export function DiffFileRow({
   bare,
   forced,
   labels,
+  onOpen,
   className,
   ...rest
 }: DiffFileRowProps) {
@@ -102,7 +105,14 @@ export function DiffFileRow({
           label={trailingIcon === "copy" ? (labels?.copy ?? "Copy path") : (labels?.open ?? "Open file")}
           icon={trailingIcon === "copy" ? <Copy /> : <ArrowUpRight />}
           data-cw-id={subId(rest, trailingIcon === "copy" ? "copy" : "open")}
-          onClick={stop}
+          onClick={
+            onOpen
+              ? (e) => {
+                  e.stopPropagation()
+                  onOpen()
+                }
+              : stop
+          }
           className={cn(
             "ml-1 size-4 text-(--cw-text-4)",
             trailingIcon === "copy" ? "[&>svg]:size-3.5" : "[&>svg]:size-4",

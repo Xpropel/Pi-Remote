@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react"
-import { PI_SIDEBAR_COPY, type PiSidebarSession } from "../sidebar/types.ts"
+import type { PiSidebarSession } from "../sidebar/types.ts"
 import { IconArchive, IconClose, IconMore, IconPin, IconUnarchive } from "./icons"
 
 /**
@@ -35,7 +35,7 @@ export function LongPressCard({
       previous?.focus?.()
     }
   }, [onClose])
-  const where = [session.dateTimeLabel, `${session.deviceName || "本机"} · 本地`].filter(Boolean).join(" · ")
+  const where = [session.dateTimeLabel, session.deviceName].filter(Boolean).join(" · ")
   return (
     <div className="pm-card-layer" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div className="pm-longpress-card" role="dialog" aria-modal="true" aria-label={`${session.title} 会话操作`} data-pi-mobile-surface="P11-MOB-09">
@@ -58,8 +58,7 @@ export function LongPressCard({
           </p>
         ) : null}
         {/* D-3: full timestamp (session.dateTimeLabel) so same-title stored rows can be told apart here too. */}
-        <p className="pm-longpress-sub">{where}</p>
-        <p className="pm-longpress-hint">{PI_SIDEBAR_COPY.pinHint}</p>
+        {where ? <p className="pm-longpress-sub">{where}</p> : null}
         <div className="pm-longpress-actions">
           <button ref={firstRef} type="button" className="pm-longpress-action" onClick={() => { onPin(session.key); onClose() }}>
             <IconPin size={18} />

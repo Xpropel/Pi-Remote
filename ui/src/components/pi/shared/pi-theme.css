@@ -16,8 +16,39 @@
   /* 需要读的灰字（收据行、行尾时间、组头、状态行、说明）：在 #F7F7F7 上约 5.0:1、侧栏 #EEEEEE 上约 4.7:1（待用户确认 14） */
   --cw-pi-text-secondary: #6a6b6d;
   --cw-pi-status-line-bg: var(--cw-chip-bg);
-  --cw-pi-approval-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.14);
-  --cw-pi-sheet-radius: 16px;
+  --cw-pi-approval-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 12px 32px rgba(0, 0, 0, 0.14);
+  --cw-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.03), 0 4px 12px rgba(0, 0, 0, 0.03);
+  --cw-shadow-composer: 0 2px 6px rgba(0, 0, 0, 0.035), 0 10px 28px rgba(0, 0, 0, 0.05);
+  --cw-shadow-popover: 0 0 0 0.5px rgba(0, 0, 0, 0.07), 0 10px 30px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --cw-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.07), 0 6px 20px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.04);
+  --cw-shadow-palette: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 18px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.06);
+  --cw-shadow-float: 0 2px 8px rgba(0, 0, 0, 0.06), 0 8px 20px rgba(0, 0, 0, 0.04);
+  --cw-pi-shell-canvas: #dcdfe4;
+  --cw-pi-sidebar-island-bg: #f5f6f8;
+  --cw-pi-island-border: rgba(15, 23, 42, 0.11);
+  --cw-pi-island-shadow: 0 1px 3px rgba(15, 23, 42, 0.045), 0 6px 20px rgba(15, 23, 42, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --cw-pi-sidebar-float-shadow: 0 12px 36px rgba(15, 23, 42, 0.16), 0 2px 8px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --cw-pi-hub-glow: radial-gradient(720px 380px at 50% 0%, rgba(4, 122, 189, 0.07), transparent 70%);
+  --cw-pi-hub-card-shadow: 0 2px 6px rgba(0, 0, 0, 0.03), 0 10px 26px rgba(0, 0, 0, 0.045);
+  --cw-pi-hub-card-hover-shadow: 0 6px 16px rgba(0, 0, 0, 0.055), 0 18px 38px rgba(0, 0, 0, 0.075);
+  --cw-pi-hub-icon-bg: rgba(4, 122, 189, 0.08);
+  --cw-pi-user-bubble-bg: #ffffff;
+  --cw-pi-user-bubble-border: rgba(15, 23, 42, 0.08);
+  --cw-pi-user-bubble-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 4px 12px rgba(15, 23, 42, 0.04);
+  --cw-pi-composer-focus-halo: 0 0 0 3px rgba(4, 122, 189, 0.12), var(--cw-shadow-composer);
+  --cw-pi-sb-menu-shadow: 0 0 0 1px var(--sb-menu-border, rgba(0, 0, 0, 0.06)), 0 10px 30px rgba(0, 0, 0, 0.09), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --cw-pi-sheet-radius: 28px;
+  --cw-radius-xs: 8px;
+  --cw-radius-button: 12px;
+  --cw-radius-row: 12px;
+  --cw-radius-input: 14px;
+  --cw-radius-card: 18px;
+  --cw-radius-bubble: 22px;
+  --cw-radius-popover: 20px;
+  --cw-radius-composer-new: 24px;
+  --cw-radius-palette: 24px;
+  --cw-menu-pad: 6px;
+  --cw-menu-item-radius: 12px;
   --cw-pi-sheet-handle: var(--cw-border-strong);
   --cw-pi-touch: 44px;
   --cw-pi-sidebar-w: 256px;
@@ -63,6 +94,20 @@
   --cw-pi-menu-divider: rgba(0, 0, 0, 0.07);
   /* 对话流正文字色（kit AgentProse / UserMessage / 代码块读它）：浅色 = --cw-text，深色压暗一档（见深色块） */
   --cw-pi-stream-fg: var(--cw-text);
+  --cw-pi-shell-bg: #fafafa;
+  --cw-pi-shell-fg: #18181b;
+  --cw-pi-shell-cursor: #18181b;
+  --cw-pi-shell-cursor-accent: #ffffff;
+  --cw-pi-shell-selection: rgba(37, 99, 235, 0.2);
+  --cw-pi-shell-black: #18181b;
+  --cw-pi-shell-red: #dc2626;
+  --cw-pi-shell-green: #15803d;
+  --cw-pi-shell-yellow: #a16207;
+  --cw-pi-shell-blue: #2563eb;
+  --cw-pi-shell-magenta: #9333ea;
+  --cw-pi-shell-cyan: #0e7490;
+  --cw-pi-shell-white: #52525b;
+  --cw-pi-shell-bright-black: #71717a;
   /*
    * P4（PLAN 4.1，修 ui-audit §2.2 的遮罩穿透）：Pi 里的层级只用这五档，部件不再自己写 z 数字（R2/p4-lanes.md §2）。
    * 弹窗 / 命令面板 / 灯箱都在 modal 档：PiDesktopShell、PiPhonePage 的 overlay 槽，以及可交互 PiDialog portal 出去的那一层；
@@ -228,12 +273,27 @@
   --cw-file-icon-html: #d3977a;
   --cw-file-icon-ts: #8fa6b0;
   --cw-file-icon-tsx: #8aa6a2;
-  /* 阴影：外圈换成 0.5px 浅描边，投影透明度 ×4 */
-  --cw-shadow-composer: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 3px rgba(0, 0, 0, 0.16);
-  --cw-shadow-popover: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 6px 18px rgba(0, 0, 0, 0.48);
-  --cw-shadow-menu: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 3px rgba(0, 0, 0, 0.32), 0 4px 12px rgba(0, 0, 0, 0.24);
-  --cw-shadow-palette: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 2px 6px rgba(0, 0, 0, 0.24), 0 12px 32px rgba(0, 0, 0, 0.4);
-  --cw-shadow-float: 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 1px 4px rgba(0, 0, 0, 0.24);
+  /* 阴影：外圈换成 0.5px 浅描边，投影层次柔和扩散 */
+  --cw-shadow-card: 0 0 0 0.5px rgba(255, 255, 255, 0.06), 0 4px 14px rgba(0, 0, 0, 0.28);
+  --cw-shadow-composer: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 4px 16px rgba(0, 0, 0, 0.28), 0 12px 32px rgba(0, 0, 0, 0.2);
+  --cw-shadow-popover: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 12px 32px rgba(0, 0, 0, 0.54), 0 2px 8px rgba(0, 0, 0, 0.26);
+  --cw-shadow-menu: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 6px 20px rgba(0, 0, 0, 0.42), 0 2px 6px rgba(0, 0, 0, 0.24);
+  --cw-shadow-palette: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 18px 48px rgba(0, 0, 0, 0.56), 0 4px 14px rgba(0, 0, 0, 0.3);
+  --cw-shadow-float: 0 0 0 0.5px rgba(255, 255, 255, 0.09), 0 4px 14px rgba(0, 0, 0, 0.32);
+  --cw-pi-shell-canvas: #09090b;
+  --cw-pi-sidebar-island-bg: #18181b;
+  --cw-pi-island-border: rgba(255, 255, 255, 0.095);
+  --cw-pi-island-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --cw-pi-sidebar-float-shadow: 0 16px 44px rgba(0, 0, 0, 0.58), 0 4px 12px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --cw-pi-hub-glow: radial-gradient(720px 380px at 50% 0%, rgba(58, 155, 217, 0.11), transparent 70%);
+  --cw-pi-hub-card-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.07), 0 8px 24px rgba(0, 0, 0, 0.32);
+  --cw-pi-hub-card-hover-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 14px 36px rgba(0, 0, 0, 0.45);
+  --cw-pi-hub-icon-bg: rgba(58, 155, 217, 0.14);
+  --cw-pi-user-bubble-bg: rgba(255, 255, 255, 0.055);
+  --cw-pi-user-bubble-border: rgba(255, 255, 255, 0.09);
+  --cw-pi-user-bubble-shadow: 0 1px 3px rgba(0, 0, 0, 0.28), 0 6px 16px rgba(0, 0, 0, 0.22);
+  --cw-pi-composer-focus-halo: 0 0 0 3px rgba(58, 155, 217, 0.18), var(--cw-shadow-composer);
+  --cw-pi-sb-menu-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 14px 36px rgba(0, 0, 0, 0.48), 0 4px 12px rgba(0, 0, 0, 0.28);
   /* Pi 变量的深色值 */
   --cw-pi-text-secondary: #8e8e93;
   --cw-pi-status-line-bg: #232325;
@@ -250,6 +310,20 @@
   --cw-pi-stream-fg: #d3d3d5;
   /* kit Switch 的圆点（tokens.local.css 默认 #FFFFFF）：深色下略灰的白点（kit-requests pi a4，原先是对 [data-slot=switch-thumb] 的覆盖） */
   --cw-switch-thumb: #f2f2f2;
+  --cw-pi-shell-bg: #141416;
+  --cw-pi-shell-fg: #ededef;
+  --cw-pi-shell-cursor: #f4f4f5;
+  --cw-pi-shell-cursor-accent: #141416;
+  --cw-pi-shell-selection: rgba(58, 155, 217, 0.34);
+  --cw-pi-shell-black: #27272a;
+  --cw-pi-shell-red: #f87171;
+  --cw-pi-shell-green: #4ade80;
+  --cw-pi-shell-yellow: #facc15;
+  --cw-pi-shell-blue: #60a5fa;
+  --cw-pi-shell-magenta: #c084fc;
+  --cw-pi-shell-cyan: #22d3ee;
+  --cw-pi-shell-white: #e4e4e7;
+  --cw-pi-shell-bright-black: #71717a;
 }
 
 /* Kit Switch ON thumb in dark: the ON track is now --cw-text (near-white in dark), so the
@@ -643,4 +717,393 @@
   --cw-font-sans: "Geist Variable", Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --sb-font-sans: var(--cw-font-sans);
   --st-font-sans: var(--cw-font-sans);
+}
+
+/* 等宽字体：默认 JetBrains Mono（@fontsource/jetbrains-mono），切换系统等宽时写 data-pi-mono-font="system" */
+:root:root,
+:root:root :is([data-pi-sidebar], [data-pi-settings]) {
+  --cw-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --sb-font-mono: var(--cw-font-mono);
+  --st-font-mono: var(--cw-font-mono);
+}
+:root:root[data-pi-mono-font="system"],
+:root:root[data-pi-mono-font="system"] :is([data-pi-sidebar], [data-pi-settings]) {
+  --cw-font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --sb-font-mono: var(--cw-font-mono);
+  --st-font-mono: var(--cw-font-mono);
+}
+
+/* 内容列宽：自定义时在产品模式与设置页内容列同步生效 */
+:root[data-pi-content-width="custom"] [data-pi-root][data-pi-mode="product"] {
+  --cw-pi-chat-max-w: var(--cw-pi-user-content-w);
+}
+:root[data-pi-content-width="custom"] [data-pi-settings] .settings-column:not(.settings-column--wide) {
+  --st-content-w: var(--cw-pi-user-content-w);
+  width: min(100%, var(--cw-pi-user-content-w));
+  max-width: var(--cw-pi-user-content-w);
+}
+
+/*
+ * ---------- 6. 桌面悬浮圆角工作岛 & 登录后设备中心质感微调 ----------
+ * 仅在产品模式（data-pi-mode="product"）生效，画廊与视觉回归快照零影响。
+ */
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] {
+  background: var(--cw-pi-shell-canvas);
+  padding: 6px;
+  gap: 3px;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] .sb-root[data-pi-sidebar] {
+  --sb-bg: var(--cw-pi-sidebar-island-bg);
+  border-radius: 22px;
+  corner-shape: squircle;
+  border: 1px solid var(--cw-pi-island-border);
+  background: var(--cw-pi-sidebar-island-bg);
+  box-shadow: var(--cw-pi-island-shadow);
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] .sb-root[data-pi-sidebar][data-sb-collapsed] {
+  border-radius: 20px;
+  corner-shape: squircle;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] [data-pi-sidebar-float] {
+  border-radius: 22px;
+  corner-shape: squircle;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] [data-pi-sidebar-float][data-open] {
+  box-shadow: none;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] [data-pi-sidebar-float][data-open] > .sb-root[data-pi-sidebar] {
+  box-shadow: var(--cw-pi-sidebar-float-shadow);
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] .sb-root[data-pi-sidebar] .sb-search {
+  border-radius: inherit;
+  corner-shape: squircle;
+  overflow: hidden;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] .sb-root[data-pi-sidebar] .sb-resize {
+  top: 16px;
+  bottom: 16px;
+  right: -5px;
+  width: 8px;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] .sb-root[data-pi-sidebar] .sb-resize::after {
+  left: 3px;
+  width: 2px;
+  border-radius: 999px;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] > [data-pi-main],
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] > [data-pi-pane] {
+  border-radius: 22px;
+  corner-shape: squircle;
+  border: 1px solid var(--cw-pi-island-border);
+  box-shadow: var(--cw-pi-island-shadow);
+  overflow: hidden;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] > [data-pi-pane][data-floating] {
+  top: 6px;
+  right: 6px;
+  bottom: 6px;
+  height: auto;
+}
+[data-pi-root][data-pi-mode="product"] .pm-drawer {
+  top: 6px;
+  bottom: 6px;
+  left: 6px;
+  border: 1px solid var(--pm-border);
+  border-radius: 22px;
+  corner-shape: squircle;
+}
+[data-pi-root] [data-pi-part="pane-rail"] {
+  border-radius: 14px;
+  corner-shape: squircle;
+  border: 1px solid var(--cw-border);
+  background: color-mix(in srgb, var(--cw-surface) 92%, var(--cw-bg));
+  backdrop-filter: blur(8px);
+  box-shadow: var(--cw-shadow-card);
+}
+[data-pi-root] [data-pi-part="pane-rail"] > button {
+  border-radius: 9px;
+  corner-shape: squircle;
+}
+[data-pi-root] [data-pi-part="pane-rail"] > button:focus-visible {
+  outline: var(--cw-pi-focus-ring);
+  outline-offset: 2px;
+}
+[data-pi-root] [data-pi-part="pane-rail-dot"] {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--cw-green);
+}
+[data-pi-root] [data-pi-part="pane-rail-dot"][data-running] {
+  background: var(--cw-status-local);
+}
+
+/* 登录页与设备选择中心的柔和背景光晕及悬浮设备卡反馈 */
+[data-pi-root] .pi-hub-surface {
+  background-color: var(--cw-bg);
+  background-image: var(--cw-pi-hub-glow);
+  background-repeat: no-repeat;
+}
+[data-pi-root] [data-pi-device-card] {
+  box-shadow: var(--cw-pi-hub-card-shadow);
+  transition: transform 190ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 190ms cubic-bezier(0.22, 1, 0.36, 1), border-color 190ms ease;
+}
+[data-pi-root] [data-pi-device-card]:hover {
+  transform: translateY(-2px);
+  border-color: var(--cw-border-strong);
+  box-shadow: var(--cw-pi-hub-card-hover-shadow);
+}
+[data-pi-root] [data-pi-device-card]:active {
+  transform: scale(0.99);
+}
+
+/* 按钮、胶囊与浮层菜单的顺滑过渡反馈（reduced-motion 开关会自动停掉这里的 transition） */
+[data-pi-root] [data-slot="pill"],
+[data-pi-root] [data-slot="ghost-icon-button"],
+[data-pi-root] [data-slot="menu-item"],
+[data-pi-root] [data-pi-login-card] {
+  transition: background-color 160ms cubic-bezier(0.22, 1, 0.36, 1), border-color 160ms cubic-bezier(0.22, 1, 0.36, 1), color 160ms ease, box-shadow 180ms ease, transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+[data-pi-root] [data-slot="pill"]:active:not(:disabled),
+[data-pi-root] [data-slot="ghost-icon-button"]:active:not(:disabled) {
+  transform: scale(0.97);
+}
+[data-pi-root] [data-pi-login-card] {
+  box-shadow: var(--cw-shadow-palette);
+}
+[data-pi-root] [data-pi-device-card][data-selected] {
+  border-color: var(--cw-blue);
+  background: color-mix(in srgb, var(--cw-blue) 5%, var(--cw-surface));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cw-blue) 28%, transparent), var(--cw-pi-hub-card-hover-shadow);
+}
+
+/* 桌面产品模式深层精修：极细滚动条、顶栏呼吸感、对话卡片/气泡层次、输入聚焦光晕、浮层微透视 */
+[data-pi-root][data-pi-mode="product"] .sb-scroll,
+[data-pi-root][data-pi-mode="product"] .sb-search-body {
+  scrollbar-gutter: stable;
+}
+[data-pi-root][data-pi-mode="product"] .sb-scroll {
+  mask-image: linear-gradient(to bottom, transparent, #000 10px, #000 calc(100% - 14px), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 10px, #000 calc(100% - 14px), transparent);
+}
+[data-pi-root][data-pi-mode="product"] .sb-scroll::-webkit-scrollbar,
+[data-pi-root][data-pi-mode="product"] .sb-search-body::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+[data-pi-root][data-pi-mode="product"] .sb-scroll::-webkit-scrollbar-track,
+[data-pi-root][data-pi-mode="product"] .sb-search-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-pi-root][data-pi-mode="product"] .sb-scroll::-webkit-scrollbar-thumb,
+[data-pi-root][data-pi-mode="product"] .sb-search-body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+[data-pi-root][data-pi-mode="product"] .sb-scroll:hover::-webkit-scrollbar-thumb,
+[data-pi-root][data-pi-mode="product"] .sb-search-body:hover::-webkit-scrollbar-thumb {
+  background: var(--sb-scrollbar, var(--cw-scrollbar-thumb));
+}
+
+[data-pi-root][data-pi-mode="product"] [data-cw-scroller]::-webkit-scrollbar,
+[data-pi-root][data-pi-mode="product"] [data-pi-pane] ::-webkit-scrollbar,
+:root:root[data-pi-mode="product"] [data-slot="menu-surface"] ::-webkit-scrollbar,
+:root:root[data-pi-mode="product"] [data-slot="menu-sub-surface"] ::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+[data-pi-root][data-pi-mode="product"] [data-cw-scroller]::-webkit-scrollbar-track,
+[data-pi-root][data-pi-mode="product"] [data-pi-pane] ::-webkit-scrollbar-track,
+:root:root[data-pi-mode="product"] [data-slot="menu-surface"] ::-webkit-scrollbar-track,
+:root:root[data-pi-mode="product"] [data-slot="menu-sub-surface"] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-pi-root][data-pi-mode="product"] [data-cw-scroller]::-webkit-scrollbar-thumb,
+[data-pi-root][data-pi-mode="product"] [data-pi-pane] ::-webkit-scrollbar-thumb,
+:root:root[data-pi-mode="product"] [data-slot="menu-surface"] ::-webkit-scrollbar-thumb,
+:root:root[data-pi-mode="product"] [data-slot="menu-sub-surface"] ::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cw-scrollbar-thumb) 72%, transparent);
+}
+
+/* 侧栏细节质感增强 */
+[data-pi-root][data-pi-mode="product"] [data-pi-sidebar] {
+  --sb-shadow-menu: var(--cw-pi-sb-menu-shadow);
+}
+[data-pi-root][data-pi-mode="product"] .sb-devrow:not(.sb-devrow-empty) {
+  box-shadow: inset 0 0 0 1px var(--sb-divider, transparent);
+}
+[data-pi-root][data-pi-mode="product"] .sb-searchbar {
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.03);
+}
+[data-pi-root][data-pi-mode="product"] .sb-searchbar:hover {
+  border-color: var(--sb-hover-icon, var(--cw-border-strong));
+}
+[data-pi-root][data-pi-mode="product"] .sb-row[data-active] {
+  box-shadow: var(--sb-selected-shadow, none), inset 0 0 0 1px var(--sb-divider, transparent);
+}
+:root:root[data-pi-mode="product"] .sb-bubble {
+  box-shadow: var(--cw-pi-sb-menu-shadow);
+}
+
+/* 桌面主岛顶栏 / 收件箱页头呼吸感与微透视底边 */
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] [data-pi-topbar="desktop"],
+[data-pi-root][data-pi-mode="product"] [data-pi-shell="desktop"] [data-pi-inbox] > header {
+  padding-inline: 16px;
+  border-bottom: 1px solid var(--cw-divider-soft);
+  background: color-mix(in srgb, var(--cw-bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+/* 对话流气泡、流顶提示胶囊与代码 / 终端 / Diff / 审批卡细节 */
+[data-pi-root][data-pi-mode="product"] [data-pi-part="user-turn"] [data-variant="card"] {
+  border-radius: 18px;
+  corner-shape: squircle;
+  border-color: var(--cw-pi-user-bubble-border);
+  background: var(--cw-pi-user-bubble-bg);
+  box-shadow: var(--cw-pi-user-bubble-shadow);
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-part="stream-top"] [data-pi-part="receipt"] {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border: 1px solid var(--cw-divider-soft);
+  border-radius: 14px;
+  corner-shape: squircle;
+  background: var(--cw-pi-status-line-bg);
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-part="code-block"],
+[data-pi-root][data-pi-mode="product"] [data-pi-part="diff-card"],
+[data-pi-root][data-pi-mode="product"] [data-pi-part="approval-card"] {
+  border-radius: 14px;
+  corner-shape: squircle;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-part="terminal-card"] {
+  margin-block: 6px;
+  border-radius: 10px;
+  corner-shape: squircle;
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-part="transcript"] :is([data-pi-part="terminal-card"], [data-pi-part="diff-card"]) {
+  width: auto;
+  max-width: calc(100% - 2 * var(--stream-inset, 0px));
+  margin-inline: var(--stream-inset, 0px);
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-part="code-head"],
+[data-pi-root][data-pi-mode="product"] [data-slot="inline-diff-card-header"] {
+  border-top-left-radius: 13px;
+  border-top-right-radius: 13px;
+  corner-shape: squircle;
+  background: color-mix(in srgb, var(--cw-surface) 80%, var(--cw-bg));
+}
+[data-pi-root][data-pi-mode="product"] [data-pi-part="terminal-card"] > button {
+  border-top-left-radius: 9px;
+  border-top-right-radius: 9px;
+  corner-shape: squircle;
+  background: color-mix(in srgb, var(--cw-surface) 80%, var(--cw-bg));
+}
+/* 终端卡单行命令超出宽度时：悬停在卡底浮现横向滑动条，可拖拽查看完整命令且不误触展开 */
+[data-pi-root] [data-pi-part="terminal-card"] {
+  isolation: isolate;
+}
+[data-pi-root] [data-pi-part="terminal-cmd-scrollbar"] {
+  position: absolute;
+  top: 18px;
+  height: 8px;
+  padding-top: 4px;
+  padding-bottom: 1px;
+  box-sizing: border-box;
+  z-index: var(--cw-pi-z-raised);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  touch-action: none;
+  user-select: none;
+  transition: opacity 150ms ease;
+}
+[data-pi-root] [data-pi-part="terminal-cmd-scrollbar"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 4px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cw-border-strong, var(--cw-border)) 55%, transparent);
+}
+[data-pi-root] [data-pi-part="terminal-card"]:hover [data-pi-part="terminal-cmd-scrollbar"],
+[data-pi-root] [data-pi-part="terminal-card"]:focus-within [data-pi-part="terminal-cmd-scrollbar"],
+[data-pi-root] [data-pi-part="terminal-cmd-scrollbar"][data-dragging] {
+  opacity: 1;
+  pointer-events: auto;
+}
+[data-pi-root] [data-pi-part="terminal-cmd-thumb"] {
+  position: relative;
+  display: block;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cw-text-3) 72%, transparent);
+  transition: background-color 120ms ease, height 120ms ease, margin-top 120ms ease;
+}
+[data-pi-root] [data-pi-part="terminal-cmd-scrollbar"]:hover [data-pi-part="terminal-cmd-thumb"],
+[data-pi-root] [data-pi-part="terminal-cmd-scrollbar"][data-dragging] [data-pi-part="terminal-cmd-thumb"] {
+  height: 4px;
+  margin-top: -0.5px;
+  background: var(--cw-text-2);
+}
+
+/* 输入框柔和聚焦光环与建议胶囊微抬升 */
+[data-pi-root][data-pi-mode="product"] [data-slot="pi-follow-up-composer"],
+[data-pi-root][data-pi-mode="product"] [data-slot="pi-empty-box"] {
+  transition: border-color 160ms ease, box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms ease;
+}
+[data-pi-root][data-pi-mode="product"] [data-slot="pi-follow-up-composer"]:focus-within,
+[data-pi-root][data-pi-mode="product"] [data-slot="pi-empty-box"]:focus-within {
+  box-shadow: var(--cw-pi-composer-focus-halo);
+}
+[data-pi-root][data-pi-mode="product"] [data-slot="suggestion-pills"] [data-slot="pill"]:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--cw-shadow-card);
+}
+
+/* Portal 浮层遮罩柔雾与菜单细描边 */
+:root:root[data-pi-mode="product"] [data-pi-overlay-layer] > [aria-hidden]:not([data-pi-sheet-backdrop]) {
+  backdrop-filter: blur(4px);
+}
+:root:root[data-pi-mode="product"] [data-slot="menu-surface"],
+:root:root[data-pi-mode="product"] [data-slot="menu-sub-surface"],
+:root:root[data-pi-mode="product"] [data-pi-composer-popover] {
+  box-shadow: var(--cw-shadow-menu), inset 0 0 0 1px var(--cw-divider-soft);
+}
+
+/*
+ * ---------- 7. 连续曲率 squircle 圆角与渐进增强降级 ----------
+ * Web 端卡片、面板、浮层、弹窗、抽屉与圆角矩形控件统一声明 corner-shape: squircle（对应 iOS .continuous 超椭圆连续曲率）；
+ * 不支持 corner-shape 的浏览器在解析阶段自动忽略该属性，无缝回退到原有的 border-radius 普通圆角。
+ * 排除正圆与胶囊（rounded-full / --cw-radius-pill / 单行胶囊 --cw-radius-composer），确保状态圆点与圆形图标保持正圆。
+ */
+:where([data-pi-root], :root[data-pi-theme])
+  :is(
+    [class*="rounded"]:not(.rounded-full):not(.rounded-none):not([class*="--cw-radius-pill)"]):not([class*="--cw-radius-composer)"]):not([class*="before:rounded-full"]),
+    [data-pi-mark],
+    [data-slot="pane-tab"]
+  ) {
+  corner-shape: squircle;
+}
+
+/* Interactive OS PTY shell container inside right sidebar / pane */
+[data-pi-root] [data-pi-part="shell-viewport"] {
+  isolation: isolate;
+  background: var(--cw-pi-shell-bg);
+  color: var(--cw-pi-shell-fg);
+}
+[data-pi-root] [data-pi-part="shell-viewport"] .xterm {
+  height: 100%;
+  width: 100%;
+}
+[data-pi-root] [data-pi-part="shell-viewport"] .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cw-scrollbar-thumb) transparent;
 }

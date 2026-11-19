@@ -54,9 +54,9 @@ function TaskRow({ done, children }: { done: boolean; children: ReactNode }) {
     <div className="flex items-start gap-2">
       <span className="mt-[calc((var(--cw-leading-base)-14px)/2)] inline-flex shrink-0">
         {done ? (
-          <SquareCheck aria-label="已完成" size={14} strokeWidth={1.75} className="text-(--cw-blue)" />
+          <SquareCheck aria-label="Completed" size={14} strokeWidth={1.75} className="text-(--cw-blue)" />
         ) : (
-          <Square aria-label="未完成" size={14} strokeWidth={1.5} className="text-(--cw-text-3)" />
+          <Square aria-label="Incomplete" size={14} strokeWidth={1.5} className="text-(--cw-text-3)" />
         )}
       </span>
       <span className={cn(done && "text-(--cw-text-2)")}>{children}</span>
@@ -298,7 +298,7 @@ function ThinkingCode({ text }: { text: string }) {
   return (
     <div data-pi-part="thinking-code-fold" className={THINKING_BLOCK}>
       {pre}
-      <ThinkingFoldToggle open={open} onToggle={() => setOpen(!open)} label={open ? "收起代码" : `展开代码（${lines} 行）`} />
+      <ThinkingFoldToggle open={open} onToggle={() => setOpen(!open)} label={open ? "Collapse code" : `Expand code (${lines} lines)`} />
     </div>
   )
 }
@@ -349,9 +349,9 @@ const THINKING_COMPONENTS: Components = {
         <li className="flex items-start gap-1.5 [&+li]:mt-0.5">
           <span className="mt-[calc((var(--cw-leading-base)-12px)/2)] inline-flex shrink-0 text-(--cw-text-3)">
             {done ? (
-              <SquareCheck aria-label="已完成" size={12} strokeWidth={1.75} />
+              <SquareCheck aria-label="Completed" size={12} strokeWidth={1.75} />
             ) : (
-              <Square aria-label="未完成" size={12} strokeWidth={1.5} />
+              <Square aria-label="Incomplete" size={12} strokeWidth={1.5} />
             )}
           </span>
           <span className="min-w-0">{children}</span>
@@ -446,7 +446,7 @@ export function PiThinkingText({ text, streaming, cut, fold }: { text: string; s
       <div data-pi-part="thinking-text" className="min-w-0 [overflow-wrap:anywhere]">
         {fold ? (
           <ThinkingFoldContext.Provider value>
-            <PiFold maxHeight={THINKING_FOLD_PX} auto toggle={(open, onToggle) => <ThinkingFoldToggle open={open} onToggle={onToggle} label={open ? "收起" : "展开全文"} />}>
+            <PiFold maxHeight={THINKING_FOLD_PX} auto toggle={(open, onToggle) => <ThinkingFoldToggle open={open} onToggle={onToggle} label={open ? "Show less" : "Show more"} />}>
               <div>{body}</div>
             </PiFold>
           </ThinkingFoldContext.Provider>
@@ -563,7 +563,7 @@ function proseFoldToggle(open: boolean, onToggle: () => void) {
     <button
       type="button"
       aria-expanded={open}
-      aria-label={open ? "收起" : "展开全文"}
+      aria-label={open ? "Show less" : "Show more"}
       onClick={onToggle}
       // 视觉 40×24 不变，点击区 44×44（§4.4；B4）。z-[1]：点击区下沿伸到下一段正文上（下一个 PiProse 根是 relative，DOM 在后，
       // 默认会盖住这颗钮的 ::after；O-R2 表格换行后折叠出现在段落标题正上方时，ui-device E8 量到下沿那一点落在标题上），同 PiCodeBlock 的展开钮

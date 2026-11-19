@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { GhostIconButton, InlineLink, MediaImage, UserMessage } from "@/components/kit"
-import { Check, Copy, Ellipsis, ImageOff, RotateCcw, Smartphone } from "@/components/kit/icons"
+import { usePiStatic } from "@/components/pi/shared/layers"
+import { Check, Copy, Ellipsis, GitFork, ImageOff, RotateCcw, Smartphone } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
 import { piBytes } from "@/components/pi/shared/format"
 import { compressedImageText, remoteImageRef } from "@/conversation/remoteImage"
@@ -34,20 +35,20 @@ export function PhoneShotPlaceholder() {
  */
 function PiImageOmitted({ image }: { image: PiImagePart }) {
   const actions = usePiTranscriptActions()
-  const size = image.bytes != null ? `（${piBytes(image.bytes)}）` : ""
+  const size = image.bytes != null ? ` (${piBytes(image.bytes)})` : ""
   let tail: ReactNode = (
     <>
       {" "}
       ·{" "}
-      <InlineLink className={cn("whitespace-nowrap", TOUCH_44_TEXT)}>加载原图</InlineLink>
+      <InlineLink className={cn("whitespace-nowrap", TOUCH_44_TEXT)}>Load original</InlineLink>
     </>
   )
-  let text: ReactNode = `图片过大未传输${size}`
+  let text: ReactNode = `Image omitted${size}`
   if (actions) {
     const load = actions.imageLoad?.(image)
     const can = !!actions.loadImage && remoteImageRef(image) != null
     const go = () => actions.loadImage?.(image)
-    if (load?.phase === "loading") tail = " · 正在加载原图…"
+    if (load?.phase === "loading") tail = " · Loading original…"
     else if (load?.phase === "compressed") {
       text = compressedImageText(image.bytes)
       tail = null
@@ -55,13 +56,13 @@ function PiImageOmitted({ image }: { image: PiImagePart }) {
       tail = can ? (
         <>
           {" "}
-          · <span title={load.error}>加载失败</span> ·{" "}
+          · <span title={load.error}>Failed to load</span> ·{" "}
           <InlineLink className={cn("whitespace-nowrap", TOUCH_44_TEXT)} onClick={go}>
-            重试
+            Retry
           </InlineLink>
         </>
       ) : (
-        " · 加载失败"
+        " · Failed to load"
       )
     else
       tail = can ? (
@@ -69,7 +70,7 @@ function PiImageOmitted({ image }: { image: PiImagePart }) {
           {" "}
           ·{" "}
           <InlineLink className={cn("whitespace-nowrap", TOUCH_44_TEXT)} onClick={go}>
-            加载原图
+            Load original
           </InlineLink>
         </>
       ) : null
@@ -102,7 +103,7 @@ export function PiImage({ image, height = 160 }: { image: PiImagePart; height?: 
         className="m-0 aspect-auto w-fit max-w-full border-(--cw-border)"
         style={{ height }}
       >
-        <img src={src} alt="图片" draggable={false} className="block h-full w-auto max-w-full object-cover" />
+        <img src={src} alt="Image" draggable={false} className="block h-full w-auto max-w-full object-cover" />
       </MediaImage>
     )
   }
@@ -147,7 +148,7 @@ export function PiImageGrid({
             key={i}
             type="button"
             data-pi-part="image-open"
-            aria-label={images.length > 1 ? `查看图片 ${i + 1} / ${images.length}` : "查看图片"}
+            aria-label={images.length > 1 ? `View image ${i + 1} / ${images.length}` : "View image"}
             className="block shrink-0 cursor-zoom-in rounded-(--cw-radius-card) p-0"
             onClick={(e) => onOpen(i, e.currentTarget)}
           >
@@ -196,9 +197,9 @@ export function PiUserTurn({
     ) : null
   const queueButtons = item.queued
     ? [
-        queueAction(actions?.queueSendNow, "立即发送"),
-        queueAction(actions?.queueEdit, "编辑"),
-        queueAction(actions?.queueCancel, "取消"),
+        queueAction(actions?.queueSendNow, "Send now"),
+        queueAction(actions?.queueEdit, "Edit"),
+        queueAction(actions?.queueCancel, "Cancel"),
       ].filter(Boolean)
     : []
   const queueButtonsSpan =
@@ -211,14 +212,14 @@ export function PiUserTurn({
   if (item.failed) {
     status = (
       <span className={T_ERROR} title={actions ? item.failed : undefined}>
-        发送失败 ·{" "}
+        Failed to send ·{" "}
         <InlineLink className={cn("text-inherit underline underline-offset-2", TOUCH_44_TEXT)} onClick={retry ? () => retry(item) : undefined}>
-          重试
+          Retry
         </InlineLink>
       </span>
     )
   } else if (item.outbox) {
-    status = <span className={T_SECONDARY}>{item.awaiting ? "已到设备 · 等待处理" : "等重连后发送"}</span>
+    status = <span className={T_SECONDARY}>{item.awaiting ? "Queued on device · waiting" : "Will send on reconnect"}</span>
   } else if (item.status === "awaiting") {
     // B-3/B-2 round 2: the device accepted the message but pi has not
     // consumed it yet (queued behind a busy pi, or in a crypto-required
@@ -227,7 +228,7 @@ export function PiUserTurn({
     // actions still attached when the queue entry is known.
     status = (
       <span className={cn("inline-flex items-center gap-2", T_SECONDARY)}>
-        <span>已到设备 · 等待 pi 处理</span>
+        <span>Queued on device · waiting for pi</span>
         {queueButtonsSpan}
       </span>
     )
@@ -237,17 +238,17 @@ export function PiUserTurn({
     // hover / focus on fine pointers, always visible on touch.
     status = (
       <span className={cn("inline-flex items-center gap-2", T_SECONDARY)}>
-        <span>排队中</span>
+        <span>Queued</span>
         {queueButtonsSpan}
       </span>
     )
   } else if (item.status === "sending") {
-    status = <span className={T_SECONDARY}>发送中…</span>
+    status = <span className={T_SECONDARY}>Sending…</span>
   }
   return (
     <div data-pi-part="user-turn" className="group" data-status={item.failed ? "failed" : item.outbox ? "outbox" : item.queued ? "queued" : item.status}>
       {/* 卡下空 12（卡上 16 和回合间 24 折叠）：回合的内容贴着自己的提问 */}
-      <UserMessage variant="card" className={cn(status != null ? "mb-1" : "mb-(--cw-space-3)")}>
+      <UserMessage variant="card" align="right" className={cn("max-w-[85%]", status != null ? "mb-1" : "mb-(--cw-space-3)")}>
         <div className={cn(remote && "pr-5")}>
           {item.text && <div className="whitespace-pre-wrap">{item.text}</div>}
           {item.images.length > 0 && (
@@ -263,7 +264,7 @@ export function PiUserTurn({
         {/* 竖直对齐第一行文字的中线（卡内上距 8 + (行高 − 13) / 2 ≈ 12） */}
         {remote && (
           <Smartphone
-            aria-label="从网页发送"
+            aria-label="Sent from web"
             size={13}
             strokeWidth={1.5}
             className="absolute top-3 right-3 text-(--cw-text-3)"
@@ -299,10 +300,12 @@ export function PiReplyActions({
   item?: PiAssistantItem
 }) {
   const phone = variant === "phone"
+  const isStatic = usePiStatic()
   const btn = cn(phone && TOUCH_44, "text-(--cw-text-3)")
   const actions = usePiTranscriptActions()
   // 复制成功后 ✓ 停 1.2 秒（同代码块复制钮）
   const [copiedNow, setCopiedNow] = useState(false)
+  const [forking, setForking] = useState(false)
   const timer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(timer.current), [])
   const copied = copiedProp || copiedNow
@@ -319,6 +322,15 @@ export function PiReplyActions({
         }
       : undefined
   const onRegenerate = actions?.regenerate
+  const forkReply = actions?.forkReply
+  const onFork =
+    !isStatic && forkReply && item
+      ? () => {
+          if (forking) return
+          setForking(true)
+          void Promise.resolve(forkReply(item)).finally(() => setForking(false))
+        }
+      : undefined
   // 桌面：更早回合的操作行悬停 / 聚焦到这一回合时才出现（最后一回合常显；触屏没有悬停，常显）
   const onHover = !phone && !retry
   return (
@@ -330,16 +342,40 @@ export function PiReplyActions({
         phone ? "gap-6" : "gap-1",
         onHover
           ? // 藏着的行不再撑开回合间距：下边距 −18 和下一回合的 24 折叠成 6，正文到下一张用户卡 6 + 20 + 6 = 32
-            "mt-(--cw-space-1-5) -mb-[18px] opacity-0 transition-opacity duration-(--pi-motion-in) group-hover/turn:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100"
+            cn(
+              "mt-(--cw-space-1-5) -mb-[18px] opacity-0 transition-opacity duration-(--pi-motion-in) group-hover/turn:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100",
+              (copied || forking) && "opacity-100",
+            )
           : "my-(--cw-space-1-5)",
       )}
     >
       {/* 手机：图标视觉 20、间距 32 → 图标中心相距 52，44×44 点击区之间隔 8（§4.4；B2、R2-B-m5）；
           钮和灰字之间仍是原来的 24 + 6（灰字不是点击目标），免得灰字被挤到截断 */}
       <div className={cn("flex shrink-0 items-center", phone ? "gap-8" : "gap-1")}>
-        <GhostIconButton size="sm" label={copied ? "已复制" : "复制回复"} icon={copied ? <Check /> : <Copy />} className={btn} onClick={onCopy} />
-        {retry && <GhostIconButton size="sm" label="重新回答" icon={<RotateCcw />} className={btn} onClick={onRegenerate} />}
-        <GhostIconButton size="sm" label="更多" icon={<Ellipsis />} className={btn} />
+        <GhostIconButton
+          size="sm"
+          data-cw-id="pi-reply-copy"
+          data-copied={copied ? "true" : undefined}
+          label={copied ? "Copied" : "Copy reply"}
+          title={copied ? "Copied" : "Copy reply"}
+          icon={copied ? <Check /> : <Copy />}
+          className={cn(btn, copied && "text-(--cw-green) hover:text-(--cw-green)")}
+          onClick={onCopy}
+        />
+        {onFork && (
+          <GhostIconButton
+            size="sm"
+            data-cw-id="pi-reply-fork"
+            label="Fork"
+            title="Fork conversation from this reply"
+            icon={<GitFork />}
+            disabled={forking}
+            className={cn(btn, forking && "opacity-50")}
+            onClick={onFork}
+          />
+        )}
+        {retry && <GhostIconButton size="sm" label="Regenerate" icon={<RotateCcw />} className={btn} onClick={onRegenerate} />}
+        {isStatic && <GhostIconButton size="sm" label="More" icon={<Ellipsis />} className={btn} />}
       </div>
       <span className={cn("ml-1.5 truncate text-(length:--cw-text-sm) leading-(--cw-leading-sm)", T_SECONDARY)}>{meta}</span>
     </div>

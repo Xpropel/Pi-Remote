@@ -506,5 +506,5 @@ test("B-2/B-3 呈现：awaiting 是正式状态、气泡写「已到设备 · �
   assert.match(shared, /export type PiSendStatus = "sending" \| "awaiting" \| "echoed" \| "delivered"/, "呈现层状态集与 reducer 对齐")
 
   const parts = readFileSync(new URL("../ui/src/components/pi/conversation/PiTurnParts.tsx", import.meta.url), "utf8")
-  assert.match(parts, /item\.status === "awaiting"[\s\S]{0,700}已到设备 · 等待 pi 处理/, "共享气泡（桌面/手机）awaiting 文案")
+  assert.match(parts, /item\.status === "awaiting"[\s\S]{0,700}Queued on device · waiting for pi/, "共享气泡（桌面/手机）awaiting 文案")
 })

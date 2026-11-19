@@ -20,7 +20,23 @@ import type { Device } from "../../../relay/devices.ts"
  * per_page 取 10：足够跳过预发布 / 草稿找到第一个正式版，也避免拉全量。
  */
 export const GITHUB_RELEASES_API =
-  "https://api.github.com/repos/your-org/Pi-Remote/releases?per_page=10"
+  "https://api.github.com/repos/Xpropel/Pi-Remote/releases?per_page=10"
+
+export interface OpenSourceLicense {
+  readonly name: string
+  readonly license: string
+}
+
+export const OPEN_SOURCE_LICENSES: readonly OpenSourceLicense[] = [
+  { name: "React", license: "MIT" },
+  { name: "Vite", license: "MIT" },
+  { name: "Tailwind CSS", license: "MIT" },
+  { name: "lucide-react", license: "ISC" },
+  { name: "marked", license: "MIT" },
+  { name: "react-markdown", license: "MIT" },
+  { name: "shiki", license: "MIT" },
+  { name: "@xterm/xterm", license: "MIT" },
+] as const
 
 export type UpdateCheckStatus = "newer" | "latest" | "none" | "error"
 
@@ -163,9 +179,40 @@ export async function checkLatestRelease(
 /* 诊断导出                                                            */
 /* ------------------------------------------------------------------ */
 
+export function formatRelayVersionText(
+  healthVersion: string | null | undefined,
+  serverProto: number | null | undefined,
+): string {
+  const ver = clean(healthVersion, 40)
+  const proto = finiteOrNull(serverProto)
+  if (ver && proto != null) return `${ver} (proto v${proto})`
+  if (ver) return ver
+  if (proto != null) return `proto v${proto}`
+  return "—"
+}
+
+export async function fetchRelayHealthVersion(
+  fetchImpl: typeof fetch | undefined = typeof fetch === "function" ? fetch : undefined,
+): Promise<{ version: string | null; proto: number | null } | null> {
+  if (!fetchImpl) return null
+  try {
+    const res = await fetchImpl("/healthz", { cache: "no-store" })
+    if (!res.ok) return null
+    const data = (await res.json()) as { ok?: unknown; version?: unknown; proto?: unknown } | null
+    if (!data || typeof data !== "object") return null
+    const version = clean(data.version, 40)
+    const proto = finiteOrNull(data.proto)
+    if (!version && proto == null) return null
+    return { version, proto }
+  } catch {
+    return null
+  }
+}
+
 export interface DiagnosticsRelay {
   serverName: string | null
   serverProto: number | null
+  relayVersion?: string | null
   clientVersion: string
   browserOnline: boolean
   authed: boolean
@@ -239,6 +286,7 @@ export function buildDiagnosticsExport(input: DiagnosticsInput): DiagnosticsFile
     relay: {
       serverName: clean(input.relay.serverName, 200),
       serverProto: finiteOrNull(input.relay.serverProto),
+      relayVersion: clean(input.relay.relayVersion, 40),
       clientVersion: clean(input.relay.clientVersion, 80),
       browserOnline: input.relay.browserOnline === true,
       authed: input.relay.authed === true,

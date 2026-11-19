@@ -1,5 +1,5 @@
 import { PiDialog, usePiStatic } from "@/components/pi/shared"
-import { PiDialogNote, PiDialogStatus, PiTextBlock, type PiDialogPhase } from "./PiDialogParts"
+import { PiDialogStatus, PiTextBlock, type PiDialogPhase } from "./PiDialogParts"
 import type { PiFamilyDialogProps } from "./PiRegenerateDialog"
 
 export interface PiJsonDialogData {
@@ -43,7 +43,6 @@ export function PiHostSettingsDialog({
       returnFocus={returnFocus}
     >
       <div data-slot="pi-host-settings-dialog" className="flex flex-col gap-3 pt-1">
-        <PiDialogNote variant={v}>敏感键已经脱敏成 ***。这里只读，要改请在电脑终端里改。</PiDialogNote>
         <PiDialogStatus variant={v} phase={phase} error={loadError} onRetry={onRetry}>
           <PiTextBlock variant={v} text={json} clipped={clipped} label="本机设置（JSON）" maxHeight={phone ? 480 : 360} />
         </PiDialogStatus>

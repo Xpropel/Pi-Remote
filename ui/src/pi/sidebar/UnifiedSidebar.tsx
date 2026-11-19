@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import "./tokens.css"
 import "./sidebar.css"
-import { SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, type PiSidebarProps, type PiSidebarSession } from "./types"
+import { SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, type PiSidebarGroup, type PiSidebarProps, type PiSidebarSession } from "./types"
 import { SidebarToolRow } from "./components/SidebarToolRow"
 import { SidebarDeviceMenu } from "./components/SidebarDeviceMenu"
 import { NewSessionPill } from "./components/NewSessionPill"
 import { SidebarSections } from "./components/SidebarSections"
 import { SidebarIdentity } from "./components/SidebarIdentity"
 import { SidebarSearchOverlay } from "./components/SidebarSearchOverlay"
-import { InboxIcon, SendIcon } from "./components/icons"
+import { InboxIcon, SearchIcon, SendIcon } from "./components/icons"
 
 const clampWidth = (width: number) => Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)))
 
@@ -20,10 +20,14 @@ export interface UnifiedSidebarView {
   inboxActive?: boolean
   /** 会话行的会话菜单内容（右键整行 / 行尾 …）；不给就没有会话菜单 */
   rowMenu?: (session: PiSidebarSession) => ReactNode
+  /** 工作区组头的菜单触发器与菜单（行尾 ⋮）；不给就没有工作区菜单 */
+  workspaceMenu?: (group: PiSidebarGroup) => ReactNode
   /** 静态态（画廊对图）会话菜单作用的那一行 id：保证它可见并作为菜单锚点 */
   menuTargetId?: string
   /** 快捷键显示串（只进提示与行尾 kbd） */
-  shortcuts?: { newSession?: string; toggleSidebar?: string; settings?: string }
+  shortcuts?: { newSession?: string; toggleSidebar?: string; settings?: string; search?: string }
+  /** 侧栏顶部常驻搜索栏（开启时替代工具行里的放大镜按钮）。 */
+  persistentSearch?: boolean
   /** 身份行「显示选项」菜单内容（设备筛选 / 分组 / 主题）；不给就不出这颗钮 */
   displayOptions?: ReactNode
   /** 静态对图：显示选项菜单开着（钮呈按下态） */
@@ -94,6 +98,7 @@ export function UnifiedSidebar({ data, actions, slots, className, onHoverSession
     >
       <SidebarToolRow
         collapsed={collapsed}
+        hideSearch={view?.persistentSearch}
         collapseShortcut={shortcuts?.toggleSidebar}
         onCollapse={actions.toggleCollapse}
         onSearch={actions.openSearch}
@@ -131,6 +136,19 @@ export function UnifiedSidebar({ data, actions, slots, className, onHoverSession
         <div className="sb-body">
           {slots?.beforePlainRows}
           <SidebarDeviceMenu data={data} actions={actions} />
+          {view?.persistentSearch ? (
+            <button
+              type="button"
+              className="sb-searchbar"
+              aria-label="搜索会话"
+              title={shortcuts?.search ? `搜索会话（${shortcuts.search}）` : "搜索会话"}
+              onClick={actions.openSearch}
+            >
+              <SearchIcon size={15} />
+              <span className="sb-searchbar-text">{data.search.query || "搜索会话…"}</span>
+              {shortcuts?.search ? <kbd className="sb-kbd sb-searchbar-kbd">{shortcuts.search}</kbd> : null}
+            </button>
+          ) : null}
           <NewSessionPill label={newLabel} shortcut={shortcuts?.newSession} onClick={actions.newSession} />
           <div className="sb-scroll">
             <SidebarSections
@@ -140,6 +158,7 @@ export function UnifiedSidebar({ data, actions, slots, className, onHoverSession
               archiveView={view?.archiveView}
               inboxActive={view?.inboxActive}
               rowMenu={view?.rowMenu}
+              workspaceMenu={view?.workspaceMenu}
               menuTargetId={view?.menuTargetId}
             />
             {slots?.beforeGroups}

@@ -16,7 +16,7 @@ import {
   type SettingsFontSize,
   type SettingsThemePref,
 } from "../../types.ts"
-import { MobileGroup, MobileNote, MobilePageBody, MobileRow, MobileSegmented, MobileSwitch } from "../atoms.tsx"
+import { MobileGroup, MobilePageBody, MobileRow, MobileSegmented, MobileSwitch } from "../atoms.tsx"
 import "./appearance.css"
 
 /**
@@ -45,6 +45,7 @@ const FONT_OPTIONS = [
 
 export function AppearancePage({ onPreviewTheme }: { onPreviewTheme?: (theme: SettingsThemePref) => void }) {
   const { p, prefs, act } = useSettings()
+  const themePref = p.ui.prefs.theme
 
   return (
     <MobilePageBody page="appearance">
@@ -52,7 +53,7 @@ export function AppearancePage({ onPreviewTheme }: { onPreviewTheme?: (theme: Se
         <div className="sm-pad">
           <MobileSegmented
             label="明暗"
-            value={prefs.appearanceTheme}
+            value={themePref}
             options={THEME_OPTIONS}
             onChange={(value) => {
               act.setPref("appearanceTheme", value)
@@ -85,7 +86,6 @@ export function AppearancePage({ onPreviewTheme }: { onPreviewTheme?: (theme: Se
               )
             })}
             </div>
-            <div className="sm-accent-desc">用于运行状态点与少量强调</div>
           </div>
         </div>
       </MobileGroup>
@@ -108,7 +108,7 @@ export function AppearancePage({ onPreviewTheme }: { onPreviewTheme?: (theme: Se
       </MobileGroup>
 
       <MobileGroup label="动态效果">
-        <MobileRow title="减少动态效果" description="关掉界面里的过渡与淡入动画">
+        <MobileRow title="减少动态效果">
           <MobileSwitch
             label="减少动态效果"
             checked={prefs.reducedMotion}
@@ -116,8 +116,6 @@ export function AppearancePage({ onPreviewTheme }: { onPreviewTheme?: (theme: Se
           />
         </MobileRow>
       </MobileGroup>
-
-      <MobileNote>外观偏好只保存在这个浏览器里，切换立即生效。</MobileNote>
     </MobilePageBody>
   )
 }

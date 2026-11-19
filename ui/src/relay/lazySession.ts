@@ -185,3 +185,79 @@ export function restoreLazyImage<T>(current: T | null, original: T | null): T | 
   if (current) return current
   return original
 }
+
+export type LazyCatalogItem = {
+  provider: string
+  modelId: string
+  name: string
+  thinkingLevels?: string[]
+}
+
+export type LazyPendingModel = {
+  sessionId: string
+  model?: { provider: string; modelId: string; name: string }
+  thinkingLevel?: string
+}
+
+/** 从 get_available_models 回包抽取紧凑目录；先扫 available 保留每个模型的 thinkingLevels，再去重合并 models。 */
+export function extractLazyCatalog(data: unknown): LazyCatalogItem[] {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return []
+  const rec = data as { available?: unknown; models?: unknown }
+  const available = Array.isArray(rec.available) ? rec.available : []
+  const models = Array.isArray(rec.models) ? rec.models : []
+  const out: LazyCatalogItem[] = []
+  const seen = new Set<string>()
+  for (const list of [available, models]) {
+    for (const raw of list) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
+      const item = raw as Record<string, unknown>
+      const provider = typeof item.provider === "string" ? item.provider.trim() : ""
+      const modelId =
+        typeof item.modelId === "string" && item.modelId.trim()
+          ? item.modelId.trim()
+          : typeof item.id === "string" && item.id.trim()
+            ? item.id.trim()
+            : ""
+      if (!provider || !modelId) continue
+      const key = `${provider}\n${modelId}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const name = typeof item.name === "string" && item.name.trim() ? item.name.trim() : modelId
+      const levels = Array.isArray(item.thinkingLevels)
+        ? [...new Set(item.thinkingLevels.filter((x): x is string => typeof x === "string" && x.length > 0))]
+        : []
+      out.push(levels.length ? { provider, modelId, name, thinkingLevels: levels } : { provider, modelId, name })
+    }
+  }
+  return out
+}
+
+/** 未载入会话里暂存选中的模型；若已选过的思考级别不在新模型支持列表内，顺手归一到新模型支持的一档。 */
+export function stageLazyModel(
+  prev: LazyPendingModel | null,
+  sessionId: string,
+  provider: string,
+  modelId: string,
+  catalog: readonly LazyCatalogItem[],
+  currentThinking: string,
+): { next: LazyPendingModel; name: string; nextThinking: string } {
+  const hit = catalog.find((item) => item.provider === provider && item.modelId === modelId) ?? null
+  const name = hit?.name || modelId
+  const levels = hit?.thinkingLevels
+  let nextThinking = currentThinking
+  let thinkingLevel = prev?.sessionId === sessionId ? prev.thinkingLevel : undefined
+  if (levels && levels.length && currentThinking && !levels.includes(currentThinking)) {
+    nextThinking = levels.length === 1 && levels[0] === "off" ? "off" : levels.includes("high") ? "high" : levels[levels.length - 1]
+    thinkingLevel = nextThinking
+  }
+  const next: LazyPendingModel = { sessionId, model: { provider, modelId, name } }
+  if (thinkingLevel) next.thinkingLevel = thinkingLevel
+  return { next, name, nextThinking }
+}
+
+/** 未载入会话里暂存选中的思考级别（保留同一会话之前选过的模型）。 */
+export function stageLazyThinking(prev: LazyPendingModel | null, sessionId: string, level: string): LazyPendingModel {
+  const next: LazyPendingModel = { sessionId, thinkingLevel: level }
+  if (prev?.sessionId === sessionId && prev.model) next.model = prev.model
+  return next
+}

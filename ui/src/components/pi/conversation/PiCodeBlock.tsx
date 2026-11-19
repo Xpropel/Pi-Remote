@@ -90,15 +90,16 @@ export function PiCodeBlock({ code, lang = "plain", foldAfter = 12, copied: copi
           timer.current = window.setTimeout(() => setCopiedNow(false), PI_COPIED_MS)
         })
       }
-  // 卡头的语言名：认得的写显示名（TypeScript、Shell…），认不得的照写围栏原文；没写语言的写"纯文本"（同文件视图），卡头不空着
+  // 卡头的语言名：认得的写显示名（TypeScript、Shell…），认不得的照写围栏原文；没写语言的写 "Plain text"，卡头不空着
   const label = highlightLabelOf(lang) ?? lang
+  const shownLabel = label === "纯文本" ? "Plain text" : label
   return (
     <div data-pi-part="code-block" data-lang={route.via === "plain" ? undefined : route.lang} className={cn("group/code", CARD, CARD_GAP, className)}>
       <div data-pi-part="code-head" className={cn(CARD_HEAD, CARD_DIVIDER, CARD_HEAD_H, "pl-3 in-data-[pi-layout=phone]:h-9")}>
-        <span className={cn("min-w-0 flex-1 truncate text-(length:--cw-text-sm)", T_SECONDARY)}>{label}</span>
+        <span className={cn("min-w-0 flex-1 truncate text-(length:--cw-text-sm)", T_SECONDARY)}>{shownLabel}</span>
         <GhostIconButton
           size="sm"
-          label={copied ? "已复制" : "复制代码"}
+          label={copied ? "Copied" : "Copy code"}
           icon={copied ? <Check /> : <Copy />}
           onClick={copy}
           className={cn("-mr-0.5", !isStatic && COPY_HIT_44, copied && "text-(--cw-blue)")}
@@ -127,7 +128,7 @@ export function PiCodeBlock({ code, lang = "plain", foldAfter = 12, copied: copi
         {clipped && <PiCardPeekFade />}
       </div>
       {foldable && (
-        <PiCardFoot open={open} onToggle={() => setOpen(!open)} label={open ? "收起代码" : "展开代码"} />
+        <PiCardFoot open={open} onToggle={() => setOpen(!open)} label={open ? "Collapse code" : "Expand code"} />
       )}
     </div>
   )

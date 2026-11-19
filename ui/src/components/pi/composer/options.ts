@@ -63,3 +63,29 @@ export function agoText(ts: number, now: number): string {
   if (s < 60) return `${s} 秒前`
   return `${Math.floor(s / 60)} 分钟前`
 }
+
+const OVERFLOW_EXPAND_SLACK = 2
+const OVERFLOW_SHRINK_HYSTERESIS = 48
+
+/**
+ * 桌面单行 ↔ 多行（两层）的文字溢出状态机：
+ * - 空草稿立即收回单行；
+ * - 单行态下，独立探针测得的单行无折行宽度超出单行可用槽宽（留 2px 余量）时升为两层；
+ * - 已在两层态下，输入法组字（composing）期间绝不跳回单行；
+ *   组字结束后，必须回退至少 48px 迟滞余量才收回单行，避免边界打字与拼音上屏反复跳变。
+ */
+export function nextComposerTextOverflow(opts: {
+  prev: boolean
+  value: string
+  textWidth: number
+  singleSlotWidth: number
+  composing: boolean
+}): boolean {
+  const { prev, value, textWidth, singleSlotWidth, composing } = opts
+  if (!value || singleSlotWidth <= 0) return false
+  if (!prev) {
+    return textWidth > Math.max(0, singleSlotWidth - OVERFLOW_EXPAND_SLACK)
+  }
+  if (composing) return true
+  return textWidth >= Math.max(0, singleSlotWidth - OVERFLOW_SHRINK_HYSTERESIS)
+}

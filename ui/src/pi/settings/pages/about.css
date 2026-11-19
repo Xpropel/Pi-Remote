@@ -14,6 +14,7 @@
   display: inline-flex;
   flex: none;
   border-radius: 14px;
+  corner-shape: squircle;
   box-shadow: var(--st-raised-shadow);
 }
 
@@ -39,6 +40,7 @@
   overflow: hidden;
   border: 1px solid var(--st-card-border);
   border-radius: var(--st-radius-card);
+  corner-shape: squircle;
   background: var(--st-card-bg);
   box-shadow: var(--st-card-shadow);
 }
@@ -163,6 +165,7 @@
   padding: 0 12px;
   border: 1px solid var(--st-control-border);
   border-radius: var(--st-radius-control);
+  corner-shape: squircle;
   background: var(--st-control-bg);
   color: var(--st-text-1);
   font-size: 12.5px;
@@ -182,11 +185,49 @@
   color: var(--st-disabled-fg);
 }
 
+.settings-about .settings-about-row--bar {
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-height: 0;
+  padding: 10px 16px;
+}
+
+.settings-about .settings-about-row--bar .settings-about-text {
+  flex: 1 1 200px;
+}
+
+.settings-about-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.settings-about .settings-about-actions .settings-about-button {
+  margin-left: 0;
+  height: 27px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.settings-about .settings-about-button.is-primary {
+  border-color: var(--st-text-1);
+  background: var(--st-text-1);
+  color: var(--st-card-bg);
+}
+
+.settings-about .settings-about-button.is-primary:hover:not(:disabled) {
+  border-color: var(--st-text-1);
+  background: color-mix(in srgb, var(--st-text-1) 86%, var(--st-card-bg));
+}
+
 .settings-about-licenses {
   margin-top: 12px;
   padding: 14px 16px;
   border: 1px solid var(--st-card-border);
   border-radius: var(--st-radius-card);
+  corner-shape: squircle;
   background: var(--st-card-bg);
 }
 

@@ -4,29 +4,42 @@
  * 由调用方决定怎么提示。口径同旧界面 chat/slash.tsx 的 copyText（P7 删旧文件，这里是新界面的那一份）。
  */
 export async function piCopyText(text: string): Promise<boolean> {
+  if (!text) return false
   try {
-    if (typeof navigator !== "undefined" && navigator.clipboard) {
+    if (typeof window !== "undefined" && window.isSecureContext && typeof navigator !== "undefined" && navigator.clipboard) {
       await navigator.clipboard.writeText(text)
       return true
     }
   } catch {
-    // 没有权限：走兜底
+    // No clipboard permission or blocked by user-gesture policy; fall back to synchronous execCommand.
   }
+  if (typeof document === "undefined" || !document.body) return false
+  const prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  const ta = document.createElement("textarea")
   try {
-    const ta = document.createElement("textarea")
     ta.value = text
-    ta.setAttribute("readonly", "")
+    ta.setAttribute("aria-hidden", "true")
     ta.style.position = "fixed"
+    ta.style.left = "-9999px"
+    ta.style.top = "0"
     ta.style.opacity = "0"
+    ta.style.pointerEvents = "none"
     document.body.appendChild(ta)
+    ta.focus({ preventScroll: true })
     ta.select()
-    const ok = document.execCommand("copy")
-    document.body.removeChild(ta)
-    return ok
+    ta.setSelectionRange(0, ta.value.length)
+    return document.execCommand("copy")
   } catch {
     return false
+  } finally {
+    ta.remove()
+    try {
+      prevFocus?.focus?.({ preventScroll: true })
+    } catch {
+      // ignore focus restoration failure
+    }
   }
 }
 
-/** "已复制"✓ 停留多久（design §3.4 conversation states："代码复制成功（✓ 1.2 秒）"） */
-export const PI_COPIED_MS = 1200
+/** "Copied" ✓ feedback duration (ms). */
+export const PI_COPIED_MS = 1500

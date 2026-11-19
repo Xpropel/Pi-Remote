@@ -299,7 +299,7 @@ test("deploy-relay 回环验证：部署时旧版首页的 200 不算数，回�
   assert.doesNotMatch(r.stdout, /healthz_proto/);
 });
 
-const SH_SCRIPTS = ["start-pi.sh", "attach.sh", "sync-extension.sh", "deploy-relay.sh", "deploy-web.sh", "linux/push.sh"];
+const SH_SCRIPTS = ["start-pi.sh", "attach.sh", "sync-extension.sh", "deploy-relay.sh", "deploy-web.sh", "linux/push.sh", "darwin/supervise-attach.sh"];
 
 test("shell 脚本：LF、可执行、bash 3.2 语法通过", { skip: process.platform === "win32" }, () => {
   for (const name of SH_SCRIPTS) {
@@ -312,7 +312,7 @@ test("shell 脚本：LF、可执行、bash 3.2 语法通过", { skip: process.pl
 });
 
 test("POSIX sh 脚本：sh -n 语法通过", { skip: process.platform === "win32" }, () => {
-  for (const name of ["attach.sh", "linux/device.sh"]) {
+  for (const name of ["attach.sh", "linux/device.sh", "darwin/device.sh", "darwin/supervise-attach.sh"]) {
     const r = spawnSync("/bin/sh", ["-n", path.join(DEPLOY, name)], { encoding: "utf8" });
     assert.equal(r.status, 0, name + ": " + r.stderr);
   }

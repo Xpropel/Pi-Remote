@@ -9,11 +9,14 @@ import { PiTranscript, type PiOpenImage } from "@/components/pi/conversation/PiT
 import type { PiImagePart, PiUserItem } from "@/components/pi/shared/types"
 import { loadRemoteImage, remoteImageRef, type RemoteImageRef } from "@/conversation/remoteImage"
 import { useNow } from "@/pi/hooks/useNow"
+import { usePiSettingsPrefs } from "@/pi/hooks/usePiSettingsPrefs"
 import { piTranscriptStick } from "@/pi/hooks/useTranscriptStick"
 import {
   archiveTopLinesOf,
   cryptoRequiredTopLineOf,
   EMPTY_THINKING_CLOCK,
+  forkEntryIdForTurn,
+  forkTurnOf,
   historyTopLineOf,
   liveExpandedOf,
   observeThinking,
@@ -24,8 +27,10 @@ import {
   turnTextOf,
   type PiThinkingClock,
   type PiTopLine,
+  type PiTreeLike,
 } from "@/pi/model/transcriptView"
 import { COPY } from "@/relay/devices"
+import { forkedSessionRow } from "@/relay/useRelay"
 import { rememberSettingsPage } from "@/pi/settings/SettingsPage"
 import type { Item } from "@/relay/transcript"
 import { openPiDialog, PI_UI_IDS, type PiContainerProps, type PiSessionExtras } from "./types"
@@ -48,6 +53,7 @@ import { sharedSendNowLock } from "@/components/pi/composer/queueGuard"
  */
 export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessionExtras }) {
   const { relay, ui, act, variant, extras } = props
+  const { autoScroll } = usePiSettingsPrefs()
   const now = useNow(1000)
   const roomId = relay.roomId
   const liveItems: Item[] = roomId ? relay.transcript.items : EMPTY_ITEMS
@@ -165,6 +171,18 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
   const notify = relay.notify
   const queueSendNow = relay.queueSendNow
   const queueCancel = relay.queueCancel
+  const runCommand = relay.runCommand
+  const forkSessionFile = relay.forkSessionFile
+  const selectListedSession = relay.selectListedSession
+  const lazySessionId = relay.lazySession?.id ?? null
+  const forkingRef = useRef(false)
+  const busyRef = useRef(false)
+  busyRef.current = relay.busy
+  const lazyTargetPath = lazy
+    ? lazy.path || (relay.sessionsByDevice[lazy.deviceId] ?? []).find((s) => s.id === lazy.id)?.path || null
+    : null
+  const lazyTargetPathRef = useRef<string | null>(null)
+  lazyTargetPathRef.current = lazyTargetPath
   const legacy = useLegacyStyle()
   const legacyRef = useRef(legacy)
   legacyRef.current = legacy
@@ -197,9 +215,59 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
       queueEdit: (item) => item.queueId && openQueueEdit(act, variant, item.queueId),
       regenerate: () => openPiDialog({ act, variant }, { id: PI_UI_IDS.regenerate, arg: roomId }),
       copyReply: async (item) => {
-        const ok = await piCopyText(turnTextOf(itemsRef.current, item.key))
-        if (!ok) notify("复制失败：浏览器不允许写剪贴板", "bad")
+        const text = turnTextOf(itemsRef.current, item.key)
+        if (!text) return false
+        const ok = await piCopyText(text)
+        if (!ok) notify("复制失败：当前环境无剪贴板权限", "bad")
         return ok
+      },
+      forkReply: async (item) => {
+        if (!roomId || forkingRef.current) return
+        if (lazySessionId === roomId) {
+          const targetPath = lazyTargetPathRef.current
+          if (!targetPath) {
+            openPiDialog({ act, variant }, { id: PI_UI_IDS.fork, arg: roomId })
+            return
+          }
+          const archiveEntryId = item.key.startsWith("archive-") ? item.key.slice("archive-".length) : undefined
+          forkingRef.current = true
+          try {
+            const data = await forkSessionFile(targetPath, archiveEntryId ? { entryId: archiveEntryId, position: "at" } : undefined)
+            const forked = forkedSessionRow(data)
+            if (forked) selectListedSession(forked)
+            notify("已从此处分叉为新会话")
+          } catch (error) {
+            notify(commandErrorText(error, "分叉失败"), "bad")
+          } finally {
+            forkingRef.current = false
+          }
+          return
+        }
+        if (busyRef.current) {
+          notify("请等待当前回复结束后再分叉")
+          return
+        }
+        const turn = forkTurnOf(itemsRef.current, item.key)
+        if (!turn) {
+          openPiDialog({ act, variant }, { id: PI_UI_IDS.fork, arg: roomId })
+          return
+        }
+        forkingRef.current = true
+        try {
+          if (turn.isLatest) {
+            await runCommand("clone")
+          } else {
+            const tree = (await runCommand("get_tree")) as PiTreeLike | null
+            const entryId = forkEntryIdForTurn(tree, turn)
+            if (!entryId) throw new Error("无法在会话树中定位该回合")
+            await runCommand("fork", { entryId, position: "at" })
+          }
+          notify("已从此处分叉为新会话")
+        } catch (error) {
+          notify(commandErrorText(error, "分叉失败"), "bad")
+        } finally {
+          forkingRef.current = false
+        }
       },
       loadImage,
       imageLoad: (image) => {
@@ -207,14 +275,17 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
         return ref ? loadMap[imageKey(ref)] : undefined
       },
     }),
-    [act, variant, roomId, retryReady, sendText, notify, loadImage, loadMap, itemsRef, queueSendNow, queueCancel],
+    [act, variant, roomId, lazySessionId, retryReady, sendText, notify, loadImage, loadMap, itemsRef, queueSendNow, queueCancel, runCommand, forkSessionFile, selectListedSession],
   )
 
   // 流顶一行：外壳的说明 + 本机记录 / 正在拉快照 + 补拉状态
   const loadEarlier = relay.loadEarlierHistory
   const deviceName = lazy ? (relay.devices.find((d) => d.id === lazy.deviceId)?.name ?? relay.selectedDevice?.name ?? null) : null
   const own: PiTopLine[] = []
-  if (lazy) own.push(...archiveTopLinesOf(archive, deviceName))
+  if (lazy) {
+    const archLines = archiveTopLinesOf(archive, deviceName)
+    if (archLines.length > 0) own.push(archLines[archLines.length - 1])
+  }
   else if (snapshotPending && liveItems.length === 0) own.push({ text: COPY.snapshotPending, spinner: true })
   // Content decryption states (crypto Phase 3): honest, plain-language
   // room states -- never silent blanks and never garbled content.
@@ -272,6 +343,7 @@ export function TranscriptContainer(props: PiContainerProps & { extras?: PiSessi
         expanded={expanded}
         thinkingSince={thinkingSince}
         foldLong={!!lazy}
+        autoScroll={autoScroll}
         onStickChange={piTranscriptStick.report}
         onOpenImage={openImage}
         actions={actions}

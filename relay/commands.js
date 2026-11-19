@@ -53,11 +53,30 @@ const DEVICE_COMMANDS = new Set([
   "get_file", "get_image", "get_host_diag", "search_session_bodies", "list_dirs",
   "get_pi_update_info", "get_operation_status", ...DEVICE_OPERATION_COMMANDS,
   ...INACTIVE_SESSION_COMMANDS,
+  "get_settings", "settings_set", "get_available_models", "get_provider_auth",
+  "get_models_config", "upsert_model_provider", "delete_model_provider",
+  "upsert_provider_model", "delete_provider_model",
+  "get_mcp_servers", "upsert_mcp_server", "toggle_mcp_server", "delete_mcp_server",
+  "get_commands", "get_prevent_sleep", "set_prevent_sleep",
 ]);
 
 /** 只读设备命令：没有活动会话时也允许直达设备（诊断/文件回程恰恰在没会话时最需要）。
  *  仍是 DEVICE_COMMANDS 的子集：白名单与设备在线检查照旧，发消息类永远不在此列。 */
 const READONLY_DEVICE_COMMANDS = new Set(["get_file", "get_image", "get_host_diag", "get_pi_update_info", "get_operation_status"]);
+
+/** 始终直达 attach 的设备级命令（不走活动房间扩展）：防休眠控制由 attach 进程持有。 */
+const DIRECT_DEVICE_COMMANDS = new Set(["get_prevent_sleep", "set_prevent_sleep"]);
+
+/** 无活动房间时允许 fallback 直达 attach 的配置与只读命令（发消息类永远走房间）。 */
+const FALLBACK_DEVICE_COMMANDS = new Set([
+  ...READONLY_DEVICE_COMMANDS,
+  "get_settings", "settings_set",
+  "get_available_models", "get_provider_auth", "get_models_config",
+  "upsert_model_provider", "delete_model_provider",
+  "upsert_provider_model", "delete_provider_model",
+  "get_mcp_servers", "upsert_mcp_server", "toggle_mcp_server", "delete_mcp_server",
+  ...DIRECT_DEVICE_COMMANDS,
+]);
 
 const DEVICE_ERRORS = {
   no_device: "这台设备从未连接过",
@@ -200,4 +219,4 @@ function pruneDedupe(rooms, config) {
   }
 }
 
-module.exports = { commandTimeoutMs, MESSAGE_COMMANDS, REMOTE_MESSAGE_EVENTS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, DEVICE_OPERATION_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, armReconcileCleanup, pruneDedupe, stableJson, argsDigest, dedupeKeyOf };
+module.exports = { commandTimeoutMs, MESSAGE_COMMANDS, REMOTE_MESSAGE_EVENTS, DEVICE_COMMANDS, READONLY_DEVICE_COMMANDS, DIRECT_DEVICE_COMMANDS, FALLBACK_DEVICE_COMMANDS, DEVICE_OPERATION_COMMANDS, INACTIVE_SESSION_COMMANDS, DEVICE_ERRORS, HARNESS_BUSY, HARNESS_ARGS, COMMAND_RECONCILE_GRACE_MS, finishWaiter, settleEntry, armWaiter, armReconcileCleanup, pruneDedupe, stableJson, argsDigest, dedupeKeyOf };

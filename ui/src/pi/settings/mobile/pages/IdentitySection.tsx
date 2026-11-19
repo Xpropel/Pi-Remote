@@ -37,6 +37,7 @@ import {
   viewerStatusTextOf,
   IDENTITY_BACKUP_RECOMMENDATION,
   IDENTITY_ENABLE_INTRO,
+  IDENTITY_INSECURE_CONTEXT_NOTE,
   IDENTITY_NOT_REGISTERED_TEXT,
   IDENTITY_PHASE_NOTE,
   IDENTITY_UNRECOVERABLE_WARNING,
@@ -50,7 +51,8 @@ import {
 } from "../../pages/identityLogic.ts"
 import { loadIdentityBridge, type IdentityBridge } from "../../pages/identityApi.ts"
 import { lastOnlineTextOf } from "../../pages/devicesLogic.ts"
-import { MobileCard, MobileGroup, MobileNote, MobileTag } from "../atoms.tsx"
+import { SettingsHoverTitle } from "../../ui.tsx"
+import { MobileCard, MobileGroup, MobileTag } from "../atoms.tsx"
 
 type PanelKind = "none" | "enable" | "export" | "import" | "forget"
 
@@ -313,7 +315,7 @@ export function MobileIdentitySection() {
 
   return (
     <>
-      <MobileGroup label="观看端身份" description={IDENTITY_PHASE_NOTE} stacked>
+      <MobileGroup label="观看端身份" tooltip={IDENTITY_PHASE_NOTE} stacked>
         <MobileCard>
           {phase === "loading" ? <div className="sm-identity-line">正在读取本机身份状态…</div> : null}
 
@@ -326,20 +328,22 @@ export function MobileIdentitySection() {
           {phase === "none" ? (
             <>
               <div className="sm-identity-block">
-                <div className="sm-identity-title">本机观看端身份</div>
-                <p className="sm-identity-text">{IDENTITY_ENABLE_INTRO}</p>
+                <div className="sm-identity-title">
+                  <SettingsHoverTitle tooltip={IDENTITY_ENABLE_INTRO}>本机观看端身份</SettingsHoverTitle>
+                </div>
+                {view?.webCryptoSupported === false ? <p className="sm-identity-text">{IDENTITY_INSECURE_CONTEXT_NOTE}</p> : null}
                 <div className="sm-device-actions">
                   <button
                     type="button"
                     className="sm-device-action"
-                    disabled={busy !== null}
+                    disabled={busy !== null || view?.webCryptoSupported === false}
                     onClick={() => setPanel(panel === "enable" ? "none" : "enable")}
                   >
                     启用观看端身份
                   </button>
                 </div>
               </div>
-              {panel === "enable" ? (
+              {view?.webCryptoSupported !== false && panel === "enable" ? (
                 <div className="sm-identity-panel" data-sm-identity-panel="enable">
                   <p className="sm-identity-warning">{IDENTITY_UNRECOVERABLE_WARNING}</p>
                   <label className="sm-identity-check">
@@ -574,7 +578,11 @@ export function MobileIdentitySection() {
         </MobileCard>
       </MobileGroup>
 
-      <MobileGroup label="已授权观看端" stacked>
+      <MobileGroup
+        label="已授权观看端"
+        tooltip="观看端名册只登记公钥（公开数据），私钥与内容钥永远不会发给中转服务。"
+        stacked
+      >
         <MobileCard>
           {roster.phase === "loading" ? <div className="sm-identity-line">正在读取观看端名册…</div> : null}
           {roster.phase === "unsupported" ? <div className="sm-identity-line">{VIEWERS_UNSUPPORTED_TEXT}</div> : null}
@@ -642,8 +650,6 @@ export function MobileIdentitySection() {
           ) : null}
         </MobileCard>
       </MobileGroup>
-
-      <MobileNote>观看端名册只登记公钥（公开数据），私钥与内容钥永远不会发给中转服务。</MobileNote>
     </>
   )
 }

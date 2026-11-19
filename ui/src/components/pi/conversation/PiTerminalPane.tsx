@@ -1,5 +1,6 @@
+import { useMemo, useState } from "react"
 import { GhostIconButton } from "@/components/kit"
-import { ArrowDownToLine, Copy, ListOrdered } from "@/components/kit/icons"
+import { ArrowDownToLine, Copy, ListOrdered, Terminal } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
 import { piDuration } from "@/components/pi/shared/format"
 import { PiTerminalCard, type PiTerminalStatus } from "./PiTerminalCard"
@@ -42,11 +43,12 @@ export interface PiTerminalToolbarProps {
   className?: string
 }
 
-/** 终端视图工具行的三个钮（容器给） */
+/** 终端视图工具行的钮（容器给） */
 export interface PiTerminalActions {
   onToggleLineNumbers?: () => void
   onCopyOutput?: () => void
   onJumpLatest?: () => void
+  onOpenShell?: () => void
 }
 
 /**
@@ -79,6 +81,16 @@ export function PiTerminalToolbar({ items, variant, lineNumbers, actions, classN
       />
       <GhostIconButton label="复制输出" icon={<Copy />} className={cn(phone && TOUCH_44)} onClick={actions?.onCopyOutput} />
       <GhostIconButton label="跳到最新" icon={<ArrowDownToLine />} className={cn(phone && TOUCH_44)} onClick={actions?.onJumpLatest} />
+      {actions?.onOpenShell && (
+        <GhostIconButton
+          data-cw-id="pi-terminal-open-shell"
+          label="Open interactive shell"
+          title="Open interactive shell"
+          icon={<Terminal />}
+          className={cn(phone && TOUCH_44)}
+          onClick={actions.onOpenShell}
+        />
+      )}
     </div>
   )
 }
@@ -92,7 +104,23 @@ export function PiTerminalToolbar({ items, variant, lineNumbers, actions, classN
  */
 export function PiTerminalPane({ items, now, variant, openIds, lineNumbers, toolbar = true, actions, unloaded, className }: PiTerminalPaneProps) {
   const phone = variant === "phone"
-  const open = new Set(openIds ?? items.filter((t) => t.state === "running").map((t) => t.id))
+  const [toggled, setToggled] = useState<Record<string, boolean>>({})
+  const defaultOpenIds = useMemo(() => {
+    if (openIds) return new Set(openIds)
+    const set = new Set<string>()
+    let firstErrorAdded = false
+    for (const t of items) {
+      if (t.state === "running") {
+        set.add(t.id)
+      } else if (!firstErrorAdded && (t.state === "failed" || t.state === "timed_out")) {
+        set.add(t.id)
+        firstErrorAdded = true
+      }
+    }
+    const latest = items[items.length - 1]
+    if (latest) set.add(latest.id)
+    return set
+  }, [openIds, items])
   const numbers = lineNumbers ?? !phone
   if (items.length === 0) {
     return (
@@ -122,7 +150,8 @@ export function PiTerminalPane({ items, now, variant, openIds, lineNumbers, tool
             output={t.output}
             stderr={t.stderr}
             truncated={t.outputTruncated}
-            open={open.has(t.id)}
+            open={toggled[t.id] ?? defaultOpenIds.has(t.id)}
+            onOpenChange={(next) => setToggled((prev) => ({ ...prev, [t.id]: next }))}
             outputMaxHeight={phone ? 420 : 560}
             wrap={phone}
             lineNumbers={numbers}

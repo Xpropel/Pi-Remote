@@ -4,6 +4,7 @@ import { usePiMotion } from "../hooks/useReducedMotion.ts"
 import { MOBILE_GROUP_TONE_LABEL, mobileGroupToneOf } from "./groupTone.ts"
 import { IconArchive, IconChevronDown, IconFolder, IconInbox, IconMonitor, IconPin, IconSearch, IconSend, IconSettings } from "./icons"
 import { LongPressCard } from "./LongPressCard"
+import { MobileDeviceMenu, useMobileDeviceMenu } from "./MobileListHome"
 import type { PiMobileNavProps } from "./types.ts"
 
 /** Exit duration of the drawer closing phase; the enter in mobile.css
@@ -26,7 +27,6 @@ export function MobileDrawerNav({
   onRowMenu,
   archiveView = false,
 }: PiMobileNavProps & { open: boolean; onClose: () => void; onSearch?: () => void }) {
-  const [deviceMenu, setDeviceMenu] = useState(false)
   const [preview, setPreview] = useState<PiSidebarSession | null>(null)
   const asideRef = useRef<HTMLElement>(null)
   const { sheetSlide } = usePiMotion()
@@ -40,6 +40,8 @@ export function MobileDrawerNav({
    * entirely, so closes are immediate in both directions.
    */
   const [phase, setPhase] = useState<"open" | "closing" | "closed">(open ? "open" : "closed")
+  const interactive = phase === "open"
+  const dev = useMobileDeviceMenu(data, actions, interactive)
   const phaseRef = useRef(phase)
   const onCloseRef = useRef(onClose)
   const slideRef = useRef(sheetSlide)
@@ -56,6 +58,7 @@ export function MobileDrawerNav({
   }, [])
   const beginClose = useCallback(() => {
     if (phaseRef.current !== "open") return
+    dev.closeIfOpen()
     if (!slideRef.current) {
       finishClose()
       return
@@ -63,7 +66,7 @@ export function MobileDrawerNav({
     phaseRef.current = "closing"
     setPhase("closing")
     closeTimerRef.current = window.setTimeout(finishClose, DRAWER_CLOSE_MS)
-  }, [finishClose])
+  }, [dev.closeIfOpen, finishClose])
   const beginCloseRef = useRef(beginClose)
   useLayoutEffect(() => {
     beginCloseRef.current = beginClose
@@ -92,7 +95,6 @@ export function MobileDrawerNav({
     },
     [],
   )
-  const interactive = phase === "open"
   // a11y：打开时焦点入内 + Tab 循环 + Esc 关闭并恢复聚焦；遮罩点击关闭由按钮承担
   // （焦点在关闭开始时即归还，和旧行为一致：旧版在父级 open 翻 false 的同一刻清理）
   useEffect(() => {
@@ -127,7 +129,6 @@ export function MobileDrawerNav({
       previous?.focus?.()
     }
   }, [interactive])
-  const activeDevice = data.devices.find((device) => device.id === data.selectedDeviceId) ?? data.devices.find((device) => device.current) ?? data.devices[0]
   const pinnedGroup = data.groups.find((group) => group.kind === "pinned")
   const workspaceGroups = data.groups.filter((group) => group.kind !== "pinned" && group.kind !== "archive")
   const showInbox = typeof data.inboxCount === "number" && !!actions.openInbox
@@ -150,41 +151,30 @@ export function MobileDrawerNav({
           ) : null}
         </div>
         <div className="pm-drawer-scroll">
-          <div className="pm-drawer-device-wrap">
+          <div ref={dev.wrapRef} className="pm-drawer-device-wrap">
             <button
+              ref={dev.triggerRef}
               type="button"
               className="pm-drawer-device"
-              aria-expanded={deviceMenu}
+              aria-expanded={dev.open}
               aria-haspopup="menu"
-              aria-label={`切换设备：当前 ${activeDevice?.name ?? "本机"}`}
-              onClick={() => setDeviceMenu((value) => !value)}
+              aria-label={`切换设备：当前 ${dev.activeDevice?.name ?? "本机"}`}
+              onClick={() => dev.toggle(!dev.open)}
             >
               <IconMonitor size={19} />
-              <span className="pm-device-name">{activeDevice?.name ?? "本机"}</span>
-              <span className="pm-online-dot" data-online={activeDevice?.online ? "" : undefined} aria-label={activeDevice?.online ? "在线" : "离线"} />
+              <span className="pm-device-name">{dev.activeDevice?.name ?? "本机"}</span>
+              <span className="pm-online-dot" data-online={dev.online ? "" : undefined} aria-label={dev.online ? "在线" : "离线"} />
               <IconChevronDown size={15} className="pm-device-chevron" />
             </button>
-            {deviceMenu ? (
-              <div className="pm-device-menu pm-drawer-device-menu" role="menu" aria-label="选择设备">
-                {data.devices.map((device) => (
-                  <button
-                    key={device.id}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={device.id === activeDevice?.id}
-                    className="pm-device-menu-row"
-                    data-active={device.id === activeDevice?.id ? "" : undefined}
-                    onClick={() => {
-                      actions.selectDevice(device.id)
-                      setDeviceMenu(false)
-                    }}
-                  >
-                    <IconMonitor size={17} />
-                    <span className="pm-device-name">{device.name}</span>
-                    <span className="pm-device-state">{device.statusLabel ?? (device.online ? "在线" : "离线")}</span>
-                  </button>
-                ))}
-              </div>
+            {dev.open ? (
+              <MobileDeviceMenu
+                data={data}
+                actions={actions}
+                activeDeviceId={dev.activeDevice?.id}
+                menuClassName="pm-drawer-device-menu"
+                onClose={() => dev.toggle(false)}
+                onLeave={beginClose}
+              />
             ) : null}
           </div>
           <button type="button" className="pm-drawer-new" onClick={() => { actions.newSession(); beginClose() }}>
@@ -211,10 +201,6 @@ export function MobileDrawerNav({
                 ) : null}
               </button>
             ) : null}
-            <button type="button" className="pm-drawer-naive-row" onClick={() => actions.togglePlainRow?.("workspace")}>
-              <IconFolder size={17} open />
-              工作区
-            </button>
             <button
               type="button"
               className="pm-drawer-naive-row"

@@ -16,6 +16,7 @@ import { diffRowsFromEdit, rowsFromPatch } from "../ui/src/pi/model/diffRows.ts"
 import { changesOfSession } from "../ui/src/pi/model/changes.ts"
 import { migratePiPrefs, setPiPref, DEFAULT_PI_PREFS } from "../ui/src/pi/model/prefs.ts"
 import { modelRowsOf, modelDefaultOf, modelMenuEntriesOf, modelThinkingOptionsOf, modelFactsLineOf } from "../ui/src/pi/model/models.ts"
+import { nextComposerTextOverflow } from "../ui/src/components/pi/composer/options.ts"
 
 const NOW = Date.UTC(2026, 9, 24, 8, 0, 0)
 const MIN = 60_000
@@ -191,9 +192,9 @@ test("trayItemsOf：三者都为 0 不出排队 pill；全空返回空数组", (
 })
 
 test("trayItemsOf：只有 outbox 的三种连接情况", () => {
-  assert.equal(queuePill(trayItemsOf({ ...base, outbox: OUTBOX })).label, "排队 1")
-  assert.equal(queuePill(trayItemsOf({ linkOk: false, deviceOnline: true, outbox: OUTBOX })).label, "排队 1 · 等重连")
-  assert.equal(queuePill(trayItemsOf({ linkOk: true, deviceOnline: false, outbox: OUTBOX })).label, "排队 1 · 等重连")
+  assert.equal(queuePill(trayItemsOf({ ...base, outbox: OUTBOX })).label, "Queued 1")
+  assert.equal(queuePill(trayItemsOf({ linkOk: false, deviceOnline: true, outbox: OUTBOX })).label, "Queued 1 · Reconnecting")
+  assert.equal(queuePill(trayItemsOf({ linkOk: true, deviceOnline: false, outbox: OUTBOX })).label, "Queued 1 · Reconnecting")
 })
 
 test("trayItemsOf：三者同时存在的计数；已注入远程条目不计；没有 outbox 时断线也不加后缀", () => {
@@ -205,25 +206,34 @@ test("trayItemsOf：三者同时存在的计数；已注入远程条目不计；
     outbox: OUTBOX,
   }
   assert.equal(queueCountOf(input), 5)
-  assert.equal(queuePill(trayItemsOf(input)).label, "排队 5 · 等重连")
-  assert.equal(queuePill(trayItemsOf({ ...input, outbox: [] })).label, "排队 4")
+  assert.equal(queuePill(trayItemsOf(input)).label, "Queued 5 · Reconnecting")
+  assert.equal(queuePill(trayItemsOf({ ...input, outbox: [] })).label, "Queued 4")
   assert.equal(queuePill(trayItemsOf({ ...base, remoteQueue: [{ status: "injected" }] })), undefined)
 })
 
-test("trayItemsOf：任务、终端、改动 pill 与顺序", () => {
+test("trayItemsOf：仅运行中（任务 / subagent / 排队 / 终端）显示英文 pill，结束后与静态改动不出", () => {
   const items = trayItemsOf({
     ...base,
     taskList: [{ status: "completed" }, { status: "completed" }, { status: "in_progress" }, { status: "pending" }],
+    subagents: 2,
     outbox: OUTBOX,
     terminals: [{ state: "running" }, { state: "succeeded" }],
     changes: { added: 12, removed: 4, files: [{}] },
   })
-  assert.deepEqual(items.map((x) => x.kind), ["tasks", "queue", "terminal", "changes"])
-  assert.deepEqual(items[0], { kind: "tasks", label: "任务 2/4", running: true })
-  assert.deepEqual(items[2], { kind: "terminal", label: "终端 1", running: true })
-  assert.deepEqual(items[3], { kind: "changes", label: "改动 +12 −4", added: 12, removed: 4 })
-  assert.deepEqual(trayItemsOf({ ...base, terminals: [{ state: "failed" }] }), [{ kind: "terminal", label: "终端 1" }])
-  assert.deepEqual(trayItemsOf({ ...base, changes: { added: 0, removed: 0, files: [] } }), [])
+  assert.deepEqual(items.map((x) => x.kind), ["tasks", "subagents", "queue", "terminal"])
+  assert.equal(items[0].kind, "tasks")
+  assert.equal(items[0].label, "Tasks 2/4")
+  assert.equal(items[0].running, true)
+  assert.equal(items[1].kind, "subagents")
+  assert.equal(items[1].label, "Subagents 2")
+  assert.equal(items[1].running, true)
+  assert.equal(items[3].kind, "terminal")
+  assert.equal(items[3].label, "Terminal 1")
+  assert.equal(items[3].running, true)
+  assert.deepEqual(trayItemsOf({ ...base, terminals: [{ state: "failed" }] }), [])
+  assert.deepEqual(trayItemsOf({ ...base, terminals: [{ state: "succeeded" }] }), [])
+  assert.deepEqual(trayItemsOf({ ...base, taskList: [{ status: "completed" }] }), [])
+  assert.deepEqual(trayItemsOf({ ...base, changes: { added: 12, removed: 4, files: [{}] } }), [])
 })
 
 test("queueSectionsOf：三段顺序、空段省略", () => {
@@ -657,11 +667,11 @@ test("modelMenuEntriesOf：不乱折——同窗口不同 id、不同 provider �
   assert.deepEqual(modelMenuEntriesOf([]), [])
 })
 
-test("modelThinkingOptionsOf：级别值 → 中文标签、去重；没有数据给空数组", () => {
+test("modelThinkingOptionsOf：级别值 → 英文标签、去重；没有数据给空数组", () => {
   assert.deepEqual(modelThinkingOptionsOf(["off", "medium", "high", "medium"]), [
-    { value: "off", label: "关" },
-    { value: "medium", label: "中" },
-    { value: "high", label: "高" },
+    { value: "off", label: "Off" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
   ])
   assert.deepEqual(modelThinkingOptionsOf(undefined), [])
 })
@@ -697,4 +707,23 @@ test("piRelativeTime：五档", { skip: hasFormat ? false : "format.ts 还没搬
   const old = NOW - 10 * 24 * H
   const d = new Date(old)
   assert.equal(piRelativeTime(old, NOW), `${d.getMonth() + 1}/${d.getDate()}`)
+})
+
+test("nextComposerTextOverflow：独立宽度判定 + IME 组字锁定 + 迟滞防单行/多行反复跳变", () => {
+  // 空串与未溢出单行宽度 → 保持单行
+  assert.equal(nextComposerTextOverflow({ prev: false, value: "", textWidth: 0, singleSlotWidth: 480, composing: false }), false)
+  assert.equal(nextComposerTextOverflow({ prev: false, value: "hello", textWidth: 400, singleSlotWidth: 480, composing: false }), false)
+  // 超出单行可用槽宽（留 2px 余量）→ 升为两层
+  assert.equal(nextComposerTextOverflow({ prev: false, value: "long line", textWidth: 479, singleSlotWidth: 480, composing: false }), true)
+
+  // 已在两层时，继续输入或拼音组字即使文字略微回缩也绝不跳回单行
+  assert.equal(nextComposerTextOverflow({ prev: true, value: "long line a", textWidth: 485, singleSlotWidth: 480, composing: false }), true)
+  assert.equal(nextComposerTextOverflow({ prev: true, value: "long line ce shi", textWidth: 300, singleSlotWidth: 480, composing: true }), true)
+  // 拼音上屏变短但仍在迟滞带内（480 - 48 = 432）→ 仍保持两层，不抖动
+  assert.equal(nextComposerTextOverflow({ prev: true, value: "long line 测试", textWidth: 460, singleSlotWidth: 480, composing: false }), true)
+  assert.equal(nextComposerTextOverflow({ prev: true, value: "long line 边界", textWidth: 432, singleSlotWidth: 480, composing: false }), true)
+
+  // 明确删减超出迟滞带或清空内容 → 顺滑收回单行
+  assert.equal(nextComposerTextOverflow({ prev: true, value: "short", textWidth: 431, singleSlotWidth: 480, composing: false }), false)
+  assert.equal(nextComposerTextOverflow({ prev: true, value: "", textWidth: 500, singleSlotWidth: 480, composing: true }), false)
 })

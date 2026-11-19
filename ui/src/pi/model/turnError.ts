@@ -31,6 +31,26 @@ export const TURN_ERROR_TEXT: Readonly<Record<string, string>> = {
   request_rejected: "请求被拒绝",
 }
 
+/** Recognized error kinds in English for the conversation stream */
+export const TURN_ERROR_TEXT_EN: Readonly<Record<string, string>> = {
+  overloaded_error: "Model service overloaded",
+  rate_limit_error: "Rate limit reached",
+  api_error: "Model service error",
+  service_unavailable: "Model service unavailable",
+  timeout_error: "Request timed out",
+  network_error: "Network connection interrupted",
+  connect_error: "Unable to connect to model service",
+  authentication_error: "Invalid or expired API key",
+  billing_error: "Insufficient quota or balance",
+  permission_error: "Permission denied for this model",
+  invalid_request_error: "Invalid request",
+  not_found_error: "Model not found",
+  request_too_large: "Request too large",
+  context_length_exceeded: "Context length exceeded",
+  content_filter: "Blocked by content filter",
+  request_rejected: "Request rejected",
+}
+
 /** 认不出原因时，原文不超过这么多字才照写进行里；超过就截短（原文全文在 detail） */
 export const TURN_ERROR_RAW_MAX = 60
 
@@ -166,34 +186,77 @@ const ABORT_MESSAGE = /^(?:(?:this |the )?operation (?:was )?aborted|request was
 /** pi 没拿到原因时的占位原文 */
 const UNKNOWN_MESSAGE = /^an unknown error occurred\.?$/i
 
+type TurnErrorCopy = {
+  table: Readonly<Record<string, string>>
+  prefix: string
+  unknown: string
+  stopped: string
+  length: string
+  fallbackRaw: string
+  formatStatus: (status: number) => string
+}
+
+const COPY_ZH: TurnErrorCopy = {
+  table: TURN_ERROR_TEXT,
+  prefix: "这一轮出错了：",
+  unknown: "未知原因",
+  stopped: "已停止生成",
+  length: "达到长度上限，回复被截断",
+  fallbackRaw: "模型服务报错",
+  formatStatus: (status) => `（${status}）`,
+}
+
+const COPY_EN: TurnErrorCopy = {
+  table: TURN_ERROR_TEXT_EN,
+  prefix: "Error: ",
+  unknown: "Unknown error",
+  stopped: "Stopped",
+  length: "Response truncated (length limit)",
+  fallbackRaw: "Model service error",
+  formatStatus: (status) => ` (${status})`,
+}
+
+function resolveTurnError(stopReason: string | null | undefined, errorMessage: string | null | undefined, copy: TurnErrorCopy): PiTurnEnd | null {
+  switch (stopReason) {
+    case "error": {
+      const raw = typeof errorMessage === "string" ? errorMessage.trim() : ""
+      if (!raw || UNKNOWN_MESSAGE.test(raw)) return { text: `${copy.prefix}${copy.unknown}`, error: true }
+      // 用户打断（排队「立即发送」= 先 abort 再发）时，pi 1.3 有时把被打断的那次模型调用记成 stopReason "error"、
+      // errorMessage 是 AbortSignal 的原文。这是停止，不是出错（D18）
+      if (ABORT_MESSAGE.test(raw)) return { text: copy.stopped, error: false }
+      const kind = turnErrorKindOf(raw)
+      if (kind) {
+        const status = httpStatusOf(raw)
+        return {
+          text: `${copy.prefix}${copy.table[kind]}${status != null ? copy.formatStatus(status) : ""}`,
+          error: true,
+          detail: detailOf(raw),
+        }
+      }
+      const json = jsonBodyOf(raw)
+      if (!json && !/[{[]/.test(raw) && raw.length <= TURN_ERROR_RAW_MAX) return { text: `${copy.prefix}${shorten(raw)}`, error: true }
+      const said = json ? providerMessageOf(json.body) : null
+      return { text: `${copy.prefix}${shorten(said ?? (/[{[]/.test(raw) ? copy.fallbackRaw : raw))}`, error: true, detail: detailOf(raw) }
+    }
+    case "aborted":
+      return { text: copy.stopped, error: false }
+    case "length":
+      return { text: copy.length, error: false }
+    default:
+      return null
+  }
+}
+
 /**
  * stopReason（+ errorMessage）→ 一行字；正常结束（stop / toolUse / 缺失）返回 null。
  * - error："这一轮出错了：模型服务繁忙（529）"（detail = 原文）；认不出原因时短的照写原文；没有原文"这一轮出错了：未知原因"。
  * - aborted："已停止生成"；length："达到长度上限，回复被截断"。
  */
 export function turnErrorOf(stopReason: string | null | undefined, errorMessage?: string | null): PiTurnEnd | null {
-  switch (stopReason) {
-    case "error": {
-      const raw = typeof errorMessage === "string" ? errorMessage.trim() : ""
-      if (!raw || UNKNOWN_MESSAGE.test(raw)) return { text: "这一轮出错了：未知原因", error: true }
-      // 用户打断（排队「立即发送」= 先 abort 再发）时，pi 1.3 有时把被打断的那次模型调用记成 stopReason "error"、
-      // errorMessage 是 AbortSignal 的原文。这是停止，不是出错（D18：停止写"已停止生成"）
-      if (ABORT_MESSAGE.test(raw)) return { text: "已停止生成", error: false }
-      const kind = turnErrorKindOf(raw)
-      if (kind) {
-        const status = httpStatusOf(raw)
-        return { text: `这一轮出错了：${TURN_ERROR_TEXT[kind]}${status != null ? `（${status}）` : ""}`, error: true, detail: detailOf(raw) }
-      }
-      const json = jsonBodyOf(raw)
-      if (!json && !/[{[]/.test(raw) && raw.length <= TURN_ERROR_RAW_MAX) return { text: `这一轮出错了：${shorten(raw)}`, error: true }
-      const said = json ? providerMessageOf(json.body) : null
-      return { text: `这一轮出错了：${shorten(said ?? (/[{[]/.test(raw) ? "模型服务报错" : raw))}`, error: true, detail: detailOf(raw) }
-    }
-    case "aborted":
-      return { text: "已停止生成", error: false }
-    case "length":
-      return { text: "达到长度上限，回复被截断", error: false }
-    default:
-      return null
-  }
+  return resolveTurnError(stopReason, errorMessage, COPY_ZH)
+}
+
+/** English turn-end text for conversation stream rendering */
+export function turnErrorEnOf(stopReason: string | null | undefined, errorMessage?: string | null): PiTurnEnd | null {
+  return resolveTurnError(stopReason, errorMessage, COPY_EN)
 }

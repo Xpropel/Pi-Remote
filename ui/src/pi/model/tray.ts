@@ -10,21 +10,25 @@ export type PiOutboxItemView = { cid: string; text: string; status: "queued" | "
 /** 本机队列（useRelay 的 queue：queue_update 的 steering + followUp）。条目形状这里不关心，只取文字。 */
 export type PiLocalQueue = { steering: readonly unknown[]; followUp: readonly unknown[] }
 
-export type PiTrayKind = "tasks" | "queue" | "terminal" | "changes"
+export type PiTrayKind = "tasks" | "subagents" | "queue" | "terminal" | "changes"
 /** 与 components/pi/composer 的 PiTrayItem 同形 */
 export type PiTrayItem = { kind: PiTrayKind; label: string; running?: boolean; added?: number; removed?: number; active?: boolean; title?: string }
 
 export type PiTrayInput = {
   /** relay.taskList */
   taskList?: readonly { status: string }[] | null
+  /** active running subagents count or list */
+  subagents?: number | readonly unknown[] | null
   /** relay.remoteQueue.items */
   remoteQueue?: readonly Pick<RemoteQueueItem, "status">[] | null
   /** relay.queue */
   localQueue?: PiLocalQueue | null
   outbox?: readonly PiOutboxItemView[] | null
+  /** armed schedules (count or entries with optional state) */
+  scheduled?: number | readonly { state?: string }[] | null
   /** relay.terminalItems（只看 state） */
   terminals?: readonly { state: string }[] | null
-  /** changesOfSession 的汇总；null = 没有改动数据 */
+  /** changesOfSession 的汇总；保留入参兼容，当前不再进 tray pill */
   changes?: { added: number; removed: number; files: readonly unknown[] } | null
   /** 与服务器连着 */
   linkOk: boolean
@@ -39,40 +43,72 @@ export function queueCountOf(input: Pick<PiTrayInput, "remoteQueue" | "localQueu
   return remote + local + (input.outbox?.length ?? 0)
 }
 
+/** 定时待触发计数 = 数字直接取非负值，数组只计未写 state 或 state === "armed" 的项。 */
+export function scheduledCountOf(input: Pick<PiTrayInput, "scheduled">): number {
+  if (typeof input.scheduled === "number") return Number.isFinite(input.scheduled) ? Math.max(0, input.scheduled) : 0
+  return (input.scheduled ?? []).filter((x) => !x.state || x.state === "armed").length
+}
+
 /** 等重连的条件：pill 后缀与排队面板第一段段名共用（R2-M-10）。 */
 function waitingForLink(linkOk: boolean, deviceOnline: boolean): boolean {
   return !linkOk || !deviceOnline
 }
 
 /**
- * tray pill 列表，顺序：任务 → 排队 → 终端 → 改动。只有有内容的 pill 才出现。
- * 排队：outbox > 0 且（断线或设备离线）时写"排队 N · 等重连"，否则"排队 N"；计数 0 不出。
+ * tray pill 列表，顺序：Tasks → Subagents → Queued → Terminal。
+ * 只有正在运行或仍在等待发送的条目才会显示；运行结束或静态项不占输入框上方空间。
  */
 export function trayItemsOf(input: PiTrayInput): PiTrayItem[] {
   const items: PiTrayItem[] = []
   const tasks = input.taskList ?? []
-  if (tasks.length > 0) {
+  if (tasks.some((x) => x.status === "in_progress")) {
     const done = tasks.filter((x) => x.status === "completed").length
-    const item: PiTrayItem = { kind: "tasks", label: `任务 ${done}/${tasks.length}` }
-    if (tasks.some((x) => x.status === "in_progress")) item.running = true
-    items.push(item)
+    items.push({
+      kind: "tasks",
+      label: `Tasks ${done}/${tasks.length}`,
+      running: true,
+      title: "Running tasks — click to view progress",
+    })
+  }
+  const subagentCount = typeof input.subagents === "number" ? input.subagents : (input.subagents?.length ?? 0)
+  if (subagentCount > 0) {
+    items.push({
+      kind: "subagents",
+      label: subagentCount > 1 ? `Subagents ${subagentCount}` : "Subagent 1",
+      running: true,
+      title: "Running subagent — click to jump to live activity",
+    })
   }
   const queued = queueCountOf(input)
-  if (queued > 0) {
-    const suffix = (input.outbox?.length ?? 0) > 0 && waitingForLink(input.linkOk, input.deviceOnline) ? " · 等重连" : ""
-    // F4: the pill is the only way into the queue panel -- say so on hover.
-    items.push({ kind: "queue", label: `排队 ${queued}${suffix}`, title: "排队中的消息，点开可编辑、取消或立即发送" })
+  const scheduled = scheduledCountOf(input)
+  if (queued > 0 || scheduled > 0) {
+    const suffix = (input.outbox?.length ?? 0) > 0 && waitingForLink(input.linkOk, input.deviceOnline) ? " · Reconnecting" : ""
+    const label =
+      queued > 0 && scheduled > 0
+        ? `Queued ${queued} · Scheduled ${scheduled}${suffix}`
+        : queued > 0
+          ? `Queued ${queued}${suffix}`
+          : `Scheduled ${scheduled}`
+    const title =
+      queued > 0 && scheduled > 0
+        ? "Queued and scheduled messages — click to edit, cancel, or send now"
+        : queued > 0
+          ? "Queued messages — click to edit, cancel, or send now"
+          : "Scheduled messages — click to view, add, or cancel"
+    items.push({
+      kind: "queue",
+      label,
+      title,
+    })
   }
-  const terminals = input.terminals ?? []
-  if (terminals.length > 0) {
-    const running = terminals.filter((x) => x.state === "running").length
-    const item: PiTrayItem = { kind: "terminal", label: `终端 ${running || terminals.length}` }
-    if (running > 0) item.running = true
-    items.push(item)
-  }
-  const changes = input.changes
-  if (changes && changes.files.length > 0) {
-    items.push({ kind: "changes", label: `改动 +${changes.added} −${changes.removed}`, added: changes.added, removed: changes.removed })
+  const runningTerminals = (input.terminals ?? []).filter((x) => x.state === "running").length
+  if (runningTerminals > 0) {
+    items.push({
+      kind: "terminal",
+      label: `Terminal ${runningTerminals}`,
+      running: true,
+      title: "Running command — click to open terminal",
+    })
   }
   return items
 }

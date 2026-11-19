@@ -8,7 +8,7 @@
  * 本页不申请系统通知权限、不伪造系统推送。
  */
 import { useSettings } from "../SettingsContext"
-import { SettingsGroup, SettingsNote, SettingsPageTitle, SettingsRow, SettingsSwitch } from "../ui"
+import { SettingsGroup, SettingsPageTitle, SettingsRow, SettingsSwitch } from "../ui"
 import "./notifications.css"
 
 function ConditionRow({
@@ -42,26 +42,49 @@ function ConditionRow({
 export function NotificationsPage() {
   const { prefs, act } = useSettings()
 
+  const toggleSystemNotify = (checked: boolean) => {
+    if (!checked) {
+      act.setPref("notifySystem", false)
+      return
+    }
+    if (typeof Notification === "undefined") {
+      act.notify("当前浏览器不支持系统通知", "warn")
+      return
+    }
+    if (Notification.permission === "granted") {
+      act.setPref("notifySystem", true)
+      return
+    }
+    if (Notification.permission === "denied") {
+      act.notify("浏览器已拦截系统通知，请在站点权限中开启", "warn")
+      return
+    }
+    void Notification.requestPermission().then((perm) => {
+      if (perm === "granted") act.setPref("notifySystem", true)
+      else act.notify("未授予系统通知权限", "warn")
+    })
+  }
+
   return (
     <div className="settings-page settings-notifications" data-settings-page="notifications">
       <SettingsPageTitle title="通知" />
 
       <SettingsGroup label="提醒时机" first>
-        <SettingsRow title="等你回答时" description="会话停下来等你回答或批准时提醒">
+        <SettingsRow title="等你回答时">
           <SettingsSwitch
             label="等你回答时"
             checked={prefs.notifyWaiting}
             onChange={(checked) => act.setPref("notifyWaiting", checked)}
           />
         </SettingsRow>
-        <SettingsRow title="出错时" description="构建或运行失败时提醒">
+        <SettingsRow title="出错时">
           <SettingsSwitch
             label="出错时"
             checked={prefs.notifyError}
             onChange={(checked) => act.setPref("notifyError", checked)}
           />
         </SettingsRow>
-        <SettingsRow title="任务完成时" description="长任务跑完时提醒">
+        <SettingsRow title="任务完成时">
           <SettingsSwitch
             label="任务完成时"
             checked={prefs.notifyComplete}
@@ -74,7 +97,6 @@ export function NotificationsPage() {
         <div className="settings-notify-radios" role="radiogroup" aria-label="提醒条件">
           <ConditionRow
             title="仅当我不在页面时"
-            description="正在看的会话不会弹提醒"
             checked={prefs.notifyOnlyWhenAway}
             onSelect={() => act.setPref("notifyOnlyWhenAway", true)}
           />
@@ -84,21 +106,22 @@ export function NotificationsPage() {
             onSelect={() => act.setPref("notifyOnlyWhenAway", false)}
           />
         </div>
-        <SettingsRow title="提示音" description="提醒出现时播放短提示音">
+        <SettingsRow title="提示音">
           <SettingsSwitch label="提示音" checked={prefs.notifySound} onChange={(checked) => act.setPref("notifySound", checked)} />
         </SettingsRow>
       </SettingsGroup>
 
       <SettingsGroup label="方式">
         <SettingsRow title="当前方式">
-          <span className="settings-value">应用内提醒</span>
+          <span className="settings-value">{prefs.notifySystem ? "应用内提醒 + 系统通知" : "应用内提醒"}</span>
         </SettingsRow>
-        <SettingsRow title="标签页未读角标" description="在浏览器标签标题上显示待处理数量">
+        <SettingsRow title="标签页未读角标">
           <SettingsSwitch label="标签页未读角标" checked={prefs.notifyBadge} onChange={(checked) => act.setPref("notifyBadge", checked)} />
         </SettingsRow>
+        <SettingsRow title="系统桌面通知" tooltip="离开页面时通过浏览器发送系统通知（不含对话正文）">
+          <SettingsSwitch label="系统桌面通知" checked={prefs.notifySystem} onChange={toggleSystemNotify} />
+        </SettingsRow>
       </SettingsGroup>
-
-      <SettingsNote>暂仅支持应用内提醒；离开页面时不会推送。</SettingsNote>
     </div>
   )
 }

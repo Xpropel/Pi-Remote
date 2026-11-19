@@ -23,10 +23,9 @@ const USAGE_CSS = read("ui/src/pi/settings/pages/usage.css")
 
 test("外观：明暗 / 五点强调色 / 字号 / 密度 / 动效 / 界面字体 都即时写本机设置", () => {
   for (const text of [
-    "明暗", "深色", "浅色", "跟随系统", "强调色", "用于运行状态点与少量强调",
-    "字号", "预览", "会话标题与正文的显示大小", "界面密度",
-    "减少动态效果", "关掉界面里的过渡与淡入动画",
-    "界面字体", "切换立即应用到整个界面，只保存在这个浏览器里。",
+    "明暗", "深色", "浅色", "跟随系统", "强调色",
+    "字号", "预览", "Aa 正文与代码", "界面密度",
+    "内容列宽", "减少动态效果", "界面字体", "等宽字体",
   ]) {
     assert.ok(APPEARANCE.includes(text), `外观页缺文案：${text}`)
   }
@@ -35,8 +34,12 @@ test("外观：明暗 / 五点强调色 / 字号 / 密度 / 动效 / 界面字�
   }
   assert.doesNotMatch(stripComments(APPEARANCE), /界面风格|appearanceStyle|setUiVariant|Claude|Codex/, "界面风格选择已移除")
   assert.match(APPEARANCE, /p\.act\.setPref\("theme", next\)/, "明暗必须立即切宿主主题")
-  assert.doesNotMatch(stripComments(APPEARANCE), /contentWidth|monoFont|内容列宽|等宽字体/, "列宽 / 等宽字体做不到全局生效，不在外观页提供")
+  assert.match(APPEARANCE, /CONTENT_WIDTH_PRESETS/, "桌面外观页提供内容列宽")
+  assert.match(APPEARANCE, /SETTINGS_MONO_FONTS/, "桌面外观页提供等宽字体")
+  assert.match(APPEARANCE, /act\.setPref\("contentWidth"/)
+  assert.match(APPEARANCE, /act\.setPref\("monoFont"/)
   assert.match(APPEARANCE, /SETTINGS_DENSITY_LABELS/, "密度文案必须用共享定稿")
+  assert.match(APPEARANCE, /影响侧边栏、菜单与设置面板的行高和留白/)
   assert.match(APPEARANCE, /SettingsColorDots/, "强调色必须用共享色点组件")
   assert.match(APPEARANCE, /data-settings-page="appearance"/)
   assert.doesNotMatch(stripComments(APPEARANCE), /pi_remote_pi_prefs|pi_remote_pi_settings_v2/, "页面不得自己读写存储键")
@@ -49,15 +52,17 @@ test("外观：明暗 / 五点强调色 / 字号 / 密度 / 动效 / 界面字�
 
 test("数据与隐私：隐私模式本机可写，◐ 不可写，○ 即时，● 导出接真实命令", () => {
   // 隐私模式已从「设计预留」改为本机偏好（prefs.privacyMode）；只做渲染层脱敏，不写 settings.json。
-  assert.match(PRIVACY, /<SettingsRow title="隐私模式" description="仅本机显示脱敏，不改设备数据">/)
+  assert.match(PRIVACY, /title="隐私模式"[\s\S]*?仅本机显示脱敏，不改设备数据/)
   assert.match(PRIVACY, /label="隐私模式"/)
   assert.match(PRIVACY, /checked=\{prefs\.privacyMode\}/)
   assert.match(PRIVACY, /act\.setPref\("privacyMode"/)
-  assert.match(PRIVACY, /不修改设备上的会话数据/)
+  assert.match(PRIVACY, /仅本机显示脱敏，不改设备数据/)
   assert.doesNotMatch(PRIVACY, /隐私模式（设计预留）|status="reserved"/)
   assert.doesNotMatch(PRIVACY, /writer\.save\("privacyMode"/, "隐私模式不得走 settings_set 写桥")
-  // 匿名统计 / 禁止图片已接 settings_set；数据存放 / 删除同步仍标 ◐。
-  assert.ok((PRIVACY.match(/status="bridge"/g) ?? []).length >= 2, "数据存放 / 删除同步仍要标 ◐")
+  // 匿名统计 / 禁止图片已接 settings_set；删除会话同步已改为本机 prefs.syncDeleteSession，无剩余 ◐ 只读项。
+  assert.equal((PRIVACY.match(/status="bridge"/g) ?? []).length, 0, "隐私页已无剩余 ◐ 只读项")
+  assert.match(PRIVACY, /checked=\{prefs\.syncDeleteSession\}/)
+  assert.match(PRIVACY, /act\.setPref\("syncDeleteSession"/)
   assert.match(PRIVACY, /useSettingsDocument/)
   assert.match(PRIVACY, /useSettingsWriter/)
   assert.match(PRIVACY, /enableInstallTelemetry/)
@@ -74,13 +79,15 @@ test("数据与隐私：隐私模式本机可写，◐ 不可写，○ 即时，
   assert.doesNotMatch(PRIVACY, /console\.(log|info|debug|warn|error)/, "不得打印设置 / 会话内容")
 })
 
-test("使用活动：真实 usage hook、52 周热力、880 宽列、无费用、额度预留", () => {
+test("使用活动：真实 usage hook、52 周热力、880 宽列、无费用、本月预算卡实时启用", () => {
   assert.match(USAGE, /useUsageActivity\(relay, \{ deviceId \}\)/)
   assert.match(USAGE, /from "@\/pi\/usage"/)
   assert.match(USAGE, /addDaysToDayKey\(currentSunday, -51 \* 7\)/)
   assert.match(USAGE, /addDaysToDayKey\(heatStart, 363\)/)
   assert.match(USAGE, /data-settings-page="usage"/)
-  assert.match(USAGE, /SettingsStatusBadge status="reserved"/)
+  assert.doesNotMatch(USAGE, /status="reserved"/, "使用活动不再有设计预留占位")
+  assert.match(USAGE, /monthlyQuotaSummaryOf/)
+  assert.match(USAGE, /monthlyTokenBudget/)
   assert.match(USAGE, /本月用量 · 供应商/)
   assert.match(USAGE, /usageCoverageText/)
   const visible = stripComments(USAGE)
@@ -92,12 +99,15 @@ test("使用活动：真实 usage hook、52 周热力、880 宽列、无费用�
 })
 
 test("关于：pi 版本读 get_host_diag、诊断导出真实 JSON、检查更新走 GitHub Releases", () => {
-  for (const text of ["Pi-Remote", "个人远程会话 · 单用户", "应用版本", "中转服务器", "中继版本", "pi 版本", "会话数据", "本机缓存", "清理缓存", "不影响设备上的会话记录", "导出诊断信息", "开源许可", "检查更新", "Pi-Remote 为个人项目，仅供本人使用。"]) {
+  for (const text of ["Pi-Remote", "应用版本", "中转服务器", "中继版本", "pi 版本", "本机缓存", "清理缓存", "导出诊断信息", "开源许可", "检查更新"]) {
     assert.ok(ABOUT.includes(text), `关于页缺文案：${text}`)
   }
   assert.match(ABOUT, /CLIENT_VERSION/)
   assert.match(ABOUT, /serverDisplayName\(relay\.serverName/)
   assert.match(ABOUT, /relay\.serverProto/)
+  assert.match(ABOUT, /fetchRelayHealthVersion/, "中继版本必须从 /healthz 实时读取")
+  assert.match(ABOUT, /formatRelayVersionText/)
+  assert.equal((ABOUT.match(/status="bridge"/g) ?? []).length, 0, "关于页不再有 ◐ 只读项")
   assert.match(ABOUT, /get_host_diag/, "pi 版本必须从 get_host_diag 读")
   assert.match(ABOUT, /normalizeHostDiag/)
   assert.match(ABOUT, /piVersion/)
@@ -109,6 +119,10 @@ test("关于：pi 版本读 get_host_diag、诊断导出真实 JSON、检查更�
   assert.match(ABOUT, /measureCacheBytes|measureBrowserCacheBytes/)
   assert.match(ABOUT, /clearCacheStorage/)
   assert.match(ABOUT, /data-settings-page="about"/)
+  assert.match(ABOUT, /OPEN_SOURCE_LICENSES/)
+  for (const pkg of ["react-markdown", "shiki", "@xterm/xterm"]) {
+    assert.ok(aboutData.OPEN_SOURCE_LICENSES.some((item) => item.name === pkg), `开源许可缺少 ${pkg}`)
+  }
   assert.doesNotMatch(ABOUT, /console\.(log|info|debug|warn|error)/)
 })
 
@@ -123,7 +137,7 @@ test("版本比较 / 检查更新：semver、列表空、预发布、404、非 2
   // 列表 API（不是 releases/latest）：没有 Release 时 200 + []，浏览器不会记 404 网络错误。
   assert.match(
     aboutData.GITHUB_RELEASES_API,
-    /^https:\/\/api\.github\.com\/repos\/your-org\/Pi-Remote\/releases\?per_page=10$/,
+    /^https:\/\/api\.github\.com\/repos\/Xpropel\/Pi-Remote\/releases\?per_page=10$/,
   )
 
   const response = (status, payload) => ({

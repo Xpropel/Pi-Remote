@@ -1192,7 +1192,7 @@ test("v4 握手：auth_result 回 relay 的 proto 和已实现的能力；local 
   //   版本门/迁移）落地进 RELAY_CAPS，同样不再是预留位。
   // dialog.respond 已随第 2 轮 O2 落地（relay 转发应答/门控/开关），是已实现能力（随 R2-1 更新）；
   // room.dialogs（P9 A）、session.purge（P9 B）由 relay 自己实现，必须声明。
-  const notRelayCaps = new Set(["agent.state", "session.files", "fs.browse"]);
+  const notRelayCaps = new Set(["agent.state", "session.files", "session.file_ops", "fs.browse"]);
   assert.deepEqual(
     [...la.caps].sort(),
     Object.keys(PROTOCOL.caps).filter((cap) => !notRelayCaps.has(cap)).sort(),

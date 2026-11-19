@@ -65,7 +65,7 @@ function DiagBody({ variant, view }: { variant: CVariant; view: Extract<HostDiag
             ))}
           </ul>
         ) : (
-          <PiDialogNote variant={variant}>最近没有记录到错误。</PiDialogNote>
+          <PiDialogNote variant={variant}>暂无错误</PiDialogNote>
         )}
       </Section>
       <Section variant={variant} title="日志尾部">
@@ -112,7 +112,6 @@ export function PiHostDiagDialog({ viewport, open, onOpenChange, static: staticP
       returnFocus={returnFocus}
     >
       <div data-slot="pi-host-diag-dialog" data-state={view.kind} aria-busy={busy || undefined} className="flex flex-col gap-3 pt-1">
-        <PiDialogNote variant={v}>这台电脑上 attach 报来的版本、连接窗口、最近错误和日志尾部。只显示这几项，日志里常见的令牌写法已经遮掉。</PiDialogNote>
         {view.kind === "ready" ? (
           <DiagBody variant={v} view={view} />
         ) : view.kind === "loading" ? (

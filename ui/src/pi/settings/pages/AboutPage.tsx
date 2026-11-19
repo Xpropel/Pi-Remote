@@ -9,14 +9,24 @@
  *   网络 / CSP / 404 都显示明确状态，不假装最新。读取失败时保留可重试的入口，不标「设计预留」。
  */
 import { useEffect, useState } from "react"
-import { ChevronRight } from "lucide-react"
 import { PiMark } from "@/components/pi/shared"
+import { useNow } from "@/pi/hooks/useNow"
 import { normalizeHostDiag, type HostDiag } from "@/pi/model/hostDiag"
 import { serverDisplayName } from "@/pi/model/serverName"
 import { CLIENT_VERSION } from "@/relay/protocol"
 import { useSettings } from "../SettingsContext"
-import { SettingsPageTitle, SettingsStatusBadge } from "../ui"
-import { buildDiagnosticsExport, checkLatestRelease } from "./aboutData"
+import { SettingsHoverTitle, SettingsPageTitle, SettingsStatusBadge } from "../ui"
+import {
+  OPEN_SOURCE_LICENSES,
+  buildDiagnosticsExport,
+  checkLatestRelease,
+  fetchRelayHealthVersion,
+  formatRelayVersionText,
+} from "./aboutData"
+import { resolveSettingsPiRestartDevice, settingsPiRestartBannerOf } from "./settingsPiRestart.ts"
+import { settingsPiUpdateRowOf } from "./settingsPiUpdate.ts"
+import { SettingsPiRestartDialog, useSettingsPiRestart } from "./useSettingsPiRestart.tsx"
+import { SettingsPiUpdateDialog, useSettingsPiUpdate } from "./useSettingsPiUpdate.tsx"
 import {
   clearBrowserCaches,
   clearCacheStorage,
@@ -34,15 +44,6 @@ function hostname(): string {
     return ""
   }
 }
-
-const LICENSES = [
-  { name: "React", license: "MIT" },
-  { name: "Vite", license: "MIT" },
-  { name: "Tailwind CSS", license: "MIT" },
-  { name: "lucide-react", license: "ISC" },
-  { name: "marked", license: "MIT" },
-  { name: "Shiki", license: "MIT" },
-] as const
 
 function AboutValueRow({
   label,
@@ -65,49 +66,6 @@ function AboutValueRow({
   )
 }
 
-function AboutActionRow({
-  label,
-  description,
-  status,
-  value,
-  onClick,
-  disabled,
-}: {
-  label: string
-  description?: string
-  status?: "reserved"
-  value?: string
-  onClick?: () => void
-  disabled?: boolean
-}) {
-  const inert = disabled || status === "reserved"
-  return (
-    <button
-      type="button"
-      className={description ? "settings-about-row settings-about-row--desc settings-about-row--action" : "settings-about-row settings-about-row--action"}
-      data-settings-status={status}
-      data-settings-inert={inert ? "true" : undefined}
-      aria-disabled={inert || undefined}
-      disabled={inert}
-      onClick={() => {
-        if (!inert) onClick?.()
-      }}
-    >
-      <span className="settings-about-text">
-        <span className="settings-about-kd">
-          {label}
-          {status ? <SettingsStatusBadge status={status} /> : null}
-        </span>
-        {description ? <span className="settings-about-rd">{description}</span> : null}
-      </span>
-      <span className="settings-about-row-end">
-        {value ? <span className="settings-about-action-value">{value}</span> : null}
-        <ChevronRight size={14} strokeWidth={2} aria-hidden="true" className="settings-about-chevron" />
-      </span>
-    </button>
-  )
-}
-
 function initialCacheBytes(): number | null {
   try {
     if (typeof window === "undefined") return null
@@ -118,8 +76,11 @@ function initialCacheBytes(): number | null {
 }
 
 export function AboutPage() {
-  const { p, act } = useSettings()
+  const { p, act, setPage } = useSettings()
   const { relay } = p
+  const restart = useSettingsPiRestart(relay, act.notify)
+  const piUpdate = useSettingsPiUpdate(relay, act.notify)
+  const now = useNow(piUpdate.running ? 1000 : 60_000)
   // 先同步量本机可清缓存，CacheStorage 的部分再由 effect 补上；首帧不显示「读取中」。
   const [cacheBytes, setCacheBytes] = useState<number | null>(initialCacheBytes)
   const [clearing, setClearing] = useState(false)
@@ -129,6 +90,17 @@ export function AboutPage() {
   const [exporting, setExporting] = useState(false)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateText, setUpdateText] = useState("")
+  const [relayHealthVersion, setRelayHealthVersion] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void fetchRelayHealthVersion().then((info) => {
+      if (active && info?.version) setRelayHealthVersion(info.version)
+    })
+    return () => {
+      active = false
+    }
+  }, [relay.serverProto, relay.authed])
 
   const refreshCache = async () => {
     let local = 0
@@ -153,8 +125,9 @@ export function AboutPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // pi 版本只认 get_host_diag；设备离线 / 旧扩展不支持时保持 —，不拿客户端版本冒充。
-  const selectedDevice = relay.devices.find((device) => device.id === relay.selectedDeviceId) ?? null
+  // pi 版本只认 get_host_diag；未显式选设备时按同一目标解析规则锚定到在线设备。
+  const resolvedTarget = resolveSettingsPiRestartDevice(relay)
+  const selectedDevice = resolvedTarget ? (relay.devices.find((device) => device.id === resolvedTarget.id) ?? null) : null
   const diagDeviceId = selectedDevice?.online ? selectedDevice.id : null
   const sessionReady =
     relay.authed &&
@@ -235,13 +208,14 @@ export function AboutPage() {
       relay: {
         serverName: relay.serverName,
         serverProto: relay.serverProto,
+        relayVersion: relayHealthVersion,
         clientVersion: CLIENT_VERSION,
         browserOnline: relay.browserOnline,
         authed: relay.authed,
         deviceMode: relay.deviceMode,
       },
       devices: relay.devices,
-      selectedDeviceId: relay.selectedDeviceId,
+      selectedDeviceId: selectedDevice?.id ?? relay.selectedDeviceId,
       appVersion: CLIENT_VERSION,
     })
     const ok = downloadTextFile(file.fileName, file.text, file.mime)
@@ -262,10 +236,31 @@ export function AboutPage() {
     act.notify(result.text, result.status === "error" ? "warn" : undefined)
   }
 
-  const relayVersion = relay.serverProto ? `relay · v${relay.serverProto}` : "—"
+  const relayVersion = formatRelayVersionText(relayHealthVersion, relay.serverProto)
   const server = serverDisplayName(relay.serverName, hostname())
-  const piVersion = effectiveDiag?.piVersion || "—"
-  const piVersionText = !diagDeviceId ? "—" : diagPhase === "loading" ? "读取中…" : piVersion
+  const piVersion = effectiveDiag?.piVersion || piUpdate.update?.currentVersion || "—"
+  const piVersionText = !diagDeviceId ? "—" : diagPhase === "loading" && !piUpdate.update?.currentVersion ? "读取中…" : piVersion
+  const updateRow = settingsPiUpdateRowOf({
+    target: piUpdate.target,
+    checking: piUpdate.checking,
+    update: piUpdate.update,
+    checkError: piUpdate.checkError,
+    status: piUpdate.status,
+    otherRunning: restart.running,
+    now,
+  })
+  const restartBanner = settingsPiRestartBannerOf({
+    pendingRestart: restart.pendingRestart,
+    phase: restart.phase,
+    error: restart.error,
+    canRestart: restart.target.canRestart,
+    unsupportedReason: restart.target.reason,
+  })
+  const restartDescription = piUpdate.running
+    ? "正在更新 Pi，更新完成后会自动重启"
+    : restartBanner.title !== "重启 Pi"
+      ? `${restartBanner.title} · ${restartBanner.description}`
+      : restartBanner.description
 
   return (
     <div className="settings-page settings-about" data-settings-page="about">
@@ -277,72 +272,127 @@ export function AboutPage() {
         </span>
         <span>
           <span className="settings-about-appname">Pi-Remote</span>
-          <span className="settings-about-appsub">个人远程会话 · 单用户</span>
         </span>
       </div>
 
       <div className="settings-about-panel settings-about-panel--info" aria-label="应用信息">
         <AboutValueRow label="应用版本" value={CLIENT_VERSION} />
         <AboutValueRow label="中转服务器" value={server} />
-        <AboutValueRow label="中继版本" value={relayVersion} status="bridge" />
+        <AboutValueRow label="中继版本" value={relayVersion} />
         <AboutValueRow label="pi 版本" value={piVersionText} />
-        <AboutValueRow label="会话数据" value="来自所连设备上的 pi 会话记录" />
       </div>
+
+      <h2 className="settings-group-label">设备运行与升级</h2>
+      <div className="settings-about-panel" aria-label="设备运行与升级">
+        <div className="settings-about-row settings-about-row--desc settings-about-row--bar">
+          <span className="settings-about-text">
+            <span className="settings-about-rd">{restart.pendingRestart ? restartDescription : updateRow.description}</span>
+          </span>
+          <span className="settings-about-actions">
+            <button
+              type="button"
+              className={updateRow.canUpdate ? "settings-about-button is-primary" : "settings-about-button"}
+              title="更新 Pi"
+              disabled={updateRow.disabled}
+              onClick={() => piUpdate.triggerPrimaryAction(restart.running)}
+            >
+              {updateRow.canUpdate ? updateRow.actionLabel : piUpdate.checking ? "检查中…" : piUpdate.running ? "更新中…" : "检查更新"}
+            </button>
+            <button
+              type="button"
+              className={restart.pendingRestart ? "settings-about-button is-primary" : "settings-about-button"}
+              title="重启 Pi"
+              disabled={restartBanner.buttonDisabled || piUpdate.running}
+              onClick={restart.requestRestart}
+            >
+              {restart.running ? "重启中…" : restartBanner.buttonLabel}
+            </button>
+            <button
+              type="button"
+              className="settings-about-button"
+              title="设备端更新与系统操作"
+              onClick={() => setPage("devices")}
+            >
+              系统操作
+            </button>
+          </span>
+        </div>
+      </div>
+      <SettingsPiUpdateDialog viewport="desktop" piUpdate={piUpdate} />
+      <SettingsPiRestartDialog viewport="desktop" restart={restart} />
 
       <h2 className="settings-group-label">数据</h2>
       <div className="settings-about-panel" aria-label="数据">
-        <AboutValueRow label="本机缓存" value={cacheBytes == null ? "读取中…" : formatCacheSize(cacheBytes)} />
         <div className="settings-about-row settings-about-row--desc">
           <span className="settings-about-text">
-            <span className="settings-about-kd">清理缓存</span>
-            <span className="settings-about-rd">不影响设备上的会话记录</span>
+            <span className="settings-about-kd">
+              <SettingsHoverTitle tooltip="清理后只移除本机浏览器缓存，不影响设备上的会话记录">本机缓存</SettingsHoverTitle>
+            </span>
           </span>
-          <button
-            type="button"
-            className="settings-about-button"
-            disabled={clearing}
-            onClick={() => {
-              void clearCache()
-            }}
-          >
-            {clearing ? "清理中…" : "清理"}
-          </button>
+          <span className="settings-about-row-end">
+            <span className="settings-about-value">{cacheBytes == null ? "读取中…" : formatCacheSize(cacheBytes)}</span>
+            <button
+              type="button"
+              className="settings-about-button"
+              disabled={clearing}
+              onClick={() => {
+                void clearCache()
+              }}
+            >
+              {clearing ? "清理中…" : "清理缓存"}
+            </button>
+          </span>
         </div>
       </div>
 
-      <h2 className="settings-group-label">支持</h2>
+      <h2 className="settings-group-label">
+        <SettingsHoverTitle tooltip="可导出脱敏诊断 JSON（不含令牌与会话正文）、检查 GitHub 新版本或查看开源许可">支持</SettingsHoverTitle>
+      </h2>
       <div className="settings-about-panel" aria-label="支持">
-        <AboutActionRow
-          label="导出诊断信息"
-          description="下载 JSON：主机诊断 + 中继 / 设备 / 版本；不含令牌与会话正文"
-          value={exporting ? "导出中…" : undefined}
-          disabled={exporting}
-          onClick={() => {
-            void exportDiagnostics()
-          }}
-        />
-        <AboutActionRow
-          label="开源许可"
-          onClick={() => setLicensesOpen((open) => !open)}
-          value={licensesOpen ? "收起" : undefined}
-        />
-        <AboutActionRow
-          label="检查更新"
-          description={updateText || "从 GitHub Releases 读取最新版本并与当前版本比较"}
-          value={checkingUpdate ? "检查中…" : undefined}
-          disabled={checkingUpdate}
-          onClick={() => {
-            void checkUpdate()
-          }}
-        />
+        <div className="settings-about-row settings-about-row--desc settings-about-row--bar">
+          <span className="settings-about-text">
+            {updateText ? <span className="settings-about-rd">{updateText}</span> : null}
+          </span>
+          <span className="settings-about-actions">
+            <button
+              type="button"
+              className="settings-about-button"
+              disabled={exporting}
+              title="下载 JSON：主机诊断 + 中继 / 设备 / 版本；不含令牌与会话正文"
+              onClick={() => {
+                void exportDiagnostics()
+              }}
+            >
+              {exporting ? "导出中…" : "导出诊断信息"}
+            </button>
+            <button
+              type="button"
+              className="settings-about-button"
+              disabled={checkingUpdate}
+              title="从 GitHub Releases 读取最新版本并与当前版本比较"
+              onClick={() => {
+                void checkUpdate()
+              }}
+            >
+              {checkingUpdate ? "检查中…" : "检查更新"}
+            </button>
+            <button
+              type="button"
+              className="settings-about-button"
+              aria-expanded={licensesOpen}
+              onClick={() => setLicensesOpen((open) => !open)}
+            >
+              {licensesOpen ? "收起许可" : "开源许可"}
+            </button>
+          </span>
+        </div>
       </div>
 
       {licensesOpen ? (
         <section className="settings-about-licenses" aria-label="开源许可">
           <h3 className="settings-about-licenses-title">开源许可</h3>
-          <p className="settings-about-licenses-note">Pi-Remote 使用以下开源软件；许可见各自项目仓库。本页为本地静态说明，不联网。</p>
           <ul className="settings-about-licenses-list">
-            {LICENSES.map((item) => (
+            {OPEN_SOURCE_LICENSES.map((item) => (
               <li key={item.name}>
                 <span>{item.name}</span>
                 <span>{item.license}</span>
@@ -351,8 +401,6 @@ export function AboutPage() {
           </ul>
         </section>
       ) : null}
-
-      <p className="settings-about-footnote">Pi-Remote 为个人项目，仅供本人使用。</p>
     </div>
   )
 }

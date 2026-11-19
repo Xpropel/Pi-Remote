@@ -28,22 +28,22 @@ const APPROVAL_DATA_SOURCE = read("ui/src/pi/settings/pages/approvalData.ts")
 /* §4 模型与会话                                                        */
 /* ------------------------------------------------------------------ */
 
-test("模型页：默认思考等级七档文案与映射（不写死档位，只做中文标签）", () => {
+test("模型页：默认思考等级七档文案与映射（不写死档位，使用英文标签）", () => {
   assert.deepEqual([...modelData.MODEL_THINKING_LEVELS], ["off", "minimal", "low", "medium", "high", "xhigh", "max"])
-  assert.equal(modelData.MODEL_THINKING_LEVELS_COPY, "共七档：关 / 最小 / 低 / 中 / 高 / 超高 / 最高")
+  assert.equal(modelData.MODEL_THINKING_LEVELS_COPY, "共七档：Off / Minimal / Low / Medium / High / XHigh / Max")
   assert.deepEqual(modelData.MODEL_THINKING_LEVEL_LABELS, {
-    off: "关",
-    minimal: "最小",
-    low: "低",
-    medium: "中",
-    high: "高",
-    xhigh: "超高",
-    max: "最高",
+    off: "Off",
+    minimal: "Minimal",
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    xhigh: "XHigh",
+    max: "Max",
   })
   for (const level of modelData.MODEL_THINKING_LEVELS) {
     assert.equal(modelData.thinkingLevelLabelOf(level), modelData.MODEL_THINKING_LEVEL_LABELS[level])
   }
-  assert.equal(modelData.thinkingLevelLabelOf("max"), "最高")
+  assert.equal(modelData.thinkingLevelLabelOf("max"), "Max")
   assert.equal(modelData.thinkingLevelLabelOf("nope"), null)
   assert.equal(modelData.thinkingLevelLabelOf(undefined), null)
 })
@@ -72,15 +72,15 @@ test("模型页：get_settings 解析（默认模型 / 默认思考 / hideThinki
   })
   assert.equal(view.defaultModel, "step-5-preview")
   assert.equal(view.defaultProvider, "stepfun")
-  assert.equal(view.defaultThinkingLevel, "最高")
+  assert.equal(view.defaultThinkingLevel, "Max")
   assert.equal(view.showThinking, false, "hideThinkingBlock=true → 显示思考过程关")
   assert.equal(view.reserveTokens, 16384)
   assert.equal(view.keepRecentTokens, 20000)
-  assert.deepEqual(view.modelThinkingLevels, { "stepfun/step-5-preview": "最高", "stepfun/step-3.7-flash": "高" })
+  assert.deepEqual(view.modelThinkingLevels, { "stepfun/step-5-preview": "Max", "stepfun/step-3.7-flash": "High" })
 
   // 裸设置对象也吃；坏类型不冒充
   const bare = modelData.modelSettingsOf({ defaultThinkingLevel: "medium", compaction: { reserveTokens: -1 } })
-  assert.equal(bare.defaultThinkingLevel, "中")
+  assert.equal(bare.defaultThinkingLevel, "Medium")
   assert.equal(bare.reserveTokens, null)
   assert.equal(bare.showThinking, true)
 })
@@ -103,7 +103,7 @@ test("模型页：供应商卡（登录状态 / 接口地址 / 模型可用 / �
       ],
       available: [{ provider: "stepfun", id: "step-5-preview" }],
     },
-    { "stepfun/step-5-preview": "最高" },
+    { "stepfun/step-5-preview": "Max" },
   )
 
   assert.deepEqual(providers.map((provider) => provider.id), ["stepfun", "anthropic", "ghost", "extra"])
@@ -113,7 +113,7 @@ test("模型页：供应商卡（登录状态 / 接口地址 / 模型可用 / �
   assert.deepEqual(
     providers[0].models.map((model) => [model.label, model.thinking, model.enabled]),
     [
-      ["step-5-preview", "最高", true],
+      ["step-5-preview", "Max", true],
       ["step-3.7-flash", null, false],
     ],
   )
@@ -176,20 +176,15 @@ test("模型页：设计册 §4 文案逐条在场，◐ 只读 / 刷新接真�
     "显示思考过程",
     "供应商",
     "添加模型",
-    "手动填入模型名",
     "添加供应商",
-    "填入名称、接口地址与 API 密钥；支持 OpenAI 兼容端点",
     "刷新模型目录",
-    "重新向 pi 读取模型清单",
     "上下文压缩",
     "自动压缩长对话",
-    "对话太长时自动把旧消息总结成摘要，腾出空间",
     "给回复预留",
     "近期原文保留",
     "新会话",
     "默认模式",
     "新会话自动生成标题",
-    "按首条消息内容命名",
   ]
   for (const text of copy) assert.ok(source.includes(text), `模型页缺文案：${text}`)
   assert.doesNotMatch(source, /官方目录拉取|联网下载/, "刷新只向 pi 重发清单，不声称联网下载")
@@ -199,31 +194,32 @@ test("模型页：设计册 §4 文案逐条在场，◐ 只读 / 刷新接真�
   assert.match(source, /MODEL_NEW_SESSION_MODES/)
   assert.match(source, /tokenBudgetPatch/)
   assert.match(source, /compactionEnabledPatch/)
-  assert.match(MODEL_DATA_SOURCE, /共七档：关 \/ 最小 \/ 低 \/ 中 \/ 高 \/ 超高 \/ 最高/)
+  assert.match(MODEL_DATA_SOURCE, /共七档：Off \/ Minimal \/ Low \/ Medium \/ High \/ XHigh \/ Max/)
 
-  // 可写项（默认模型 / 思考 / 压缩三项）走 settings_set；供应商 / 新会话仍标 ◐ 只读。
-  // After audit U3: the bridge badge hangs only on the provider header /
-  // add-provider / new-session group; individual model rows and the
-  // add-model row no longer carry it (they stay inert via disabled).
+  // 可写项（默认模型 / 思考 / 单模型启用与思考 / 供应商与模型增删改 / 压缩）均已解锁，新会话两项写本机偏好。
   const bridge = (source.match(/status="bridge"/g) ?? []).length
-  assert.ok(bridge >= 4, `模型页剩下的只读项都要标状态（实际 ${bridge}）`)
+  assert.equal(bridge, 0, `模型页已全部解锁，不应残留 ◐ 徽标（实际 ${bridge}）`)
   assert.doesNotMatch(source, /<SettingsRow key=\{model\.key\} title=\{<span style=\{MONO\}>\{model\.label\}<\/span>\} status="bridge">/, "模型行不再逐行挂需扩展桥徽章")
-  assert.match(source, /<SettingsRow key=\{model\.key\} title=\{<span style=\{MONO\}>\{model\.label\}<\/span>\} disabled>/, "模型行改用 disabled 保持不可写")
+  assert.match(source, /<SettingsRow key=\{model\.key\} title=\{<span style=\{MONO\}>\{model\.label\}<\/span>\}>/, "模型行挂载单模型控制与编辑/删除操作")
+  assert.match(source, /ProviderConfigModal/, "模型页挂载供应商新增/编辑弹窗")
+  assert.match(source, /ModelConfigModal/, "模型页挂载模型新增/编辑弹窗")
   assert.doesNotMatch(source, /status="reserved"/, "给回复预留 / 近期原文保留已可写，不再是设计预留")
   assert.match(source, /useSettingsDocument/)
   assert.match(source, /useSettingsWriter/)
   assert.match(source, /defaultModelPatch/)
   assert.match(source, /defaultThinkingLevelPatch/)
   assert.match(source, /hideThinkingBlockPatch/)
-  assert.doesNotMatch(source, /act\.setPref\(/, "模型页没有 ○ 本机项，不应写本机偏好")
+  assert.match(source, /act\.setPref\("newSessionMode"/)
+  assert.match(source, /act\.setPref\("newSessionAutoTitle"/)
   assert.doesNotMatch(source, /localStorage/, "页面不得直接读写存储")
 
   // 刷新模型目录：真实重发 get_available_models；loading / error / ready=false 都有状态
   const refreshRow = source.match(/刷新模型目录[\s\S]{0,260}?\/>/)?.[0] ?? ""
-  assert.match(refreshRow, /modelsQuery\.reload\(\)/, "刷新必须重发 modelsQuery")
+  assert.match(refreshRow, /reloadAllCatalog/, "刷新按钮必须触发完整目录刷新")
+  assert.match(source, /modelsQuery\.reload\(\)/, "完整目录刷新必须重发 modelsQuery")
   assert.doesNotMatch(refreshRow, /status="reserved"/, "刷新不再是设计预留")
   assert.match(refreshRow, /disabled=\{!refreshReady \|\| modelsLoading\}/, "未就绪 / 设备离线 / 读取中禁用")
-  assert.match(source, /setLastModels\(\{ room: roomKey, data: modelsQuery\.data \}\)/, "成功回包要留同一会话的快照")
+  assert.match(source, /setLastModels\(\{ key: targetKey, data: modelsQuery\.data \}\)/, "成功回包要留当前读取目标的快照")
   assert.match(source, /lastModelsData/, "loading / error 时用快照兜底")
   assert.match(source, /仍显示上次读取的清单/, "失败要保留旧数据并提示")
   assert.match(source, /正在读取模型清单/, "loading 要有正在读取文案")
@@ -234,7 +230,7 @@ test("模型页：设计册 §4 文案逐条在场，◐ 只读 / 刷新接真�
   }
   assert.match(source, /useSettingsDocument/)
   assert.match(source, /settings_set|useSettingsWriter/)
-  assert.match(source, /commandsReady/)
+  assert.match(source, /settingsCommandsReady/)
   assert.doesNotMatch(source, /set_active_tools|set_model|set_thinking_level/, "模型页不写当前会话模型 / 工具")
   assert.match(source, /SettingsStatusDot/)
   assert.match(source, /SettingsSwitch/)
@@ -246,10 +242,10 @@ test("模型页：设计册 §4 文案逐条在场，◐ 只读 / 刷新接真�
 /* §5 审批与执行                                                        */
 /* ------------------------------------------------------------------ */
 
-test("审批页：口径框与四组预留文案逐字来自设计册 §5", () => {
+test("审批页：口径框与权限策略文案来自设计册 §5（无设计预留占位）", () => {
   assert.match(approvalData.APPROVAL_BRIEF, /pi 没有 Codex 式权限档位/)
-  assert.match(approvalData.APPROVAL_BRIEF, /设计预留/)
-  assert.match(approvalData.APPROVAL_BRIEF, /tool_call 权限门 \+ 项目信任/)
+  assert.doesNotMatch(approvalData.APPROVAL_BRIEF, /设计预留/)
+  assert.match(approvalData.APPROVAL_BRIEF, /tool_call 权限门与项目信任/)
 
   assert.deepEqual(
     approvalData.APPROVAL_ASK_OPTIONS.map((option) => [option.label, option.description]),
@@ -278,10 +274,6 @@ test("审批页：口径框与四组预留文案逐字来自设计册 §5", () =
   )
   assert.equal(approvalData.APPROVAL_SCOPE_OPTIONS[2].note, "需先在下方解锁")
   assert.equal(approvalData.APPROVAL_SCOPE_DEFAULT, "workspace")
-  assert.equal(approvalData.APPROVAL_NETWORK_LABEL, "允许联网")
-  assert.equal(approvalData.APPROVAL_NETWORK_DESCRIPTION, "沙盒内命令可访问网络")
-  assert.deepEqual(approvalData.APPROVAL_SEARCH_OPTIONS.map((option) => option.label), ["实时", "缓存"])
-  assert.equal(approvalData.APPROVAL_SEARCH_DEFAULT, "live")
   assert.equal(approvalData.APPROVAL_UNLOCK_LABEL, "允许「完全访问」与「永不询问」")
   assert.equal(approvalData.APPROVAL_UNLOCK_DESCRIPTION, "打开后上面两组的高危档位才可选，防误触")
   assert.deepEqual([...approvalData.APPROVAL_ALLOWLIST], ["git status", "cat *", "npm run test"])
@@ -361,29 +353,31 @@ test("审批页：可用工具映射真实工具名，切换只动这一项（�
   assert.deepEqual(approvalData.toolsFromResponse({}, ["read", "bash"]), ["read", "bash"])
 })
 
-test("审批页：五组 + 可用工具逐条在场，◌ 组级预留 / ◐ 只读 / ● 真实写桥", () => {
+test("审批页：五组 + 可用工具逐条在场，无设计预留占位 / ● 真实写桥", () => {
   const source = stripComments(PAGES.approval)
   assert.match(source, /data-settings-page="approval"/)
-  assert.match(source, /<SettingsPageTitle title="审批与执行" \/>/)
+  assert.match(source, /<SettingsPageTitle[\s\S]*?title="审批与执行"/)
 
-  assert.match(source, /APPROVAL_BRIEF/, "口径框必须呈现")
-  assert.match(source, /role="note"/)
+  assert.match(source, /tooltip="通过扩展的 tool_call 权限门与项目信任实施执行边界/, "审批与执行页说明收进标题悬停提示")
+  assert.doesNotMatch(source, /role="note"/, "审批页已去除页顶 / 页底废话说明块")
   for (const label of ["何时询问", "项目信任", "能碰什么", "高危解锁", "免审命令名单", "可用工具"]) {
     assert.ok(source.includes(label), `审批页缺分组：${label}`)
   }
-  for (const copy of ["允许联网", "网页搜索", "添加命令", "默认关"]) {
+  for (const copy of ["添加命令", "默认关"]) {
     assert.ok(source.includes(copy) || APPROVAL_DATA_SOURCE.includes(copy), `审批页缺文案：${copy}`)
   }
+  assert.match(source, /需先在「设备」启用浏览器身份/, "身份提示应指向「设备」页")
+  assert.doesNotMatch(source, /需先在「通用」启用浏览器身份/)
+  assert.doesNotMatch(source, /允许联网|网页搜索|status="reserved"/, "已移除死掉的沙盒预留开关")
   assert.match(source, /APPROVAL_ASK_OPTIONS/)
   assert.match(source, /APPROVAL_TRUST_OPTIONS/)
   assert.match(source, /APPROVAL_SCOPE_OPTIONS/)
-  assert.match(source, /APPROVAL_ALLOWLIST/)
+  assert.match(source, /approvalAllowlist/)
   assert.match(source, /APPROVAL_TOOLS_NOTE/)
   assert.match(source, /APPROVAL_TRUST_NOTE/)
 
-  const reservedGroups = (source.match(/status="reserved"/g) ?? []).length
-  assert.ok(reservedGroups >= 4, `四组 ◌ 预留都要标状态（实际 ${reservedGroups}）`)
-  // 项目信任默认已接 settings_set；当前项目状态仍只读，权限档位仍是 ◌。
+  assert.equal((source.match(/status="reserved"/g) ?? []).length, 0)
+  // 项目信任默认已接 settings_set；当前项目状态仍只读；何时询问/范围/高危解锁/免审名单走本地偏好与 set_approval_policy。
   assert.match(source, /useSettingsWriter/)
   assert.match(source, /defaultProjectTrustPatch/)
   assert.match(source, /effectiveProjectTrustOf/)
@@ -399,11 +393,11 @@ test("审批页：五组 + 可用工具逐条在场，◌ 组级预留 / ◐ 只
   assert.match(source, /act\.notify/)
   assert.doesNotMatch(source, /保存按钮|取消<\/button>|确定<\/button>/)
   assert.doesNotMatch(source, /localStorage/, "页面不得直接读写存储")
-  assert.doesNotMatch(source, /act\.setPref\(/, "审批页没有 ○ 本机项")
+  assert.match(source, /validateAllowlistCommand/)
+  assert.match(source, /approvalAllowlist/)
 
-  // 预留组不伪造可写控件：没有任何 onChange 接进预留组（开关一律 disabled）
-  assert.match(source, /checked=\{false\} disabled/)
-  assert.match(source, /<SettingsActionRow title="添加命令" disabled \/>/)
+  // 添加命令与免审名单已接入读写
+  assert.match(source, /<SettingsActionRow[\s\S]*?title="添加命令"/)
   assert.doesNotMatch(source, /SettingsPlaceholder/)
 })
 
@@ -411,15 +405,14 @@ test("审批页：五组 + 可用工具逐条在场，◌ 组级预留 / ◐ 只
 /* §3 通用：补强校对                                                    */
 /* ------------------------------------------------------------------ */
 
-test("通用页：设计册 §3 文案齐全，○ 即时写本机、◐ 只读、● 接 relay", () => {
+test("通用页：设计册 §3 文案齐全，○ 即时写本机、◐ 只读、● 接 relay（已移除死麦克风与伪开关）", () => {
   const source = stripComments(PAGES.general)
   for (const copy of [
     "启动与导航",
     "打开时进入",
     "上次会话",
-    "会话列表",
+    "新建会话页",
     "侧边栏常驻搜索框",
-    "关闭时用功能键唤出搜索",
     "界面语言",
     "发送与会话",
     "发送消息",
@@ -431,17 +424,14 @@ test("通用页：设计册 §3 文案齐全，○ 即时写本机、◐ 只读�
     "7 天后",
     "30 天后",
     "插话消息投递",
-    "生成时排队的插话，怎么递给模型",
     "收尾消息投递",
     "发送图片前自动缩小",
     "语音输入",
-    "麦克风",
     "语音转文字",
     "听写快捷键",
     "中转服务器",
     "连接状态",
     "服务器地址",
-    "断线后自动重连",
     "连接诊断",
     "重新配对",
   ]) {
@@ -453,14 +443,12 @@ test("通用页：设计册 §3 文案齐全，○ 即时写本机、◐ 只读�
   assert.match(source, /useSettingsLocalState|prefs\./)
   assert.doesNotMatch(source, /localStorage/, "页面不得直接读写存储，持久化在 SettingsContext")
 
-  // 麦克风补强：浏览器侧列真实输入设备
-  assert.match(source, /enumerateDevices/)
-  assert.match(source, /audioinput/)
-  assert.match(source, /devicechange/)
-  assert.match(source, /micDevice/)
+  // 已移除无意义的麦克风硬件选择与永久禁用的自动重连伪开关
+  assert.doesNotMatch(source, /micDevice|enumerateDevices|麦克风|断线后自动重连/)
 
-  // 连接诊断仍是 ◐；三项设备设置改走 settings_set。
-  assert.ok((source.match(/status="bridge"/g) ?? []).length >= 1)
+  // 连接诊断接真实 get_host_diag；三项设备设置走 settings_set。
+  assert.equal((source.match(/status="bridge"/g) ?? []).length, 0)
+  assert.match(source, /get_host_diag/)
   assert.match(source, /useSettingsDocument/)
   assert.match(source, /useSettingsWriter/)
   assert.match(source, /steeringModePatch/)
@@ -486,9 +474,25 @@ test("三页共同口径：作用域内、无字面色、无浮层残留、标�
     assert.match(clean, /useSettings\(\)/, `${page} 必须从设置上下文取宿主能力`)
     assert.match(clean, /<SettingsGroup|<ApprovalGroup/, `${page} 必须有分组卡片结构`)
   }
-  // 模型页 / 审批页不得写本机偏好；通用页是唯一允许写本机偏好的一页
-  assert.doesNotMatch(stripComments(PAGES.model), /act\.setPref\(/)
-  assert.doesNotMatch(stripComments(PAGES.approval), /act\.setPref\(/)
+  // 审批页不得写本机偏好；模型页除“新会话”两项外，其余均走 settings_set / 模型配置写桥
+  const modelPrefMatches = [...stripComments(PAGES.model).matchAll(/act\.setPref\("([^"]+)"/g)].map((m) => m[1])
+  assert.deepEqual(
+    modelPrefMatches.filter((k) => k !== "newSessionMode" && k !== "newSessionAutoTitle"),
+    [],
+    "模型页除新会话本地偏好外不应写其他 setPref",
+  )
+  const approvalPrefMatches = [...stripComments(PAGES.approval).matchAll(/act\.setPref\("([^"]+)"/g)].map((m) => m[1])
+  assert.deepEqual(
+    approvalPrefMatches.filter(
+      (k) =>
+        k !== "approvalUseAllowlist" &&
+        k !== "approvalScope" &&
+        k !== "approvalUnlockHighRisk" &&
+        k !== "approvalAllowlist",
+    ),
+    [],
+    "审批页除权限门 / 范围 / 高危解锁 / 免审名单本机策略外不应写其他 setPref",
+  )
 })
 
 test("文案常量集中：模型 / 审批的设计文案集中在可测的 data 模块里", () => {
@@ -516,15 +520,14 @@ test("通用页「对话」组：三开关与审批档位齐全，文案与会�
   const source = stripComments(PAGES.general)
   for (const copy of [
     "对话",
-    "本机偏好，改完立即生效；与输入框旁会话设置里的同名开关是同一组设置。",
     "允许智能体向我提问",
-    "开启后，智能体可以用 ask_user 工具发来选择题或填空，在网页上作答；关掉后它不会问你",
+    "允许模型调用 ask_user 工具向当前网页发起单选、多选或填空提问。",
     "在网页上回答电脑上的确认框",
-    "关掉后，确认框只能在电脑终端里回答",
+    "将设备终端弹出的确认框转发到网页端作答；关闭后仅能在设备终端内确认。",
     "工具执行审批门",
-    "开启后，智能体执行工具前先弹窗等你批准；与上面的确认框应答是两个独立开关",
+    "执行受控工具前先暂停并请求你的批准；与终端确认框转发相互独立。",
     "审批门问哪些工具",
-    "名单制时，名单在电脑端桥的配置里维护",
+    "选择「只问名单里的工具」时，具体工具名单由设备端扩展配置维护。",
     "只问高危操作",
     "所有非只读操作都问",
     "只问名单里的工具",

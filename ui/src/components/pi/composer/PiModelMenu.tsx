@@ -95,9 +95,9 @@ export interface PiModelMenuProps extends Omit<ComponentProps<"div">, "children"
   /** true = static state; when omitted, read PiStaticContext */
   static?: boolean
   /** Pick a model (an unconfigured provider is not selectable); the host closes the menu / sheet after picking (PiMenuCloseContext) */
-  onSelectModel?: (key: string) => void
+  onSelectModel?: (key: string) => void | Promise<boolean>
   /** Pick one thinking level */
-  onThinkingChange?: (value: string) => void
+  onThinkingChange?: (value: string, opts?: { force?: boolean }) => void
   /** Desktop: explainer card of the picked row, floating to the right of the menu, linked to the option with aria-describedby; null means no card from the host (the menu falls back to its own facts card) */
   explainerFor?: (key: string) => ReactNode
   /** Empty-state action: jump to the settings page model section (redesign section 7) */
@@ -179,9 +179,17 @@ function useExplainerTop(surfaceRef: { current: HTMLElement | null }, scrollRef:
     const box = scroller.getBoundingClientRect()
     setTop(Math.min(Math.max(y(r, 0.5), y(box, 0)), y(box, 1)))
   }, [surfaceRef, scrollRef, rowId])
-  // Re-measure after every commit (the list changes with the search query, so a row's
-  // position moves even when the anchored row does not); an unchanged value does not re-render
-  useLayoutEffect(() => place())
+  // Re-measure after the anchored row or list layout changes. place() uses
+  // getBoundingClientRect which returns the CSS-transformed rect; during the
+  // Radix dropdown's entry animation the scale changes each frame, causing
+  // the explainer card to jump. We defer to the next animation frame so the
+  // measurement runs after the CSS transition settles to its final value on
+  // the first commit, and only re-runs when the callback identity changes
+  // (i.e. when rowId changes) or via the onScroll handler.
+  useLayoutEffect(() => {
+    const id = requestAnimationFrame(() => place())
+    return () => cancelAnimationFrame(id)
+  }, [place])
   return { top, place }
 }
 
@@ -195,11 +203,14 @@ function useExplainerTop(surfaceRef: { current: HTMLElement | null }, scrollRef:
 function useExplainerSide(surfaceRef: { current: HTMLElement | null }, gap: number): ExplainerSide {
   const [side, setSide] = useState<ExplainerSide>("right")
   useLayoutEffect(() => {
-    const surface = surfaceRef.current
-    if (!surface) return
-    const next = explainerSideOf(surface.getBoundingClientRect().right, window.innerWidth, gap)
-    setSide((prev) => (prev === next ? prev : next))
-  })
+    const id = requestAnimationFrame(() => {
+      const surface = surfaceRef.current
+      if (!surface) return
+      const next = explainerSideOf(surface.getBoundingClientRect().right, window.innerWidth, gap)
+      setSide((prev) => (prev === next ? prev : next))
+    })
+    return () => cancelAnimationFrame(id)
+  }, [surfaceRef, gap])
   return side
 }
 
@@ -294,7 +305,16 @@ function ModelListStatus({ phase, error, onRetry, phone }: { phase: "loading" | 
 /** Empty states (redesign section 7): zero configured models, or no search match */
 function ModelEmptyState({ query, onConfigureModels }: { query?: string; onConfigureModels?: () => void }) {
   if (query?.trim()) {
-    return <div className={cn("px-2 py-1.5 text-(length:--cw-text-sm)", C_SECONDARY)}>没有匹配的模型</div>
+    return (
+      <div className="flex flex-col items-start gap-1.5 px-2 py-2">
+        <div className={cn("text-(length:--cw-text-sm)", C_SECONDARY)}>没有匹配的模型</div>
+        {onConfigureModels && (
+          <button type="button" className={cn("text-(length:--cw-text-sm) underline underline-offset-2", C_SECONDARY, "hover:text-(--cw-text)")} onClick={onConfigureModels}>
+            管理供应商与模型…
+          </button>
+        )}
+      </div>
+    )
   }
   return (
     <div className="flex flex-col items-start gap-2 px-2 py-4">
@@ -316,6 +336,7 @@ function ModelParamsPanel({
   section,
   onContext,
   onThinking,
+  onBack,
 }: {
   entry: PiModelMenuEntry<PiModelMenuRow>
   isCurrent: boolean
@@ -323,9 +344,22 @@ function ModelParamsPanel({
   section: ThinkingSection
   onContext: (row: PiModelMenuRow) => void
   onThinking: (value: string) => void
+  onBack?: () => void
 }) {
   return (
-    <div data-slot="pi-model-params" role="group" aria-label={`${entry.representative.name} 的参数`} className={cn(menuSurfaceClass, menuShadowClass("popover"), "w-[212px] text-left")}>
+    <div
+      data-slot="pi-model-params"
+      role="group"
+      aria-label={`${entry.representative.name} 的参数`}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" || event.key === "ArrowLeft") {
+          event.preventDefault()
+          event.stopPropagation()
+          onBack?.()
+        }
+      }}
+      className={cn(menuSurfaceClass, menuShadowClass("popover"), "w-[212px] text-left")}
+    >
       {entry.hasContextVariants && (
         <>
           <MenuLabel className={C_SECONDARY}>上下文</MenuLabel>
@@ -347,7 +381,7 @@ function ModelParamsPanel({
       )}
       {section.kind === "options" && (
         <>
-          <MenuLabel className={C_SECONDARY}>思考级别</MenuLabel>
+          <MenuLabel className={C_SECONDARY}>Thinking</MenuLabel>
           {section.options.map((option) => (
             <button
               key={option.value}
@@ -365,7 +399,7 @@ function ModelParamsPanel({
       )}
       {section.kind === "unknown" && (
         <>
-          <MenuLabel className={C_SECONDARY}>思考级别</MenuLabel>
+          <MenuLabel className={C_SECONDARY}>Thinking</MenuLabel>
           <div className={cn("px-2 py-1 text-(length:--cw-text-sm)", C_SECONDARY)}>切换到该模型后可调</div>
         </>
       )}
@@ -541,6 +575,10 @@ function ModelMenuInteractive({
   const searchRef = useRef<HTMLInputElement>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const closePanel = useCallback(() => {
+    setEditingKey(null)
+    searchRef.current?.focus({ preventScroll: true })
+  }, [])
   const fallbackCard = (entry: PiModelMenuEntry<PiModelMenuRow>): ReactNode => {
     // Facts only (redesign section 2.4): the explainer is built from the row's own
     // fields -- no invented tagline; the cost line comes from the row when present.
@@ -560,26 +598,29 @@ function ModelMenuInteractive({
           isCurrent={entryCurrent(editingEntry)}
           thinking={thinking}
           section={section}
+          onBack={closePanel}
           onContext={(variant) => {
             if (variant.current) return
             onSelectModel?.(variant.key)
             if (!entryCurrent(editingEntry)) close?.()
           }}
-          onThinking={(value) => {
+          onThinking={async (value) => {
             if (entryCurrent(editingEntry)) {
               onThinkingChange?.(value)
               return
             }
-            onSelectModel?.(editingEntry.representative.key)
-            onThinkingChange?.(value)
-            close?.()
+            const ok = await onSelectModel?.(editingEntry.representative.key)
+            if (ok !== false) {
+              onThinkingChange?.(value, { force: true })
+              close?.()
+            }
           }}
         />
       )
     }
     if (!active) return null
     return explainerFor?.(active.representative.key) ?? fallbackCard(active)
-  }, [editingEntry, active, explainerFor, thinkingLevels, thinking, onSelectModel, onThinkingChange, close])
+  }, [editingEntry, active, explainerFor, thinkingLevels, thinking, closePanel, onSelectModel, onThinkingChange, close])
   const anchorEntry = editingEntry ?? active ?? null
   const activeRowId = activeCard != null && anchorEntry ? modelRowId(base, anchorEntry.representative.key) : null
   // After opening, and after keyboard Up/Down: scroll the active row into the list's visible range (pointer-hovered rows are already visible, so they do not scroll)
@@ -608,7 +649,7 @@ function ModelMenuInteractive({
     if (event.key === "Escape" && editingEntry) {
       event.preventDefault()
       event.stopPropagation()
-      setEditingKey(null)
+      closePanel()
       return
     }
     if (event.key === "ArrowRight" && active && !editingEntry && entryEditable(active, thinkingLevels)) {
@@ -618,7 +659,7 @@ function ModelMenuInteractive({
     }
     if (event.key === "ArrowLeft" && editingEntry) {
       event.preventDefault()
-      setEditingKey(null)
+      closePanel()
       return
     }
     if (nav.onKeyDown(event)) {
@@ -641,6 +682,11 @@ function ModelMenuInteractive({
       {...surface}
       ref={surfaceRef}
       onOpenAutoFocus={focusSearch}
+      onEscapeKeyDown={(event) => {
+        if (!editingEntry) return
+        event.preventDefault()
+        closePanel()
+      }}
       data-slot="pi-model-menu"
       data-cw-id="pi-model-menu"
       role="group"
@@ -679,7 +725,7 @@ function ModelMenuInteractive({
           </MenuLabel>
           <div ref={scrollRef} data-slot="pi-model-list-scroll" className={LIST_SCROLL} onScroll={explainer.place}>
             <div role="listbox" id={listId} aria-labelledby={labelId} className="flex flex-col">
-              {entries.length === 0 && <ModelEmptyState query={query} />}
+              {entries.length === 0 && <ModelEmptyState query={query} onConfigureModels={onConfigureModels} />}
               {entries.map((entry, i) => {
                 const on = i === nav.active
                 const isEditing = editingEntry?.key === entry.key
@@ -718,6 +764,24 @@ function ModelMenuInteractive({
               })}
             </div>
           </div>
+          {onConfigureModels && (
+            <>
+              <MenuSeparator />
+              <button
+                type="button"
+                data-slot="pi-model-configure"
+                data-cw-id="pi-model-configure"
+                className={cn(menuItemClass({ kind: "dropdown", weak: true, dim: false, forcedOn: false, twoLine: false }), "min-h-7 w-full text-left")}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onConfigureModels()
+                  close?.()
+                }}
+              >
+                <MenuItemContent label="管理供应商与模型…" checked={false} weak dim={false} forcedOn={false} />
+              </button>
+            </>
+          )}
         </>
       )}
       {activeCard != null && (
@@ -760,6 +824,8 @@ function ModelSheetList({
   const [pageKey, setPageKey] = useState<string | null>(null)
   const allEntries = useMemo(() => entriesOf(models, ""), [models])
   const entries = useMemo(() => entriesOf(models, query), [models, query])
+  const currentEntry = useMemo(() => allEntries.find((entry) => entryCurrent(entry)) ?? null, [allEntries])
+  const currentThinking = useMemo(() => (currentEntry ? thinkingSectionOf(currentEntry, thinkingLevels) : null), [currentEntry, thinkingLevels])
   const pageEntry = pageKey ? entries.find((entry) => entry.key === pageKey) ?? allEntries.find((entry) => entry.key === pageKey) ?? null : null
   const current = Math.max(0, entries.findIndex((entry) => entryCurrent(entry)))
   const nav = useListNav(
@@ -792,16 +858,18 @@ function ModelSheetList({
     if (entryCurrent(entry)) setPageKey(null)
     else close?.()
   }
-  const pickThinking = (entry: PiModelMenuEntry<PiModelMenuRow>, value: string) => {
+  const pickThinking = async (entry: PiModelMenuEntry<PiModelMenuRow>, value: string) => {
     if (!interactive) return
     if (entryCurrent(entry)) {
       onThinkingChange?.(value)
       setPageKey(null)
       return
     }
-    onSelectModel?.(entry.representative.key)
-    onThinkingChange?.(value)
-    close?.()
+    const ok = await onSelectModel?.(entry.representative.key)
+    if (ok !== false) {
+      onThinkingChange?.(value, { force: true })
+      close?.()
+    }
   }
   if (pageEntry) {
     const row = pageEntry.representative
@@ -840,7 +908,7 @@ function ModelSheetList({
         )}
         {section.kind === "options" && (
           <>
-            <div className={cn("mt-4 px-1 pb-1", t.sub, C_SECONDARY)}>思考级别</div>
+            <div className={cn("mt-4 px-1 pb-1", t.sub, C_SECONDARY)}>Thinking</div>
             {section.options.map((option) => (
               <button
                 key={option.value}
@@ -856,7 +924,7 @@ function ModelSheetList({
         )}
         {section.kind === "unknown" && (
           <>
-            <div className={cn("mt-4 px-1 pb-1", t.sub, C_SECONDARY)}>思考级别</div>
+            <div className={cn("mt-4 px-1 pb-1", t.sub, C_SECONDARY)}>Thinking</div>
             <div className={cn("px-1 py-2", t.sub, C_SECONDARY)}>切换到该模型后可调</div>
           </>
         )}
@@ -866,16 +934,41 @@ function ModelSheetList({
   }
   return (
     <div data-slot="pi-model-menu" data-cw-id="pi-model-menu" role="group" aria-label="模型" className={cn("flex flex-col", className)} {...div}>
-      <PiSheetSearch
-        placeholder="搜索模型…"
-        aria-label="搜索模型"
-        value={query}
-        onChange={(event) => {
-          setQuery(event.currentTarget.value)
-          nav.setActive(0)
-        }}
+      <div
         className="mb-2"
-      />
+        onPointerDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <PiSheetSearch
+          placeholder="搜索模型…"
+          aria-label="搜索模型"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.currentTarget.value)
+            nav.setActive(0)
+          }}
+        />
+      </div>
+      {variant === "phone" && currentThinking?.kind === "options" && (
+        <div
+          data-slot="pi-model-thinking-quick"
+          className="flex flex-col gap-1.5 pt-0.5 pb-1"
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div className={cn("flex items-center justify-between px-1", t.sub, C_SECONDARY)}>
+            <span>思考强度</span>
+          </div>
+          <PiThinkingSegments
+            variant={variant}
+            levels={currentThinking.options}
+            value={thinking}
+            onValueChange={interactive ? (value) => onThinkingChange?.(value) : undefined}
+            className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          />
+        </div>
+      )}
       {allEntries.length === 0 && listPhase !== "loading" ? (
         listPhase === "error" ? (
           <ModelListStatus phase="error" error={listError} onRetry={onRetry} phone />
@@ -899,7 +992,11 @@ function ModelSheetList({
             onKeyDown={interactive ? onKeyDown : undefined}
             className="flex flex-col"
           >
-            {allEntries.length === 0 ? <ModelListStatus phase="loading" phone /> : entries.length === 0 && <ModelEmptyState query={query} />}
+            {allEntries.length === 0 ? (
+              <ModelListStatus phase="loading" phone />
+            ) : (
+              entries.length === 0 && <ModelEmptyState query={query} onConfigureModels={interactive ? onConfigureModels : undefined} />
+            )}
             {entries.map((entry) => {
               const row = entry.representative
               const isCurrent = entryCurrent(entry)
@@ -954,6 +1051,25 @@ function ModelSheetList({
               )
             })}
           </div>
+          {interactive && onConfigureModels && (
+            <button
+              type="button"
+              data-slot="pi-model-configure"
+              data-cw-id="pi-model-configure"
+              className={cn(
+                "mt-2 flex min-h-11 w-full items-center justify-between border-t border-solid px-1 py-2 text-left",
+                MENU_DIVIDER_BORDER,
+                C_SECONDARY,
+                t.sub,
+              )}
+              onClick={() => {
+                onConfigureModels()
+                close?.()
+              }}
+            >
+              <span>管理供应商与模型…</span>
+            </button>
+          )}
         </>
       )}
     </div>

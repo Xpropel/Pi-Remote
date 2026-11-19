@@ -24,6 +24,8 @@ export interface PiDesktopShellProps {
   dock?: ReactNode
   /** 右 pane（终端 / 改动 / 文件）；不传 = 关闭 */
   pane?: ReactNode
+  /** 右 pane 关闭时浮在正文右上角的快捷条（产品模式） */
+  paneRail?: ReactNode
   /** 右 pane 宽度（CSS px），默认 460（--cw-pi-pane-w） */
   paneWidth?: number
   /** 全屏浮层（PiDialog、命令面板等），盖住整个外壳 */
@@ -57,6 +59,7 @@ export function PiDesktopShell({
   children,
   dock,
   pane,
+  paneRail,
   paneWidth,
   overlay,
   tablet = false,
@@ -150,6 +153,11 @@ export function PiDesktopShell({
               style={paneOpen && tablet ? { right: paneFloatW } : undefined}
             >
               <div className="pointer-events-auto max-w-full">{notice}</div>
+            </div>
+          )}
+          {!paneOpen && paneRail != null && (
+            <div data-pi-pane-rail-slot="" className="pointer-events-none absolute top-2 right-3 z-(--cw-pi-z-raised)">
+              <div className="pointer-events-auto">{paneRail}</div>
             </div>
           )}
         </div>

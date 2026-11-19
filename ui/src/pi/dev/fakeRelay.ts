@@ -142,6 +142,7 @@ function defaults(): Relay {
     deleteSessionFile: resolved,
     // P9 B：新入口（有 session.purge 走设备命令；假 relay 没有服务端，够画廊返回成功形状即可）
     deleteSession: () => Promise.resolve({ status: "deleted", method: null }),
+    hideSession: () => Promise.resolve({ status: "hidden" as const }),
     renameSessionFile: resolved,
     exportSessionFile: resolved,
     forkSessionFile: resolved,
@@ -196,6 +197,7 @@ function defaults(): Relay {
     listViewers: async () => [],
     revokeViewer: resolved,
     revokeDevice: resolved,
+    subscribeShellEvents: () => () => {},
   }
 }
 

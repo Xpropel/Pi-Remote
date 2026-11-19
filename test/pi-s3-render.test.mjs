@@ -251,12 +251,12 @@ describe("PiProse 流式逐字渲染（react-dom/server）", () => {
     assert.match(textOf(done), /\*\*测试都过/)
   })
 
-  test("点名折叠的长回复：收起时限高 + 渐隐，下面一颗「展开全文」", () => {
+  test("点名折叠的长回复：收起时限高 + 渐隐，下面一颗「Show more」", () => {
     const tree = parse(proseHtml({ markdown: "一段\n\n两段", fold: { maxHeight: 180 } }))
     const box = find(tree, (n) => n.attrs["data-pi-fold"] === "clipped")
     assert.match(box.attrs.style, /max-height:180px/)
     assert.match(box.attrs.style, /mask-image:linear-gradient/)
-    assert.equal(find(tree, (n) => n.tag === "button")?.attrs["aria-label"], "展开全文")
+    assert.equal(find(tree, (n) => n.tag === "button")?.attrs["aria-label"], "Show more")
   })
 })
 
@@ -274,7 +274,7 @@ describe("PiThinkingText（思考原文）", () => {
     assertSteadyStream(THOUGHT, (text) => thinkingHtml({ text, streaming: true }), blocksOf)
   })
 
-  test("想完了：超过 12 行的代码段收起（限 12 行 + 渐隐，下面「展开代码（N 行）」）；流式中不收", () => {
+  test("想完了：超过 12 行的代码段收起（限 12 行 + 渐隐，下面「Expand code (N lines)」）；流式中不收", () => {
     const code = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n")
     const text = `看一下：\n\n\`\`\`js\n${code}\n\`\`\``
     const done = parse(thinkingHtml({ text, fold: true }))
@@ -282,7 +282,7 @@ describe("PiThinkingText（思考原文）", () => {
     assert.ok(fold)
     assert.match(find(fold, part("thinking-code")).attrs.style, /max-height:calc\(12lh \+ 12px\)/)
     const toggle = find(fold, (n) => n.tag === "button")
-    assert.equal(textOf(toggle), "展开代码（20 行）")
+    assert.equal(textOf(toggle), "Expand code (20 lines)")
     assert.equal(toggle.attrs["aria-expanded"], "false")
     const live = parse(thinkingHtml({ text, streaming: true }))
     assert.equal(find(live, part("thinking-code-fold")), null)
@@ -308,7 +308,7 @@ describe("终端 / 改动视图的空态", () => {
     assert.equal(textOf(terminal(false)), "这个会话还没有运行命令pi 运行命令时，输出会在这里展开")
     assert.equal(textOf(terminal(true)), "会话还没载入发第一条消息载入后，这里会列出本会话跑过的命令")
     assert.equal(find(terminal(true), part("terminal-pane")).attrs["data-empty"], "unloaded")
-    assert.equal(textOf(changes(false)), "这个会话还没有编辑文件改动视图根据本会话的编辑记录，不是 git 状态")
+    assert.equal(textOf(changes(false)), "这个会话还没有编辑文件")
     assert.equal(textOf(changes(true)), "会话还没载入发第一条消息载入后，这里会列出本会话的编辑记录")
   })
 })
@@ -344,12 +344,12 @@ describe("第六轮：被停止的写入 / 编辑卡标「已取消」", () => {
     assert.deepEqual([m.exploreRowOf(grep, true).running, m.exploreRowOf(grep).running], [false, true], "停下的消息里探查行不再转圈")
   })
 
-  test("停在参数流里的 write（真实会话：pi 存下 arguments {}）：算已取消，出一行「写入文件」；知道文件时写文件名", () => {
+  test("停在参数流里的 write（真实会话：pi 存下 arguments {}）：算已取消，出一行「Wrote file」；知道文件时写文件名", () => {
     const stoppedWrite = block("write", {}, { state: "input-available" })
     assert.equal(m.streamToolStatus(stoppedWrite, true), "aborted")
     assert.equal(m.editsOf(stoppedWrite), undefined)
-    assert.deepEqual(m.diffLineOf(stoppedWrite, false), { verb: "写入文件" })
-    assert.deepEqual(m.diffLineOf(block("edit", { path: "src/cart.js" }), true), { verb: "正在编辑", detail: "cart.js" })
+    assert.deepEqual(m.diffLineOf(stoppedWrite, false), { verb: "Wrote file" })
+    assert.deepEqual(m.diffLineOf(block("edit", { path: "src/cart.js" }), true), { verb: "Editing", detail: "cart.js" })
   })
 
   test("edit 参数里成对的替换：edits[] 与旧版顶层 oldText / newText；还没写完的那对不算", () => {
@@ -362,13 +362,32 @@ describe("第六轮：被停止的写入 / 编辑卡标「已取消」", () => {
   const card = (props) => parse(renderToStaticMarkup(React.createElement(m.PiDiffCard, { path: "cart.js", variant: "desktop", ...props })))
   const headOf = (tree) => find(tree, part("diff-card")).children.filter(isEl)[0]
 
-  test("卡头行尾：已取消 = 灰字、未生效 = 红字，平常没有", () => {
+  test("卡头行尾：Cancelled = 灰字、Failed = 红字，平常没有", () => {
     const trailing = (props) => headOf(card({ content: "a", ...props })).children.filter(isEl).at(-1)
-    assert.equal(textOf(trailing({ cancelled: true })), "已取消")
+    assert.equal(textOf(trailing({ cancelled: true })), "Cancelled")
     assert.match(trailing({ cancelled: true }).attrs.class, /--cw-pi-text-secondary/)
-    assert.equal(textOf(trailing({ failed: true })), "未生效")
+    assert.equal(textOf(trailing({ failed: true })), "Failed")
     assert.match(trailing({ failed: true }).attrs.class, /--cw-pi-error/)
-    assert.doesNotMatch(textOf(headOf(card({ content: "a" }))), /已取消|未生效/)
+    assert.doesNotMatch(textOf(headOf(card({ content: "a" }))), /Cancelled|Failed/)
+  })
+
+  test("tools 英文短语与探索摘要/明细格式", () => {
+    assert.equal(m.bashPhrase("date; env | sort"), "Run command")
+    assert.equal(m.bashPhrase("npm test"), "Run tests")
+    assert.equal(m.bashPhrase("git status"), "Check git status")
+    assert.equal(
+      m.exploreSummary([block("grep", { pattern: "foo" }), block("ls", {}, { outputText: "a\nb\n" })]),
+      "2 files, 1 search",
+    )
+    assert.deepEqual(m.exploreRowOf(block("grep", { pattern: "foo", path: "ui/src" }, { state: "output-available", outputText: "a:1\n" })), {
+      id: "grep",
+      running: false,
+      failed: false,
+      verb: "Search",
+      target: "foo",
+      scope: "ui/src",
+      count: "1 match",
+    })
   })
 
   test("没有 patch 的 edit 卡按 oldText → newText 画出删行 / 增行（计数对得上、不写行号），不再是一行空的「+1」", () => {

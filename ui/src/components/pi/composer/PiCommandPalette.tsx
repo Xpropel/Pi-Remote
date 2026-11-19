@@ -12,7 +12,6 @@ import {
   ScanSearch,
   Search,
   Settings,
-  X,
 } from "@/components/kit/icons"
 import { PiOverlay, PiRowMarker, PiSheet, usePiStatic, type PiOverlayControl, type PiReturnFocus } from "@/components/pi/shared"
 import { cn } from "@/lib/utils"
@@ -110,8 +109,8 @@ function Row({ id, variant, icon, label, subtitle, trailing, active, disabled, o
       className={cn(
         "flex min-w-0 shrink-0 items-center select-none",
         phone
-          ? cn("mx-1 gap-3 rounded-[10px] px-3 text-[15px]", subtitle != null ? "min-h-[56px] py-1.5" : "h-12")
-          : "mx-2.5 h-8 gap-2.5 rounded-[7px] pr-2 pl-[7px] text-(length:--cw-text-md)",
+          ? cn("mx-1 gap-3 rounded-[12px] px-3 text-[15px]", subtitle != null ? "min-h-[56px] py-1.5" : "h-12")
+          : "mx-2.5 h-8 gap-2.5 rounded-[10px] pr-2 pl-[7px] text-(length:--cw-text-md)",
         active ? "bg-(--cw-palette-row-selected)" : interactive ? undefined : "hover:bg-(--cw-palette-row-selected)",
         disabled ? "text-(--cw-text-4)" : "text-(--cw-text)",
       )}
@@ -265,7 +264,7 @@ export function PiCommandPalette(props: PiCommandPaletteProps) {
   if (variant === "phone") {
     return (
       <PiSheet static size="full" label="命令面板" bodyClassName="px-2 pb-2">
-        <div className="mx-2 mb-2 flex h-11 shrink-0 items-center gap-2 rounded-[10px] bg-(--cw-chip-bg) px-3 text-[16px] text-(--cw-text-4)">
+        <div className="mx-2 mb-2 flex h-11 shrink-0 items-center gap-2 rounded-[14px] bg-(--cw-chip-bg) px-3 text-[16px] text-(--cw-text-4)">
           <Search aria-hidden strokeWidth={1.5} className="size-[18px] shrink-0" />
           <span className="min-w-0 flex-1 truncate">搜索命令和会话…</span>
           <span className="text-[15px] text-(--cw-text-2)">取消</span>
@@ -278,14 +277,13 @@ export function PiCommandPalette(props: PiCommandPaletteProps) {
     <div data-slot="pi-command-palette" className="absolute inset-0 z-(--cw-pi-z-modal)">
       <div aria-hidden className="absolute inset-0 bg-(--cw-overlay)" />
       <div role="dialog" aria-modal="true" aria-label="命令面板" className={PALETTE_CARD}>
-        <div className="flex h-12 items-center border-b border-solid border-(--cw-border) pr-4 pl-3">
-          <ScopeChip />
+        <div className="flex h-12 items-center border-b border-solid border-(--cw-border) px-4">
+          <Search aria-hidden strokeWidth={1.5} className="mr-2.5 size-4 shrink-0 text-(--cw-text-4)" />
           <span className="min-w-0 flex-1 truncate text-[17px] leading-none text-(--cw-text-4)">搜索命令和会话…</span>
         </div>
         <div className="pt-2 pb-2">
           <PaletteList {...props} />
         </div>
-        <PaletteFooter />
       </div>
     </div>
   )
@@ -293,23 +291,6 @@ export function PiCommandPalette(props: PiCommandPaletteProps) {
 
 const PALETTE_CARD =
   "absolute top-[120px] left-1/2 w-(--cw-palette-w) -translate-x-1/2 overflow-hidden rounded-(--cw-radius-palette) bg-(--cw-palette-bg) shadow-(--cw-shadow-palette)"
-
-function ScopeChip() {
-  return (
-    <span className="mr-2.5 inline-flex h-[23px] shrink-0 items-center gap-1.5 rounded-full bg-(--cw-chip-bg) pr-[7px] pl-[9px] text-(length:--cw-text-sm) leading-none text-(--cw-text-2) select-none">
-      命令
-      <X aria-hidden strokeWidth={1.75} className="size-3" />
-    </span>
-  )
-}
-
-function PaletteFooter() {
-  return (
-    <div className={cn("flex h-8 items-center border-t border-solid border-(--cw-border) px-[19px] text-(length:--cw-text-sm) text-(--cw-text-2)")}>
-      ↑↓ 选择 · ↵ 执行 · esc 关闭
-    </div>
-  )
-}
 
 /** 可交互的面板：搜索过滤、↑↓ / Enter，桌面 PiOverlay、手机全高 PiSheet */
 function PaletteInteractive({ variant, commands, sessions, offline, offlineReason, recentLimit, body, onQueryChange, open, onOpenChange, onRun, returnFocus }: PiCommandPaletteProps) {
@@ -445,7 +426,7 @@ function PaletteInteractive({ variant, commands, sessions, offline, offlineReaso
   if (phone) {
     return (
       <PiSheet open={open} onOpenChange={onOpenChange} returnFocus={returnFocus} size="full" label="命令面板" bodyClassName="px-2 pb-2">
-        <div className="mx-2 mb-2 flex h-11 shrink-0 items-center gap-2 rounded-[10px] bg-(--cw-chip-bg) px-3">
+        <div className="mx-2 mb-2 flex h-11 shrink-0 items-center gap-2 rounded-[14px] bg-(--cw-chip-bg) px-3">
           <Search aria-hidden strokeWidth={1.5} className="size-[18px] shrink-0 text-(--cw-text-4)" />
           {input}
           <Dialog.Close asChild>
@@ -468,12 +449,11 @@ function PaletteInteractive({ variant, commands, sessions, offline, offlineReaso
       layerData={{ "data-slot": "pi-command-palette" }}
       className={PALETTE_CARD}
     >
-      <div className="flex h-12 items-center border-b border-solid border-(--cw-border) pr-4 pl-3 focus-within:border-(--cw-pi-field-focus-border)">
-        <ScopeChip />
+      <div className="flex h-12 items-center border-b border-solid border-(--cw-border) px-4 focus-within:border-(--cw-pi-field-focus-border)">
+        <Search aria-hidden strokeWidth={1.5} className="mr-2.5 size-4 shrink-0 text-(--cw-text-4)" />
         {input}
       </div>
       <div className="max-h-[480px] overflow-y-auto pt-2 pb-2 [scrollbar-width:none]">{list}</div>
-      <PaletteFooter />
     </PiOverlay>
   )
 }

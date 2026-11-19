@@ -7,8 +7,8 @@ import type { CVariant } from "./styles"
 
 /** 功能 tray 的一颗 pill（design §6.4 PiTrayItem，跨区契约：只许加可选字段） */
 export interface PiTrayItem {
-  kind: "tasks" | "queue" | "terminal" | "changes"
-  /** pill 文字："任务 2/4"、"排队 2"、"排队 1 · 等重连"、"终端 1"、"改动" */
+  kind: "tasks" | "subagents" | "queue" | "terminal" | "changes"
+  /** pill 文字："Tasks 2/4"、"Subagent 1"、"Queued 2"、"Scheduled 1"、"Queued 2 · Scheduled 1"、"Queued 1 · Reconnecting"、"Terminal 1" */
   label: string
   /** Native tooltip (title attr): says what clicking the pill does (F4 --
    *  the queue pill gave no hint it was clickable at all). */
@@ -72,7 +72,7 @@ export function PiTray({ variant, items, scrollDown, newCount, static: staticPro
             aria-pressed={isStatic || !PANEL_KINDS.has(item.kind) ? item.active : undefined}
             aria-expanded={!isStatic && PANEL_KINDS.has(item.kind) ? !!item.active : undefined}
             onClick={isStatic ? undefined : () => onItemClick?.(item.kind)}
-            icon={item.running ? <PiSpinner size={phone ? 14 : 12} arc={0.5} tone="muted" label="运行中" /> : undefined}
+            icon={item.running ? <PiSpinner size={phone ? 14 : 12} arc={0.5} tone="muted" label="Running" /> : undefined}
             className={cn(
               "shrink-0",
               // 点击区 44：absolute 的 ::after 以内边距盒为准，pill 有 1px 描边，所以上下外扩 7（= 6 + 描边 1）
@@ -96,12 +96,12 @@ export function PiTray({ variant, items, scrollDown, newCount, static: staticPro
         <span className="ml-auto inline-flex shrink-0 items-center gap-2">
           {newCount ? (
             <span className="text-(length:--cw-text-sm) text-[color:var(--cw-pi-text-secondary,var(--cw-text-3))]">
-              {newCount} 条新消息
+              {newCount} new
             </span>
           ) : null}
           <RoundIconButton
             variant="scroll-down"
-            aria-label="回到底部"
+            aria-label="Scroll to bottom"
             data-cw-id="pi-tray-scroll-down"
             size={phone ? 36 : "md"}
             onClick={isStatic ? undefined : onScrollDown}

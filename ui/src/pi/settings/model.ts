@@ -8,6 +8,8 @@
  */
 import {
   SETTINGS_ACCENTS,
+  SETTINGS_APPROVAL_ALLOWLIST_DEFAULT,
+  SETTINGS_APPROVAL_SCOPES,
   SETTINGS_AUTO_ARCHIVE,
   SETTINGS_CONTENT_WIDTH_DEFAULT,
   SETTINGS_CONTENT_WIDTH_MAX,
@@ -18,6 +20,8 @@ import {
   SETTINGS_LANGUAGES,
   SETTINGS_LOCAL_VERSION,
   SETTINGS_MONO_FONTS,
+  SETTINGS_MONTHLY_TOKEN_BUDGET_MAX,
+  SETTINGS_NEW_SESSION_MODES,
   SETTINGS_RETENTION,
   SETTINGS_SEND_KEYS,
   SETTINGS_SHORTCUT_ACTIONS,
@@ -63,6 +67,9 @@ export const DEFAULT_SETTINGS_PREFS: SettingsPrefs = {
   micDevice: "system",
   speechToText: true,
   dictationShortcut: SETTINGS_DICTATION_SHORTCUT_DEFAULT,
+  newSessionMode: "agent",
+  newSessionAutoTitle: true,
+  syncDeleteSession: true,
 
   appearanceTheme: "system",
   accent: "violet",
@@ -79,8 +86,14 @@ export const DEFAULT_SETTINGS_PREFS: SettingsPrefs = {
   notifyOnlyWhenAway: true,
   notifySound: false,
   notifyBadge: true,
+  notifySystem: false,
 
   shortcuts: defaultSettingsShortcuts(),
+
+  approvalUseAllowlist: true,
+  approvalScope: "workspace",
+  approvalUnlockHighRisk: false,
+  approvalAllowlist: [...SETTINGS_APPROVAL_ALLOWLIST_DEFAULT],
 
   retention: "forever",
   privacyMode: false,
@@ -88,6 +101,7 @@ export const DEFAULT_SETTINGS_PREFS: SettingsPrefs = {
   defaultDeviceId: "",
   usageMetric: "tokens",
   usageRange: "daily",
+  monthlyTokenBudget: 0,
 }
 
 /** 新对象；页面可以直接持有，不会与 DEFAULT 共享引用。 */
@@ -95,6 +109,7 @@ export function createDefaultSettingsPrefs(): SettingsPrefs {
   return {
     ...DEFAULT_SETTINGS_PREFS,
     shortcuts: defaultSettingsShortcuts(),
+    approvalAllowlist: [...SETTINGS_APPROVAL_ALLOWLIST_DEFAULT],
   }
 }
 
@@ -131,6 +146,26 @@ function text(value: unknown, fallback: string, max = 160): string {
 function width(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback
   return Math.min(SETTINGS_CONTENT_WIDTH_MAX, Math.max(SETTINGS_CONTENT_WIDTH_MIN, Math.round(value)))
+}
+
+function nonNegBudget(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return fallback
+  return Math.min(SETTINGS_MONTHLY_TOKEN_BUDGET_MAX, Math.round(value))
+}
+
+function allowlistOf(value: unknown, fallback: readonly string[]): string[] {
+  if (!Array.isArray(value)) return [...fallback]
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of value) {
+    if (typeof item !== "string") continue
+    const clean = printable(item).trim().slice(0, 160)
+    if (!clean || seen.has(clean)) continue
+    seen.add(clean)
+    out.push(clean)
+    if (out.length >= 64) break
+  }
+  return out
 }
 
 function shortcutKeys(value: unknown, fallback: readonly string[]): string[] {
@@ -180,6 +215,9 @@ export function normalizeSettingsPrefs(value: unknown, base: SettingsPrefs = DEF
     micDevice: text(source.micDevice, base.micDevice),
     speechToText: bool(source.speechToText, base.speechToText),
     dictationShortcut: text(source.dictationShortcut, base.dictationShortcut, 60),
+    newSessionMode: pick(source.newSessionMode, SETTINGS_NEW_SESSION_MODES, base.newSessionMode),
+    newSessionAutoTitle: bool(source.newSessionAutoTitle, base.newSessionAutoTitle),
+    syncDeleteSession: bool(source.syncDeleteSession, base.syncDeleteSession),
 
     appearanceTheme: pick(source.appearanceTheme, THEME_PREFS, base.appearanceTheme),
     accent: pick(source.accent, SETTINGS_ACCENTS, base.accent),
@@ -196,8 +234,14 @@ export function normalizeSettingsPrefs(value: unknown, base: SettingsPrefs = DEF
     notifyOnlyWhenAway: bool(source.notifyOnlyWhenAway, base.notifyOnlyWhenAway),
     notifySound: bool(source.notifySound, base.notifySound),
     notifyBadge: bool(source.notifyBadge, base.notifyBadge),
+    notifySystem: bool(source.notifySystem, base.notifySystem),
 
     shortcuts: shortcutsOf(source.shortcuts, base.shortcuts),
+
+    approvalUseAllowlist: bool(source.approvalUseAllowlist, base.approvalUseAllowlist),
+    approvalScope: pick(source.approvalScope, SETTINGS_APPROVAL_SCOPES, base.approvalScope),
+    approvalUnlockHighRisk: bool(source.approvalUnlockHighRisk, base.approvalUnlockHighRisk),
+    approvalAllowlist: allowlistOf(source.approvalAllowlist, base.approvalAllowlist),
 
     retention: pick(source.retention, SETTINGS_RETENTION, base.retention),
     privacyMode: bool(source.privacyMode, base.privacyMode),
@@ -205,6 +249,7 @@ export function normalizeSettingsPrefs(value: unknown, base: SettingsPrefs = DEF
     defaultDeviceId: text(source.defaultDeviceId, base.defaultDeviceId, 200),
     usageMetric: pick(source.usageMetric, SETTINGS_USAGE_METRICS, base.usageMetric),
     usageRange: pick(source.usageRange, SETTINGS_USAGE_RANGES, base.usageRange),
+    monthlyTokenBudget: nonNegBudget(source.monthlyTokenBudget, base.monthlyTokenBudget),
   }
 }
 
@@ -213,13 +258,14 @@ export function setSettingsPref<K extends keyof SettingsPrefs>(prefs: SettingsPr
   return normalizeSettingsPrefs({ ...prefs, [key]: value }, prefs)
 }
 
-/** 逐字段比较（含 shortcuts 的每个动作）；跨标签页 storage 事件用它判断是否真的变了。 */
+/** 逐字段比较（含 shortcuts 的每个动作与 approvalAllowlist）；跨标签页 storage 事件用它判断是否真的变了。 */
 export function settingsPrefsEqual(left: SettingsPrefs, right: SettingsPrefs): boolean {
   if (left === right) return true
   for (const key of Object.keys(DEFAULT_SETTINGS_PREFS) as (keyof SettingsPrefs)[]) {
-    if (key === "shortcuts") continue
+    if (key === "shortcuts" || key === "approvalAllowlist") continue
     if (left[key] !== right[key]) return false
   }
+  if (!keysEqual(left.approvalAllowlist, right.approvalAllowlist)) return false
   return SETTINGS_SHORTCUT_ACTIONS.every((action) => {
     const a = left.shortcuts[action.id]
     const b = right.shortcuts[action.id]

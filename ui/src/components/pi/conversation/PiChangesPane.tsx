@@ -1,3 +1,4 @@
+import { useState, type KeyboardEvent } from "react"
 import { ChangesSummaryRow, DiffFileRow, DiffFileSection, DiffStat, type DiffRow } from "@/components/kit"
 import { cn } from "@/lib/utils"
 import { langOf } from "./PiDiffCard"
@@ -25,6 +26,8 @@ export interface PiChangesPaneProps {
   openPaths?: readonly string[]
   /** 会话还没载入（只点选了本机记录）：本机记录不带编辑记录，列表空着不等于没改过文件 */
   unloaded?: boolean
+  /** 点文件行右上角打开按钮（↗）时的回调 */
+  onOpenFile?: (path: string) => void
   className?: string
 }
 
@@ -54,17 +57,28 @@ const UNMODIFIED_SECONDARY = "[&_[data-slot=unmodified-lines-bar]]:text-(--cw-te
  * Cursor diffs view 的同一语法（规则 7）：三级统计 → 文件行 → 单列 unified diff（一列行号）+ 未改动折叠条。
  * 数据来自本会话的 edit / write 记录，不是 git 状态；所以没有勾选框、撤销、Commit & Push（§8）。
  */
-export function PiChangesPane({ files, total, variant, openPaths, unloaded, className }: PiChangesPaneProps) {
+export function PiChangesPane({ files, total, variant, openPaths, unloaded, onOpenFile, className }: PiChangesPaneProps) {
   const phone = variant === "phone"
-  const open = new Set(openPaths ?? (files[0] ? [files[0].path] : []))
+  const defaultOpenSet = new Set(openPaths ?? (files[0] ? [files[0].path] : []))
+  const [toggled, setToggled] = useState<Record<string, boolean>>({})
+  const isOpen = (path: string) => toggled[path] ?? defaultOpenSet.has(path)
+  const allOpen = files.length > 0 && files.every((f) => isOpen(f.path))
+  const toggleAll = () => {
+    const next = !allOpen
+    const nextMap: Record<string, boolean> = {}
+    for (const f of files) nextMap[f.path] = next
+    setToggled(nextMap)
+  }
   if (files.length === 0) {
     // 没有改动（design changes-pane states）：本会话还没有成功的 edit / write；没载入的会话还看不到编辑记录
     return (
       <div data-pi-part="changes-pane" data-empty={unloaded ? "unloaded" : ""} className={cn("flex min-h-0 flex-1 flex-col items-center justify-center px-6", className)}>
         <div className="text-(length:--cw-text-md) text-(--cw-text-2)">{unloaded ? "会话还没载入" : "这个会话还没有编辑文件"}</div>
-        <div className={cn("mt-1 text-(length:--cw-text-sm) leading-(--cw-leading-sm)", T_SECONDARY)}>
-          {unloaded ? "发第一条消息载入后，这里会列出本会话的编辑记录" : "改动视图根据本会话的编辑记录，不是 git 状态"}
-        </div>
+        {unloaded && (
+          <div className={cn("mt-1 text-(length:--cw-text-sm) leading-(--cw-leading-sm)", T_SECONDARY)}>
+            发第一条消息载入后，这里会列出本会话的编辑记录
+          </div>
+        )}
       </div>
     )
   }
@@ -76,15 +90,14 @@ export function PiChangesPane({ files, total, variant, openPaths, unloaded, clas
           removed={total.removed}
           className={cn("font-(--cw-weight-semibold)", phone ? "text-[17px]" : "text-(length:--cw-text-lg)")}
         />
-        <div className={cn("mt-1 text-(length:--cw-text-sm) leading-(--cw-leading-sm)", T_SECONDARY)}>
-          根据本会话的编辑记录，不是 git 状态
-        </div>
       </div>
       <ChangesSummaryRow
         variant="uncommitted"
         label={`${files.length} 个文件改动`}
         added={total.added}
         removed={total.removed}
+        open={allOpen}
+        onToggle={toggleAll}
         revert={false}
         checkbox={false}
         // kit 图标钮的中文名（§4.7 D-04；kit-requests pi b6）
@@ -100,7 +113,7 @@ export function PiChangesPane({ files, total, variant, openPaths, unloaded, clas
         )}
       >
         {files.map((f) =>
-          open.has(f.path) ? (
+          isOpen(f.path) ? (
             <DiffFileSection
               key={f.path}
               path={f.path}
@@ -111,7 +124,9 @@ export function PiChangesPane({ files, total, variant, openPaths, unloaded, clas
               lang={langOf(f.path)}
               revert={false}
               checkbox={false}
-              defaultOpen
+              open
+              onOpenChange={(next) => setToggled((prev) => ({ ...prev, [f.path]: next }))}
+              onOpen={onOpenFile ? () => onOpenFile(f.path) : undefined}
               labels={FILE_LABELS}
               // 手机：文件行高 44，Open file ↗ 视觉 16、点击区 44×44（B3）
               headerClassName={phone ? cn("h-11", TOUCH_44_CHILD_BUTTON) : undefined}
@@ -126,8 +141,23 @@ export function PiChangesPane({ files, total, variant, openPaths, unloaded, clas
               isNew={f.isNew}
               revert={false}
               checkbox={false}
+              role="button"
+              tabIndex={0}
+              aria-expanded={false}
+              onClick={() => setToggled((prev) => ({ ...prev, [f.path]: true }))}
+              onKeyDown={(e: KeyboardEvent<HTMLDivElement>) => {
+                if (e.target !== e.currentTarget) return
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  setToggled((prev) => ({ ...prev, [f.path]: true }))
+                }
+              }}
+              onOpen={onOpenFile ? () => onOpenFile(f.path) : undefined}
               labels={FILE_LABELS}
-              className={phone ? cn("h-11", TOUCH_44_CHILD_BUTTON) : undefined}
+              className={cn(
+                "cursor-pointer outline-none focus-visible:bg-[color:var(--cw-pi-menu-hl,var(--cw-row-hover))]",
+                phone && cn("h-11", TOUCH_44_CHILD_BUTTON),
+              )}
             />
           ),
         )}

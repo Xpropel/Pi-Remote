@@ -1,6 +1,6 @@
 import { PiButton, PiDialog, usePiStatic } from "@/components/pi/shared"
 import { cn } from "@/lib/utils"
-import { PiDialogError, PiDialogListRow, PiDialogNote, PiDialogStatus, type PiDialogPhase } from "./PiDialogParts"
+import { PiDialogError, PiDialogListRow, PiDialogStatus, type PiDialogPhase } from "./PiDialogParts"
 import type { PiFamilyDialogProps } from "./PiRegenerateDialog"
 
 export interface PiForkDialogProps extends PiFamilyDialogProps {
@@ -69,31 +69,25 @@ export function PiForkDialog({
     >
       <div data-slot="pi-fork-dialog" className="flex flex-col gap-3 pt-1">
         {cold ? (
-          <>
-            <PiDialogNote variant={v} tone="primary">
-              在后台读取这个会话文件，把当前分支复制成一个新会话；不会启动新的 pi，也不会切换当前会话。
-            </PiDialogNote>
-            {file && <p className="m-0 font-(family-name:--cw-font-mono) text-(length:--cw-text-code) break-all text-(--cw-text-2)">{file}</p>}
-          </>
+          file ? (
+            <p className="m-0 font-(family-name:--cw-font-mono) text-(length:--cw-text-code) break-all text-(--cw-text-2)">{file}</p>
+          ) : null
         ) : (
-          <>
-            <PiDialogNote variant={v}>新分支包含所选消息；点一条会把它的原文放回输入框，改完发送就从新分支继续。</PiDialogNote>
-            <PiDialogStatus variant={v} phase={phase} error={loadError} onRetry={onRetry} empty={phase === "ready" && messages.length === 0 ? "没有可分叉的用户消息" : null}>
-              <div role="list" aria-label="可分叉的用户消息" className="-mx-2 flex flex-col">
-                {messages.map((m) => (
-                  <div role="listitem" key={m.id}>
-                    <PiDialogListRow
-                      variant={v}
-                      title={m.text}
-                      mark={pendingId === m.id ? "分叉中…" : undefined}
-                      disabled={!!pendingId}
-                      onClick={isStatic ? undefined : () => onPick?.(m.id)}
-                    />
-                  </div>
-                ))}
-              </div>
-            </PiDialogStatus>
-          </>
+          <PiDialogStatus variant={v} phase={phase} error={loadError} onRetry={onRetry} empty={phase === "ready" && messages.length === 0 ? "没有可分叉的用户消息" : null}>
+            <div role="list" aria-label="可分叉的用户消息" className="-mx-2 flex flex-col">
+              {messages.map((m) => (
+                <div role="listitem" key={m.id}>
+                  <PiDialogListRow
+                    variant={v}
+                    title={m.text}
+                    mark={pendingId === m.id ? "分叉中…" : undefined}
+                    disabled={!!pendingId}
+                    onClick={isStatic ? undefined : () => onPick?.(m.id)}
+                  />
+                </div>
+              ))}
+            </div>
+          </PiDialogStatus>
         )}
         <PiDialogError>{error}</PiDialogError>
       </div>

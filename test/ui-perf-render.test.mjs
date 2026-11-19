@@ -87,7 +87,7 @@ describe("300 条渲染窗：主界面 transcriptWindow 的窗口数学", () => 
     assert.equal(win.visible.length, 300)
     assert.equal(win.hidden, 9700)
     assert.equal(win.nextPage, 300)
-    assert.equal(showEarlierText(win.nextPage), "显示更早的 300 条")
+    assert.equal(showEarlierText(win.nextPage), "Show 300 earlier messages")
     const page = transcriptWindowOf(items, PI_TRANSCRIPT_WINDOW * 2)
     assert.equal(page.visible.length, 600)
     assert.equal(page.hidden, 9400)

@@ -45,6 +45,7 @@ import {
   viewerStatusTextOf,
   IDENTITY_BACKUP_RECOMMENDATION,
   IDENTITY_ENABLE_INTRO,
+  IDENTITY_INSECURE_CONTEXT_NOTE,
   IDENTITY_NOT_REGISTERED_TEXT,
   IDENTITY_PHASE_NOTE,
   IDENTITY_UNRECOVERABLE_WARNING,
@@ -322,7 +323,7 @@ export function IdentitySection() {
 
   return (
     <>
-      <SettingsGroup label="观看端身份" description={IDENTITY_PHASE_NOTE}>
+      <SettingsGroup label="观看端身份" tooltip={IDENTITY_PHASE_NOTE}>
         {phase === "loading" ? (
           <div className="settings-row">
             <span className="settings-device-empty">正在读取本机身份状态…</span>
@@ -343,17 +344,18 @@ export function IdentitySection() {
 
         {phase === "none" ? (
           <>
-            <SettingsRow title="本机观看端身份" description={IDENTITY_ENABLE_INTRO}>
+            <SettingsRow title="本机观看端身份" tooltip={IDENTITY_ENABLE_INTRO}>
               <button
                 type="button"
                 className="settings-device-action"
-                disabled={busy !== null}
+                disabled={busy !== null || view?.webCryptoSupported === false}
                 onClick={() => setPanel(panel === "enable" ? "none" : "enable")}
               >
                 启用观看端身份
               </button>
             </SettingsRow>
-            {panel === "enable" ? (
+            {view?.webCryptoSupported === false ? <SettingsNote>{IDENTITY_INSECURE_CONTEXT_NOTE}</SettingsNote> : null}
+            {view?.webCryptoSupported !== false && panel === "enable" ? (
               <div className="settings-identity-panel" data-settings-identity-panel="enable">
                 <p className="settings-identity-warning">{IDENTITY_UNRECOVERABLE_WARNING}</p>
                 <label className="settings-identity-check">
@@ -606,7 +608,10 @@ export function IdentitySection() {
         ) : null}
       </SettingsGroup>
 
-      <SettingsGroup label="已授权观看端">
+      <SettingsGroup
+        label="已授权观看端"
+        tooltip="观看端名册只登记公钥（公开数据），私钥与内容钥永远不会发给中转服务。"
+      >
         {roster.phase === "loading" ? (
           <div className="settings-row">
             <span className="settings-device-empty">正在读取观看端名册…</span>
@@ -690,8 +695,6 @@ export function IdentitySection() {
           </div>
         ) : null}
       </SettingsGroup>
-
-      <SettingsNote>观看端名册只登记公钥（公开数据），私钥与内容钥永远不会发给中转服务。</SettingsNote>
     </>
   )
 }

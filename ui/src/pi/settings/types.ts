@@ -147,8 +147,11 @@ export function settingsItemInert(status: SettingsItemStatus | undefined, disabl
 /* 偏好枚举                                                            */
 /* ------------------------------------------------------------------ */
 
-export const SETTINGS_START_VIEWS = ["last", "list"] as const
+export const SETTINGS_START_VIEWS = ["last", "list", "hub"] as const
 export type SettingsStartView = (typeof SETTINGS_START_VIEWS)[number]
+
+export const SETTINGS_NEW_SESSION_MODES = ["agent", "ask"] as const
+export type SettingsNewSessionMode = (typeof SETTINGS_NEW_SESSION_MODES)[number]
 
 /** 第一期只有简体中文；字段先固定成稳定类型，后续加语言只扩数组。 */
 export const SETTINGS_LANGUAGES = ["zh-CN"] as const
@@ -210,6 +213,10 @@ export const SETTINGS_DICTATION_SHORTCUT_DEFAULT = "Caps Lock"
 export const SETTINGS_CONTENT_WIDTH_MIN = 620
 export const SETTINGS_CONTENT_WIDTH_MAX = 1120
 export const SETTINGS_CONTENT_WIDTH_DEFAULT = 860
+export const SETTINGS_APPROVAL_SCOPES = ["read-only", "workspace", "full"] as const
+export type SettingsApprovalScope = (typeof SETTINGS_APPROVAL_SCOPES)[number]
+export const SETTINGS_APPROVAL_ALLOWLIST_DEFAULT = ["git status", "cat *", "npm run test"] as const
+export const SETTINGS_MONTHLY_TOKEN_BUDGET_MAX = 1_000_000_000_000
 
 /* ------------------------------------------------------------------ */
 /* 快捷键                                                              */
@@ -291,6 +298,9 @@ export interface SettingsPrefs {
   micDevice: string
   speechToText: boolean
   dictationShortcut: string
+  newSessionMode: SettingsNewSessionMode
+  newSessionAutoTitle: boolean
+  syncDeleteSession: boolean
 
   /* 外观 */
   appearanceTheme: SettingsThemePref
@@ -309,9 +319,16 @@ export interface SettingsPrefs {
   notifyOnlyWhenAway: boolean
   notifySound: boolean
   notifyBadge: boolean
+  notifySystem: boolean
 
   /* 快捷键（纯本地；与 pi 的 keybindings.json 无关） */
   shortcuts: SettingsShortcutMap
+
+  /* 审批策略（实时门控补充偏好，纯本地持有并同步至活动房间） */
+  approvalUseAllowlist: boolean
+  approvalScope: SettingsApprovalScope
+  approvalUnlockHighRisk: boolean
+  approvalAllowlist: string[]
 
   /* 数据与隐私 / 设备 / 使用活动里浏览器可独立负责的部分 */
   retention: SettingsRetention
@@ -325,6 +342,7 @@ export interface SettingsPrefs {
   defaultDeviceId: string
   usageMetric: SettingsUsageMetric
   usageRange: SettingsUsageRange
+  monthlyTokenBudget: number
 }
 
 /** 持久化版本；结构变更必须升版本，低版本数据整体回落默认值。 */

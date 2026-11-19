@@ -4,6 +4,7 @@ import { BackIcon, ForwardIcon, PanelIcon, SearchIcon } from "./icons"
 /** P11-SIDE-01 工具行（44px，与主区顶栏同高同中线）：折叠/搜索 +（slots）→ 右锚后退/前进（宿主给了才画）；无红绿灯。 */
 export function SidebarToolRow({
   collapsed,
+  hideSearch = false,
   collapseShortcut,
   onCollapse,
   onSearch,
@@ -12,6 +13,8 @@ export function SidebarToolRow({
   endSlot,
 }: {
   collapsed: boolean
+  /** 侧栏常驻搜索框开启时，主搜索入口在正文顶部，这里隐藏重复的放大镜按钮。 */
+  hideSearch?: boolean
   /** 折叠快捷键的显示串（如 ⌘B），只进提示 */
   collapseShortcut?: string
   onCollapse?: () => void
@@ -33,7 +36,7 @@ export function SidebarToolRow({
       >
         <PanelIcon size={16} />
       </button>
-      {collapsed ? null : (
+      {collapsed || hideSearch ? null : (
         <button type="button" className="sb-iconbtn sb-iconbtn-weak" aria-label="搜索会话" title="搜索会话" onClick={onSearch}>
           <SearchIcon size={16} />
         </button>

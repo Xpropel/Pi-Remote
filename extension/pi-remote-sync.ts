@@ -52,7 +52,8 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { fileURLToPath } = require("node:url");
-const { spawnSync } = require("node:child_process");
+const { spawnSync, spawn } = require("node:child_process");
+const { StringDecoder } = require("node:string_decoder");
 // @@PROTOCOL_BEGIN（由 protocol/sync.cjs 生成，勿手改）
 const PROTOCOL = {
   "proto": 4,
@@ -76,6 +77,7 @@ const PROTOCOL = {
     "room.schedule": "定时/心跳排期（设计 D §3）：排期表归 relay（per-account 落盘 data/accounts/<safeKey>/schedules.json，tmp+fsync+rename、0600；relay 重启恢复全部 armed 并按 nextAt 算账，一次 tick 5 秒粗粒度扫描）；帧：schedule_create{roomId,text,segment:steer|follow_up,kind:once|every,at?|intervalMs?,maxFires?,expireAt?} / schedule_cancel{scheduleId} / schedule_list{roomId}（三者均为 viewer→relay 本地命令、经 ack 回执，绝不转发桥；scheduleId 单独成字段，不占帧 id 回执位），room_list 房间条目给声明了本能力的连接多带 schedules: ScheduleEntry[]（armed 全量 + retired/failed 保留 24h 内），变化时广播 schedule_update{room,schedules}（单房全量替换，与 room_waiting 同批听众纪律）；ScheduleEntry={id:sch_<随机>,accountId,roomId,deviceId,text,segment,kind,at?/intervalMs?,nextAt,firedCount,maxFires?,expireAt,state:armed|retired|failed,retireReason?:canceled|session_ended|expired|max_fires|missed|delivery_failed,createdAt,stateAt,lastFiredAt?,lastError?}；到点投递 = 经既有命令通道下发普通 prompt{text,streamingBehavior:steer|followUp,cid:sch_<id>_<拍号>}（恒带段位、只入队不打断；队列条目带 cid 故排队卡可标注来源拍号）；停止条件逐条：手动取消/会话结束（clearSessionState 与房间淘汰触发退休）/投递失败（命令回执失败、remote_message_failed 按 cid 对号、队列满 busy——once、every 都停并以 sched:<id> 写收件箱账本 error 条目）/maxFires/expireAt（缺省创建+24h，静默退休不进账本）；离线口径：once 顺延宽限 15 分钟（自原 at）内补投、超限作废（missed+账本提示），every 跳过错过的拍、房间恢复后 nextAt=恢复时刻+interval 重新起算；every 按计划节律推进 nextAt=max(now,上一拍)+intervalMs 不追赶；一期只支持纯文本（带 images 的创建以 bad_args 拒绝）；上限见 limits 的 schedule* 项",
     "session.purge": "删除后清理服务器副本（P9 B）：设备确认删除成功后，relay 清掉该会话的全部副本（名册里的离线房间、正文内存与落盘文件、会话库正文、索引里的旧行只留最小墓碑），并向所有在线 viewer 广播 session_removed{deviceId,ids}（只发给声明了本能力的连接）",
     "session.files": "设备级会话文件命令（P9 B，attach 声明）：attach 能按 sessionId 在设备的整个会话根目录里执行 delete_session，成功回 data{status:deleted|already_deleted,method:trash|unlink|null}",
+    "session.file_ops": "设备级未载入会话文件操作（attach 声明）：rename_session_file / export_session_file / fork_session_file 可在无活动扩展房间或目标项目无在线房间时直达设备连接",
     "fs.browse": "设备文件夹浏览（P9 C，attach 声明）：attach 能执行 list_dirs{path?,showHidden?}，只返回允许根目录内的目录名（不返回文件、不传文件内容），成功回 data{root,path,parent,entries,truncated}",
     "device.ops": "系统操作（attach 声明、relay 按设备路由）：设备级命令 get_pi_update_info（只读，回 {currentVersion,latestVersion,installMethod,canUpdate}）与 harness_restart / update_pi / restart_host / update_components（改动类，fire-and-track：命令只回验收 {accepted:true,operationId} 或错误码，实际进度与结果经 get_host_diag 回包的 operationStatus 字段观察，diag 另带 piInstallMethod / supervised / launchedPiCount）；这组命令按 deviceId 寻址、直达设备连接（attach），没有活动会话也可达，永不经房间转发；relay 在 auth_result.caps 里声明本能力表示路由/白名单/超时已就位，单台设备是否可用看 room_list.devices[].features 是否含 device.ops（attach 声明的交集），UI 据此决定是否显示系统操作区",
     "agent.state": "agent_state 全量快照事件能力位（子智能体胶囊预留：协议/通道先行，当前无生产者）",
@@ -1159,7 +1161,7 @@ const BODY_EVENT_TYPES = new Set(["message_start", "message_update", "message_en
  *  abort / abort_bash 同样必须插队——排在被中断的那条命令后面就永远中断不了。 */
 const IMMEDIATE_COMMANDS = new Set([
   "get_state", "get_messages", "get_entries", "get_all_tools", "get_available_models", "get_models",
-  "get_available_thinking_levels", "get_thinking_levels", "get_provider_auth", "get_settings", "get_active_tools",
+  "get_available_thinking_levels", "get_thinking_levels", "get_provider_auth", "get_models_config", "get_settings", "get_active_tools",
   "get_mcp_servers", "get_system_prompt", "get_entry", "get_labels", "get_children", "get_routing", "get_flags",
   "export_session", "get_scoped_models", "get_last_assistant_text", "get_context_usage", "list_sessions",
   "search_session_bodies",
@@ -1741,6 +1743,11 @@ export const APPROVAL_CHOICE_ONCE = "允许一次";
 export const APPROVAL_CHOICE_SESSION = "本会话都允许";
 export const APPROVAL_CHOICE_DENY = "拒绝";
 export const APPROVAL_GATE_TIERS = ["high-risk", "all-non-readonly", "list"];
+export const APPROVAL_SCOPES = ["read-only", "workspace", "full"] as const;
+export type ApprovalPolicyScope = (typeof APPROVAL_SCOPES)[number];
+const APPROVAL_READONLY_TOOLS = new Set(["read", "read_file", "grep", "search_files", "ls", "find", "list_files", "tool_search", "searchTools", "search_tools"]);
+const APPROVAL_WORKSPACE_WRITE_TOOLS = new Set(["edit", "edit_file", "write", "write_file"]);
+const APPROVAL_COMPOUND_SHELL_RE = /(?:&&|\|\||[;|`<>]|\$\(|&)/;
 
 /** ask_user 的参数 schema（手写 JSON Schema，与本文件零依赖口径一致；pi 按 TypeBox 结构校验）。 */
 export const ASK_USER_PARAMETERS: any = {
@@ -2065,6 +2072,44 @@ function askResultUnanswered(reason?: string): any {
 
 function askResultError(message: string): any {
   return { content: [{ type: "text", text: message }], details: { cancelled: false, error: true }, isError: true };
+}
+
+/** 判断单条 bash 命令是否命中免审名单。包含换行或复合/重定向/子壳元字符的命令一律拒绝免审。 */
+export function approvalCommandMatchesAllowlist(command: string, allowlist: readonly string[]): boolean {
+  if (typeof command !== "string" || !Array.isArray(allowlist) || allowlist.length === 0) return false;
+  const trimmedEnd = command.replace(/[\r\n]+$/, "");
+  if (!trimmedEnd.trim() || /[\r\n]/.test(trimmedEnd)) return false;
+  const normalized = trimmedEnd.trim();
+  if (APPROVAL_COMPOUND_SHELL_RE.test(normalized)) return false;
+  for (const rawPattern of allowlist) {
+    if (typeof rawPattern !== "string") continue;
+    const pattern = rawPattern.trim();
+    if (!pattern || /[\u0000-\u001f\u007f]/.test(pattern)) continue;
+    if (pattern.indexOf("*") < 0) {
+      if (normalized === pattern) return true;
+      continue;
+    }
+    const regexSource = "^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$";
+    try {
+      if (new RegExp(regexSource).test(normalized)) return true;
+    } catch {}
+  }
+  return false;
+}
+
+/** 判断目标路径是否落在工作区根目录内（展开 ~ 以便准确识别越界写入）。 */
+export function approvalPathWithinRoot(targetPath: string, rootDir: string): boolean {
+  if (typeof targetPath !== "string" || typeof rootDir !== "string") return false;
+  const raw = targetPath.trim();
+  const rootRaw = rootDir.trim();
+  if (!raw || !rootRaw) return false;
+  let expanded = raw;
+  if (raw === "~") expanded = os.homedir();
+  else if (/^~[\\/]/.test(raw)) expanded = path.join(os.homedir(), raw.slice(2));
+  const resolvedRoot = path.resolve(rootRaw);
+  const resolvedTarget = path.resolve(resolvedRoot, expanded);
+  const rel = path.relative(resolvedRoot, resolvedTarget);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 /** 审批门策略判定（§4.2 三档）：返回 true = 需要弹窗确认。
@@ -2972,6 +3017,8 @@ const SETTINGS_DELIVERY_MODES = ["one-at-a-time", "all"];
 const SETTINGS_TOP_LEVEL_FIELDS = new Set([
   "steeringMode", "followUpMode", "hideThinkingBlock", "defaultProjectTrust",
   "enableInstallTelemetry", "enableSkillCommands", "defaultThinkingLevel", "defaultModel", "defaultProvider",
+  "enabledModels", "modelThinkingLevels", "defaultTools",
+  "skills", "prompts", "extensions", "packages",
 ]);
 const SETTINGS_NESTED_FIELDS: Record<string, Set<string>> = {
   compaction: new Set(["enabled", "reserveTokens", "keepRecentTokens"]),
@@ -2980,15 +3027,22 @@ const SETTINGS_NESTED_FIELDS: Record<string, Set<string>> = {
 const SETTINGS_PATCH_MAX_FIELDS = 32;
 const SETTINGS_FILE_MAX_BYTES = 1024 * 1024;
 const SETTINGS_STRING_MAX = 200;
+const SETTINGS_RESOURCE_STRING_MAX = 500;
+const SETTINGS_NULLABLE_TOP_LEVEL_FIELDS = new Set([
+  "enabledModels", "modelThinkingLevels", "defaultTools", "defaultThinkingLevel",
+  "skills", "prompts", "extensions", "packages",
+]);
+const PACKAGE_FILTER_KEYS = ["extensions", "skills", "prompts", "themes"] as const;
 const SETTINGS_FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const MCP_VALID_EXPOSURES = new Set(["codemode", "deferred", "direct", "hidden"]);
+const MCP_VALID_TRANSPORTS = new Set(["stdio", "http", "sse"]);
 
 function settingsIsObject(v: any): boolean {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
-/** 全局设置文件路径。与 pi 的 getAgentDir() 同口径：PI_CODING_AGENT_DIR 优先，否则 ~/.pi/agent。
- *  home 可注入，测试用；生产传默认值。不读项目本地设置。 */
-function settingsFilePath(env: any = process.env, home: string = os.homedir()): string {
+/** agentDir 解析：PI_CODING_AGENT_DIR 优先，否则 ~/.pi/agent。不把绝对路径回传远端。 */
+function settingsAgentDir(env: any = process.env, home: string = os.homedir()): string {
   const raw = String((env && env.PI_CODING_AGENT_DIR) || "").trim();
   let dir: string;
   try {
@@ -3001,7 +3055,25 @@ function settingsFilePath(env: any = process.env, home: string = os.homedir()): 
     // 不把 env 里的路径/URL 回传；调用方只需要知道“目录配置无法解析”
     throw new RemoteError("internal", "无法解析设置目录（检查 PI_CODING_AGENT_DIR）");
   }
-  return path.join(dir, "settings.json");
+  return dir;
+}
+
+/** 全局设置文件路径。与 pi 的 getAgentDir() 同口径：PI_CODING_AGENT_DIR 优先，否则 ~/.pi/agent。
+ *  home 可注入，测试用；生产传默认值。不读项目本地设置。 */
+function settingsFilePath(env: any = process.env, home: string = os.homedir()): string {
+  return path.join(settingsAgentDir(env, home), "settings.json");
+}
+
+function modelsFilePath(env: any = process.env, home: string = os.homedir()): string {
+  return path.join(settingsAgentDir(env, home), "models.json");
+}
+
+function authFilePath(env: any = process.env, home: string = os.homedir()): string {
+  return path.join(settingsAgentDir(env, home), "auth.json");
+}
+
+function mcpFilePath(env: any = process.env, home: string = os.homedir()): string {
+  return path.join(settingsAgentDir(env, home), "mcp.json");
 }
 
 /** IO 失败只回错误码，不回 fs 错误里的绝对路径（避免把用户目录带到远端）。 */
@@ -3014,7 +3086,26 @@ function settingsBadArg(field: string, detail: string): never {
   throw new RemoteError("bad_args", "设置 " + field + " " + detail);
 }
 
-/** 单个白名单字段的类型/范围校验。值与 pi 1.3 settings-schema 对齐。 */
+function validateStringList(field: string, value: any, limit: number, maxLen: number): string[] {
+  if (!Array.isArray(value)) settingsBadArg(field, "必须是字符串数组或 null");
+  if (value.length > limit) settingsBadArg(field, "条目过多（上限 " + limit + "）");
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") settingsBadArg(field, "数组项必须是字符串");
+    const text = item.trim();
+    if (!text) settingsBadArg(field, "数组项不能为空");
+    if (text.length > maxLen) settingsBadArg(field, "数组项过长（上限 " + maxLen + " 字符）");
+    if (/[\u0000-\u001f\u007f]/.test(text)) settingsBadArg(field, "数组项不能包含控制字符");
+    if (!seen.has(text)) {
+      seen.add(text);
+      out.push(text);
+    }
+  }
+  return out;
+}
+
+/** 单个白名单字段的类型/范围校验。值与 pi settings-schema 对齐。 */
 function validateSettingValue(field: string, value: any): any {
   switch (field) {
     case "steeringMode":
@@ -3043,6 +3134,7 @@ function validateSettingValue(field: string, value: any): any {
       }
       return value;
     case "defaultThinkingLevel":
+      if (value === null) return null;
       if (typeof value !== "string" || SETTINGS_THINKING_LEVELS.indexOf(value) < 0) {
         settingsBadArg(field, "不是 pi 合法档位（" + SETTINGS_THINKING_LEVELS.join("/") + "）");
       }
@@ -3055,6 +3147,78 @@ function validateSettingValue(field: string, value: any): any {
       if (text.length > SETTINGS_STRING_MAX) settingsBadArg(field, "过长（上限 " + SETTINGS_STRING_MAX + " 字符）");
       if (/[\u0000-\u001f\u007f]/.test(text)) settingsBadArg(field, "不能包含控制字符");
       return text;
+    }
+    case "enabledModels":
+    case "defaultTools": {
+      if (value === null) return null;
+      return validateStringList(field, value, field === "enabledModels" ? 200 : 100, SETTINGS_STRING_MAX);
+    }
+    case "skills":
+    case "prompts":
+    case "extensions": {
+      if (value === null) return null;
+      return validateStringList(field, value, 200, SETTINGS_RESOURCE_STRING_MAX);
+    }
+    case "packages": {
+      if (value === null) return null;
+      if (!Array.isArray(value)) settingsBadArg(field, "必须是数组或 null");
+      if (value.length > 200) settingsBadArg(field, "条目过多（上限 200）");
+      const seenSources = new Set<string>();
+      const out: any[] = [];
+      for (const item of value) {
+        if (typeof item === "string") {
+          const text = item.trim();
+          if (!text) settingsBadArg(field, "包来源不能为空");
+          if (text.length > SETTINGS_RESOURCE_STRING_MAX) settingsBadArg(field, "包来源过长（上限 " + SETTINGS_RESOURCE_STRING_MAX + " 字符）");
+          if (/[\u0000-\u001f\u007f]/.test(text)) settingsBadArg(field, "包来源不能包含控制字符");
+          if (!seenSources.has(text)) {
+            seenSources.add(text);
+            out.push(text);
+          }
+          continue;
+        }
+        if (!settingsIsObject(item)) settingsBadArg(field, "数组项必须是字符串或对象");
+        for (const k of Object.keys(item)) {
+          if (SETTINGS_FORBIDDEN_KEYS.has(k)) settingsBadArg(field, "包含禁用键名");
+        }
+        if (typeof item.source !== "string") settingsBadArg(field, "对象项必须包含字符串 source");
+        const src = item.source.trim();
+        if (!src) settingsBadArg(field, "包 source 不能为空");
+        if (src.length > SETTINGS_RESOURCE_STRING_MAX) settingsBadArg(field, "包 source 过长（上限 " + SETTINGS_RESOURCE_STRING_MAX + " 字符）");
+        if (/[\u0000-\u001f\u007f]/.test(src)) settingsBadArg(field, "包 source 不能包含控制字符");
+        const normalizedObj: Record<string, any> = { source: src };
+        for (const fk of PACKAGE_FILTER_KEYS) {
+          if (item[fk] !== undefined) {
+            normalizedObj[fk] = validateStringList(`packages.${fk}`, item[fk], 200, SETTINGS_RESOURCE_STRING_MAX);
+          }
+        }
+        if (!seenSources.has(src)) {
+          seenSources.add(src);
+          out.push(normalizedObj);
+        }
+      }
+      return out;
+    }
+    case "modelThinkingLevels": {
+      if (value === null) return null;
+      if (!settingsIsObject(value)) settingsBadArg(field, "必须是对象或 null");
+      const keys = Object.keys(value);
+      if (keys.length > 200) settingsBadArg(field, "条目过多（上限 200）");
+      const out: Record<string, string> = {};
+      for (const rawKey of keys) {
+        if (SETTINGS_FORBIDDEN_KEYS.has(rawKey)) settingsBadArg(field, "包含禁用键名");
+        const k = String(rawKey).trim();
+        if (!k || k.length > SETTINGS_STRING_MAX || /[\u0000-\u001f\u007f]/.test(k)) {
+          settingsBadArg(field, "模型键不合法");
+        }
+        const lvl = value[rawKey];
+        if (lvl === null || lvl === undefined) continue;
+        if (typeof lvl !== "string" || SETTINGS_THINKING_LEVELS.indexOf(lvl) < 0) {
+          settingsBadArg(field, "思考档位不合法（" + SETTINGS_THINKING_LEVELS.join("/") + "）");
+        }
+        out[k] = lvl;
+      }
+      return out;
     }
     default:
       return settingsBadArg(field, "不在写桥白名单");
@@ -3128,41 +3292,46 @@ function settingsPatchFromArgs(args: any): any {
   return args;
 }
 
-/** 读取现有全局设置。文件不存在 = {}；空文件 = {}；坏 JSON / 顶层非对象 / 符号链接 / 非普通文件
- *  一律报错拒绝（宁可写不进去，也不能把用户的设置文件冲掉）。 */
-function settingsReadFile(filePath: string, fsImpl: any = fs): { settings: any; existed: boolean } {
+function safeReadJsonObjectFile(filePath: string, fileLabel: string = "settings.json", fsImpl: any = fs): { data: any; existed: boolean } {
   let st: any;
   try {
     st = fsImpl.lstatSync(filePath);
   } catch (e: any) {
-    if (e && e.code === "ENOENT") return { settings: {}, existed: false };
-    settingsIoFailure("读取设置文件失败", e);
+    if (e && e.code === "ENOENT") return { data: {}, existed: false };
+    settingsIoFailure("读取" + (fileLabel === "settings.json" ? "设置文件" : " " + fileLabel + " ") + "失败", e);
   }
   if (typeof st.isSymbolicLink === "function" && st.isSymbolicLink()) {
-    throw new RemoteError("internal", "settings.json 是符号链接；为不替换链接，写桥本次不写入（可改为普通文件或手动修改）");
+    throw new RemoteError("internal", fileLabel + " 是符号链接；为不替换链接，写桥本次不写入（可改为普通文件或手动修改）");
   }
-  if (!st.isFile()) throw new RemoteError("internal", "settings.json 不是普通文件；写桥本次不写入");
+  if (!st.isFile()) throw new RemoteError("internal", fileLabel + " 不是普通文件；写桥本次不写入");
   if (Number(st.size) > SETTINGS_FILE_MAX_BYTES) {
-    throw new RemoteError("internal", "settings.json 过大（" + st.size + " 字节）；写桥本次不写入");
+    throw new RemoteError("internal", fileLabel + " 过大（" + st.size + " 字节）；写桥本次不写入");
   }
   let text: string;
   try {
     text = fsImpl.readFileSync(filePath, "utf8");
   } catch (e: any) {
-    settingsIoFailure("读取设置文件失败", e);
+    settingsIoFailure("读取" + (fileLabel === "settings.json" ? "设置文件" : " " + fileLabel + " ") + "失败", e);
   }
   const body = String(text || "").replace(/^\uFEFF/, "");
-  if (!body.trim()) return { settings: {}, existed: true };
+  if (!body.trim()) return { data: {}, existed: true };
   let parsed: any;
   try {
     parsed = JSON.parse(body);
   } catch {
-    throw new RemoteError("internal", "现有 settings.json 不是合法 JSON；为不破坏原文件，本次未写入");
+    throw new RemoteError("internal", "现有 " + fileLabel + " 不是合法 JSON；为不破坏原文件，本次未写入");
   }
   if (!settingsIsObject(parsed)) {
-    throw new RemoteError("internal", "现有 settings.json 顶层不是对象；为不破坏原文件，本次未写入");
+    throw new RemoteError("internal", "现有 " + fileLabel + " 顶层不是对象；为不破坏原文件，本次未写入");
   }
-  return { settings: parsed, existed: true };
+  return { data: parsed, existed: true };
+}
+
+/** 读取现有全局设置。文件不存在 = {}；空文件 = {}；坏 JSON / 顶层非对象 / 符号链接 / 非普通文件
+ *  一律报错拒绝（宁可写不进去，也不能把用户的设置文件冲掉）。 */
+function settingsReadFile(filePath: string, fsImpl: any = fs): { settings: any; existed: boolean } {
+  const res = safeReadJsonObjectFile(filePath, "settings.json", fsImpl);
+  return { settings: res.data, existed: res.existed };
 }
 
 /** 把扁平补丁合并进现有设置：保留文件里其它键和未知嵌套键（如 modelOverrides），只改白名单命中项。 */
@@ -3172,7 +3341,11 @@ function settingsApplyPatch(base: any, patch: Record<string, any>): any {
     const value = patch[field];
     const dot = field.indexOf(".");
     if (dot < 0) {
-      next[field] = value;
+      if (value === null && SETTINGS_NULLABLE_TOP_LEVEL_FIELDS.has(field)) {
+        delete next[field];
+      } else {
+        next[field] = value;
+      }
       continue;
     }
     const parent = field.slice(0, dot);
@@ -3231,6 +3404,463 @@ function settingsWritePatch(filePath: string, rawPatch: any, options: { fs?: any
   const applied: Record<string, any> = {};
   for (const key of Object.keys(patch)) applied[key] = patch[key];
   return { applied, existed: current.existed, bytes: info.bytes };
+}
+
+/* ================= 模型/Provider 与 MCP 配置读写（models.json / auth.json / mcp.json） ================= */
+function safeConfigId(raw: any, label: string, maxLen: number = 120): string {
+  if (typeof raw !== "string") throw new RemoteError("bad_args", label + " 必须是字符串");
+  const text = raw.trim();
+  if (!text) throw new RemoteError("bad_args", label + " 不能为空");
+  if (text.length > maxLen) throw new RemoteError("bad_args", label + " 过长（上限 " + maxLen + " 字符）");
+  if (/[\u0000-\u001f\u007f]/.test(text) || SETTINGS_FORBIDDEN_KEYS.has(text)) {
+    throw new RemoteError("bad_args", label + " 包含非法字符");
+  }
+  return text;
+}
+
+function safeHttpUrl(raw: any, label: string): string {
+  if (typeof raw !== "string") throw new RemoteError("bad_args", label + " 必须是字符串");
+  const text = raw.trim();
+  if (!text || text.length > 1000 || /[\u0000-\u001f\u007f]/.test(text)) {
+    throw new RemoteError("bad_args", label + " 格式不合法");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    throw new RemoteError("bad_args", label + " 不是合法 URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new RemoteError("bad_args", label + " 仅支持 http/https 协议");
+  }
+  return text;
+}
+
+function redactSafeUrl(raw: any): string | undefined {
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  try {
+    const u = new URL(raw.trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    return u.origin + (u.pathname && u.pathname !== "/" ? u.pathname : "");
+  } catch {
+    return undefined;
+  }
+}
+
+function maskApiKeyInfo(raw: any, sourceIfSet: "models.json" | "auth.json"): { hasApiKey: boolean; apiKeyHint?: string; apiKeySource: "models.json" | "auth.json" | "env" | "none" } {
+  if (typeof raw !== "string" || !raw.trim()) return { hasApiKey: false, apiKeySource: "none" };
+  const text = raw.trim();
+  if (text.startsWith("$") && text.length <= 80 && /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(text)) {
+    return { hasApiKey: true, apiKeyHint: text, apiKeySource: "env" };
+  }
+  if (text.startsWith("!")) {
+    return { hasApiKey: true, apiKeyHint: "命令解析", apiKeySource: sourceIfSet };
+  }
+  const tail = text.length >= 8 ? text.slice(-4) : "";
+  return {
+    hasApiKey: true,
+    apiKeyHint: tail ? "已配置（****" + tail + "）" : "已配置",
+    apiKeySource: sourceIfSet,
+  };
+}
+
+function redactModelConfigEntry(m: any): any {
+  const out: any = { id: String(m.id || "") };
+  if (typeof m.name === "string" && m.name) out.name = m.name;
+  if (typeof m.api === "string" && m.api) out.api = m.api;
+  if (typeof m.baseUrl === "string" && m.baseUrl) out.baseUrl = m.baseUrl;
+  if (typeof m.reasoning === "boolean") out.reasoning = m.reasoning;
+  if (Array.isArray(m.input)) out.input = m.input.filter((x: any) => typeof x === "string");
+  if (typeof m.contextWindow === "number") out.contextWindow = m.contextWindow;
+  if (typeof m.maxTokens === "number") out.maxTokens = m.maxTokens;
+  if (settingsIsObject(m.headers)) out.headerKeys = Object.keys(m.headers);
+  return out;
+}
+
+/** 安全读取 models.json 与 auth.json 的脱敏投影，绝不返回明文密钥或请求头值。 */
+function modelsReadConfig(env: any = process.env, home: string = os.homedir(), fsImpl: any = fs): { providers: any[] } {
+  const modelsData = safeReadJsonObjectFile(modelsFilePath(env, home), "models.json", fsImpl).data;
+  const authData = safeReadJsonObjectFile(authFilePath(env, home), "auth.json", fsImpl).data;
+  const rawProviders = settingsIsObject(modelsData.providers) ? modelsData.providers : {};
+  const ids = new Set<string>([...Object.keys(rawProviders), ...Object.keys(authData)]);
+  const providers: any[] = [];
+  for (const id of [...ids].sort()) {
+    if (SETTINGS_FORBIDDEN_KEYS.has(id)) continue;
+    const cfg = settingsIsObject(rawProviders[id]) ? rawProviders[id] : {};
+    const authEntry = settingsIsObject(authData[id]) ? authData[id] : null;
+    const keyInfo = typeof cfg.apiKey === "string" && cfg.apiKey.trim()
+      ? maskApiKeyInfo(cfg.apiKey, "models.json")
+      : authEntry && authEntry.type === "api_key" && typeof authEntry.key === "string"
+        ? maskApiKeyInfo(authEntry.key, "auth.json")
+        : authEntry && authEntry.type === "oauth"
+          ? { hasApiKey: true, apiKeyHint: "OAuth", apiKeySource: "auth.json" as const }
+          : { hasApiKey: false, apiKeySource: "none" as const };
+    const row: any = {
+      id,
+      inModelsJson: Object.prototype.hasOwnProperty.call(rawProviders, id),
+      inAuthJson: !!authEntry,
+      hasApiKey: keyInfo.hasApiKey,
+      apiKeySource: keyInfo.apiKeySource,
+      ...(keyInfo.apiKeyHint ? { apiKeyHint: keyInfo.apiKeyHint } : {}),
+      models: Array.isArray(cfg.models) ? cfg.models.filter((m: any) => settingsIsObject(m) && typeof m.id === "string").map(redactModelConfigEntry) : [],
+    };
+    if (typeof cfg.name === "string" && cfg.name) row.name = cfg.name;
+    if (typeof cfg.baseUrl === "string" && cfg.baseUrl) row.baseUrl = cfg.baseUrl;
+    if (typeof cfg.api === "string" && cfg.api) row.api = cfg.api;
+    if (typeof cfg.authHeader === "boolean") row.authHeader = cfg.authHeader;
+    if (settingsIsObject(cfg.headers)) row.headerKeys = Object.keys(cfg.headers);
+    providers.push(row);
+  }
+  return { providers };
+}
+
+function upsertModelProviderConfig(args: any, env: any = process.env, home: string = os.homedir(), fsImpl: any = fs): { ok: true; id: string } {
+  if (!settingsIsObject(args)) throw new RemoteError("bad_args", "upsert_model_provider 需要对象参数");
+  const id = safeConfigId(args.id, "Provider ID", 120);
+  const modelsPath = modelsFilePath(env, home);
+  const authPath = authFilePath(env, home);
+  const modelsRead = safeReadJsonObjectFile(modelsPath, "models.json", fsImpl);
+  const authRead = safeReadJsonObjectFile(authPath, "auth.json", fsImpl);
+  const modelsData: any = { ...modelsRead.data };
+  const providers: any = settingsIsObject(modelsData.providers) ? { ...modelsData.providers } : {};
+  const existing = settingsIsObject(providers[id]) ? { ...providers[id] } : null;
+
+  const hasName = Object.prototype.hasOwnProperty.call(args, "name");
+  const hasBaseUrl = Object.prototype.hasOwnProperty.call(args, "baseUrl");
+  const hasApi = Object.prototype.hasOwnProperty.call(args, "api");
+  const hasAuthHeader = Object.prototype.hasOwnProperty.call(args, "authHeader");
+  const clearApiKey = args.clearApiKey === true;
+  const rawApiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : "";
+  if (rawApiKey && (rawApiKey.length > 2000 || /[\u0000-\u001f\u007f]/.test(rawApiKey))) {
+    throw new RemoteError("bad_args", "API Key 格式不合法");
+  }
+
+  const nextBaseUrl = hasBaseUrl ? (typeof args.baseUrl === "string" && args.baseUrl.trim() ? safeHttpUrl(args.baseUrl, "baseUrl") : "") : undefined;
+  const nextApi = hasApi ? (typeof args.api === "string" && args.api.trim() ? safeConfigId(args.api, "API 协议", 80) : "") : undefined;
+  const nextName = hasName ? (typeof args.name === "string" && args.name.trim() ? safeConfigId(args.name, "Provider 名称", 120) : "") : undefined;
+
+  const writeToModelsJson = !!(existing || nextBaseUrl || nextApi || nextName || hasAuthHeader || args.storage === "models");
+
+  if (writeToModelsJson) {
+    const entry: any = existing ? { ...existing } : {};
+    if (hasName) {
+      if (nextName) entry.name = nextName;
+      else delete entry.name;
+    }
+    if (hasBaseUrl) {
+      if (nextBaseUrl) entry.baseUrl = nextBaseUrl;
+      else delete entry.baseUrl;
+    }
+    if (hasApi) {
+      if (nextApi) entry.api = nextApi;
+      else delete entry.api;
+    }
+    if (hasAuthHeader) {
+      if (typeof args.authHeader === "boolean") entry.authHeader = args.authHeader;
+      else delete entry.authHeader;
+    }
+    if (clearApiKey) delete entry.apiKey;
+    else if (rawApiKey) entry.apiKey = rawApiKey;
+    providers[id] = entry;
+    modelsData.providers = providers;
+    settingsAtomicWrite(modelsPath, modelsData, fsImpl);
+
+    if (clearApiKey && settingsIsObject(authRead.data[id])) {
+      const nextAuth = { ...authRead.data };
+      delete nextAuth[id];
+      settingsAtomicWrite(authPath, nextAuth, fsImpl);
+    }
+  } else {
+    const nextAuth: any = { ...authRead.data };
+    if (clearApiKey) {
+      delete nextAuth[id];
+      settingsAtomicWrite(authPath, nextAuth, fsImpl);
+    } else if (rawApiKey) {
+      nextAuth[id] = { type: "api_key", key: rawApiKey };
+      settingsAtomicWrite(authPath, nextAuth, fsImpl);
+    } else {
+      throw new RemoteError("bad_args", "请提供 Base URL 或 API Key");
+    }
+  }
+  return { ok: true, id };
+}
+
+function deleteModelProviderConfig(args: any, env: any = process.env, home: string = os.homedir(), fsImpl: any = fs): { ok: true; id: string; deleted: boolean } {
+  if (!settingsIsObject(args)) throw new RemoteError("bad_args", "delete_model_provider 需要对象参数");
+  const id = safeConfigId(args.id, "Provider ID", 120);
+  const modelsPath = modelsFilePath(env, home);
+  const authPath = authFilePath(env, home);
+  const modelsRead = safeReadJsonObjectFile(modelsPath, "models.json", fsImpl);
+  const authRead = safeReadJsonObjectFile(authPath, "auth.json", fsImpl);
+  let deleted = false;
+  if (settingsIsObject(modelsRead.data.providers) && Object.prototype.hasOwnProperty.call(modelsRead.data.providers, id)) {
+    const nextProviders = { ...modelsRead.data.providers };
+    delete nextProviders[id];
+    settingsAtomicWrite(modelsPath, { ...modelsRead.data, providers: nextProviders }, fsImpl);
+    deleted = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(authRead.data, id)) {
+    const nextAuth = { ...authRead.data };
+    delete nextAuth[id];
+    settingsAtomicWrite(authPath, nextAuth, fsImpl);
+    deleted = true;
+  }
+  return { ok: true, id, deleted };
+}
+
+function validateModelDefinitionInput(raw: any): any {
+  if (!settingsIsObject(raw)) throw new RemoteError("bad_args", "model 必须是对象");
+  const id = safeConfigId(raw.id, "模型 ID", 160);
+  const out: any = { id };
+  if (typeof raw.name === "string" && raw.name.trim()) out.name = safeConfigId(raw.name, "模型名称", 160);
+  if (typeof raw.api === "string" && raw.api.trim()) out.api = safeConfigId(raw.api, "模型 API", 80);
+  if (typeof raw.baseUrl === "string" && raw.baseUrl.trim()) out.baseUrl = safeHttpUrl(raw.baseUrl, "模型 baseUrl");
+  if (typeof raw.reasoning === "boolean") out.reasoning = raw.reasoning;
+  if (raw.contextWindow !== undefined && raw.contextWindow !== null) {
+    const cw = Number(raw.contextWindow);
+    if (!Number.isSafeInteger(cw) || cw <= 0 || cw > 10_000_000) throw new RemoteError("bad_args", "contextWindow 必须是正整数");
+    out.contextWindow = cw;
+  }
+  if (raw.maxTokens !== undefined && raw.maxTokens !== null) {
+    const mt = Number(raw.maxTokens);
+    if (!Number.isSafeInteger(mt) || mt <= 0 || mt > 2_000_000) throw new RemoteError("bad_args", "maxTokens 必须是正整数");
+    out.maxTokens = mt;
+  }
+  if (Array.isArray(raw.input)) {
+    const modalities = raw.input.filter((x: any) => x === "text" || x === "image");
+    if (modalities.length) out.input = [...new Set(modalities)];
+  }
+  return out;
+}
+
+function upsertProviderModelConfig(args: any, env: any = process.env, home: string = os.homedir(), fsImpl: any = fs): { ok: true; provider: string; modelId: string } {
+  if (!settingsIsObject(args)) throw new RemoteError("bad_args", "upsert_provider_model 需要对象参数");
+  const provider = safeConfigId(args.provider, "Provider ID", 120);
+  const model = validateModelDefinitionInput(args.model);
+  const originalId = typeof args.originalId === "string" && args.originalId.trim() ? safeConfigId(args.originalId, "原模型 ID", 160) : model.id;
+
+  const modelsPath = modelsFilePath(env, home);
+  const modelsRead = safeReadJsonObjectFile(modelsPath, "models.json", fsImpl);
+  const modelsData: any = { ...modelsRead.data };
+  const providers: any = settingsIsObject(modelsData.providers) ? { ...modelsData.providers } : {};
+  const existingProvider = settingsIsObject(providers[provider]) ? { ...providers[provider] } : {};
+  const list: any[] = Array.isArray(existingProvider.models) ? existingProvider.models.map((m: any) => ({ ...m })) : [];
+
+  const idx = list.findIndex((m: any) => m && m.id === originalId);
+  if (idx >= 0) {
+    const rawM = settingsIsObject(args.model) ? args.model : {};
+    const merged: any = { ...list[idx], ...model };
+    if (Object.prototype.hasOwnProperty.call(rawM, "name") && !model.name) delete merged.name;
+    if (Object.prototype.hasOwnProperty.call(rawM, "api") && !model.api) delete merged.api;
+    if (Object.prototype.hasOwnProperty.call(rawM, "baseUrl") && !model.baseUrl) delete merged.baseUrl;
+    if (Object.prototype.hasOwnProperty.call(rawM, "input") && !model.input) delete merged.input;
+    if (Object.prototype.hasOwnProperty.call(rawM, "contextWindow") && (rawM.contextWindow === null || rawM.contextWindow === "")) {
+      delete merged.contextWindow;
+    }
+    if (Object.prototype.hasOwnProperty.call(rawM, "maxTokens") && (rawM.maxTokens === null || rawM.maxTokens === "")) {
+      delete merged.maxTokens;
+    }
+    list[idx] = merged;
+  } else {
+    list.push(model);
+  }
+  existingProvider.models = list;
+  providers[provider] = existingProvider;
+  modelsData.providers = providers;
+  settingsAtomicWrite(modelsPath, modelsData, fsImpl);
+  return { ok: true, provider, modelId: model.id };
+}
+
+function deleteProviderModelConfig(args: any, env: any = process.env, home: string = os.homedir(), fsImpl: any = fs): { ok: true; provider: string; modelId: string; deleted: boolean } {
+  if (!settingsIsObject(args)) throw new RemoteError("bad_args", "delete_provider_model 需要对象参数");
+  const provider = safeConfigId(args.provider, "Provider ID", 120);
+  const modelId = safeConfigId(args.modelId, "模型 ID", 160);
+  const modelsPath = modelsFilePath(env, home);
+  const modelsRead = safeReadJsonObjectFile(modelsPath, "models.json", fsImpl);
+  const providers = settingsIsObject(modelsRead.data.providers) ? modelsRead.data.providers : null;
+  if (!providers || !settingsIsObject(providers[provider]) || !Array.isArray(providers[provider].models)) {
+    return { ok: true, provider, modelId, deleted: false };
+  }
+  const before = providers[provider].models;
+  const after = before.filter((m: any) => !m || m.id !== modelId);
+  if (after.length === before.length) return { ok: true, provider, modelId, deleted: false };
+  const nextProviders = { ...providers, [provider]: { ...providers[provider], models: after } };
+  settingsAtomicWrite(modelsPath, { ...modelsRead.data, providers: nextProviders }, fsImpl);
+  return { ok: true, provider, modelId, deleted: true };
+}
+
+function validateStringMap(raw: any, label: string): Record<string, string> {
+  if (!settingsIsObject(raw)) throw new RemoteError("bad_args", label + " 必须是键值对对象");
+  const keys = Object.keys(raw);
+  if (keys.length > 64) throw new RemoteError("bad_args", label + " 键值过多");
+  const out: Record<string, string> = {};
+  for (const k of keys) {
+    const key = safeConfigId(k, label + " 键名", 120);
+    const val = raw[k];
+    if (typeof val !== "string" || val.length > 2000 || /[\u0000-\u001f\u007f]/.test(val)) {
+      throw new RemoteError("bad_args", label + " 值不合法");
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+function mcpReadConfigList(env: any = process.env, home: string = os.homedir(), fsImpl: any = fs): any[] {
+  const mcpData = safeReadJsonObjectFile(mcpFilePath(env, home), "mcp.json", fsImpl).data;
+  const servers = settingsIsObject(mcpData.mcpServers) ? mcpData.mcpServers : {};
+  const list: any[] = [];
+  for (const name of Object.keys(servers).sort()) {
+    if (SETTINGS_FORBIDDEN_KEYS.has(name)) continue;
+    const cfg = servers[name];
+    if (!settingsIsObject(cfg)) continue;
+    const transport = typeof cfg.transport === "string" && cfg.transport
+      ? cfg.transport
+      : typeof cfg.url === "string" && cfg.url
+        ? "http"
+        : "stdio";
+    const row: any = {
+      name,
+      id: name,
+      transport,
+      enabled: cfg.enabled !== false,
+      exposure: typeof cfg.exposure === "string" && cfg.exposure ? cfg.exposure : "codemode",
+      source: "config",
+      editable: true,
+    };
+    if (typeof cfg.command === "string" && cfg.command) row.command = cfg.command;
+    if (Array.isArray(cfg.args)) row.args = cfg.args.filter((a: any) => typeof a === "string").slice(0, 64);
+    const safeUrl = redactSafeUrl(cfg.url);
+    if (safeUrl) {
+      row.url = safeUrl;
+      try {
+        if (new URL(String(cfg.url)).search) row.hasUrlQuery = true;
+      } catch {}
+    }
+    if (typeof cfg.description === "string" && cfg.description) row.description = cfg.description;
+    if (typeof cfg.timeout === "number") row.timeout = cfg.timeout;
+    if (settingsIsObject(cfg.env)) row.envKeys = Object.keys(cfg.env);
+    if (settingsIsObject(cfg.headers)) row.headerKeys = Object.keys(cfg.headers);
+    list.push(row);
+  }
+  return list;
+}
+
+function upsertMcpServerConfig(args: any, env: any = process.env, home: string = os.homedir(), fsImpl: any = fs): { ok: true; name: string } {
+  if (!settingsIsObject(args)) throw new RemoteError("bad_args", "upsert_mcp_server 需要对象参数");
+  const name = safeConfigId(args.name, "MCP 名称", 120);
+  const originalName = typeof args.originalName === "string" && args.originalName.trim()
+    ? safeConfigId(args.originalName, "原 MCP 名称", 120)
+    : name;
+  const mcpPath = mcpFilePath(env, home);
+  const read = safeReadJsonObjectFile(mcpPath, "mcp.json", fsImpl);
+  const root: any = { ...read.data };
+  const servers: any = settingsIsObject(root.mcpServers) ? { ...root.mcpServers } : {};
+  const existing = settingsIsObject(servers[originalName]) ? { ...servers[originalName] } : {};
+
+  let transport = typeof args.transport === "string" ? args.transport.trim().toLowerCase() : "";
+  if (!transport) transport = args.url ? "http" : args.command ? "stdio" : (existing.url ? "http" : "stdio");
+  if (!MCP_VALID_TRANSPORTS.has(transport)) throw new RemoteError("bad_args", "MCP transport 只能是 stdio、http 或 sse");
+
+  const nextEntry: any = { ...existing, transport };
+  if (transport === "stdio") {
+    const cmdRaw = Object.prototype.hasOwnProperty.call(args, "command") ? args.command : existing.command;
+    if (typeof cmdRaw !== "string" || !cmdRaw.trim() || cmdRaw.trim().length > 500 || /[\u0000-\u001f\u007f]/.test(cmdRaw)) {
+      throw new RemoteError("bad_args", "stdio 类型 MCP 需要合法 command");
+    }
+    nextEntry.command = cmdRaw.trim();
+    if (Object.prototype.hasOwnProperty.call(args, "args")) {
+      if (Array.isArray(args.args)) {
+        nextEntry.args = args.args.slice(0, 64).map((a: any) => {
+          if (typeof a !== "string" || a.length > 1000 || /[\u0000-\u001f\u007f]/.test(a)) {
+            throw new RemoteError("bad_args", "MCP args 项不合法");
+          }
+          return a;
+        });
+      } else if (args.args == null) {
+        delete nextEntry.args;
+      } else {
+        throw new RemoteError("bad_args", "MCP args 必须是字符串数组");
+      }
+    }
+    delete nextEntry.url;
+  } else {
+    const urlRaw = Object.prototype.hasOwnProperty.call(args, "url") ? args.url : existing.url;
+    nextEntry.url = safeHttpUrl(urlRaw, "MCP URL");
+    delete nextEntry.command;
+    delete nextEntry.args;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(args, "enabled")) {
+    if (typeof args.enabled !== "boolean") throw new RemoteError("bad_args", "enabled 必须是布尔值");
+    nextEntry.enabled = args.enabled;
+  } else if (nextEntry.enabled === undefined) {
+    nextEntry.enabled = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "exposure")) {
+    const exp = String(args.exposure || "").trim();
+    if (exp) {
+      if (!MCP_VALID_EXPOSURES.has(exp)) throw new RemoteError("bad_args", "exposure 不合法");
+      nextEntry.exposure = exp;
+    } else {
+      delete nextEntry.exposure;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "description")) {
+    const desc = typeof args.description === "string" ? args.description.trim() : "";
+    if (desc) nextEntry.description = desc.slice(0, 500);
+    else delete nextEntry.description;
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "timeout")) {
+    if (args.timeout === null || args.timeout === "") delete nextEntry.timeout;
+    else {
+      const t = Number(args.timeout);
+      if (!Number.isSafeInteger(t) || t < 100 || t > 600000) throw new RemoteError("bad_args", "timeout 需为 100~600000 整数");
+      nextEntry.timeout = t;
+    }
+  }
+  if (args.clearEnv === true) delete nextEntry.env;
+  else if (Object.prototype.hasOwnProperty.call(args, "env") && args.env != null) {
+    nextEntry.env = validateStringMap(args.env, "MCP env");
+  }
+  if (args.clearHeaders === true) delete nextEntry.headers;
+  else if (Object.prototype.hasOwnProperty.call(args, "headers") && args.headers != null) {
+    nextEntry.headers = validateStringMap(args.headers, "MCP headers");
+  }
+
+  if (originalName !== name) delete servers[originalName];
+  servers[name] = nextEntry;
+  root.mcpServers = servers;
+  settingsAtomicWrite(mcpPath, root, fsImpl);
+  return { ok: true, name };
+}
+
+function toggleMcpServerConfig(args: any, env: any = process.env, home: string = os.homedir(), fsImpl: any = fs): { ok: true; name: string; enabled: boolean } {
+  if (!settingsIsObject(args)) throw new RemoteError("bad_args", "toggle_mcp_server 需要对象参数");
+  const name = safeConfigId(args.name, "MCP 名称", 120);
+  if (typeof args.enabled !== "boolean") throw new RemoteError("bad_args", "enabled 必须是布尔值");
+  const mcpPath = mcpFilePath(env, home);
+  const read = safeReadJsonObjectFile(mcpPath, "mcp.json", fsImpl);
+  const servers = settingsIsObject(read.data.mcpServers) ? { ...read.data.mcpServers } : {};
+  if (!settingsIsObject(servers[name])) {
+    throw new RemoteError("not_found", "mcp.json 中不存在该 MCP 服务");
+  }
+  servers[name] = { ...servers[name], enabled: args.enabled };
+  settingsAtomicWrite(mcpPath, { ...read.data, mcpServers: servers }, fsImpl);
+  return { ok: true, name, enabled: args.enabled };
+}
+
+function deleteMcpServerConfig(args: any, env: any = process.env, home: string = os.homedir(), fsImpl: any = fs): { ok: true; name: string; deleted: boolean } {
+  if (!settingsIsObject(args)) throw new RemoteError("bad_args", "delete_mcp_server 需要对象参数");
+  const name = safeConfigId(args.name, "MCP 名称", 120);
+  const mcpPath = mcpFilePath(env, home);
+  const read = safeReadJsonObjectFile(mcpPath, "mcp.json", fsImpl);
+  if (!settingsIsObject(read.data.mcpServers) || !Object.prototype.hasOwnProperty.call(read.data.mcpServers, name)) {
+    return { ok: true, name, deleted: false };
+  }
+  const servers = { ...read.data.mcpServers };
+  delete servers[name];
+  settingsAtomicWrite(mcpPath, { ...read.data, mcpServers: servers }, fsImpl);
+  return { ok: true, name, deleted: true };
 }
 
 /** 设备身份。account 缺省 admin；deviceId 为空时 room_register 不带该字段（服务端归未登记）。 */
@@ -3996,11 +4626,12 @@ function readSessionHeaderLine(p: string, action: string): any {
   }
 }
 
-/** 流式索引里的活动叶路径（root → leaf）；坏 parent 链只保留能走到的部分。 */
-function activeSessionPathFromScan(scan: SessionFileScan): SessionEntryMeta[] {
+/** 流式索引里到指定节点（缺省为活动叶）的路径（root → target）；坏 parent 链只保留能走到的部分。 */
+function pathFromScan(scan: SessionFileScan, leafId?: string | null): SessionEntryMeta[] {
   const byId = scan.byId;
-  if (!byId || !scan.lastId) return [];
-  let cur: string | null = scan.lastId;
+  const startId = leafId !== undefined ? leafId : scan.lastId;
+  if (!byId || !startId) return [];
+  let cur: string | null = startId;
   const out: SessionEntryMeta[] = [];
   const seen = new Set<string>();
   while (cur && !seen.has(cur)) {
@@ -4011,6 +4642,11 @@ function activeSessionPathFromScan(scan: SessionFileScan): SessionEntryMeta[] {
     cur = meta.parentId;
   }
   return out.reverse();
+}
+
+/** 流式索引里的活动叶路径（root → leaf）；坏 parent 链只保留能走到的部分。 */
+function activeSessionPathFromScan(scan: SessionFileScan): SessionEntryMeta[] {
+  return pathFromScan(scan, scan.lastId);
 }
 
 /** 当前活动叶路径（root → leaf）；坏 parent 链只保留能走到的部分。 */
@@ -4093,7 +4729,13 @@ class Bridge {
   sessionName: string | null = null;
   /** 仅本机刚改名时才用 sessionName 覆盖清单，避免把旧名字反复写回 */
   nameDirty = false;
+  /** runSessionOp / navigateTreeWithSummary 改写 SessionManager 后 AgentSession.state.messages 可能仍带旧上下文，
+   *  通过 context 钩子把模型上下文与 SessionManager.buildSessionContext() 重新对齐。 */
+  sessionContextDirty = false;
+  preSwitchMessages: any[] = [];
+  sessionSwitchAt = 0;
   sentStamp = new Map<string, { at: number; name: any; messageCount: number; path: string; active: boolean; cwd: string }>();
+  _writtenDefaultModel: { provider: string; id: string } | null = null;
   roomLabel: string | null = null;
   cwd: string | null = null;
   busy = false;
@@ -4162,6 +4804,9 @@ class Bridge {
     ? (process.env.PI_REMOTE_APPROVAL_GATE_TIER as string)
     : "high-risk";
   approvalGateList: string[] = (process.env.PI_REMOTE_APPROVAL_GATE_TOOLS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  /** 审批执行范围（read-only / workspace / full）与免审 bash 命令名单（仅内存，由浏览器按偏好同步）。 */
+  approvalScope: ApprovalPolicyScope = "workspace";
+  approvalCommandAllowlist: string[] = [];
   /** 「本会话都允许」的工具名集合（仅内存，随会话切换清空、不落盘，§4.3） */
   approvalSessionAllow = new Set<string>();
   /* ---------------- 设备钥状态（加密阶段 1，§3） ----------------
@@ -4307,6 +4952,7 @@ class Bridge {
       this.flushPending();
       this.abandonDeliveries("本机会话已关闭，消息未注入");
       this.resetRemoteQueueForSession("本机会话已关闭，待发消息未注入", "session_switched");
+      this.closeActiveShell("shutdown");
       if (this.roomId) this.send({ type: "room_closed", room: this.roomId }, { essential: true });
     } catch {}
     this.closing = true;
@@ -4703,6 +5349,21 @@ class Bridge {
     queue: any[];
     attempts: number;
     afterUsage: boolean;
+  } | null = null;
+  private _pyPtyAvailable: boolean | null = null;
+  private activeShell: {
+    id: string;
+    roomId: string;
+    shell: string;
+    cwd: string;
+    pty: boolean;
+    cols: number;
+    rows: number;
+    proc: any;
+    buffer: string;
+    closed: boolean;
+    coalesceText: string;
+    coalesceTimer: any;
   } | null = null;
 
   /** 发送缓冲上限：可丢帧超过它就丢；关键帧（快照/状态/回包）另有一个硬上限。 */
@@ -5825,29 +6486,94 @@ class Bridge {
     }
   }
 
+  /** 读取或更新当前房间的扩展侧审批策略（执行范围 + bash 免审名单）。 */
+  getApprovalPolicy() {
+    return { scope: this.approvalScope, allowlist: [...this.approvalCommandAllowlist] };
+  }
+
+  setApprovalPolicy(args: any) {
+    if (!args || typeof args !== "object" || Array.isArray(args)) {
+      throw new RemoteError("bad_args", "set_approval_policy 需要对象参数");
+    }
+    if (args.scope !== undefined) {
+      if (typeof args.scope !== "string" || !(APPROVAL_SCOPES as readonly string[]).includes(args.scope)) {
+        throw new RemoteError("bad_args", "approval scope 只能是 read-only、workspace 或 full");
+      }
+      this.approvalScope = args.scope as ApprovalPolicyScope;
+    }
+    if (args.allowlist !== undefined) {
+      if (!Array.isArray(args.allowlist)) throw new RemoteError("bad_args", "allowlist 必须是字符串数组");
+      if (args.allowlist.length > 64) throw new RemoteError("bad_args", "allowlist 条目过多（上限 64）");
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const rawItem of args.allowlist) {
+        if (typeof rawItem !== "string") throw new RemoteError("bad_args", "allowlist 每项必须是字符串");
+        const text = rawItem.trim();
+        if (!text || text.length > 160 || /[\u0000-\u001f\u007f]/.test(text)) {
+          throw new RemoteError("bad_args", "allowlist 命令不合法（需 1-160 字符且不含控制字符）");
+        }
+        if (!seen.has(text)) {
+          seen.add(text);
+          out.push(text);
+        }
+      }
+      this.approvalCommandAllowlist = out;
+    }
+    log("审批策略:", `scope=${this.approvalScope}`, `allowlist=${this.approvalCommandAllowlist.length}`);
+    return { ok: true, scope: this.approvalScope, allowlist: [...this.approvalCommandAllowlist] };
+  }
+
   /** tool_call 审批裁决（§4）：放行回 undefined，拦截回 { block:true, reason }。
    *  本方法不吞异常——弹窗/宿主异常向上抛，由 pi 按 fail-safe block 处理（审批语义）。
    *  ask_user 自身豁免：它是向用户提问的工具，再套一层审批只会把提问变成审批题。 */
   async checkToolCallApproval(event: any, ctx: any): Promise<any> {
-    if (!this.approvalGateEnabled) return undefined;
     const toolName = event && typeof event.toolName === "string" ? event.toolName : "";
     if (!toolName || toolName === ASK_USER_TOOL_NAME) return undefined;
-    if (this.approvalSessionAllow.has(toolName)) return undefined;
     let annotations: any = undefined;
     try {
       const all = this.pi && typeof this.pi.getAllTools === "function" ? this.pi.getAllTools() : [];
       const info = Array.isArray(all) ? all.find((t: any) => t && t.name === toolName) : null;
       annotations = info ? info.annotations : undefined;
     } catch {}
-    if (!approvalGateDecision(this.approvalGateTier, toolName, annotations, this.approvalGateList)) return undefined;
+    const isReadOnlyTool = (!!annotations && annotations.readOnlyHint === true) || APPROVAL_READONLY_TOOLS.has(toolName);
+    if (this.approvalScope === "read-only" && !isReadOnlyTool) {
+      return { block: true, reason: "当前审批范围设为「仅查看」，已拦截修改或执行类工具调用。" };
+    }
+    const targetPath = typeof event?.input?.path === "string"
+      ? event.input.path
+      : typeof event?.input?.file_path === "string"
+        ? event.input.file_path
+        : "";
+    const outsideWorkspace =
+      this.approvalScope === "workspace" &&
+      APPROVAL_WORKSPACE_WRITE_TOOLS.has(toolName) &&
+      !!ctx?.cwd &&
+      !!targetPath &&
+      !approvalPathWithinRoot(targetPath, String(ctx.cwd));
+    if (!outsideWorkspace) {
+      if (!this.approvalGateEnabled) return undefined;
+      if (this.approvalSessionAllow.has(toolName)) return undefined;
+      if (!approvalGateDecision(this.approvalGateTier, toolName, annotations, this.approvalGateList)) return undefined;
+      if ((toolName === "bash" || toolName === "run_command") &&
+          approvalCommandMatchesAllowlist(String(event?.input?.command ?? ""), this.approvalCommandAllowlist)) {
+        return undefined;
+      }
+    }
     if (!ctx || ctx.hasUI === false || !ctx.ui || typeof ctx.ui.select !== "function") {
       // 需要问而无界面可问：fail-closed（§7 审批语义），不许静默放行
       log("审批门：无 UI 可确认，拦截工具调用:", toolName);
-      return { block: true, reason: "Pi-Remote 审批门已开启，但当前没有可确认的界面，该工具调用被拦截。" };
+      return {
+        block: true,
+        reason: outsideWorkspace
+          ? "写入目标位于当前工作区外，且当前没有可确认的界面，已拦截该操作。"
+          : "Pi-Remote 审批门已开启，但当前没有可确认的界面，该工具调用被拦截。",
+      };
     }
     const summary = approvalSummary(toolName, event.input);
     const hint = summary ? summary.split(/\r?\n/)[0] : "";
-    const composed = `允许执行 ${toolName}？${hint ? " " + hint : ""}`;
+    const composed = outsideWorkspace
+      ? `允许向工作区外执行 ${toolName}？${hint ? " " + hint : ""}`
+      : `允许执行 ${toolName}？${hint ? " " + hint : ""}`;
     const titleLine = composed.slice(0, PROTOCOL.limits.dialogTitleMax);
     // When the summary is multi-line or the title line had to cut it, the
     // full summary rides after a newline; buildDialogOpen splits it back
@@ -5858,7 +6584,7 @@ class Bridge {
     const { picked, settleReason } = await this.approvalSelectHeldOrLocal(ctx, title);
     if (picked === APPROVAL_CHOICE_ONCE) return undefined;
     if (picked === APPROVAL_CHOICE_SESSION) {
-      this.approvalSessionAllow.add(toolName);
+      if (!outsideWorkspace) this.approvalSessionAllow.add(toolName);
       return undefined;
     }
     // Not approved: still fail-closed, but the reason names the actual
@@ -6188,9 +6914,121 @@ class Bridge {
     this.requestSync(reason, true);
   }
 
+  clearSessionContextDirty() {
+    this.sessionContextDirty = false;
+    this.preSwitchMessages = [];
+    this.sessionSwitchAt = 0;
+  }
+
+  snapshotPreSwitchContext(sm: any) {
+    if (!this.sessionContextDirty) {
+      const built = this.safeRead(() => (sm && typeof sm.buildSessionContext === "function" ? sm.buildSessionContext() : null), null);
+      this.preSwitchMessages = Array.isArray(built?.messages)
+        ? built.messages.filter((m: any) => m && m.role !== "system")
+        : [];
+    }
+    this.sessionSwitchAt = Date.now();
+  }
+
+  markSessionContextDirty(commandCtx?: any) {
+    this.sessionContextDirty = true;
+    const roots = [commandCtx, this.ctx, this.pi];
+    const targets = new Set<any>();
+    for (const r of roots) {
+      if (!r || typeof r !== "object") continue;
+      targets.add(r);
+      if (r.session && typeof r.session === "object") targets.add(r.session);
+      if (r.agentSession && typeof r.agentSession === "object") targets.add(r.agentSession);
+      if (r.owner && typeof r.owner === "object") {
+        if (r.owner.session && typeof r.owner.session === "object") targets.add(r.owner.session);
+        if (r.owner.agentSession && typeof r.owner.agentSession === "object") targets.add(r.owner.agentSession);
+      }
+    }
+    for (const t of targets) {
+      try { if (typeof t.clearQueue === "function") t.clearQueue(); } catch {}
+      try { if (typeof t.refreshContext === "function") t.refreshContext(); } catch {}
+    }
+  }
+
+  contextMsgKey(m: any): string {
+    if (!m || typeof m !== "object") return "";
+    try {
+      return JSON.stringify([
+        m.role || "",
+        typeof m.timestamp === "number" ? m.timestamp : null,
+        m.toolCallId ?? null,
+        m.toolName ?? null,
+        m.content ?? null,
+      ]);
+    } catch {
+      return String(m.role || "") + ":" + String(m.timestamp ?? "");
+    }
+  }
+
+  reconcileDirtyContext(canonical: any[], rawIncoming: any[]): any[] {
+    const incoming = Array.isArray(rawIncoming) ? rawIncoming.filter((m: any) => m && m.role !== "system") : [];
+    if (!incoming.length) return canonical;
+    const canKeys = canonical.map((m) => this.contextMsgKey(m));
+    const incKeys = incoming.map((m) => this.contextMsgKey(m));
+    const preKeys = this.preSwitchMessages.map((m) => this.contextMsgKey(m));
+    const startsWithKeys = (arr: string[], prefix: string[]) =>
+      prefix.length > 0 && arr.length >= prefix.length && prefix.every((k, i) => arr[i] === k);
+
+    let postSwitch: any[] = [];
+    if (startsWithKeys(incKeys, preKeys) && !startsWithKeys(canKeys, preKeys)) {
+      postSwitch = incoming.slice(preKeys.length);
+    } else if (startsWithKeys(incKeys, canKeys)) {
+      postSwitch = incoming.slice(canKeys.length);
+    } else {
+      const staleCounts = new Map<string, number>();
+      for (const k of preKeys) staleCounts.set(k, (staleCounts.get(k) || 0) + 1);
+      for (const k of canKeys) {
+        const c = staleCounts.get(k) || 0;
+        if (c > 0) staleCounts.set(k, c - 1);
+      }
+      let skippingPrefix = true;
+      for (let i = 0; i < incoming.length; i++) {
+        const m = incoming[i];
+        if (this.sessionSwitchAt > 0 && typeof m.timestamp === "number") {
+          if (m.timestamp < this.sessionSwitchAt) continue;
+          postSwitch.push(m);
+          continue;
+        }
+        if (skippingPrefix && preKeys.length > 0) {
+          const k = incKeys[i];
+          const sc = staleCounts.get(k) || 0;
+          if (sc > 0 && (preKeys.length === 1 ? incoming.length > 1 : true)) {
+            staleCounts.set(k, sc - 1);
+            continue;
+          }
+          skippingPrefix = false;
+        }
+        postSwitch.push(m);
+      }
+    }
+
+    const postKeys = postSwitch.map((m) => this.contextMsgKey(m));
+    let overlap = 0;
+    const maxOverlap = Math.min(canKeys.length, postKeys.length);
+    for (let len = maxOverlap; len > 0; len--) {
+      let match = true;
+      for (let j = 0; j < len; j++) {
+        if (canKeys[canKeys.length - len + j] !== postKeys[j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) {
+        overlap = len;
+        break;
+      }
+    }
+    return overlap > 0 ? [...canonical, ...postSwitch.slice(overlap)] : [...canonical, ...postSwitch];
+  }
+
   /** session_start / 换会话后调用：绑定当前会话并对齐镜像。任何异常只能吞掉——
    *  这里抛异常会逃逸进 pi 的事件分发，连累整个扩展 runtime */
-  bindSession(ctx: any) {
+  bindSession(ctx: any, opts?: { preserveContextDirty?: boolean }) {
     try {
       this.ctx = ctx;
       const sm = ctx?.sessionManager;
@@ -6201,12 +7039,16 @@ class Bridge {
       }
       const previousId = this.roomId;
       const changed = id !== this.roomId;
+      if (!opts?.preserveContextDirty && changed) {
+        this.clearSessionContextDirty();
+      }
       if (changed) {
         this.flushPending();
         // 还在等送达确认的消息属于旧会话：不在这里结案的话，新会话里一条更长的同前缀消息会把它误判成已送达
         if (this.roomId) this.abandonDeliveries("目标会话已切换，消息未注入");
         // 远程待发缓冲不跨会话：旧房间的 pending 记失败并广播，新会话从空队列开始。
         if (this.roomId) this.resetRemoteQueueForSession("目标会话已切换，待发消息未注入", "session_switched", this.roomId);
+        this.closeActiveShell("session_switched");
         this._lastUsagePayload = "";
         // 审批门的「本会话都允许」只活在本会话内，换会话即清（§4.3）
         this.approvalSessionAllow.clear();
@@ -8436,6 +9278,17 @@ class Bridge {
     }
     // 空闲但仍有未注入的远程待发：先按序放行，避免新 prompt 抢到它们前面。
     if (idle && hasPending) this.flushRemoteQueue("idle");
+    let imagesBlocked = false;
+    if (images && images.length > 0) {
+      try {
+        imagesBlocked = settingsReadFile(settingsFilePath()).settings?.images?.blockImages === true;
+      } catch {
+        imagesBlocked = false;
+      }
+    }
+    if (imagesBlocked) {
+      throw new RemoteError("bad_args", "已在设置中开启「禁止发送图片」");
+    }
     this.deliverText(text, behavior || "steer", images, cid, { expandPromptTemplates });
     return expandPromptTemplates ? { disposition: idle ? "started" : "queued", expanded: true } : { disposition: idle ? "started" : "queued" };
   }
@@ -8588,6 +9441,11 @@ class Bridge {
       case "get_available_thinking_levels":
         return { levels: availableThinkingLevels(this.ctx ? this.ctx.model : null) };
       case "get_provider_auth": return this.cmdGetProviderAuth();
+      case "get_models_config": return modelsReadConfig();
+      case "upsert_model_provider": return await this.cmdUpsertModelProvider(args);
+      case "delete_model_provider": return await this.cmdDeleteModelProvider(args);
+      case "upsert_provider_model": return await this.cmdUpsertProviderModel(args);
+      case "delete_provider_model": return await this.cmdDeleteProviderModel(args);
       case "set_thinking_level":
         if (!args.level) throw new RemoteError("bad_args", "set_thinking_level 需要 level");
         await this.pi.setThinkingLevel(args.level);
@@ -8603,6 +9461,8 @@ class Bridge {
         return { ok: true };
       case "get_settings": return this.cmdGetSettings();
       case "settings_set": return this.cmdSettingsSet(args);
+      case "get_approval_policy": return this.getApprovalPolicy();
+      case "set_approval_policy": return this.setApprovalPolicy(args);
       case "get_active_tools":
         return { tools: this.pi.getActiveTools ? this.pi.getActiveTools() : [] };
       case "set_active_tools":
@@ -8610,6 +9470,9 @@ class Bridge {
         await this.pi.setActiveTools(args.tools);
         return { ok: true, tools: this.pi.getActiveTools ? this.pi.getActiveTools() : [] };
       case "get_mcp_servers": return this.cmdGetMcpServers();
+      case "upsert_mcp_server": return this.cmdUpsertMcpServer(args);
+      case "toggle_mcp_server": return this.cmdToggleMcpServer(args);
+      case "delete_mcp_server": return this.cmdDeleteMcpServer(args);
       case "get_system_prompt": return this.cmdGetSystemPrompt();
       case "get_entry": return this.cmdGetEntry(args);
       case "get_labels": return this.cmdGetLabels();
@@ -8665,6 +9528,10 @@ class Bridge {
       case "fork": return this.runSessionOp("fork", args);
       case "clone": return this.runSessionOp("clone", {});
       case "navigate_tree": return this.runSessionOp("navigate_tree", args);
+      case "shell_open": return this.cmdShellOpen(args);
+      case "shell_input": return this.cmdShellInput(args);
+      case "shell_resize": return this.cmdShellResize(args);
+      case "shell_close": return this.cmdShellClose(args);
       default:
         throw new RemoteError("unknown_command", "未知命令：" + name + "（可用命令见 readyUI/data-interface.md）");
     }
@@ -8796,6 +9663,7 @@ class Bridge {
    *  omit the field instead of guessing; never substitutes the session's
    *  current model. */
   _defaultModelSetting(): any {
+    if (this._writtenDefaultModel) return { ...this._writtenDefaultModel };
     const provider = this._settingOr("defaultProvider", null);
     const modelId = this._settingOr("defaultModel", null);
     if (typeof provider !== "string" || typeof modelId !== "string") return null;
@@ -8990,15 +9858,68 @@ class Bridge {
     return { providers };
   }
 
-  /** MCP 服务器清单（pi.getMcpServers，[探针] 返回数组）。
-   *  **白名单投影**：config 可能含 env/headers/command 等敏感或大体积内容，只回安全字段；
-   *  同时回 `keys`（实际字段名）——本机无 MCP 服务器，元素形状待有服务器时实测。 */
-  cmdGetMcpServers() {
-    if (!this.pi || typeof this.pi.getMcpServers !== "function") return { servers: [] };
+  async _refreshModelRegistry(): Promise<{ refreshed: boolean; restartRequired: boolean; refreshError?: string }> {
+    const mr: any = this.ctx && this.ctx.modelRegistry;
+    if (!mr) return { refreshed: false, restartRequired: true };
+    try { mr.runtime?.authStorage?.reload?.(); } catch {}
     try {
-      const list = this.pi.getMcpServers() || [];
-      return {
-        servers: list.map((s: any) => {
+      const piPkg = require("@earendil-works/pi-coding-agent");
+      if (piPkg && typeof piPkg.clearApiKeyCache === "function") piPkg.clearApiKeyCache();
+    } catch {}
+    if (typeof mr.refresh === "function") {
+      try {
+        const res = await mr.refresh();
+        const err = res && typeof res === "object" && (res as any).error ? String((res as any).error) : undefined;
+        return { refreshed: true, restartRequired: false, ...(err ? { refreshError: err } : {}) };
+      } catch (e: any) {
+        return { refreshed: false, restartRequired: true, refreshError: e?.message || String(e) };
+      }
+    }
+    return { refreshed: false, restartRequired: true };
+  }
+
+  async cmdUpsertModelProvider(args: any) {
+    const res = upsertModelProviderConfig(args);
+    const live = await this._refreshModelRegistry();
+    log("upsert_model_provider:", res.id, live.refreshed ? "(refreshed)" : "(restartRequired)");
+    return { ...res, ...live, config: modelsReadConfig() };
+  }
+
+  async cmdDeleteModelProvider(args: any) {
+    const res = deleteModelProviderConfig(args);
+    const live = await this._refreshModelRegistry();
+    log("delete_model_provider:", res.id, "deleted=", res.deleted);
+    return { ...res, ...live, config: modelsReadConfig() };
+  }
+
+  async cmdUpsertProviderModel(args: any) {
+    const res = upsertProviderModelConfig(args);
+    const live = await this._refreshModelRegistry();
+    log("upsert_provider_model:", res.provider + "/" + res.modelId);
+    return { ...res, ...live, config: modelsReadConfig() };
+  }
+
+  async cmdDeleteProviderModel(args: any) {
+    const res = deleteProviderModelConfig(args);
+    const live = await this._refreshModelRegistry();
+    log("delete_provider_model:", res.provider + "/" + res.modelId, "deleted=", res.deleted);
+    return { ...res, ...live, config: modelsReadConfig() };
+  }
+
+  /** MCP 服务器清单（运行时 pi.getMcpServers + mcp.json 安全合并）。
+   *  **白名单投影**：绝不返回 env 值、headers 值或 URL 中的敏感 query/凭据。 */
+  cmdGetMcpServers() {
+    let configList: any[] = [];
+    try { configList = mcpReadConfigList(); } catch {}
+    const configByName = new Map<string, any>();
+    for (const c of configList) configByName.set(String(c.name), c);
+
+    const merged: any[] = [];
+    const seen = new Set<string>();
+    if (this.pi && typeof this.pi.getMcpServers === "function") {
+      try {
+        const list = this.pi.getMcpServers() || [];
+        for (const s of list) {
           const o: any = { keys: s && typeof s === "object" ? Object.keys(s) : [] };
           for (const k of ["name", "id", "transport", "exposure", "enabled", "connected", "status", "toolCount", "error"]) {
             if (s && typeof s === "object" && k in s) {
@@ -9006,12 +9927,47 @@ class Bridge {
               o[k] = typeof v === "object" ? JSON.stringify(v).slice(0, 300) : v;
             }
           }
-          return o;
-        }),
-      };
-    } catch (e: any) {
-      return { servers: [], error: e.message };
+          const keyName = String(o.name || o.id || "");
+          const cfg = keyName ? configByName.get(keyName) : undefined;
+          if (cfg) {
+            seen.add(keyName);
+            merged.push({ ...cfg, ...o, editable: true, source: "config" });
+          } else {
+            merged.push({ ...o, editable: false, source: "runtime" });
+          }
+        }
+      } catch (e: any) {
+        if (!configList.length) return { servers: [], error: e.message };
+      }
     }
+    for (const cfg of configList) {
+      if (!seen.has(String(cfg.name))) {
+        merged.push({
+          ...cfg,
+          connected: false,
+          status: cfg.enabled === false ? "disabled" : "configured",
+        });
+      }
+    }
+    return { servers: merged };
+  }
+
+  cmdUpsertMcpServer(args: any) {
+    const res = upsertMcpServerConfig(args);
+    log("upsert_mcp_server:", res.name);
+    return { ...res, restartRequired: true, reloadHint: "新会话或重载 pi 后连接生效" };
+  }
+
+  cmdToggleMcpServer(args: any) {
+    const res = toggleMcpServerConfig(args);
+    log("toggle_mcp_server:", res.name, "enabled=", res.enabled);
+    return { ...res, restartRequired: true, reloadHint: "新会话或重载 pi 后连接状态更新" };
+  }
+
+  cmdDeleteMcpServer(args: any) {
+    const res = deleteMcpServerConfig(args);
+    log("delete_mcp_server:", res.name, "deleted=", res.deleted);
+    return { ...res, restartRequired: true, reloadHint: "新会话或重载 pi 后断开移除" };
   }
 
   /** 当前生效的系统提示词（ctx.getSystemPrompt，[探针 probe10] 事件 ctx 可用）。
@@ -9154,7 +10110,7 @@ class Bridge {
   /** 未载入会话改名：向目标 .jsonl 追加一条 pi 语义的 session_info。
    *  不切会话、不改文件名/id；当前会话必须走 set_session_name（否则内存里的 leaf 会与文件脱节）。 */
   async cmdRenameSessionFile(args: any) {
-    const p = this.jailSessionPath(String(args.sessionPath || ""));
+    const p = this.jailInactiveSessionPath(String(args.sessionPath || ""));
     const name = String(args.name == null ? "" : args.name).replace(/[\r\n]+/g, " ").trim();
     if (!name) throw new RemoteError("bad_args", "rename_session_file 需要 name");
     if (name.length > SESSION_INFO_NAME_MAX) throw new RemoteError("bad_args", "会话名过长（上限 " + SESSION_INFO_NAME_MAX + " 字符）");
@@ -9219,7 +10175,7 @@ class Bridge {
   /** 未载入会话导出：直接读目标文件。JSONL 原样；文本按该文件自己的活动叶转换。
    *  超限明确报错，不返回截断的半份导出。 */
   async cmdExportSessionFile(args: any) {
-    const p = this.jailSessionPath(String(args.sessionPath || ""));
+    const p = this.jailInactiveSessionPath(String(args.sessionPath || ""));
     const format = args.format === "jsonl" ? "jsonl" : args.format === "text" || args.format == null ? "text" : "";
     if (!format) throw new RemoteError("bad_args", "export_session_file 的 format 只能是 text 或 jsonl");
     const requested = Number(args.maxBytes);
@@ -9273,25 +10229,46 @@ class Bridge {
   /** 冷 fork：纯文件实现，复制目标文件 root→leaf 的活动分支并落一个新会话文件。
    *  不启动 pi 进程、不改当前活动会话、不依赖 pi 包；源文件流式扫描，正文不整份驻留。 */
   async cmdForkSessionFile(args: any) {
-    const p = this.jailSessionPath(String(args.sessionPath || ""));
-    const dir = this.sessionDir();
-    if (!dir) throw new RemoteError("not_ready", "拿不到会话目录，无法分叉");
+    const p = this.jailInactiveSessionPath(String(args.sessionPath || ""));
+    const targetDir = path.dirname(p);
+    const entryId = typeof args.entryId === "string" ? args.entryId.trim() : "";
+    if (args.position != null && args.position !== "at" && args.position !== "before") {
+      throw new RemoteError("bad_args", "fork_session_file 的 position 只能是 at 或 before");
+    }
+    const position: "at" | "before" | undefined = args.position === "before" ? "before" : args.position === "at" ? "at" : undefined;
+
     // 严格扫描源文件：损坏行/缺头/越界/权限都在写新文件之前报清楚（不拿半份解析结果去 fork）。
     const scan = scanSessionFile(p, "分叉", { entries: true });
-    const pathEntries = activeSessionPathFromScan(scan);
-    if (!pathEntries.length) {
-      const anyMessage = scan.byId
-        ? [...scan.byId.values()].some((e) => e.type === "message" && (e.role === "user" || e.role === "assistant"))
-        : false;
-      if (!anyMessage) throw new RemoteError("bad_args", "这个会话还没有用户/助手消息，没有可分叉的分支");
-      throw new RemoteError("bad_args", "这个会话没有活动分支");
+    let pathEntries: SessionEntryMeta[];
+    let allowEmptyBefore = false;
+    if (entryId) {
+      const entry = scan.byId ? scan.byId.get(entryId) : null;
+      if (!entry) throw new RemoteError("not_found", "找不到分叉节点：" + entryId);
+      if (position === "before") {
+        allowEmptyBefore = true;
+        pathEntries = entry.parentId ? pathFromScan(scan, entry.parentId) : [];
+      } else {
+        pathEntries = pathFromScan(scan, entry.id);
+      }
+    } else {
+      pathEntries = activeSessionPathFromScan(scan);
     }
-    const canFork = pathEntries.some((e) => e.type === "message" && (e.role === "user" || e.role === "assistant"));
-    if (!canFork) throw new RemoteError("bad_args", "这个会话还没有用户/助手消息，没有可分叉的分支");
 
-    const newFile = this.forkSessionFileReadOnly(p, dir, scan);
-    // 新文件也必须落在会话目录监狱内；写文件名由我们生成，这里再校一次防止未来改动越界。
-    const safe = this.jailSessionPath(newFile);
+    if (!allowEmptyBefore) {
+      if (!pathEntries.length) {
+        const anyMessage = scan.byId
+          ? [...scan.byId.values()].some((e) => e.type === "message" && (e.role === "user" || e.role === "assistant"))
+          : false;
+        if (!anyMessage) throw new RemoteError("bad_args", "这个会话还没有用户/助手消息，没有可分叉的分支");
+        throw new RemoteError("bad_args", "这个会话没有活动分支");
+      }
+      const canFork = pathEntries.some((e) => e.type === "message" && (e.role === "user" || e.role === "assistant"));
+      if (!canFork) throw new RemoteError("bad_args", "这个会话还没有用户/助手消息，没有可分叉的分支");
+    }
+
+    const newFile = this.forkSessionFileReadOnly(p, targetDir, scan, pathEntries, { allowEmpty: allowEmptyBefore });
+    // 新文件也必须落在允许的会话目录监狱内；写文件名由我们生成，这里再校一次防止未来改动越界。
+    const safe = this.jailInactiveSessionPath(newFile);
     const created = readSessionHeaderLine(safe, "读取分叉结果");
     const one = this.parseSessionFile(safe, null) || {};
     const cwd = String(created.cwd || scan.header.cwd || this.cwd || "");
@@ -9315,18 +10292,26 @@ class Bridge {
       sessionPath: safe.replace(/\\/g, "/"),
       parentSession: p.replace(/\\/g, "/"),
       cwd,
+      name: (row && row.name) || null,
+      firstMessage: (row && row.firstMessage) || null,
       session: row || null,
     };
   }
 
-  /** 纯文件冷 fork：按 pi createBranchedSession 的规则复制 root→leaf，滤掉 label 后重新挂链。
+  /** 纯文件冷 fork：按 pi createBranchedSession 的规则复制 root→target，滤掉 label 后重新挂链。
    *  第一遍流式扫描已建好 id→{parentId,offset,length} 索引；这里只按偏移逐行读取目标分支，
    *  边读边写新文件，内存上限是一条条目的字节数。源文件在读的过程中被改写/截断会明确失败。 */
-  forkSessionFileReadOnly(sourcePath: string, dir: string, scan: SessionFileScan): string {
+  forkSessionFileReadOnly(
+    sourcePath: string,
+    dir: string,
+    scan: SessionFileScan,
+    customPath?: SessionEntryMeta[],
+    opts?: { allowEmpty?: boolean },
+  ): string {
     const byId = scan.byId;
     if (!byId) throw new RemoteError("internal", "冷 fork 缺少流式索引");
-    const pathEntries = activeSessionPathFromScan(scan);
-    if (!pathEntries.length) throw new RemoteError("bad_args", "这个会话没有活动分支");
+    const pathEntries = customPath !== undefined ? customPath : activeSessionPathFromScan(scan);
+    if (!pathEntries.length && !opts?.allowEmpty) throw new RemoteError("bad_args", "这个会话没有活动分支");
 
     // 和 pi 一样：路径里的 label 条目不是模型上下文的一部分；先记下全部 label，
     // 重建活动链后再把“目标仍在路径里”的书签挂到末尾。
@@ -9436,6 +10421,11 @@ class Bridge {
     const patch = settingsPatchFromArgs(args);
     const filePath = settingsFilePath();
     const result = settingsWritePatch(filePath, patch);
+    if (typeof result.applied.defaultProvider === "string" && typeof result.applied.defaultModel === "string") {
+      const p = result.applied.defaultProvider.trim();
+      const m = result.applied.defaultModel.trim();
+      if (p && m) this._writtenDefaultModel = { provider: p, id: m };
+    }
     // 只记字段名，不记值（defaultModel 等虽非密钥，也没必要进日志）
     log("settings_set 已写白名单设置:", Object.keys(result.applied).join(",") || "(none)");
     return {
@@ -9654,6 +10644,384 @@ class Bridge {
     } finally {
       if (fd !== null) { try { fs.closeSync(fd); } catch {} }
     }
+  }
+
+  /** ================= Interactive Shell (PTY) ================= */
+  private hasPythonPty(): boolean {
+    if (this.platform === "win32") return false;
+    if (this._pyPtyAvailable !== null) return this._pyPtyAvailable;
+    try {
+      const r = spawnSync("python3", ["-c", "import pty, termios, fcntl, select, struct"], {
+        stdio: "ignore",
+        timeout: 2000,
+      });
+      this._pyPtyAvailable = r.status === 0;
+    } catch {
+      this._pyPtyAvailable = false;
+    }
+    return this._pyPtyAvailable;
+  }
+
+  private resolveInteractiveShell(): string {
+    if (this.platform === "win32") return "powershell.exe";
+    const candidates = [
+      process.env.SHELL ? String(process.env.SHELL).trim() : "",
+      "/bin/zsh",
+      "/bin/bash",
+      "/bin/sh",
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch {}
+    }
+    return "/bin/sh";
+  }
+
+  private buildShellEnv(): Record<string, string> {
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v === undefined) continue;
+      if (
+        k === "PI_REMOTE_TOKEN" ||
+        k === "PI_REMOTE_DEVICE_TOKEN" ||
+        k === "PI_REMOTE_VIEWER_TOKEN" ||
+        k === "PI_REMOTE_ADMIN_TOKEN" ||
+        k === "PI_REMOTE_LOCAL_TOKEN" ||
+        k === "PI_REMOTE_PI_ENV_FILE"
+      ) {
+        continue;
+      }
+      env[k] = String(v);
+    }
+    env.TERM = "xterm-256color";
+    env.COLORTERM = "truecolor";
+    env.TERM_PROGRAM = "Pi-Remote";
+    if (!env.LANG) env.LANG = "en_US.UTF-8";
+    return env;
+  }
+
+  private clampShellSize(raw: any, min: number, max: number, fallback: number): number {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, Math.floor(n)));
+  }
+
+  private resizeShellProc(shellState: NonNullable<Bridge["activeShell"]>, cols: number, rows: number) {
+    shellState.cols = cols;
+    shellState.rows = rows;
+    if (!shellState.pty || shellState.closed) return;
+    try {
+      const ctl = shellState.proc && shellState.proc.stdio && shellState.proc.stdio[3];
+      if (ctl && !ctl.destroyed && ctl.writable) ctl.write(`${cols} ${rows}\n`);
+    } catch {}
+  }
+
+  closeActiveShell(reason = "closed") {
+    const s = this.activeShell;
+    if (!s) return;
+    this.activeShell = null;
+    s.closed = true;
+    if (s.coalesceTimer) {
+      clearTimeout(s.coalesceTimer);
+      s.coalesceTimer = null;
+    }
+    s.coalesceText = "";
+    try {
+      const ctl = s.proc && s.proc.stdio && s.proc.stdio[3];
+      if (ctl && !ctl.destroyed) ctl.end();
+    } catch {}
+    try {
+      if (s.proc && s.proc.stdin && !s.proc.stdin.destroyed) s.proc.stdin.end();
+    } catch {}
+    try {
+      if (s.proc && typeof s.proc.kill === "function") {
+        s.proc.kill("SIGTERM");
+        const killer = setTimeout(() => {
+          try { if (s.proc && typeof s.proc.kill === "function") s.proc.kill("SIGKILL"); } catch {}
+        }, 1500);
+        if (typeof killer.unref === "function") killer.unref();
+      }
+    } catch {}
+    log("关闭交互终端:", s.id, reason);
+  }
+
+  cmdShellOpen(args: any) {
+    if (!this.roomId) throw new RemoteError("not_ready", "No active session room");
+    if (process.env.PI_REMOTE_DISABLE_SHELL === "1") {
+      throw new RemoteError("unsupported", "Interactive shell is disabled on this host");
+    }
+    if (this.encEntry(this.roomId)) {
+      throw new RemoteError("unsupported", "Encrypted rooms do not support plaintext interactive shell");
+    }
+    const cols = this.clampShellSize(args?.cols, 10, 500, 80);
+    const rows = this.clampShellSize(args?.rows, 4, 200, 24);
+    const reset = !!args?.reset;
+    const existing = this.activeShell;
+    if (!reset && existing && !existing.closed && existing.roomId === this.roomId) {
+      if (existing.cols !== cols || existing.rows !== rows) this.resizeShellProc(existing, cols, rows);
+      return {
+        shellId: existing.id,
+        pty: existing.pty,
+        shell: existing.shell,
+        cwd: existing.cwd,
+        cols: existing.cols,
+        rows: existing.rows,
+        buffer: existing.buffer,
+        reused: true,
+      };
+    }
+    this.closeActiveShell(reset ? "reset" : "replaced");
+
+    const shell = this.resolveInteractiveShell();
+    const cwd = (this.cwd && fs.existsSync(this.cwd) ? this.cwd : process.cwd());
+    const env = this.buildShellEnv();
+    const ptySupported = this.hasPythonPty();
+    const shellId = `sh_${crypto.randomBytes(6).toString("hex")}`;
+    const PY_PTY_SCRIPT = [
+      "import os, sys, pty, fcntl, termios, struct, select, signal",
+      "cols = max(10, min(500, int(sys.argv[1])))",
+      "rows = max(4, min(200, int(sys.argv[2])))",
+      "shell = sys.argv[3]",
+      "args = sys.argv[4:]",
+      "master, slave = pty.openpty()",
+      'fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))',
+      "pid = os.fork()",
+      "if pid == 0:",
+      "    try:",
+      "        os.close(master)",
+      "        try:",
+      "            os.close(3)",
+      "        except OSError:",
+      "            pass",
+      "        os.setsid()",
+      "        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)",
+      "        os.dup2(slave, 0)",
+      "        os.dup2(slave, 1)",
+      "        os.dup2(slave, 2)",
+      "        if slave > 2:",
+      "            os.close(slave)",
+      "        os.execvp(shell, [shell] + args)",
+      "    except Exception:",
+      "        os._exit(127)",
+      "os.close(slave)",
+      "ctl_open = True",
+      "try:",
+      "    os.fstat(3)",
+      "except OSError:",
+      "    ctl_open = False",
+      "stdin_open = True",
+      'ctl_buf = b""',
+      "def write_all(fd, data):",
+      "    view = memoryview(data)",
+      "    while len(view) > 0:",
+      "        try:",
+      "            n = os.write(fd, view)",
+      "            view = view[n:]",
+      "        except InterruptedError:",
+      "            continue",
+      "        except OSError:",
+      "            break",
+      "def apply_resize(line):",
+      "    parts = line.strip().split()",
+      "    if len(parts) == 2:",
+      "        try:",
+      "            c = max(10, min(500, int(parts[0])))",
+      "            r = max(4, min(200, int(parts[1])))",
+      '            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", r, c, 0, 0))',
+      "            os.killpg(pid, signal.SIGWINCH)",
+      "        except Exception:",
+      "            pass",
+      "while True:",
+      "    watch = [master]",
+      "    if stdin_open:",
+      "        watch.append(0)",
+      "    if ctl_open:",
+      "        watch.append(3)",
+      "    try:",
+      "        rlist, _, _ = select.select(watch, [], [], 0.25)",
+      "    except InterruptedError:",
+      "        continue",
+      "    if master in rlist:",
+      "        try:",
+      "            data = os.read(master, 8192)",
+      "        except OSError:",
+      "            break",
+      "        if not data:",
+      "            break",
+      "        write_all(1, data)",
+      "    if 0 in rlist:",
+      "        try:",
+      "            data = os.read(0, 4096)",
+      "        except OSError:",
+      '            data = b""',
+      "        if not data:",
+      "            stdin_open = False",
+      "            try:",
+      "                os.killpg(pid, signal.SIGHUP)",
+      "            except OSError:",
+      "                pass",
+      "            break",
+      "        write_all(master, data)",
+      "    if ctl_open and 3 in rlist:",
+      "        try:",
+      "            data = os.read(3, 1024)",
+      "        except OSError:",
+      '            data = b""',
+      "        if not data:",
+      "            ctl_open = False",
+      "        else:",
+      "            ctl_buf += data",
+      '            while b"\\n" in ctl_buf:',
+      '                line, ctl_buf = ctl_buf.split(b"\\n", 1)',
+      '                apply_resize(line.decode("ascii", "ignore"))',
+      "try:",
+      "    os.close(master)",
+      "except OSError:",
+      "    pass",
+      "try:",
+      "    _, status = os.waitpid(pid, 0)",
+      "    if os.WIFEXITED(status):",
+      "        sys.exit(os.WEXITSTATUS(status))",
+      "    if os.WIFSIGNALED(status):",
+      "        sys.exit(128 + os.WTERMSIG(status))",
+      "except ChildProcessError:",
+      "    pass",
+      "sys.exit(0)",
+    ].join("\n");
+
+    let proc: any;
+    if (ptySupported) {
+      proc = spawn("python3", ["-u", "-c", PY_PTY_SCRIPT, String(cols), String(rows), shell, "-i"], {
+        cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe", "pipe"],
+      });
+    } else if (this.platform === "win32") {
+      proc = spawn(shell, ["-NoLogo"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    } else {
+      proc = spawn(shell, ["-i"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    }
+
+    const state: NonNullable<Bridge["activeShell"]> = {
+      id: shellId,
+      roomId: this.roomId,
+      shell,
+      cwd,
+      pty: ptySupported,
+      cols,
+      rows,
+      proc,
+      buffer: "",
+      closed: false,
+      coalesceText: "",
+      coalesceTimer: null,
+    };
+    this.activeShell = state;
+
+    const SHELL_BUFFER_MAX = 64 * 1024;
+    const flush = () => {
+      if (state.coalesceTimer) {
+        clearTimeout(state.coalesceTimer);
+        state.coalesceTimer = null;
+      }
+      if (!state.coalesceText) return;
+      const chunk = state.coalesceText;
+      state.coalesceText = "";
+      if (this.roomId === state.roomId && !this.closing) {
+        this.send(
+          { type: "event", room: state.roomId, event: { type: "shell_output", shellId: state.id, data: chunk } },
+          { essential: false },
+        );
+      }
+    };
+    const pushChunk = (text: string) => {
+      if (!text || state.closed) return;
+      state.buffer += text;
+      if (state.buffer.length > SHELL_BUFFER_MAX) {
+        state.buffer = state.buffer.slice(-SHELL_BUFFER_MAX);
+      }
+      state.coalesceText += text;
+      if (state.coalesceText.length >= 16384) flush();
+      else if (!state.coalesceTimer) state.coalesceTimer = setTimeout(flush, 16);
+    };
+
+    const outDec = new StringDecoder("utf8");
+    const errDec = new StringDecoder("utf8");
+    proc.stdout?.on("data", (chunk: Buffer) => pushChunk(outDec.write(chunk)));
+    proc.stderr?.on("data", (chunk: Buffer) => pushChunk(errDec.write(chunk)));
+    const ctlPipe = proc.stdio && proc.stdio[3];
+    if (ctlPipe && typeof ctlPipe.on === "function") ctlPipe.on("error", () => {});
+    proc.stdin?.on("error", () => {});
+
+    let finalized = false;
+    const finalize = (code: number | null, signal: string | null) => {
+      if (finalized) return;
+      finalized = true;
+      pushChunk(outDec.end());
+      pushChunk(errDec.end());
+      flush();
+      const wasActive = this.activeShell === state;
+      state.closed = true;
+      if (wasActive) this.activeShell = null;
+      if (this.roomId === state.roomId && !this.closing) {
+        this.send(
+          { type: "event", room: state.roomId, event: { type: "shell_exit", shellId: state.id, code, signal } },
+          { essential: true },
+        );
+      }
+    };
+    proc.on("close", (code: number | null, signal: string | null) => finalize(typeof code === "number" ? code : null, signal || null));
+    proc.on("error", (err: any) => {
+      pushChunk(`\r\n[shell error: ${err?.message || err}]\r\n`);
+      finalize(-1, null);
+    });
+
+    return {
+      shellId: state.id,
+      pty: state.pty,
+      shell: state.shell,
+      cwd: state.cwd,
+      cols: state.cols,
+      rows: state.rows,
+      buffer: "",
+      reused: false,
+    };
+  }
+
+  cmdShellInput(args: any) {
+    const s = this.activeShell;
+    const sid = typeof args?.shellId === "string" ? args.shellId : "";
+    if (!s || s.closed || (sid && sid !== s.id)) {
+      throw new RemoteError("not_found", "No active shell session");
+    }
+    const data = typeof args?.data === "string" ? args.data : "";
+    if (!data) return { ok: true };
+    if (data.length > 65536) throw new RemoteError("bad_args", "Shell input exceeds maximum chunk size");
+    if (!s.proc || !s.proc.stdin || s.proc.stdin.destroyed || !s.proc.stdin.writable) {
+      throw new RemoteError("not_found", "Shell stdin is closed");
+    }
+    s.proc.stdin.write(data);
+    return { ok: true };
+  }
+
+  cmdShellResize(args: any) {
+    const s = this.activeShell;
+    const sid = typeof args?.shellId === "string" ? args.shellId : "";
+    if (!s || s.closed || (sid && sid !== s.id)) return { ok: false };
+    const cols = this.clampShellSize(args?.cols, 10, 500, s.cols);
+    const rows = this.clampShellSize(args?.rows, 4, 200, s.rows);
+    this.resizeShellProc(s, cols, rows);
+    return { ok: true, cols: s.cols, rows: s.rows };
+  }
+
+  cmdShellClose(args: any) {
+    const s = this.activeShell;
+    if (!s) return { ok: true };
+    const sid = typeof args?.shellId === "string" ? args.shellId : "";
+    if (sid && sid !== s.id) return { ok: true, stale: true };
+    this.closeActiveShell("client");
+    return { ok: true };
   }
 
   /** ================= 只读：会话列表 / Fork 点 / 树 / 统计（event ctx 即可执行） ================= */
@@ -9933,9 +11301,14 @@ class Bridge {
 
   cmdGetForkMessages() {
     const sm = this.ctx && this.ctx.sessionManager;
-    if (!sm || typeof sm.getEntries !== "function") return { messages: [] };
+    const entries = sm && typeof sm.getBranch === "function"
+      ? sm.getBranch()
+      : sm && typeof sm.getEntries === "function"
+        ? sm.getEntries()
+        : null;
+    if (!Array.isArray(entries)) return { messages: [] };
     const out: any[] = [];
-    for (const e of sm.getEntries() || []) {
+    for (const e of entries) {
       if (e && e.type === "message" && e.message && e.message.role === "user") {
         const t = msgText(e.message).trim();
         if (t) out.push({ entryId: e.id, text: t.slice(0, 120) });
@@ -10008,8 +11381,7 @@ class Bridge {
     }
   }
 
-  /** 路径监狱：把任意输入收敛成 sessionDir 内的绝对 .jsonl 路径，越界即抛错 */
-  jailSessionPath(p: string): string {
+  resolveSessionJailPath(p: string, allowSiblingProjects: boolean): string {
     const np = require("node:path");
     const base = this.sessionDir();
     if (!base) throw new RemoteError("not_ready", "拿不到会话目录，拒绝切换会话");
@@ -10017,9 +11389,32 @@ class Bridge {
     const b = np.resolve(base);
     // Windows 盘符/目录大小写可能不同（pi 给的 D:\Users\...，调用方传 d:\users\...），macOS 同样不分大小写：统一小写后再比，别把合法路径判越界
     const ci = caseInsensitivePaths(this.platform);
-    const absC = ci ? abs.toLowerCase() : abs;
-    const bC = ci ? b.toLowerCase() : b;
-    if (absC !== bC && !absC.startsWith(bC + np.sep.toLowerCase())) throw new RemoteError("bad_args", "会话路径越界（必须在 " + base + " 内）");
+    const eqOrInside = (candidate: string, dir: string) => {
+      const c = ci ? candidate.toLowerCase() : candidate;
+      const d = ci ? dir.toLowerCase() : dir;
+      return c === d || c.startsWith(d + np.sep.toLowerCase());
+    };
+    const isProjectFolder = (dirPath: string) => {
+      const name = np.basename(dirPath);
+      const parent = np.basename(np.dirname(dirPath));
+      return name.startsWith("--") && (ci ? parent.toLowerCase() === "sessions" : parent === "sessions");
+    };
+    const inSiblingProject = (candidate: string, baseDir: string, useRealRoot: boolean) => {
+      if (!allowSiblingProjects || !isProjectFolder(baseDir)) return false;
+      const rootRaw = np.dirname(baseDir);
+      const sessionsRoot = useRealRoot ? fs.realpathSync(rootRaw) : rootRaw;
+      const parent = np.dirname(candidate);
+      const folder = np.basename(parent);
+      const grandParent = np.dirname(parent);
+      if (!folder.startsWith("--") || !folder.endsWith("--") || folder.length <= 4) return false;
+      return ci
+        ? grandParent.toLowerCase() === sessionsRoot.toLowerCase()
+        : grandParent === sessionsRoot;
+    };
+
+    if (!eqOrInside(abs, b) && !inSiblingProject(abs, b, false)) {
+      throw new RemoteError("bad_args", "会话路径越界（必须在 " + base + " 内）");
+    }
     if (!abs.toLowerCase().endsWith(".jsonl")) throw new RemoteError("bad_args", "只支持 .jsonl 会话文件");
     // existsSync 会把 EACCES 也当成“不存在”：先 stat，权限错误要原样报出来。
     let st: any;
@@ -10028,18 +11423,28 @@ class Bridge {
       throw sessionFileError(e, "读取会话文件");
     }
     if (!st.isFile()) throw new RemoteError("bad_args", "不是普通会话文件：" + abs);
-    // 符号链接可能在 sessionDir 内指向外面：真实路径也必须在监狱内。
+    // 符号链接可能在 sessionDir 内指向外面：真实路径也必须在允许的监狱范围内。
     try {
       const realAbs = fs.realpathSync(abs);
       const realBase = fs.realpathSync(b);
-      const ra = ci ? realAbs.toLowerCase() : realAbs;
-      const rb = ci ? realBase.toLowerCase() : realBase;
-      if (ra !== rb && !ra.startsWith(rb + np.sep.toLowerCase())) throw new RemoteError("bad_args", "会话路径越界（符号链接指向 " + realAbs + "）");
+      if (!eqOrInside(realAbs, realBase) && !inSiblingProject(realAbs, b, true)) {
+        throw new RemoteError("bad_args", "会话路径越界（符号链接指向 " + realAbs + "）");
+      }
     } catch (e: any) {
       if (e instanceof RemoteError) throw e;
       throw sessionFileError(e, "检查会话路径");
     }
     return abs;
+  }
+
+  /** 路径监狱：把任意输入收敛成 sessionDir 内的绝对 .jsonl 路径，越界即抛错 */
+  jailSessionPath(p: string): string {
+    return this.resolveSessionJailPath(p, false);
+  }
+
+  /** 未载入会话文件操作的路径监狱：允许当前 sessionDir，或当当前处于 sessions/--cwd-- 下时允许同级 --*-- 项目目录 */
+  jailInactiveSessionPath(p: string): string {
+    return this.resolveSessionJailPath(p, true);
   }
 
   /** 轻量解析会话标识（id 或名字 → path）：先按文件名匹配（文件名含 sessionId），命中不了再限量扫内容 */
@@ -10304,7 +11709,9 @@ class Bridge {
         if (!ms.length) throw new RemoteError("not_found", "会话中没有 user 消息可 fork");
         entryId = ms[ms.length - 1].entryId; // 默认 fork 最后一条 user 消息
       }
-      return { entryId };
+      const out: any = { entryId };
+      if (a.position === "at" || a.position === "before") out.position = a.position;
+      return out;
     }
     if (kind === "navigate_tree") {
       let targetId = String(a.targetId || a.entryId || "").trim();
@@ -10392,6 +11799,10 @@ class Bridge {
     await this.settleBeforeSessionOp(kind);
     const before = this.safeRead(() => (sm.getSessionFile ? String(sm.getSessionFile()) : null), null);
     const norm = (p: any) => (p ? String(p).replace(/\\/g, "/") : null);
+    const readSessionId = () => {
+      const sid = this.safeRead(() => (typeof sm.getSessionId === "function" ? sm.getSessionId() : null), null);
+      return sid ? String(sid) : null;
+    };
 
     if (kind === "navigate_tree" && opArgs.summarize) {
       // 优先走 pi 的公开 navigateTree：它内部会发 session_before_tree / session_tree，
@@ -10399,6 +11810,7 @@ class Bridge {
       // 事件/WS 回调的 ctx 没有；拿不到才走下面的等价手动实现（说明见报告）。
       const navigate = this.resolveNavigateTree(commandCtx);
       if (navigate) {
+        this.snapshotPreSwitchContext(sm);
         let result: any;
         try {
           result = await navigate(opArgs.targetId, { summarize: true });
@@ -10410,6 +11822,7 @@ class Bridge {
           if (result.aborted) throw new RemoteError("timeout", "分支摘要已中止，未跳转");
           return { ok: true, cancelled: true, kind, sessionFile: norm(before), summarize: true, summary: false };
         }
+        this.markSessionContextDirty(commandCtx);
         // 成功换代由 pi 的 session_tree 事件驱动（forward 里 bumpEpoch），这里不能再 bump 一次。
         const entry = result && result.summaryEntry;
         const details = entry && entry.details;
@@ -10418,6 +11831,7 @@ class Bridge {
           cancelled: false,
           kind,
           sessionFile: norm(before),
+          sessionId: readSessionId(),
           summarize: true,
           summary: !!(entry && typeof entry.summary === "string" && entry.summary),
         };
@@ -10428,24 +11842,14 @@ class Bridge {
       }
       // 兜底：pi 版本/上下文没有公开 navigateTree。摘要算法与 AgentSession 内部一致，但钩子不会触发；
       // 生成失败时不改叶（原子性），只有 branchWithSummary 成功才换代。
-      const extra = await this.navigateTreeWithSummary(opArgs.targetId);
+      const extra = await this.navigateTreeWithSummary(opArgs.targetId, commandCtx);
       this.bumpEpoch("navigate_tree");
-      return { ok: true, cancelled: false, kind, sessionFile: norm(before), summarize: true, ...extra };
+      return { ok: true, cancelled: false, kind, sessionFile: norm(before), sessionId: readSessionId(), summarize: true, ...extra };
     }
 
+    this.snapshotPreSwitchContext(sm);
     let newFile: string | null = null;
     let forkText: string | null = null;
-    if (kind === "fork") {
-      // 官方 fork 返回带 text（被分叉的消息文本，rpc-commands.md §fork）：先读后建
-      try {
-        for (const e of sm.getEntries() || []) {
-          if (e && e.id === opArgs.entryId && e.type === "message" && e.message) {
-            forkText = msgText(e.message).trim() || null;
-            break;
-          }
-        }
-      } catch {}
-    }
     if (kind === "new_session") {
       const r = sm.newSession(opArgs.parentSession ? { parentSession: opArgs.parentSession } : {});
       newFile = typeof r === "string" ? r : this.safeRead(() => (sm.getSessionFile ? String(sm.getSessionFile()) : null), null);
@@ -10453,8 +11857,23 @@ class Bridge {
       sm.setSessionFile(opArgs.sessionPath);
       newFile = this.safeRead(() => (sm.getSessionFile ? String(sm.getSessionFile()) : null), null);
     } else if (kind === "fork") {
-      const r = sm.createBranchedSession(opArgs.entryId);
-      newFile = typeof r === "string" ? r : this.safeRead(() => (sm.getSessionFile ? String(sm.getSessionFile()) : null), null);
+      // 官方 fork 语义：position==="before"（或未显式传 position 时的 user 消息）停在所选条目的 parentId
+      // 并回填用户输入；position==="at"（或非 user 条目缺省）停在所选条目本身且不回填 text。
+      const entries = typeof sm.getEntries === "function" ? (this.safeRead(() => sm.getEntries(), []) || []) : [];
+      const selectedEntry = entries.find((e: any) => e && String(e.id) === String(opArgs.entryId))
+        || (typeof sm.getEntry === "function" ? this.safeRead(() => sm.getEntry(opArgs.entryId), null) : null);
+      const isUser = !!(selectedEntry?.type === "message" && selectedEntry?.message?.role === "user");
+      const pos = opArgs.position || (isUser ? "before" : "at");
+      if (pos === "before") {
+        forkText = isUser ? (msgText(selectedEntry.message).trim() || null) : null;
+        const r = selectedEntry?.parentId
+          ? sm.createBranchedSession(selectedEntry.parentId)
+          : sm.newSession(before ? { parentSession: before } : {});
+        newFile = typeof r === "string" ? r : this.safeRead(() => (sm.getSessionFile ? String(sm.getSessionFile()) : null), null);
+      } else {
+        const r = sm.createBranchedSession(opArgs.entryId);
+        newFile = typeof r === "string" ? r : this.safeRead(() => (sm.getSessionFile ? String(sm.getSessionFile()) : null), null);
+      }
     } else if (kind === "clone") {
       // pi RPC clone：把当前活动分支原样复制进一个新会话。
       // pi 的对应原语就是 createBranchedSession(当前叶)（probe 实测存在）。
@@ -10468,13 +11887,14 @@ class Bridge {
       throw new RemoteError("unsupported", "不支持的操作：" + kind);
     }
 
+    this.markSessionContextDirty(commandCtx);
     const beforeN = norm(before);
     const afterN = norm(newFile);
 
     if (kind === "navigate_tree") {
       // 换分支：房间 id 与会话文件都不变，但内容全变 → 换代（relay reset 存储 → 回 0 条 → 推新分支全量）
       this.bumpEpoch("navigate_tree");
-      return { ok: true, cancelled: false, kind, sessionFile: beforeN };
+      return { ok: true, cancelled: false, kind, sessionFile: beforeN, sessionId: readSessionId() };
     }
 
     // 换会话：旧房间下线 → 重新绑定（读新 sessionId → 注册新房 → 对齐镜像）
@@ -10483,11 +11903,11 @@ class Bridge {
       this.send({ type: "room_closed", room: this.roomId }, { essential: true });
     }
     try {
-      this.bindSession(this.ctx);
+      this.bindSession(this.ctx, { preserveContextDirty: true });
     } catch (e: any) {
       log("换会话后重新绑定失败:", e?.message);
     }
-    const out: any = { ok: true, cancelled: false, kind, sessionFile: afterN || beforeN };
+    const out: any = { ok: true, cancelled: false, kind, sessionFile: afterN || beforeN, sessionId: readSessionId() };
     if (kind === "fork" && forkText) out.text = forkText;
     return out;
   }
@@ -10506,7 +11926,7 @@ class Bridge {
    *  本扩展的历史语义一直是“叶移到所选节点”，这里保持该语义，只额外附加摘要，避免同类节点
    *  在“直接跳转/跳转并总结”两种模式下落到不同位置。
    */
-  async navigateTreeWithSummary(targetId: string): Promise<any> {
+  async navigateTreeWithSummary(targetId: string, commandCtx?: any): Promise<any> {
     const sm: any = this.ctx && this.ctx.sessionManager;
     if (!sm || typeof sm.getLeafId !== "function" || typeof sm.branchWithSummary !== "function" || typeof sm.getEntry !== "function") {
       throw new RemoteError("not_ready", "当前上下文不支持带摘要的跳转");
@@ -10531,9 +11951,11 @@ class Bridge {
     }
     if (!entries.length) {
       // 没有可总结的条目（例如旧叶为空），仍然完成跳转，不能把“没摘要”当成“已成功总结”。
+      this.snapshotPreSwitchContext(sm);
       try { sm.branch(targetId); } catch (e: any) {
         throw new RemoteError("internal", "跳转失败：" + String((e && e.message) || e));
       }
+      this.markSessionContextDirty(commandCtx);
       return { summary: false, noop: false };
     }
 
@@ -10576,6 +11998,7 @@ class Bridge {
     const summary = String((result && result.summary) || "").trim();
     if (!summary) throw new RemoteError("internal", "分支摘要为空，未跳转");
 
+    this.snapshotPreSwitchContext(sm);
     try {
       sm.branchWithSummary(targetId, summary, {
         readFiles: Array.isArray(result.readFiles) ? result.readFiles : [],
@@ -10584,6 +12007,7 @@ class Bridge {
     } catch (e: any) {
       throw new RemoteError("internal", "写入分支摘要失败：" + String((e && e.message) || e));
     }
+    this.markSessionContextDirty(commandCtx);
     return {
       summary: true,
       summaryChars: summary.length,
@@ -10699,6 +12123,7 @@ export default function (pi: any) {
   }
 
   for (const name of FORWARD_EVENTS) {
+    if (name === "context") continue; // 下方单独注册 context 钩子，统一做脏上下文纠偏后再透传摘要
     try {
       pi.on(name, (event: any, ctx: any) => {
         if (ctx) bridge.ctx = ctx;
@@ -10754,10 +12179,39 @@ export default function (pi: any) {
   } catch {}
 
   try {
+    pi.on("context", (event: any, ctx: any) => {
+      if (ctx) bridge.ctx = ctx;
+      let transformed: { messages: any[] } | undefined;
+      if (bridge.sessionContextDirty) {
+        const sm = ctx?.sessionManager || bridge.ctx?.sessionManager;
+        if (sm && typeof sm.buildSessionContext === "function") {
+          try {
+            const built = sm.buildSessionContext();
+            const canonical = Array.isArray(built?.messages)
+              ? built.messages.filter((m: any) => m && m.role !== "system")
+              : null;
+            if (canonical) {
+              const incoming = Array.isArray(event?.messages) ? event.messages : [];
+              transformed = { messages: bridge.reconcileDirtyContext(canonical, incoming) };
+            }
+          } catch (e: any) {
+            log("context 同步失败（已忽略）:", e?.message);
+          }
+        }
+      }
+      bridge.forward(transformed && event && typeof event === "object" ? { ...event, messages: transformed.messages } : event);
+      return transformed;
+    });
+  } catch (e: any) {
+    log("注册 context 失败:", e?.message);
+  }
+
+  try {
     pi.on("session_start", (_e: any, ctx: any) => {
       // 连接在这里才建立（不在工厂里）：`pi --list-models` 等不进会话的调用也会执行工厂
       // bindSession 内部已全兜底；这里再包一层，双保险防异常逃逸进 pi 事件分发
       try {
+        bridge.clearSessionContextDirty();
         bridge.start();
         bridge.bindSession(ctx);
       } catch (e: any) { log("session_start 处理失败（已忽略）:", e?.message); }
@@ -11217,5 +12671,5 @@ function usageEmptySnapshot(options: any = {}): any {
   });
 }
 
-export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, canonicalCwd, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsFilePath, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, createAskSelectState, normalizeAskSelectKeys, askSelectApplyKey, askSelectComponentFactory, isAskLocalFreeText, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalSummary, approvalBlockReason, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, heldPrevContentKey, contentKeyCandidates, planContentKeyInstall, installContentKeyInKeyFile, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile, canonicalJsonOf, contentHashOf, remoteHashOf, sealBody, encryptMessageBody, openBody, decryptMessageBody, encryptTextCt, decryptTextCt, wrapRoomKey, unwrapRoomKey, encryptAckText, decryptAckText, remoteEchoMatchesText, shrinkImagesWithBudget, encryptTextBlocksDeep, storeRoomKeyInKeyFile, IMAGE_TOTAL_MAX_CHARS };
+export { Bridge, RemoteError, usageScanSnapshot, usageContributionOfRows, usageContributionOfText, usageSnapshotFromContributions, usageEmptySnapshot, usageTimezone, usageDayKeyOf, usageTodayKey, usageAddDays, usageModelKey, usageSessionsRoot, usageCachePath, USAGE_ACTIVITY_VERSION, USAGE_CACHE_VERSION, USAGE_DAYS_MAX, USAGE_MODELS_MAX, remoteErrorCode, validCid, authFrame, CLIENT_CAPS, PROTOCOL, projectEvent, projectNotifyEvent, buildDialogOpen, capDialogOptions, shrinkDeep, mirrorMessages, hashOf, redactDeep, mergeableDelta, truncateStringsDeep, oversizeFallback, deliveryKey, deliveryMatches, deleteLikePi, hasTrashCommand, deviceIdentity, platformId, defaultDeviceName, samePath, canonicalCwd, evaluateAttachWindow, attachStatePath, attachGateHint, insecureRelayWarning, STREAM_DELTA_MAX_CHARS, IMAGE_RETURN_MAX_CHARS, buildSessionManifest, manifestProjectDirs, normalizeSessionEntry, sessionIdFromPath, sessionIdFromFile, MAX_MANIFEST_BATCH, MANIFEST_THROTTLE_MS, LOG_ROTATE_BYTES, LOG_CHECK_EVERY, LOG_FILE, log, pidAlive, taskListFromDetails, taskListFromPlanEntry, taskListFromBranch, DIAG_ERROR_MAX, LOG_TAIL_LINES, redactDiagText, recordDiagError, readLogTail, attachDiagState, FILE_MAX_BYTES, mimeForFile, resolveFileInRoot, readFileInRoot, readPiVersion, settingsAgentDir, settingsFilePath, modelsFilePath, authFilePath, mcpFilePath, safeReadJsonObjectFile, modelsReadConfig, upsertModelProviderConfig, deleteModelProviderConfig, upsertProviderModelConfig, deleteProviderModelConfig, mcpReadConfigList, upsertMcpServerConfig, toggleMcpServerConfig, deleteMcpServerConfig, validateSettingsPatch, settingsPatchFromArgs, settingsReadFile, settingsApplyPatch, settingsAtomicWrite, settingsWritePatch, SETTINGS_THINKING_LEVELS, ASK_USER_TOOL_NAME, ASK_USER_PARAMETERS, ASK_FREE_TEXT_SENTINEL, ASK_UNANSWERED_TEXT, createAskSelectState, normalizeAskSelectKeys, askSelectApplyKey, askSelectComponentFactory, isAskLocalFreeText, APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY, APPROVAL_GATE_TIERS, APPROVAL_SCOPES, askTimeoutMs, validateAskOptions, prepareAskOptions, multiSelectRange, validateMultiValues, approvalGateDecision, approvalCommandMatchesAllowlist, approvalPathWithinRoot, approvalSummary, approvalBlockReason, DEVICE_KEY_FILE_ENV, AUTH_SIGN_DOMAIN, ACK_WRAP_INFO, CLIENT_NONCE_BYTES, keyFingerprintHex, contentKeyFingerprint, parseDeviceKeyData, loadDeviceKey, heldContentKey, heldPrevContentKey, contentKeyCandidates, planContentKeyInstall, installContentKeyInKeyFile, signAuthChallenge, verifyAuthSignature, unwrapAckGrant, wrapAckGrant, storeAckInKeyFile, canonicalJsonOf, contentHashOf, remoteHashOf, sealBody, encryptMessageBody, openBody, decryptMessageBody, encryptTextCt, decryptTextCt, wrapRoomKey, unwrapRoomKey, encryptAckText, decryptAckText, remoteEchoMatchesText, shrinkImagesWithBudget, encryptTextBlocksDeep, storeRoomKeyInKeyFile, IMAGE_TOTAL_MAX_CHARS };
 

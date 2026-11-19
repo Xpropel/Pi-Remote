@@ -39,6 +39,9 @@ import type {
 } from "../sidebar/types.ts"
 import type { PiSidebarData, PiSidebarDevice } from "../sidebar/types.ts"
 import { useNow } from "@/pi/hooks/useNow"
+import { usePiSettingsPrefs } from "@/pi/hooks/usePiSettingsPrefs"
+import { effectiveSidebarArchivesOf, filterSessionsByRetention } from "@/pi/model/settingsHost"
+import { publishSidebarLocal, subscribeSidebarLocal } from "../sidebar/useSidebarLocal.ts"
 
 export interface MobileSidebarDataInput {
   style: PiSidebarStyle
@@ -56,7 +59,9 @@ type GroupBuild = {
   deviceId: string
   cwd: string
   more?: number
+  folderOnly?: boolean
   expanded?: boolean
+  flat?: boolean
   rows: { id: string; title: string; marker: string; at?: number; deviceId?: string; subtitle?: string; trailingText?: string }[]
 }
 
@@ -76,6 +81,7 @@ function markerStatus(marker: string) {
 export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDataInput) {
   const { relay } = p
   const now = useNow(30_000)
+  const settingsPrefs = usePiSettingsPrefs()
   const [local, setLocal] = useState<PiSidebarLocalState>(() => {
     if (typeof window === "undefined") return emptySidebarLocalState()
     try {
@@ -84,6 +90,22 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       return emptySidebarLocalState()
     }
   })
+  useEffect(() => {
+    const unsub = subscribeSidebarLocal(setLocal)
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== PI_SIDEBAR_LOCAL_STORAGE_KEY) return
+      try {
+        setLocal(parseSidebarLocalState(event.newValue))
+      } catch {
+        setLocal(emptySidebarLocalState())
+      }
+    }
+    window.addEventListener("storage", onStorage)
+    return () => {
+      unsub()
+      window.removeEventListener("storage", onStorage)
+    }
+  }, [])
   const account = relay.serverName || "local"
   const deviceId = relay.selectedDeviceId ?? ""
   const scope = sidebarStorageScope(account, deviceId)
@@ -95,6 +117,7 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
     } catch {
       // 存量/隐私模式失败：本会话内仍可用（不假装已持久化）
     }
+    publishSidebarLocal(next)
   }, [])
   const archiveView = input.archiveView === true
   const { data, archivedCount } = useMemo(() => {
@@ -110,6 +133,22 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       inbox: relay.inbox,
       selectedDevice: relay.selectedDevice,
     })
+    const sessions = filterSessionsByRetention(base.sessions, settingsPrefs.retention, now, relay.roomId)
+    const effectiveArchives = effectiveSidebarArchivesOf({
+      manualArchives: scopeState.archives,
+      autoArchive: settingsPrefs.autoArchive,
+      now,
+      sessions: sessions
+        .filter((s) => !relay.selectedDeviceId || !s.deviceId || s.deviceId === relay.selectedDeviceId)
+        .map((s) => ({
+          key: sidebarSessionKeyOf(s.deviceId ?? deviceId, s.id),
+          updatedAt: s.updatedAt,
+          active: s.id === relay.roomId,
+          online: s.online,
+        })),
+      pins: scopeState.pins,
+    })
+    const effectiveArchiveSet = new Set(effectiveArchives)
     const sortedDevices = sidebarDeviceRows(
       [...base.devices].map((device) => ({ id: device.id, name: device.name, online: device.online, platform: device.platform, current: device.id === relay.selectedDeviceId })),
       relay.selectedDeviceId ?? null,
@@ -119,14 +158,18 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
     // Same scoping as the desktop sidebar: the list belongs to the
     // selected device — only its folders, headers without the device
     // prefix. No selection yet -> no filter.
-    const legacy = sidebarGroups(base.sessions, base.devices, base.attention, { grouping: p.ui.prefs.grouping, filter: relay.selectedDeviceId ?? null, expanded: p.ui.expanded, ...uncapped })
-    const sessionOf = new Map(base.sessions.map((session) => [session.id, session]))
+    const legacy = sidebarGroups(sessions, base.devices, base.attention, { grouping: p.ui.prefs.grouping, filter: relay.selectedDeviceId ?? null, expanded: p.ui.expanded, ...uncapped })
+    const sessionOf = new Map(sessions.map((session) => [session.id, session]))
     // 设计 D §2.2：一行实时状态（roomStatusLine）的输入面——房间事实按 id 索引、未读落定按 roomId 索引
     const roomById = new Map(relay.rooms.map((r) => [r.id, r]))
     const turnEndByRoom = new Map(relay.roomTurnEnds.map((t) => [t.roomId, t]))
     const groups: PiSidebarGroup[] = (legacy.groups as unknown as GroupBuild[]).map((group: GroupBuild) => {
       const cwd = group.cwd ?? ""
-      const folderCollapsed = scopeState.folders[group.key] !== false
+      const isFlat = group.flat === true
+      const defaultLabel = isFlat ? "" : group.label || sidebarWorkspaceLabel(cwd)
+      const customName = !isFlat ? (scopeState.workspaceNames?.[group.key] ?? scopeState.workspaceNames?.[`workspace:${group.key}`]) : undefined
+      const label = isFlat ? (group.label || sidebarWorkspaceLabel(cwd)) : (customName || defaultLabel)
+      const folderCollapsed = !isFlat && scopeState.folders[group.key] !== false
       const sessions: PiSidebarSession[] = group.rows.map((row) => {
         const listed = sessionOf.get(row.id)
         const dev = base.devices.find((d) => d.id === (row.deviceId ?? deviceId))
@@ -152,7 +195,7 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
           deviceName: dev?.name ?? "",
           selected: relay.roomId === row.id,
           pinned: scopeState.pins.includes(key),
-          archived: scopeState.archives.includes(key),
+          archived: effectiveArchiveSet.has(key),
           groupId: sidebarWorkspaceGroupId(cwd || listed?.cwd),
           enc: listed?.enc,
           encReason: listed?.encReason,
@@ -161,7 +204,10 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       return {
         id: group.key,
         kind: "workspace",
-        label: group.label || sidebarWorkspaceLabel(cwd),
+        label,
+        defaultLabel: isFlat ? undefined : defaultLabel,
+        customLabel: Boolean(customName),
+        deviceId: group.deviceId || relay.selectedDeviceId || undefined,
         cwd,
         collapsed: !archiveView && folderCollapsed,
         sessions,
@@ -172,15 +218,15 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
     })
     // 只数名册里还在的会话：已删掉的会话留在归档表里不算，免得入口写着有、点进去是空的
     const archivedCount = groups.reduce((count, group) => count + group.sessions.filter((session) => session.archived).length, 0)
-    const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: scopeState.archives, archiveView, folders: scopeState.folders })
-    const shownGroups = overlaid.filter((group) => group.sessions.length > 0 || group.kind === "pinned")
+    const overlaid = sidebarGroupsWithOverlay({ groups, pins: scopeState.pins, archives: effectiveArchives, archiveView, folders: scopeState.folders })
+    const shownGroups = overlaid.filter((group) => group.sessions.length > 0 || group.kind === "pinned" || (!archiveView && group.kind === "workspace" && Boolean(group.cwd)))
     const search = input.search ?? { open: false, query: "" }
     const data = {
       style: input.style,
       theme: input.theme,
       serverName: sidebarIdentityNameOf(relay.serverName, typeof location === "undefined" ? "" : location.host),
       serverUrl: undefined,
-      online: relay.online,
+      online: relay.status === "已连接",
       devices: sortedDevices.map((device: PiSidebarDevice) => ({ ...device, current: device.id === relay.selectedDeviceId })),
       selectedDeviceId: relay.selectedDeviceId ?? null,
       deviceMenuOpen: input.deviceMenuOpen,
@@ -197,7 +243,7 @@ export function useMobileSidebarData(p: VariantAppProps, input: MobileSidebarDat
       now,
     } satisfies PiSidebarData
     return { data, archivedCount }
-  }, [relay, p.ui.prefs, p.ui.expanded, input, scopeState, now, archiveView, deviceId])
+  }, [relay, p.ui.prefs, p.ui.expanded, input, scopeState, settingsPrefs.autoArchive, settingsPrefs.retention, now, archiveView, deviceId])
   const togglePin = useCallback((key: string) => persist(toggleSidebarPin(local, scope, key)), [local, persist, scope])
   const toggleArchive = useCallback((key: string) => persist(toggleSidebarArchive(local, scope, key)), [local, persist, scope])
   const toggleGroup = useCallback((groupId: string) => {

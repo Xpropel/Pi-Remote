@@ -33,6 +33,9 @@ function textOf(value: unknown): string {
 /** 成功后唯一允许的承诺：文件已写、重启才生效。 */
 export const SETTINGS_WRITE_OK_TEXT = "已保存，重启 pi 后生效"
 
+/** 设置页内触发 Pi 重启并收敛后的反馈文案。 */
+export const SETTINGS_RESTART_APPLIED_TEXT = "Pi 已重启，已保存的设置已生效"
+
 /** 重新进入页面时的常驻说明：overlay 显示的是已写入值，运行中的 pi 仍是旧值。 */
 export const SETTINGS_WRITE_PENDING_RESTART_TEXT =
   "有设置已写入设置文件，待重启 pi 后生效；运行中的 pi 仍使用旧值。"
@@ -49,7 +52,7 @@ export const SETTINGS_WRITE_READ_FAILED_TEXT = "设置读取失败，暂时只�
 
 export const SETTINGS_WRITE_READING_TEXT = "正在读取设备设置…"
 
-/** UI 可写的 14 个键（与扩展白名单一一对应，供测试静态核对）。 */
+/** UI 可写的 21 个键（与扩展 / attach 白名单一一对应，供测试静态核对）。 */
 export const SETTINGS_WRITE_KEYS = [
   "steeringMode",
   "followUpMode",
@@ -65,6 +68,13 @@ export const SETTINGS_WRITE_KEYS = [
   "defaultThinkingLevel",
   "defaultModel",
   "defaultProvider",
+  "enabledModels",
+  "modelThinkingLevels",
+  "defaultTools",
+  "skills",
+  "prompts",
+  "extensions",
+  "packages",
 ] as const
 
 export type SettingsWriteKey = (typeof SETTINGS_WRITE_KEYS)[number]
@@ -165,14 +175,19 @@ export function settingsValueOf(data: unknown, path: string): unknown {
 /** 写桥成功回包里的 applied（点号扁平）；也兼容嵌套写法。 */
 export type SettingsApplied = Record<string, unknown>
 
-/** 把 `{compaction:{enabled:true}}` 摊成 `{"compaction.enabled":true}`，供乐观覆盖使用。 */
+const SETTINGS_LEAF_RECORD_KEYS = new Set(["modelThinkingLevels"])
+
+/** 把 `{compaction:{enabled:true}}` 摊成 `{"compaction.enabled":true}`，供乐观覆盖使用；保留 `modelThinkingLevels` 等字典叶节点。 */
 export function flattenSettingsPatch(patch: Obj, prefix = ""): SettingsApplied {
   const out: SettingsApplied = {}
   for (const [key, value] of Object.entries(patch)) {
     const path = prefix ? `${prefix}.${key}` : key
     const nested = recordOf(value)
-    if (nested && Object.keys(nested).length > 0) Object.assign(out, flattenSettingsPatch(nested, path))
-    else out[path] = value
+    if (nested && Object.keys(nested).length > 0 && !SETTINGS_LEAF_RECORD_KEYS.has(path)) {
+      Object.assign(out, flattenSettingsPatch(nested, path))
+    } else {
+      out[path] = value
+    }
   }
   return out
 }
@@ -282,6 +297,125 @@ export function settingsOverlayAppliedOf(book: SettingsOverlayBook, target: stri
   return book[target]?.applied ?? EMPTY_SETTINGS_APPLIED
 }
 
+const SETTINGS_FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"])
+
+function stringArrayOf(value: unknown, maxItems: number): string[] | null {
+  if (!Array.isArray(value) || value.length > maxItems) return null
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of value) {
+    const clean = nonEmptyText(item)
+    if (!clean) return null
+    if (!seen.has(clean)) {
+      seen.add(clean)
+      out.push(clean)
+    }
+  }
+  return out
+}
+
+export function enabledModelsOf(value: unknown): string[] | null {
+  return stringArrayOf(value, 200)
+}
+
+export function defaultToolsOf(value: unknown): string[] | null {
+  return stringArrayOf(value, 100)
+}
+
+export function resourceListOf(value: unknown): string[] | null {
+  return stringArrayOf(value, 200)
+}
+
+export type PackageSettingEntry =
+  | string
+  | {
+      source: string
+      extensions?: string[]
+      skills?: string[]
+      prompts?: string[]
+      themes?: string[]
+    }
+
+const PACKAGE_FILTER_FIELDS = ["extensions", "skills", "prompts", "themes"] as const
+
+export function packageEntryOf(value: unknown): PackageSettingEntry | null {
+  if (typeof value === "string") return nonEmptyText(value, 400)
+  const record = recordOf(value)
+  if (!record) return null
+  const source = nonEmptyText(record.source, 400)
+  if (!source) return null
+  const out: Extract<PackageSettingEntry, object> = { source }
+  for (const field of PACKAGE_FILTER_FIELDS) {
+    if (!own(record, field) || record[field] === undefined) continue
+    const list = stringArrayOf(record[field], 200)
+    if (!list) return null
+    out[field] = list
+  }
+  return out
+}
+
+export function packagesListOf(value: unknown): PackageSettingEntry[] | null {
+  if (!Array.isArray(value) || value.length > 200) return null
+  const out: PackageSettingEntry[] = []
+  for (const item of value) {
+    const clean = packageEntryOf(item)
+    if (!clean) return null
+    out.push(clean)
+  }
+  return out
+}
+
+export function modelThinkingLevelsMapOf(value: unknown): Record<string, SettingsThinkingLevel> | null {
+  const record = recordOf(value)
+  if (!record) return null
+  const keys = Object.keys(record)
+  if (keys.length > 200) return null
+  const out: Record<string, SettingsThinkingLevel> = {}
+  for (const rawKey of keys) {
+    if (SETTINGS_FORBIDDEN_KEYS.has(rawKey)) return null
+    const cleanKey = nonEmptyText(rawKey)
+    if (!cleanKey) return null
+    const rawLevel = record[rawKey]
+    if (rawLevel === null || rawLevel === undefined) continue
+    const level = thinkingLevelOf(rawLevel)
+    if (!level) return null
+    out[cleanKey] = level
+  }
+  return out
+}
+
+export function effectiveSettingsArrayOf(
+  data: unknown,
+  applied: SettingsApplied,
+  path: "enabledModels" | "defaultTools" | "skills" | "prompts" | "extensions",
+): string[] | null {
+  const value = effectiveSettingsValue(data, applied, path)
+  if (value === null || value === undefined) return null
+  if (path === "enabledModels") return enabledModelsOf(value)
+  if (path === "defaultTools") return defaultToolsOf(value)
+  return resourceListOf(value)
+}
+
+export function effectiveRawPackagesOf(data: unknown, applied: SettingsApplied): PackageSettingEntry[] | null {
+  const value = effectiveSettingsValue(data, applied, "packages")
+  if (value === null || value === undefined) return null
+  return packagesListOf(value)
+}
+
+export function effectivePackagesListOf(data: unknown, applied: SettingsApplied): string[] {
+  const raw = effectiveRawPackagesOf(data, applied)
+  if (!raw) return []
+  return raw.map((entry) => (typeof entry === "string" ? entry : entry.source))
+}
+
+export function effectiveModelThinkingLevelsOf(
+  data: unknown,
+  applied: SettingsApplied,
+): Record<string, SettingsThinkingLevel> {
+  const value = effectiveSettingsValue(data, applied, "modelThinkingLevels")
+  return modelThinkingLevelsMapOf(value) ?? {}
+}
+
 /** 只接受写桥白名单里的合法值，避免被塞入 localStorage 的脏值直接显示。 */
 export function settingsWriteValueValidOf(path: string, value: unknown): boolean {
   switch (path) {
@@ -291,7 +425,7 @@ export function settingsWriteValueValidOf(path: string, value: unknown): boolean
     case "defaultProjectTrust":
       return projectTrustOf(value) !== null
     case "defaultThinkingLevel":
-      return thinkingLevelOf(value) !== null
+      return value === null || thinkingLevelOf(value) !== null
     case "compaction.enabled":
     case "hideThinkingBlock":
     case "enableInstallTelemetry":
@@ -305,6 +439,18 @@ export function settingsWriteValueValidOf(path: string, value: unknown): boolean
     case "defaultModel":
     case "defaultProvider":
       return nonEmptyText(value) !== null
+    case "enabledModels":
+      return value === null || enabledModelsOf(value) !== null
+    case "defaultTools":
+      return value === null || defaultToolsOf(value) !== null
+    case "modelThinkingLevels":
+      return value === null || modelThinkingLevelsMapOf(value) !== null
+    case "skills":
+    case "prompts":
+    case "extensions":
+      return value === null || resourceListOf(value) !== null
+    case "packages":
+      return value === null || packagesListOf(value) !== null
     default:
       return false
   }
@@ -317,8 +463,28 @@ function settingsAppliedOf(value: unknown): SettingsApplied {
   const out: SettingsApplied = {}
   for (const [path, item] of Object.entries(record)) {
     if (!settingsWriteValueValidOf(path, item)) continue
-    const normalized = path === "defaultModel" || path === "defaultProvider" ? nonEmptyText(item) : item
-    if (normalized === null) continue
+    let normalized: unknown = item
+    if (path === "defaultModel" || path === "defaultProvider") normalized = nonEmptyText(item)
+    else if (path === "enabledModels") normalized = item === null ? null : enabledModelsOf(item)
+    else if (path === "defaultTools") normalized = item === null ? null : defaultToolsOf(item)
+    else if (path === "modelThinkingLevels") normalized = item === null ? null : modelThinkingLevelsMapOf(item)
+    else if (path === "skills" || path === "prompts" || path === "extensions") {
+      normalized = item === null ? null : resourceListOf(item)
+    } else if (path === "packages") {
+      normalized = item === null ? null : packagesListOf(item)
+    }
+    if (normalized === undefined) continue
+    if (
+      normalized === null &&
+      path !== "enabledModels" &&
+      path !== "defaultTools" &&
+      path !== "modelThinkingLevels" &&
+      path !== "defaultThinkingLevel" &&
+      path !== "skills" &&
+      path !== "prompts" &&
+      path !== "extensions" &&
+      path !== "packages"
+    ) continue
     out[path] = normalized
   }
   return out
@@ -413,6 +579,22 @@ export interface SettingsOverlayReconcileResult {
  *   - 运行中仍是旧值 → 保留 pending，页面继续显示已写入值；
  *   - 主机版本变化 → 整条 overlay 作废（避免跨扩展版本显示旧写入）。
  */
+function settingsValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((item, idx) => settingsValuesEqual(item, right[idx]))
+  }
+  const lRec = recordOf(left)
+  const rRec = recordOf(right)
+  if (lRec && rRec) {
+    const lKeys = Object.keys(lRec)
+    const rKeys = Object.keys(rRec)
+    if (lKeys.length !== rKeys.length) return false
+    return lKeys.every((k) => own(rRec, k) && settingsValuesEqual(lRec[k], rRec[k]))
+  }
+  return false
+}
+
 export function reconcileSettingsOverlay(input: SettingsOverlayReconcileInput): SettingsOverlayReconcileResult {
   const { book, target, data } = input
   const entry = book[target]
@@ -429,8 +611,13 @@ export function reconcileSettingsOverlay(input: SettingsOverlayReconcileInput): 
   const pending: SettingsApplied = {}
   for (const [path, written] of Object.entries(entry.applied)) {
     const current = settingsValueOf(data, path)
+    if (written === null) {
+      if (current === undefined || current === null) cleared.push(path)
+      else pending[path] = written
+      continue
+    }
     const runtime = current === undefined ? settingsDefaultValueOf(path) : current
-    if (runtime !== undefined && runtime === written) cleared.push(path)
+    if (runtime !== undefined && settingsValuesEqual(runtime, written)) cleared.push(path)
     else pending[path] = written
   }
 
@@ -511,6 +698,7 @@ export function defaultModelPatch(provider: unknown, model: unknown): Obj | null
 }
 
 export function defaultThinkingLevelPatch(level: unknown): Obj | null {
+  if (level === null) return { defaultThinkingLevel: null }
   const value = thinkingLevelOf(level)
   return value ? { defaultThinkingLevel: value } : null
 }
@@ -539,6 +727,48 @@ export function skillCommandsPatch(enabled: boolean): Obj {
 export function defaultProjectTrustPatch(trust: unknown): Obj | null {
   const value = projectTrustOf(trust)
   return value ? { defaultProjectTrust: value } : null
+}
+
+export function enabledModelsPatch(models: readonly string[] | null): Obj | null {
+  if (models === null) return { enabledModels: null }
+  const clean = enabledModelsOf(models)
+  return clean ? { enabledModels: clean } : null
+}
+
+export function defaultToolsPatch(tools: readonly string[] | null): Obj | null {
+  if (tools === null) return { defaultTools: null }
+  const clean = defaultToolsOf(tools)
+  return clean ? { defaultTools: clean } : null
+}
+
+export function modelThinkingLevelsPatch(map: Record<string, unknown> | null): Obj | null {
+  if (map === null) return { modelThinkingLevels: null }
+  const clean = modelThinkingLevelsMapOf(map)
+  return clean ? { modelThinkingLevels: clean } : null
+}
+
+export function skillsPatch(list: readonly string[] | null): Obj | null {
+  if (list === null) return { skills: null }
+  const clean = resourceListOf(list)
+  return clean ? { skills: clean } : null
+}
+
+export function promptsPatch(list: readonly string[] | null): Obj | null {
+  if (list === null) return { prompts: null }
+  const clean = resourceListOf(list)
+  return clean ? { prompts: clean } : null
+}
+
+export function extensionsPatch(list: readonly string[] | null): Obj | null {
+  if (list === null) return { extensions: null }
+  const clean = resourceListOf(list)
+  return clean ? { extensions: clean } : null
+}
+
+export function packagesPatch(list: readonly PackageSettingEntry[] | null): Obj | null {
+  if (list === null) return { packages: null }
+  const clean = packagesListOf(list)
+  return clean ? { packages: clean } : null
 }
 
 /** `settings_set` 的 args：固定用 `{ patch }`，避免与 `settings` 同时出现。 */
@@ -620,21 +850,93 @@ export function settingsFailureOf(error: unknown): SettingsWriteFailure {
   }
 }
 
-/** 设备命令能不能跑（与设置页现有 ready 口径一致）。 */
-export function settingsCommandsReady(relay: {
+export interface SettingsRelayLike {
   authed?: boolean
   browserOnline?: boolean
   online?: boolean
   roomId?: string | null
   lazySession?: { id?: string } | null
-}): boolean {
+  selectedDeviceId?: string | null
+  devices?: readonly { id: string; online?: boolean }[]
+  rooms?: readonly { id: string; deviceId?: string }[]
+  runCommand?: (command: string, args?: Record<string, unknown>) => Promise<unknown>
+  runDeviceCommand?: (deviceId: string, command: string, args?: Record<string, unknown>) => Promise<unknown>
+}
+
+const DIRECT_DEVICE_COMMANDS = new Set(["get_prevent_sleep", "set_prevent_sleep"])
+
+/** 当前已有在线且已载入的会话房间时返回 true。 */
+export function settingsRoomReady(relay: SettingsRelayLike): boolean {
   return Boolean(
     relay.authed &&
-      relay.browserOnline &&
+      relay.browserOnline !== false &&
       relay.online &&
       relay.roomId &&
       !(relay.lazySession && relay.lazySession.id === relay.roomId),
   )
+}
+
+/** 选取当前应承载设备级命令的在线设备 id（优先 selectedDeviceId，其次任意在线设备）。 */
+export function settingsFallbackDeviceIdOf(relay: SettingsRelayLike): string | null {
+  if (!relay.authed || relay.browserOnline === false) return null
+  const list = relay.devices ?? []
+  if (relay.selectedDeviceId) {
+    const selected = list.find((item) => item.id === relay.selectedDeviceId)
+    if (selected) return selected.online ? selected.id : null
+  }
+  const firstOnline = list.find((item) => item.online)
+  return firstOnline ? firstOnline.id : null
+}
+
+/**
+ * 设备命令能不能跑：
+ * 1. 当前房间在线且已载入（且当前选中的设备没有指向另一台设备）；或
+ * 2. 没有载入房间，但选中的在线设备（或任意在线设备）可通过 attach 设备级回落执行。
+ */
+export function settingsCommandsReady(relay: SettingsRelayLike): boolean {
+  if (!relay.authed || relay.browserOnline === false) return false
+  if (settingsRoomReady(relay)) {
+    if (!relay.selectedDeviceId || !relay.rooms?.length) return true
+    const room = relay.rooms.find((item) => item.id === relay.roomId)
+    if (!room?.deviceId || room.deviceId === relay.selectedDeviceId) return true
+  }
+  return Boolean(settingsFallbackDeviceIdOf(relay) && (typeof relay.runDeviceCommand === "function" || settingsRoomReady(relay)))
+}
+
+/**
+ * 统一执行设置/配置类命令：
+ * - `get_prevent_sleep` / `set_prevent_sleep` 始终走设备级 `runDeviceCommand`；
+ * - 若当前房间在线、已载入且与选中设备匹配，优先走房间通道（命中运行中的 pi 扩展，支持实时刷新 ModelRegistry）；
+ * - 否则回落到选中/在线设备的 `runDeviceCommand`（命中 attach.cjs，无活跃会话也能读写配置）。
+ */
+export function settingsRunCommand(
+  relay: SettingsRelayLike,
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<unknown> {
+  const deviceId = settingsFallbackDeviceIdOf(relay)
+  if (DIRECT_DEVICE_COMMANDS.has(command)) {
+    if (deviceId && typeof relay.runDeviceCommand === "function") {
+      return relay.runDeviceCommand(deviceId, command, args)
+    }
+    return Promise.reject(Object.assign(new Error("需设备在线"), { code: "device_offline" }))
+  }
+  const roomOk = settingsRoomReady(relay) && typeof relay.runCommand === "function"
+  const roomMatchesSelected = (() => {
+    if (!relay.selectedDeviceId || !relay.rooms?.length || !relay.roomId) return true
+    const room = relay.rooms.find((item) => item.id === relay.roomId)
+    return !room?.deviceId || room.deviceId === relay.selectedDeviceId
+  })()
+  if (roomOk && roomMatchesSelected) {
+    return relay.runCommand!(command, args)
+  }
+  if (deviceId && typeof relay.runDeviceCommand === "function") {
+    return relay.runDeviceCommand(deviceId, command, args)
+  }
+  if (roomOk) {
+    return relay.runCommand!(command, args)
+  }
+  return Promise.reject(Object.assign(new Error("需设备在线"), { code: "device_offline" }))
 }
 
 export interface SettingsReadOnlyHintInput {
@@ -662,7 +964,3 @@ export function settingsReadOnlyHintOf(input: SettingsReadOnlyHintInput): string
 
 /** 只影响新会话 / 重启后才生效的说明（模型页两行用）。 */
 export const SETTINGS_WRITE_NEW_SESSION_NOTE = "只影响新会话；保存后仍需重启 pi 才保证生效。"
-
-/** 其余暂不开放的项：写桥白名单没有对应键，页面继续保持只读。 */
-export const SETTINGS_WRITE_REMAINING_READONLY_NOTE =
-  "仍只读：写桥白名单未包含这些字段（供应商启停 / 每模型思考 / 新会话默认模式与自动标题 / MCP 与技能清单增删 / 审批权限档位）。"

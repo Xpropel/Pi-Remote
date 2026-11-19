@@ -111,13 +111,13 @@ test("F4: the queue tray pill carries a tooltip that says what clicking does", (
   const items = tray.trayItemsOf({ remoteQueue: [{ status: "pending" }, { status: "pending" }], localQueue: null, outbox: [], linkOk: true, deviceOnline: true })
   const queue = items.find((item) => item.kind === "queue")
   assert.ok(queue)
-  assert.equal(queue.title, "排队中的消息，点开可编辑、取消或立即发送")
+  assert.equal(queue.title, "Queued messages — click to edit, cancel, or send now")
   assert.match(read("ui/src/components/pi/composer/PiTray.tsx"), /title=\{item\.title\}/)
 })
 
 test("F4: queued bubbles render queue actions", () => {
   const parts = read("ui/src/components/pi/conversation/PiTurnParts.tsx")
-  assert.match(parts, /排队中/)
+  assert.match(parts, /Queued/)
   assert.match(parts, /queueSendNow/)
   assert.match(parts, /queueCancel/)
   const transcript = read("ui/src/pi/containers/TranscriptContainer.tsx")
@@ -148,13 +148,21 @@ const providerRow = (id, name, configured, keys) => ({
   models: keys.map((key) => ({ key, provider: id, modelId: key.split("/")[1] ?? key, label: key.split("/")[1] ?? key, thinking: null, enabled: true })),
 })
 
-test("F7: defaultModelGroupsOf groups by provider and marks unconfigured providers", () => {
-  const groups = modelData.defaultModelGroupsOf(
-    [providerRow("stepfun", "StepFun", true, ["stepfun/a", "stepfun/b"]), providerRow("openai", "OpenAI", false, ["openai/c"])],
-    "stepfun/a",
-  )
-  assert.deepEqual(groups.map((group) => group.label), ["StepFun", "OpenAI（未配置凭据）"])
+test("F7: defaultModelGroupsOf groups configured providers and excludes unconfigured providers except active currentKey", () => {
+  const providers = [
+    providerRow("stepfun", "StepFun", true, ["stepfun/a", "stepfun/b"]),
+    providerRow("openai", "OpenAI", false, ["openai/c", "openai/d"]),
+  ]
+  const groups = modelData.defaultModelGroupsOf(providers, "stepfun/a")
+  assert.deepEqual(groups.map((group) => group.label), ["StepFun"])
   assert.deepEqual(groups[0].options.map((option) => option.value), ["stepfun/a", "stepfun/b"])
+
+  // Passing a stored currentKey under an unconfigured provider keeps ONLY that stored option.
+  const storedUnconfigured = modelData.defaultModelGroupsOf(providers, "openai/c")
+  assert.deepEqual(storedUnconfigured.map((group) => group.label), ["OpenAI（当前已存 · 未配置凭据）", "StepFun"])
+  assert.deepEqual(storedUnconfigured[0].options.map((option) => option.value), ["openai/c"])
+  assert.deepEqual(storedUnconfigured[1].options.map((option) => option.value), ["stepfun/a", "stepfun/b"])
+
   // configured === null (unknown) must NOT be marked as unconfigured
   const unknown = modelData.defaultModelGroupsOf([providerRow("x", "XProv", null, ["x/m"])], "")
   assert.equal(unknown[0].label, "XProv")
@@ -166,7 +174,7 @@ test("F7: a stored current model missing from the catalog stays selectable in it
   assert.deepEqual(groups[1].options.map((option) => option.value), ["stepfun/a"])
 })
 
-test("F7: mobile modelGroupsOf groups choices under their provider rows", () => {
+test("F7: mobile modelGroupsOf groups choices under their provider rows and skips unconfigured providers", () => {
   const choices = [
     { key: "stepfun/a", provider: "stepfun", modelId: "a", label: "a" },
     { key: "openai/c", provider: "openai", modelId: "c", label: "c" },
@@ -177,7 +185,7 @@ test("F7: mobile modelGroupsOf groups choices under their provider rows", () => 
     { id: "openai", name: "OpenAI", connected: false, configured: false, models: 1, authSource: null },
   ]
   const groups = mobileModel.modelGroupsOf(choices, providers)
-  assert.deepEqual(groups.map((group) => group.label), ["StepFun", "OpenAI（未配置凭据）"])
+  assert.deepEqual(groups.map((group) => group.label), ["StepFun"])
   assert.deepEqual(groups[0].options.map((option) => option.value), ["stepfun/a", "stepfun/b"])
 })
 

@@ -276,8 +276,9 @@ test("●/◐/◌ 口径：徽标文案、inert 判定、General 页真实接线
   assert.match(ui, /export function SettingsColorDots/)
   assert.match(ui, /export function SettingsShortcutCapture/)
 
-  // 通用页：投递 ×2 + 图片自动缩小改走 settings_set；连接诊断仍是 ◐ 只读。
-  assert.ok((general.match(/status="bridge"/g) ?? []).length >= 1, "连接诊断仍要标 ◐")
+  // 通用页：投递 ×2 + 图片自动缩小改走 settings_set；连接诊断改走真实 get_host_diag 设备命令。
+  assert.equal((general.match(/status="bridge"/g) ?? []).length, 0, "通用页已全部接入真实读写，不再留 ◐")
+  assert.match(general, /get_host_diag/, "连接诊断需接真实 get_host_diag")
   assert.match(general, /useSettingsDocument/)
   assert.match(general, /get_settings|settingsSetResultOf|useSettingsWriter/)
   assert.match(general, /steeringModePatch/)

@@ -145,6 +145,8 @@ export interface PiSheetProps extends PiOverlayControl {
   size?: "auto" | "half" | "full"
   /** 拖拽把手 36×5，默认 true */
   handle?: boolean
+  /** 头部右上角关闭钮（手机全高 PiDialog 使用） */
+  closeButton?: boolean
   /** 贴底的按钮行 */
   footer?: ReactNode
   /** 正文区的 class（默认左右 8，给菜单行留 8 + 行内 8 = 16 的页边距） */
@@ -279,7 +281,7 @@ export function PiSheet(props: PiSheetProps) {
   return isStatic ? <PiSheetStatic {...props} /> : <PiSheetInteractive {...props} />
 }
 
-function PiSheetStatic({ title, label, subtitle, size = "auto", handle = true, footer, bodyClassName, className, children, keyboardOpen = false, open }: PiSheetProps) {
+function PiSheetStatic({ title, label, subtitle, size = "auto", handle = true, closeButton = false, footer, bodyClassName, className, children, keyboardOpen = false, open }: PiSheetProps) {
   const titleId = useId()
   if (open === false) return null
   return (
@@ -300,15 +302,25 @@ function PiSheetStatic({ title, label, subtitle, size = "auto", handle = true, f
         style={sheetStyle(size, keyboardOpen)}
       >
         {handle && <SheetHandle />}
-        {(title != null || subtitle != null) && (
+        {(title != null || subtitle != null || closeButton) && (
           // 标题内缩 16 = 页边距（design §3.1），与正文区默认的 8 + 菜单行 8 对齐
-          <header className={cn("shrink-0 px-4 pb-2", handle ? "pt-2" : "pt-4")}>
-            {title != null && (
-              <div id={titleId} className={SHEET_TITLE}>
-                {title}
-              </div>
+          <header className={cn("flex shrink-0 items-start gap-3 px-4 pb-2", handle ? "pt-2" : "pt-4")}>
+            <div className="min-w-0 flex-1">
+              {title != null && (
+                <div id={titleId} className={SHEET_TITLE}>
+                  {title}
+                </div>
+              )}
+              {subtitle != null && <div className={SHEET_SUBTITLE}>{subtitle}</div>}
+            </div>
+            {closeButton && (
+              <GhostIconButton
+                label="关闭"
+                icon={<X />}
+                data-pi-dialog-close=""
+                className="relative -mt-0.5 -mr-1 after:absolute after:-inset-2.5 after:content-['']"
+              />
             )}
-            {subtitle != null && <div className={SHEET_SUBTITLE}>{subtitle}</div>}
           </header>
         )}
         <div className={cn(SHEET_BODY, bodyClassName)}>{children}</div>
@@ -341,6 +353,7 @@ function PiSheetInteractive({
   subtitle,
   size = "auto",
   handle = true,
+  closeButton = false,
   footer,
   bodyClassName,
   className,
@@ -468,18 +481,30 @@ function PiSheetInteractive({
       contentData={{ "data-pi-sheet-card": "" }}
     >
       {handle && !compact && <SheetHandle ref={handleRef} />}
-      {(title != null || subtitle != null) && (
+      {(title != null || subtitle != null || closeButton) && (
         // compact：标题行不在屏幕上，但留给读屏（sheet 的名字取自它）
-        <header ref={headerRef} className={compact ? "sr-only" : cn("shrink-0 px-4 pb-2", handle ? "pt-2" : "pt-4")}>
-          {title != null && (
-            <Dialog.Title asChild>
-              <div className={SHEET_TITLE}>{title}</div>
-            </Dialog.Title>
-          )}
-          {subtitle != null && (
-            <Dialog.Description asChild>
-              <div className={SHEET_SUBTITLE}>{subtitle}</div>
-            </Dialog.Description>
+        <header ref={headerRef} className={compact ? "sr-only" : cn("flex shrink-0 items-start gap-3 px-4 pb-2", handle ? "pt-2" : "pt-4")}>
+          <div className="min-w-0 flex-1">
+            {title != null && (
+              <Dialog.Title asChild>
+                <div className={SHEET_TITLE}>{title}</div>
+              </Dialog.Title>
+            )}
+            {subtitle != null && (
+              <Dialog.Description asChild>
+                <div className={SHEET_SUBTITLE}>{subtitle}</div>
+              </Dialog.Description>
+            )}
+          </div>
+          {closeButton && !compact && (
+            <Dialog.Close asChild>
+              <GhostIconButton
+                label="关闭"
+                icon={<X />}
+                data-pi-dialog-close=""
+                className="relative -mt-0.5 -mr-1 after:absolute after:-inset-2.5 after:content-['']"
+              />
+            </Dialog.Close>
           )}
         </header>
       )}
@@ -539,6 +564,7 @@ export function PiDialog(props: PiDialogProps) {
         returnFocus={props.returnFocus}
         keyboardOpen={props.keyboardOpen}
         size="full"
+        closeButton
         title={<span className={danger ? "text-(--cw-pi-error)" : undefined}>{title}</span>}
         subtitle={subtitle}
         footer={footer}

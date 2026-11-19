@@ -391,7 +391,7 @@ function Actions({ variant, on }: { variant: CVariant; on?: (action: PiQueueActi
 /**
  * 排队面板（F08 F09；排队消息编辑 / 取消属未核实项，版式推断）：
  * 段一"网页发的"（remote_queue_state：pending 行 = 正文一行截断 + 灰字"投递方式 · 来源 · 时间" + 文字按钮；injected 只剩灰字"已插入"），
- * 段二"终端里排的 · 只读"（queue_update），脚注"要改或撤回，请回到电脑终端"。
+ * 段二"终端里排的 · 只读"（queue_update）。
  * 桌面是 tray 上方的浮层（宽 360）；手机是半高 PiSheet 的内容，文字按钮点击区 44、换到第二行右对齐。
  */
 export function PiQueuePanel({
@@ -602,7 +602,6 @@ export function PiQueuePanel({
               </div>
             ))}
           </div>
-          <div className={cn("pt-0.5 pb-1 text-(--cw-text-4)", t.sub)}>要改或撤回，请回到电脑终端</div>
         </>
       )}
       {/* 定时段（D-§3.7）：与排队卡同一列；armed 可取消（不可原地编辑，改 = 取消重建），终态只报结局 */}

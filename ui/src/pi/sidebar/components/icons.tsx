@@ -101,6 +101,13 @@ export const MoreIcon = (p: IconProps) => (
     <circle cx="18.5" cy="12" r="0.9" />
   </svg>
 )
+export const MoreVerticalIcon = (p: IconProps) => (
+  <svg {...base({ size: 15, ...p })} viewBox="0 0 16 16" fill="currentColor" stroke="none">
+    <circle cx="8" cy="3.2" r="1.15" />
+    <circle cx="8" cy="8" r="1.15" />
+    <circle cx="8" cy="12.8" r="1.15" />
+  </svg>
+)
 export const CheckIcon = (p: IconProps) => (
   <svg {...base({ size: 15, ...p })}><path d="M19.5 7 9.8 16.7 5 12" /></svg>
 )

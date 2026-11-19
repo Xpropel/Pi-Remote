@@ -1,26 +1,22 @@
 /**
  * 设置 › 审批与执行 · 纯数据适配（无 React / 无 DOM / 无副作用），node --test 直接加载。
  *
- * 设计册 §5 的六组：口径框 / 何时询问（◌）/ 项目信任（◐）/ 能碰什么（◌）/
- * 高危解锁（◌）/ 免审命令名单（◌）/ 可用工具（●）。
- *
- * 本页真正有代码依据的只有两组：
- *   - 项目信任：当前项目信任状态读 get_state.projectTrusted；改默认值需扩展桥；
+ *   - 何时询问 / 能碰什么（活动范围）/ 高危解锁 / 免审命令名单：实时同步到当前会话（set_approval_policy）；
+ *   - 项目信任：当前项目信任状态读 get_state.projectTrusted；默认策略写 settings_set.defaultProjectTrust；
  *   - 可用工具：get_active_tools + get_all_tools 读，set_active_tools 写，
- *     **作用域 = 当前会话**（不是持久默认）。
- * 其余四组按设计稿保留形态，只提供文案与默认选中项，任何调用方都写不进去。
+ *     **作用域 = 当前会话**（无会话时写 defaultTools）。
  */
 import { toolNamesOf } from "../../model/dialogsData.ts"
 
 /* ------------------------------------------------------------------ */
-/* 口径框（设计册 §5 引文，逐字保留）                                   */
+/* 口径说明                                                            */
 /* ------------------------------------------------------------------ */
 
 export const APPROVAL_BRIEF =
-  "pi 没有 Codex 式权限档位。本页的「何时询问 / 能碰什么 / 高危解锁 / 免审名单」为设计预留 ◌；pi 侧真实机制是扩展的 tool_call 权限门 + 项目信任，落地形态待定。本页真正有代码依据的只有「项目信任」与「可用工具」两组。"
+  "pi 没有 Codex 式权限档位；本页通过扩展的 tool_call 权限门与项目信任实施边界。「何时询问 / 能碰什么（活动范围）/ 高危解锁 / 免审命令名单」实时同步到当前会话。"
 
 /* ------------------------------------------------------------------ */
-/* 何时询问 ◌                                                          */
+/* 何时询问                                                            */
 /* ------------------------------------------------------------------ */
 
 export const APPROVAL_ASK_OPTIONS = [
@@ -36,7 +32,6 @@ export const APPROVAL_ASK_OPTIONS = [
 
 export type ApprovalAskMode = (typeof APPROVAL_ASK_OPTIONS)[number]["value"]
 
-/** 设计稿选中「逐项询问」；整组是 ◌ 预留，没有写入通道。 */
 export const APPROVAL_ASK_DEFAULT: ApprovalAskMode = "ask"
 
 /* ------------------------------------------------------------------ */
@@ -51,7 +46,7 @@ export const APPROVAL_TRUST_OPTIONS = [
 
 export type ApprovalTrust = (typeof APPROVAL_TRUST_OPTIONS)[number]["value"]
 
-/** 设计稿选中「先询问」，也是 pi defaultProjectTrust 的默认值（docs/settings.md）。 */
+/** pi defaultProjectTrust 的默认值（docs/settings.md）。 */
 export const APPROVAL_TRUST_DEFAULT: ApprovalTrust = "ask"
 
 export const APPROVAL_TRUST_NOTE = "项目级配置、扩展与 MCP 服务器都要信任后才加载。"
@@ -72,7 +67,7 @@ export function projectTrustOf(value: unknown): ApprovalProjectTrust {
 }
 
 /* ------------------------------------------------------------------ */
-/* 能碰什么 ◌                                                          */
+/* 能碰什么                                                            */
 /* ------------------------------------------------------------------ */
 
 export const APPROVAL_SCOPE_OPTIONS = [
@@ -83,37 +78,43 @@ export const APPROVAL_SCOPE_OPTIONS = [
 
 export type ApprovalScope = (typeof APPROVAL_SCOPE_OPTIONS)[number]["value"]
 
-/** 设计稿选中「工作区内可改」。 */
 export const APPROVAL_SCOPE_DEFAULT: ApprovalScope = "workspace"
 
-export const APPROVAL_NETWORK_LABEL = "允许联网"
-export const APPROVAL_NETWORK_DESCRIPTION = "沙盒内命令可访问网络"
-
-export const APPROVAL_SEARCH_OPTIONS = [
-  { value: "live", label: "实时" },
-  { value: "cached", label: "缓存" },
-] as const
-
-export type ApprovalWebSearch = (typeof APPROVAL_SEARCH_OPTIONS)[number]["value"]
-
-/** 设计稿选中「实时」。 */
-export const APPROVAL_SEARCH_DEFAULT: ApprovalWebSearch = "live"
-
 /* ------------------------------------------------------------------ */
-/* 高危解锁 ◌                                                          */
+/* 高危解锁                                                            */
 /* ------------------------------------------------------------------ */
 
 export const APPROVAL_UNLOCK_LABEL = "允许「完全访问」与「永不询问」"
 export const APPROVAL_UNLOCK_DESCRIPTION = "打开后上面两组的高危档位才可选，防误触"
 
 /* ------------------------------------------------------------------ */
-/* 免审命令名单 ◌                                                      */
+/* 免审命令名单                                                        */
 /* ------------------------------------------------------------------ */
 
-/** 设计稿里的三条示例；◌ 预留形态，没有读写通道。 */
 export const APPROVAL_ALLOWLIST = ["git status", "cat *", "npm run test"] as const
 
 export const APPROVAL_ALLOWLIST_NOTE = "名单内命令按上方策略自动通过，仍会记录在会话里。"
+
+export function approvalAskModeOf(approvalGateEnabled: boolean, useAllowlist: boolean): ApprovalAskMode {
+  if (!approvalGateEnabled) return "never"
+  return useAllowlist ? "allowlist" : "ask"
+}
+
+const SHELL_COMPOUND_RE = /&&|\|\||[;|`<>]|&\s*$|\$\(|[\r\n]/
+
+export function validateAllowlistCommand(raw: string): { ok: true; value: string } | { ok: false; error: string } {
+  const value = raw.trim()
+  if (!value) return { ok: false, error: "请输入命令模式（例如 git status 或 npm run test）" }
+  if (value.length > 160) return { ok: false, error: "命令模式过长（最多 160 个字符）" }
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0
+    if (code < 0x20 || code === 0x7f) return { ok: false, error: "命令模式不能包含控制字符或换行" }
+  }
+  if (SHELL_COMPOUND_RE.test(value)) {
+    return { ok: false, error: "出于安全限制，免审名单不支持管道、重定向、命令替换或串接符号（|、&&、||、;、>、<、$()）" }
+  }
+  return { ok: true, value }
+}
 
 /* ------------------------------------------------------------------ */
 /* 可用工具 ●（作用域 = 当前会话）                                     */
@@ -159,6 +160,31 @@ export interface ApprovalToolView {
   rows: ApprovalToolRow[]
   /** 当前会话已启用的工具全量（包含设计稿八行之外的工具，切换时原样保留）。 */
   enabled: string[]
+}
+
+export const DEFAULT_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "ls"] as const
+
+/**
+ * 无打开会话时的默认可用工具视图：读自 settings.json 的 defaultTools（缺省为内置六项开启）。
+ */
+export function approvalDefaultToolRowsOf(configuredTools: readonly string[] | null): ApprovalToolView {
+  const enabledList = configuredTools ? [...configuredTools] : [...DEFAULT_BUILTIN_TOOLS]
+  return {
+    enabled: enabledList,
+    rows: APPROVAL_TOOL_SPECS.map((spec) => {
+      const matched = spec.names.find((name) => enabledList.includes(name))
+      return {
+        id: spec.id,
+        label: spec.label,
+        toolName: matched ?? spec.names[0],
+        displayName: spec.names[0],
+        available: true,
+        enabled: matched !== undefined,
+        mono: spec.mono === true,
+        note: spec.note ?? null,
+      }
+    }),
+  }
 }
 
 /**

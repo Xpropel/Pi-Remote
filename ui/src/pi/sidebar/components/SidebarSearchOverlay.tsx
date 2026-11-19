@@ -56,11 +56,18 @@ export function SidebarSearchOverlay({ data, actions }: { data: PiSidebarData; a
       return
     }
     actions.selectSession(result.id)
+    actions.closeSearch()
   }
   const options: Option[] = [
     ...sessions.map((result) => ({ id: `sb-search-s-${result.id}`, run: () => openResult(result) })),
     ...workspaces.map((result) => ({ id: `sb-search-w-${result.id}`, run: () => openResult(result) })),
-    ...(body?.hits ?? []).map((hit) => ({ id: `sb-search-b-${hit.id}`, run: () => actions.selectBodyHit?.(hit.id) })),
+    ...(body?.hits ?? []).map((hit) => ({
+      id: `sb-search-b-${hit.id}`,
+      run: () => {
+        actions.selectBodyHit?.(hit.id)
+        actions.closeSearch()
+      },
+    })),
   ]
   // 换关键词时高亮回到第一项（按 query 记，不用 effect 回写）
   const [activeState, setActiveState] = useState({ query, index: 0 })
@@ -172,7 +179,14 @@ export function SidebarSearchOverlay({ data, actions }: { data: PiSidebarData; a
                   <div className="sb-search-section" role="group" aria-label="正文匹配">
                     <p className="sb-search-bodyhead" aria-hidden>{`正文匹配${body.deviceName ? ` · ${body.deviceName}` : ""}`}</p>
                     {body.hits.map((hit) => (
-                      <div key={hit.id} className="sb-search-result" {...optionProps(`sb-search-b-${hit.id}`, () => actions.selectBodyHit?.(hit.id))}>
+                      <div
+                        key={hit.id}
+                        className="sb-search-result"
+                        {...optionProps(`sb-search-b-${hit.id}`, () => {
+                          actions.selectBodyHit?.(hit.id)
+                          actions.closeSearch()
+                        })}
+                      >
                         <span className="sb-search-marker" aria-hidden data-tone="idle" />
                         <span className="sb-search-result-text">
                           <span className="sb-search-result-label">{hit.label}</span>

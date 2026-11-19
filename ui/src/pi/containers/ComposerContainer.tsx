@@ -1,4 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react"
+import { GhostIconButton } from "@/components/kit"
+import { Mic, MicOff } from "@/components/kit/icons"
 import { ModelExplainerCard } from "@/components/kit/menu/ModelExplainerCard"
 import {
   PiAttachMenu,
@@ -21,10 +23,14 @@ import { PiSheet } from "@/components/pi/shared"
 import { usePiStatic } from "@/components/pi/shared/layers"
 import { C_EXPLAINER_ORANGE } from "@/components/pi/composer/styles"
 import { collectTranscriptFiles, mentionLabel, mergeMentionCandidates, viewedMentionFiles } from "@/chat/composer/mention"
+import { expandMentionText } from "@/chat/composer/mention"
 import { decodeTextFile, insertFileBlock, TEXT_FILE_MAX_BYTES } from "@/chat/composerTools"
 import { matchExactModel, matchResourceCommand, matchThinkingLevel, parseResourceCommands, parseSlashDetailed, resourceCommandText, resourceExecArgs, withoutSlash, type ResourceCommand } from "@/chat/slashParse"
 import { frequentSlashNames, loadSlashUsage, noteSlashCommandUsed, SLASH_USAGE_EVENT, SLASH_USAGE_MAX_ENTRIES, SLASH_USAGE_STORAGE_KEY } from "@/chat/slashUsage"
 import { useNow } from "@/pi/hooks/useNow"
+import { usePiSettingsPrefs } from "@/pi/hooks/usePiSettingsPrefs"
+import { useVoiceDictation } from "@/pi/hooks/useVoiceDictation"
+import { useSettingsEffectiveBool } from "@/pi/settings/pages/settingsWriteHooks"
 import { rememberSettingsPage } from "@/pi/settings/SettingsPage"
 import { rememberMobileSettingsPage } from "@/pi/settings/mobile/MobileSettingsPage"
 import { useTranscriptStick } from "@/pi/hooks/useTranscriptStick"
@@ -37,7 +43,11 @@ import { modelContextWindowOf, modelExplainerOf } from "@/pi/model/models"
 import { PROMPT_RECALL_IDLE, promptHistoryKey, promptRecallAfterDraft, promptRecallStep, type PromptRecall, type PromptRecallKey } from "@/pi/model/promptRecall"
 import { SLASH_BUILTINS_COPY } from "@/pi/model/slashBuiltins"
 import { slashBrowseGroupsOf, slashBuiltinRows, slashResourceOf } from "@/pi/model/slashMenu"
-import { queueSectionsOf, trayItemsOf, type PiQueueSection } from "@/pi/model/tray"
+import { toolWeightOf } from "@/pi/model/toolWeight"
+import { subagentsOf } from "@/pi/model/transcriptView"
+import { queueSectionsOf, trayItemsOf, type PiQueueSection, type PiTrayInput } from "@/pi/model/tray"
+import { compactionNumbersOf, compactionResultText } from "@/relay/compactionResult"
+import { normalizeSendImageMime, toolDisplayState } from "@/relay/transcript"
 import { contextReadout } from "@/relay/contextUsage"
 import { errorCode } from "@/relay/devices"
 import { clearDraftImages, onDraftPersistFailure, readDraftImages, saveDraftImages } from "@/relay/drafts"
@@ -419,6 +429,8 @@ const SLASH_DIALOG: Record<string, string> = {
 
 function useSlashCommands(p: PiContainerProps, resources: ResourceCommand[]) {
   const { relay, act, variant } = p
+  const draftRef = useRef(relay.draft)
+  draftRef.current = relay.draft
   const clear = () => relay.setDraft(withoutSlash(relay.draft))
   const openModelMenu = () => {
     if (variant === "phone") act.openSheet({ id: C_IDS.model })
@@ -485,12 +497,22 @@ function useSlashCommands(p: PiContainerProps, resources: ResourceCommand[]) {
       openPiDialog(p, { id: dialog, arg: relay.roomId })
     }
   }
-  /** 发送前看一眼：带参数的 /name、/follow 和资源命令在这里执行，其余照普通消息发（未知 /xxx 也是普通文本，不误执行） */
+  /** 发送前看一眼：内置斜杠命令与资源命令在这里执行，未知 /xxx 照普通消息发 */
   const trySend = (): boolean => {
     const parsed = parseSlashDetailed(relay.draft.trim())
     if (!parsed) return false
     const arg = (parsed.arg ?? "").trim()
-    if (parsed.name === "name" && arg) {
+    if (parsed.name === "name" || parsed.name === "rename") {
+      if (!arg) {
+        if (!relay.roomId) {
+          relay.notify("先打开一个会话", "warn")
+          return true
+        }
+        clear()
+        noteSlashCommandUsed("/name")
+        openPiDialog(p, { id: PI_UI_IDS.rename, arg: relay.roomId })
+        return true
+      }
       void relay.runCommand("set_session_name", { name: arg }).then(
         () => {
           noteSlashCommandUsed("/name")
@@ -537,16 +559,53 @@ function useSlashCommands(p: PiContainerProps, resources: ResourceCommand[]) {
       ).catch((error: unknown) => relay.notify(commandErrorText(error, "切换模型失败"), "bad"))
       return true
     }
-    if (parsed.name === "follow" && arg) {
-      void relay.runCommand("follow_up", { message: arg }).then(
+    if (parsed.name === "follow") {
+      if (!arg) {
+        relay.notify("用法：/follow <补充消息>", "warn")
+        return true
+      }
+      const attachedFiles = [...relay.pendingFiles]
+      const message = expandMentionText(arg, attachedFiles)
+      void relay.runCommand("follow_up", { message }).then(
         () => {
           noteSlashCommandUsed("/follow")
           relay.setDraft("")
+          if (attachedFiles.length) relay.clearPendingFiles()
           relay.notify("已排到这轮结束之后")
         },
         (error: unknown) => relay.notify(commandErrorText(error), "bad"),
       )
       return true
+    }
+    if (parsed.name === "compact") {
+      if (!arg) {
+        clear()
+        noteSlashCommandUsed("/compact")
+        openPiDialog(p, { id: PI_UI_IDS.compact, arg: relay.roomId })
+        return true
+      }
+      const prevDraft = relay.draft
+      relay.setDraft("")
+      relay.notify("正在压缩上下文…")
+      void relay.runCommand("compact", { customInstructions: arg }).then(
+        (data) => {
+          noteSlashCommandUsed("/compact")
+          const summary = compactionResultText(compactionNumbersOf(data))
+          relay.notify(summary || "上下文压缩完成")
+        },
+        (error: unknown) => {
+          if (!draftRef.current.trim()) relay.setDraft(prevDraft)
+          relay.notify(`压缩失败：${commandErrorText(error)}`, "bad")
+        },
+      )
+      return true
+    }
+    if (!arg && BUILTIN_NAMES.has(parsed.name)) {
+      const row = BUILTIN_ROWS.find((r) => r.key === parsed.name)
+      if (row) {
+        runRow(row)
+        return true
+      }
     }
     if (!BUILTIN_NAMES.has(parsed.name)) {
       const resource = matchResourceCommand(resources, parsed.raw)
@@ -562,14 +621,139 @@ function useSlashCommands(p: PiContainerProps, resources: ResourceCommand[]) {
 
 /* ======================= + 菜单（图片 / 文本文件 / 命令 / 用量） ======================= */
 
+const DROP_TEXT_FILE_MAX_BYTES = 200 * 1024
+const DROP_TEXT_MIMES = new Set([
+  "application/json",
+  "application/ld+json",
+  "application/javascript",
+  "application/x-javascript",
+  "application/typescript",
+  "application/x-typescript",
+  "application/xml",
+  "application/xhtml+xml",
+  "application/yaml",
+  "application/x-yaml",
+  "application/toml",
+  "application/x-sh",
+  "application/sql",
+  "application/graphql",
+  "image/svg+xml",
+])
+const DROP_TEXT_EXTS = new Set([
+  "txt", "md", "mdx", "markdown", "json", "jsonc", "json5", "jsonl",
+  "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
+  "py", "pyw", "pyi", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
+  "go", "rs", "yaml", "yml", "toml", "css", "scss", "sass", "less",
+  "html", "htm", "xml", "svg", "csv", "tsv", "log", "ini", "conf", "cfg",
+  "env", "sql", "java", "kt", "kts", "swift", "c", "cc", "cpp", "cxx",
+  "h", "hh", "hpp", "cs", "rb", "php", "lua", "r", "vue", "svelte",
+  "astro", "prisma", "graphql", "gql", "proto", "tf", "hcl",
+])
+const DROP_TEXT_NAMES = new Set(["makefile", "dockerfile", "readme", "license", "changelog", ".gitignore", ".gitattributes", ".editorconfig", ".npmrc", ".nvmrc", ".env"])
+
+function isDropImageFile(file: File): boolean {
+  if (normalizeSendImageMime(file.type)) return true
+  if (file.type.startsWith("image/") && file.type !== "image/svg+xml") return true
+  if (!file.type || file.type === "application/octet-stream") {
+    return /\.(png|jpe?g|gif|webp)$/i.test(file.name)
+  }
+  return false
+}
+
+function isDropTextFile(file: File): boolean {
+  if (file.type.startsWith("text/") || DROP_TEXT_MIMES.has(file.type)) return true
+  const base = file.name.trim().toLowerCase()
+  if (!base) return false
+  if (DROP_TEXT_NAMES.has(base)) return true
+  const dot = base.lastIndexOf(".")
+  if (dot >= 0 && DROP_TEXT_EXTS.has(base.slice(dot + 1))) return true
+  return false
+}
+
+function removeMentionFromDraft(source: string, path: string): string {
+  if (!path || !source.includes("@")) return source
+  const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const re = new RegExp(`(^|[\\s\\u0080-\\uffff])@${escaped}([ \\t]?)(?=\\s|$)`, "g")
+  return source.replace(re, (full, lead: string, _trail: string, offset: number, src: string) => {
+    const after = src[offset + full.length]
+    if (lead === " " || lead === "\t") {
+      if (!after || after === "\n" || after === "\r") return ""
+      return lead
+    }
+    if (lead === "") return ""
+    return lead
+  })
+}
+
 function useAttach(p: PiContainerProps) {
   const { relay } = p
+  const draftRef = useRef(relay.draft)
+  draftRef.current = relay.draft
+  const blockImages = useSettingsEffectiveBool(relay, "images.blockImages") === true
   const imageInput = useRef<HTMLInputElement>(null)
   const textInput = useRef<HTMLInputElement>(null)
+  const importImages = (files: readonly File[]) => {
+    if (!files.length) return
+    if (blockImages) {
+      relay.notify("已在「数据与隐私」中开启禁止发送图片", "warn")
+      return
+    }
+    // 压缩 / 额度 / 被拒的提示照旧界面的同一套口径（./cImages.ts；不 import chat/toolbar.tsx：它带旧界面的全局样式表）
+    void importImageFiles(relay, files)
+  }
+  const importFiles = (files: readonly File[]) => {
+    if (!files.length) return
+    const images: File[] = []
+    const texts: File[] = []
+    let rejected = 0
+    for (const file of files) {
+      if (isDropImageFile(file)) {
+        images.push(file)
+      } else if (isDropTextFile(file) && file.size <= DROP_TEXT_FILE_MAX_BYTES) {
+        texts.push(file)
+      } else {
+        rejected += 1
+      }
+    }
+    if (images.length) importImages(images)
+    if (texts.length) {
+      void (async () => {
+        let nextDraft: string | null = null
+        for (const file of texts) {
+          const buffer = await file.arrayBuffer()
+          const decoded = decodeTextFile(new Uint8Array(buffer))
+          if (!decoded.ok) {
+            relay.notify(decoded.reason, "warn")
+            continue
+          }
+          const inserted = insertFileBlock(nextDraft ?? draftRef.current, file.name, decoded.text)
+          if (!inserted.ok) {
+            relay.notify(inserted.reason, "warn")
+            break
+          }
+          nextDraft = inserted.text
+          relay.setDraft(nextDraft)
+          if (inserted.truncated) relay.notify(`${file.name} 太长，截掉了 ${inserted.omittedChars} 字`, "warn")
+        }
+      })()
+    }
+    if (rejected > 0) {
+      relay.notify("不支持的文件类型或体积超过 200 KB", "warn")
+    }
+  }
   const pick = (key: PiAttachPick) => {
-    if (key === "image") imageInput.current?.click()
-    else if (key === "text") textInput.current?.click()
+    if (key === "image") {
+      if (blockImages) {
+        relay.notify("已在「数据与隐私」中开启禁止发送图片", "warn")
+        return
+      }
+      imageInput.current?.click()
+    } else if (key === "text") textInput.current?.click()
     else if (key === "commands") {
+      if (relay.draft.trim().length > 0) {
+        p.act.setPaletteOpen(true)
+        return
+      }
       // "命令…" = 在输入框里打 /（斜杠菜单由输入内容打开）
       relay.setDraft("/")
       window.setTimeout(() => document.querySelector<HTMLElement>('[data-cw-id="pi-composer-input"]')?.focus({ preventScroll: true }), 30)
@@ -586,9 +770,7 @@ function useAttach(p: PiContainerProps) {
         onChange={(event) => {
           const files = Array.from(event.currentTarget.files ?? [])
           event.currentTarget.value = ""
-          if (!files.length) return
-          // 压缩 / 额度 / 被拒的提示照旧界面的同一套口径（./cImages.ts；不 import chat/toolbar.tsx：它带旧界面的全局样式表）
-          void importImageFiles(relay, files)
+          importImages(files)
         }}
       />
       <input
@@ -622,7 +804,7 @@ function useAttach(p: PiContainerProps) {
       />
     </>
   )
-  return { pick, inputs }
+  return { pick, inputs, blockImages, importImages, importFiles }
 }
 
 /* ======================= dock ======================= */
@@ -677,22 +859,39 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
 
   /* ---------- tray ---------- */
   const items = relay.transcript.items
-  // 改动数（tray 的「改动 +N −M」）：按工具调用缓存每块的 diff，流式时只有还在长的那条会重算（UI·perf 中-2）
+  // 改动数（保留增量缓存契约；改动统计已在顶部悬浮栏中直达）
   const [changesCache] = useState(createChangesCache)
   const changes = useMemo(() => changesOfSessionCached(items, changesCache), [items, changesCache])
+  const liveOnline = linkOk && (device?.online ?? true)
+  const liveKey = relay.transcript.liveKey
+  const activeSubagents = useMemo(() => {
+    const reported = subagentsOf(relay.agentState).length
+    if (reported > 0) return reported
+    if (!relay.busy || !liveKey) return 0
+    const liveItem = items.find((it) => it.kind === "assistant" && it.key === liveKey)
+    if (!liveItem || liveItem.kind !== "assistant") return 0
+    return liveItem.blocks.filter(
+      (b) => b.kind === "tool" && toolWeightOf(b.name) === "subagent" && toolDisplayState(b) === "running",
+    ).length
+  }, [relay.agentState, relay.busy, liveKey, items])
   const menuId = ui.menu?.id
   const sheetId = ui.sheet?.id
   useQueueEditRequest(!phone && menuId === C_IDS.queue ? ui.menu?.arg : undefined, queue, () => act.openMenu({ id: C_IDS.queue }))
-  const tray: PiTrayItem[] = trayItemsOf({
-    taskList: relay.taskList,
+  const armedScheduleCount = queue.schedules.filter((s) => s.state === "armed").length
+  const hasQueuePanelItems = queue.count > 0 || armedScheduleCount > 0 || Boolean(queue.editing)
+  const trayInput: PiTrayInput & { scheduled?: typeof queue.schedules } = {
+    taskList: liveOnline ? relay.taskList : [],
+    subagents: liveOnline && relay.busy ? activeSubagents : 0,
     remoteQueue: relay.remoteQueue.items,
     localQueue: relay.queue,
     outbox: relay.outbox,
-    terminals: relay.terminalItems,
+    terminals: liveOnline ? relay.terminalItems : [],
     changes,
+    scheduled: queue.schedules,
     linkOk,
     deviceOnline: device?.online ?? true,
-  }).map((item) => {
+  }
+  const tray: PiTrayItem[] = trayItemsOf(trayInput).map((item) => {
     const active =
       item.kind === "tasks"
         ? phone
@@ -702,13 +901,28 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
           ? phone
             ? sheetId === C_IDS.queue
             : menuId === C_IDS.queue
-          : !phone && ui.pane === item.kind
-    // 改动 pill：数字由 PiTray 的 DiffStat 按 added / removed 画（同画廊屏 TRAY_CHANGES），label 只留"改动"，
-    // 否则读成"改动 +32 −9 +32 −9"（lane-requests p5-a #7、p5-b #4）；读屏名仍是"改动 +32 −9"
-    const shown = item.kind === "changes" ? { ...item, label: "改动" } : item
+          : item.kind === "subagents"
+            ? false
+            : !phone && ui.pane === item.kind
+    const shown = item.kind === "changes" ? { ...item, label: "Changes" } : item
     return active ? { ...shown, active: true } : shown
   })
+  const hasTasksPill = tray.some((item) => item.kind === "tasks")
+  useEffect(() => {
+    if (hasTasksPill || isStatic) return
+    if (!phone && menuId === PI_UI_IDS.tasks) act.closeMenu()
+    else if (phone && sheetId === PI_UI_IDS.tasks) act.closeSheet()
+  }, [hasTasksPill, isStatic, phone, menuId, sheetId, act])
+  useEffect(() => {
+    if (hasQueuePanelItems || isStatic) return
+    if (menuId === C_IDS.queue) act.closeMenu()
+    if (sheetId === C_IDS.queue) act.closeSheet()
+  }, [hasQueuePanelItems, isStatic, menuId, sheetId, act])
   const onTrayItem = (kind: PiTrayItem["kind"]) => {
+    if (kind === "subagents") {
+      stick.onScrollDown()
+      return
+    }
     if (kind === "tasks" || kind === "queue") {
       const id = kind === "tasks" ? PI_UI_IDS.tasks : C_IDS.queue
       if (phone) act.openSheet({ id })
@@ -716,14 +930,15 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
       else act.openMenu({ id })
       return
     }
+    if (kind !== "terminal" && kind !== "changes") return
     // 终端 / 改动：桌面开关右 pane；手机进推入页（PhoneApp 按 ui.pane 换整页）
     if (phone) act.setPane(kind)
     else act.setPane(ui.pane === kind ? null : kind)
   }
   const panel =
-    phone || !menuId ? undefined : menuId === PI_UI_IDS.tasks ? (
+    phone || !menuId ? undefined : menuId === PI_UI_IDS.tasks && hasTasksPill ? (
       <TaskPanelContainer {...p} />
-    ) : menuId === C_IDS.queue && queue.count > 0 ? (
+    ) : menuId === C_IDS.queue && hasQueuePanelItems ? (
       <PiQueuePanel
         variant="desktop"
         remote={queue.remote}
@@ -753,7 +968,14 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
     src: img.data ? `data:${img.mimeType};base64,${img.data}` : undefined,
   }))
   const onMentionsChange = (paths: string[]) => {
-    for (const path of mentions) if (!paths.includes(path)) relay.removePendingFile(path)
+    let nextDraft = relay.draft
+    for (const path of mentions) {
+      if (!paths.includes(path)) {
+        relay.removePendingFile(path)
+        nextDraft = removeMentionFromDraft(nextDraft, path)
+      }
+    }
+    if (nextDraft !== relay.draft) relay.setDraft(nextDraft)
     const added = paths.filter((path) => !mentions.includes(path))
     if (added.length) relay.addPendingFiles(added.map((path) => ({ path, label: mentionLabel(path) })))
   }
@@ -825,10 +1047,11 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
   // P6.3（design §4.2 第 7 条）：手机键盘开着时 + / 模型不开 sheet（会被键盘挡住、或一打开就收掉键盘），
   // 记在 ui.menu 里、由 PiFollowUpComposer 画成浮层；键盘收起时浮层由 composer 关掉，再点就是 sheet
   const sheetMenus = phone && !keyboardOpen
-  const isOpen = (id: string) => (phone ? sheetId === id || menuId === id : menuId === id)
+  const sheetOpen = ui.sheet != null
+  const isOpen = (id: string) => (phone ? (sheetOpen ? sheetId === id : menuId === id) : menuId === id)
   const plusOpen = isOpen(C_IDS.plus)
   const modelOpen = isOpen(C_IDS.model)
-  const modelData = useModelData(relay, modelOpen && !sheetMenus)
+  const modelData = useModelData(relay, modelOpen && !sheetMenus && !sheetOpen)
   const toggle = (id: string) => (open: boolean) => {
     if (open) {
       if (sheetMenus) act.openSheet({ id })
@@ -858,11 +1081,50 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
     }
   }
 
+  const settingsPrefs = usePiSettingsPrefs({
+    pollMs: isStatic ? 0 : 1000,
+    storage: isStatic ? null : undefined,
+  })
+  const dictationAllowed = !isStatic && !!roomId && settingsPrefs.speechToText && ui.blockedBy !== "approval" && state !== "S7"
+  const dictation = useVoiceDictation({
+    enabled: dictationAllowed,
+    draft,
+    onDraftChange: relay.setDraft,
+    shortcut: settingsPrefs.dictationShortcut,
+    language: settingsPrefs.language,
+    disabled: !roomId || ui.blockedBy === "approval" || state === "S7",
+    overlayBlocked: !!ui.menu || !!ui.sheet || !!ui.dialog,
+    onNotify: notify,
+  })
+
+  const dockDisabled = state === "S7" || ui.blockedBy === "approval"
+  const onDockDragOver = isStatic
+    ? undefined
+    : (event: DragEvent<HTMLDivElement>) => {
+        const hasFiles = Boolean(event.dataTransfer?.types?.includes("Files")) || Boolean(event.dataTransfer?.files?.length)
+        if (!hasFiles) return
+        event.preventDefault()
+        event.stopPropagation()
+        if (event.dataTransfer) event.dataTransfer.dropEffect = dockDisabled ? "none" : "copy"
+      }
+  const onDockDrop = isStatic
+    ? undefined
+    : (event: DragEvent<HTMLDivElement>) => {
+        const rawFiles = event.dataTransfer?.files
+        const hasFiles = (rawFiles?.length ?? 0) > 0 || Boolean(event.dataTransfer?.types?.includes("Files"))
+        if (!hasFiles) return
+        event.preventDefault()
+        event.stopPropagation()
+        if (!dockDisabled && rawFiles?.length) attach.importFiles(Array.from(rawFiles))
+      }
+
   return (
     <>
       <PiComposerDock
         variant={variant}
         state={state}
+        onDragOver={onDockDragOver}
+        onDrop={onDockDrop}
         approval={<ApprovalContainer {...p} />}
         blockedBy={ui.blockedBy}
         draft={draft}
@@ -883,6 +1145,20 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
         onPanelClose={act.closeMenu}
         status={status}
         statusTrailing={phone ? undefined : extras?.statusTrailing}
+        voiceSlot={
+          dictationAllowed && dictation.supported ? (
+            <GhostIconButton
+              data-cw-id="pi-composer-mic"
+              label={dictation.listening ? "停止语音听写" : "语音听写"}
+              aria-pressed={dictation.listening}
+              title={dictation.listening ? "点击或按快捷键停止语音听写" : `语音听写（${settingsPrefs.dictationShortcut || "快捷键"}）`}
+              icon={dictation.listening ? <MicOff className="text-(--cw-danger)" /> : <Mic />}
+              className={phone ? "relative size-8 after:absolute after:-inset-1.5 after:content-['']" : undefined}
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={dictation.toggle}
+            />
+          ) : undefined
+        }
         keyboardOpen={keyboardOpen}
         onDeliveryChange={(value) => relay.setSendMode(value)}
         deliveryOpen={phone ? sheetId === C_IDS.delivery : undefined}
@@ -891,7 +1167,7 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
         plusOpen={plusOpen}
         onPlusOpenChange={toggle(C_IDS.plus)}
         plusMenu={
-          sheetMenus ? undefined : phone ? (
+          sheetMenus || (phone && (sheetOpen || menuId !== C_IDS.plus)) ? undefined : phone ? (
             <PiAttachMenu
               variant="phone"
               bare
@@ -908,16 +1184,21 @@ export function ComposerContainer(props: PiContainerProps & { extras?: PiSession
         modelOpen={modelOpen}
         onModelOpenChange={toggle(C_IDS.model)}
         modelMenu={
-          sheetMenus ? undefined : (
+          sheetMenus || (phone && (sheetOpen || menuId !== C_IDS.model)) ? undefined : (
             <ModelMenuContent relay={relay} variant={variant} data={modelData} isStatic={false} onConfigureModels={openModelConfigure} />
           )
         }
         slashGroups={slashGroups}
         onSlashCommand={slash.runRow}
         mentionPool={mentionPool}
+        onImportFiles={attach.importFiles}
         onHistoryKey={phone ? undefined : recallPrompt}
         onSend={() => {
           if (slash.trySend()) return
+          if (attach.blockImages && relay.pendingImages.length > 0) {
+            relay.notify("已在「数据与隐私」中开启禁止发送图片", "warn")
+            return
+          }
           void relay.sendText()
         }}
         onStop={() => void relay.abort()}
@@ -949,6 +1230,12 @@ export function ComposerSheets(p: PiContainerProps) {
   const now = useNow(1000)
   const isStatic = usePiStatic()
   const modelData = useModelData(relay, sheetId === C_IDS.model)
+  const armedScheduleCount = queue.schedules.filter((s) => s.state === "armed").length
+  const hasQueuePanelItems = queue.count > 0 || armedScheduleCount > 0 || Boolean(queue.editing)
+  useEffect(() => {
+    if (hasQueuePanelItems || isStatic) return
+    if (sheetId === C_IDS.queue) act.closeSheet()
+  }, [hasQueuePanelItems, isStatic, sheetId, act])
   // Opening settings replaces the session view (and this sheet with it),
   // so there is no sheet to close first
   const openModelConfigure = () => {
@@ -1003,13 +1290,13 @@ export function ComposerSheets(p: PiContainerProps) {
         />
       </PiSheet>
     )
-  } else if (sheetId === C_IDS.queue && queue.count > 0) {
+  } else if (sheetId === C_IDS.queue && hasQueuePanelItems) {
     // P6.3（design §4.3）：编辑一条待发消息时"保存 / 取消"放进 sheet 的 footer，键盘开着时钉在键盘上沿
     const editing = queue.editing
     sheet = (
       <PiSheet
         title="排队"
-        subtitle={`${queue.count} 条在等`}
+        subtitle={queue.count > 0 ? `${queue.count} 条在等` : undefined}
         size="half"
         bodyClassName="px-4"
         onOpenChange={onOpenChange}

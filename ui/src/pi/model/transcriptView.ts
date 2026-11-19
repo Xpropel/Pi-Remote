@@ -344,3 +344,159 @@ export function turnTextOf(items: readonly Item[], itemKey: string): string {
   }
   return parts.join("\n\n")
 }
+
+export type PiForkTurnTarget = {
+  /** Committed turn index from the end (0 = latest committed turn). */
+  fromEnd: number
+  /** True if this turn is the latest committed turn in items. */
+  isLatest: boolean
+  /** Trimmed user prompt text for sanity-matching tree turns if counts diverge. */
+  userText: string
+}
+
+export type PiTreeEntryLike = {
+  id?: unknown
+  parentId?: unknown
+  type?: unknown
+  role?: unknown
+  preview?: unknown
+}
+
+export type PiTreeNodeLike = {
+  entry?: PiTreeEntryLike | null
+  onPath?: unknown
+  children?: unknown
+}
+
+export type PiTreeLike = {
+  tree?: unknown
+  leafId?: unknown
+  path?: unknown
+}
+
+/** Identify which committed turn owns `itemKey`, indexed from the tail so truncated histories still align with `get_tree`. */
+export function forkTurnOf(items: readonly Item[], itemKey: string): PiForkTurnTarget | null {
+  const committed = items.filter(
+    (it) => !(it.kind === "user" && (it.queued || it.status === "sending" || it.status === "awaiting" || it.failed)),
+  )
+  const at = committed.findIndex((it) => it.key === itemKey)
+  if (at < 0) return null
+  const ranges = turnRanges(committed)
+  const turnIndex = ranges.findIndex(([from, to]) => at >= from && at < to)
+  if (turnIndex < 0) return null
+  const first = committed[ranges[turnIndex][0]]
+  const userText = first?.kind === "user" ? first.text.trim() : ""
+  return {
+    fromEnd: ranges.length - 1 - turnIndex,
+    isLatest: turnIndex === ranges.length - 1,
+    userText,
+  }
+}
+
+function activeTreeEntries(treeData: PiTreeLike | null | undefined): PiTreeEntryLike[] {
+  if (!treeData || !Array.isArray(treeData.tree)) return []
+  const byId = new Map<string, PiTreeEntryLike>()
+  const onPathList: PiTreeEntryLike[] = []
+  const stack: PiTreeNodeLike[] = []
+  for (let i = treeData.tree.length - 1; i >= 0; i--) {
+    const n = treeData.tree[i]
+    if (n && typeof n === "object") stack.push(n as PiTreeNodeLike)
+  }
+  while (stack.length) {
+    const node = stack.pop()!
+    const entry = node.entry
+    if (entry && typeof entry === "object" && typeof entry.id === "string" && entry.id) {
+      byId.set(entry.id, entry)
+      if (node.onPath) onPathList.push(entry)
+    }
+    if (Array.isArray(node.children)) {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        const c = node.children[i]
+        if (c && typeof c === "object") stack.push(c as PiTreeNodeLike)
+      }
+    }
+  }
+  if (Array.isArray(treeData.path) && treeData.path.length > 0) {
+    const out: PiTreeEntryLike[] = []
+    for (const id of treeData.path) {
+      if (typeof id === "string") {
+        const e = byId.get(id)
+        if (e) out.push(e)
+      }
+    }
+    if (out.length > 0) return out
+  }
+  if (onPathList.length > 0) return onPathList
+  const leafId = typeof treeData.leafId === "string" ? treeData.leafId : ""
+  const reversed: PiTreeEntryLike[] = []
+  let cur = leafId ? byId.get(leafId) : undefined
+  const seen = new Set<string>()
+  while (cur && typeof cur.id === "string" && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    reversed.push(cur)
+    cur = typeof cur.parentId === "string" ? byId.get(cur.parentId) : undefined
+  }
+  reversed.reverse()
+  return reversed
+}
+
+function isRenderableTurnEntry(entry: PiTreeEntryLike): boolean {
+  if (entry.type === "compaction" || entry.type === "branch_summary" || entry.type === "custom_message") return true
+  if (entry.type === "message") {
+    return entry.role === "assistant" || entry.role === "bashExecution" || entry.role === "user"
+  }
+  return false
+}
+
+const FORK_MESSAGE_ROLES = new Set(["assistant", "toolResult", "bashExecution", "user"])
+
+/** Resolve the session entry ID to branch from for a turn targeted by `forkTurnOf`. */
+export function forkEntryIdForTurn(treeData: PiTreeLike | null | undefined, target: PiForkTurnTarget): string | null {
+  const entries = activeTreeEntries(treeData)
+  if (entries.length === 0) return null
+  const turns: PiTreeEntryLike[][] = []
+  let cur: PiTreeEntryLike[] = []
+  let seenUser = false
+  for (const e of entries) {
+    const isUser = e.type === "message" && e.role === "user"
+    if (isUser) {
+      if (seenUser || cur.some(isRenderableTurnEntry)) turns.push(cur)
+      cur = [e]
+      seenUser = true
+    } else {
+      cur.push(e)
+    }
+  }
+  if (seenUser || cur.some(isRenderableTurnEntry)) turns.push(cur)
+  if (turns.length === 0) return null
+
+  const byOffset = turns.length - 1 - target.fromEnd
+  let chosen = byOffset >= 0 && byOffset < turns.length ? turns[byOffset] : null
+  const u = target.userText.trim()
+  const previewOf = (t: PiTreeEntryLike[]) => (typeof t[0]?.preview === "string" ? t[0].preview.trim() : "")
+  const matches = (t: PiTreeEntryLike[] | null) => {
+    if (!t) return false
+    const p = previewOf(t)
+    if (!p) return u.length === 0
+    return u.length > 0 && (u.startsWith(p) || p.startsWith(u))
+  }
+  if (!matches(chosen)) {
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (matches(turns[i])) {
+        chosen = turns[i]
+        break
+      }
+    }
+  }
+  if (!chosen) return null
+  for (let i = chosen.length - 1; i >= 0; i--) {
+    const e = chosen[i]
+    if (e.type === "message" && typeof e.role === "string" && FORK_MESSAGE_ROLES.has(e.role) && typeof e.id === "string" && e.id) {
+      return e.id
+    }
+  }
+  for (let i = chosen.length - 1; i >= 0; i--) {
+    if (typeof chosen[i].id === "string" && chosen[i].id) return chosen[i].id as string
+  }
+  return null
+}

@@ -7,7 +7,7 @@ import { useMemo, useState } from "react"
  */
 
 export type PlayView = "session" | "new" | "settings"
-export type PlayPane = "changes" | "terminal" | "file" | null
+export type PlayPane = "changes" | "terminal" | "shell" | "file" | null
 export type PlayPhonePage = "list" | "chat"
 
 export interface PlayUi {

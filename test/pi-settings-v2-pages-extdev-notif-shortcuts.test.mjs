@@ -18,17 +18,20 @@ const devices = await import("../ui/src/pi/settings/pages/devicesLogic.ts")
 const shortcuts = await import("../ui/src/pi/settings/pages/shortcutsLogic.ts")
 
 const extensions = PAGE("ExtensionsPage.tsx")
+const extensionsLogic = PAGE("extensionsLogic.ts")
 const devicesPage = PAGE("DevicesPage.tsx")
 const notifications = PAGE("NotificationsPage.tsx")
 const shortcutsPage = PAGE("ShortcutsPage.tsx")
 
-test("扩展页：五组齐全、逐字文案、总闸可写 / 清单仍只读、真实命令", () => {
+test("扩展页：五组齐全、逐字文案、资源列表读写解锁、真实命令", () => {
   assert.match(extensions, /data-settings-page="extensions"/)
   for (const label of ["技能", "MCP 服务器", "提示词模板", "扩展本体", "Pi 包"]) {
     assert.ok(extensions.includes(`label="${label}"`), `扩展页缺分组「${label}」`)
   }
-  // 技能总闸接 settings_set；MCP / 提示词 / 扩展本体 / Pi 包仍是 ◐ 只读，逐条技能也标 ◐。
-  assert.ok((extensions.match(/status="bridge"/g) ?? []).length >= 4, "清单类分组 / 行仍要标「需扩展桥」")
+  assert.equal((extensions.match(/status="bridge"/g) ?? []).length, 0, "扩展页清单与开关已全部解锁，不再标 ◐ 只读")
+  assert.match(extensions, /ExtensionResourceModal/)
+  assert.match(extensions, /toggleResourceEntry/)
+  assert.match(extensions, /togglePackageEntry/)
   assert.match(extensions, /useSettingsDocument/)
   assert.match(extensions, /useSettingsWriter/)
   assert.match(extensions, /skillCommandsPatch/)
@@ -36,30 +39,23 @@ test("扩展页：五组齐全、逐字文案、总闸可写 / 清单仍只读�
 
   for (const copy of [
     "技能斜杠命令",
-    "把技能注册成 /skill:名字 命令；关了仍可手动输入调用",
+    "把技能注册成 /skill:名字 命令；关闭后仍可手动输入调用",
     "仅手动调用",
     "添加技能",
-    "从本地文件夹或链接导入",
     "添加 MCP 服务器",
-    "填入启动命令或服务器地址",
     "添加模板",
-    "模板文件名就是命令名",
     "pi-remote 远程",
-    "把本机 pi 会话镜像到浏览器",
-    "扩展拥有完整系统权限，只装可信来源",
+    "扩展拥有完整系统权限，请仅安装可信来源",
     "内置",
     "MCP 支持",
     "代码模式 codemode",
     "工具搜索",
     "本地模型 llama.cpp",
     "添加扩展",
-    "从本地文件或文件夹添加",
     "尚未安装任何包",
     "添加包",
-    "从 npm、git 或本地文件夹整包安装扩展、技能与模板",
-    "停用的技能与服务器不会出现在会话里。",
   ]) {
-    assert.ok(extensions.includes(copy), `扩展页缺文案：${copy}`)
+    assert.ok(extensions.includes(copy) || extensionsLogic.includes(copy), `扩展页缺文案：${copy}`)
   }
   assert.match(extensions, /get_commands/)
   assert.match(extensions, /get_mcp_servers/)
@@ -148,28 +144,24 @@ test("设备页：真实名册 / 延迟 / 测试连接 / 本机默认设备，�
   assert.match(devicesPage, /默认设备/)
   assert.doesNotMatch(devicesPage, /ReservedAction/, "测试连接 / 设为默认不再是预留动作")
 
-  assert.ok((devicesPage.match(/status="reserved"/g) ?? []).length >= 2, "主机行为两项预留")
-  assert.ok((devicesPage.match(/设计预留/g) ?? []).length >= 3, "预留项要注明「设计预留」")
+  assert.equal((devicesPage.match(/status="reserved"/g) ?? []).length, 0, "已移除托盘/菜单栏死开关")
+  assert.doesNotMatch(devicesPage, /在设备上常驻托盘\/菜单栏|设计预留/)
+  assert.match(devicesPage, /usePreventSleepToggle/, "防休眠开关需接入设备命令桥")
   assert.match(devicesPage, /再点一次移除/, "撤销要二次确认")
   assert.match(devicesPage, /测试连接/)
   assert.match(devicesPage, /设为默认/)
   assert.match(devicesPage, /当前设备/)
   assert.match(devicesPage, /pushNotice/)
 
+  const deviceBehavior = PAGE("deviceBehavior.ts")
   for (const copy of [
     "我的设备",
     "长任务运行时阻止设备睡眠",
-    "在被控设备上生效，长任务过夜跑不会被系统睡眠打断",
     "新会话自动连上默认设备",
-    "新建会话时自动归属默认设备",
-    "在设备上常驻托盘/菜单栏",
-    "Pi-Remote 的小图标常驻被控设备，随手看会话状态",
     "添加设备",
-    "在新设备浏览器打开后，输入这里显示的配对码",
-    "在侧边栏顶部的设备选择器也可切换当前设备。",
     "延迟来自设备心跳",
   ]) {
-    assert.ok(devicesPage.includes(copy), `设备页缺文案：${copy}`)
+    assert.ok(devicesPage.includes(copy) || deviceBehavior.includes(copy), `设备页缺文案：${copy}`)
   }
 })
 
@@ -214,7 +206,7 @@ test("设备展示逻辑：平台、今天/昨天/月日、在线与离线状态
   assert.equal(devices.deviceRoundTripTextOf(Number.NaN), "0 ms")
 })
 
-test("通知页：整页纯本地、六项即时持久化、文案与脚注逐字", () => {
+test("通知页：整页纯本地、七项即时持久化、文案与系统桌面通知完整", () => {
   assert.match(notifications, /data-settings-page="notifications"/)
   assert.equal((notifications.match(/status="(bridge|reserved)"/g) ?? []).length, 0, "通知整页是 ○ 本机项")
   assert.equal((notifications.match(/localStorage/g) ?? []).length, 0, "页面不直写存储，走 act.setPref")
@@ -225,29 +217,25 @@ test("通知页：整页纯本地、六项即时持久化、文案与脚注逐�
     "notifyOnlyWhenAway",
     "notifySound",
     "notifyBadge",
+    "notifySystem",
   ]) {
     assert.ok(notifications.includes(`act.setPref("${key}"`), `通知页缺 ${key} 的即时写偏好`)
   }
   for (const copy of [
     "提醒时机",
     "等你回答时",
-    "会话停下来等你回答或批准时提醒",
     "出错时",
-    "构建或运行失败时提醒",
     "任务完成时",
-    "长任务跑完时提醒",
     "提醒条件",
     "仅当我不在页面时",
-    "正在看的会话不会弹提醒",
     "总是提醒",
     "提示音",
-    "提醒出现时播放短提示音",
     "方式",
     "当前方式",
     "应用内提醒",
     "标签页未读角标",
-    "在浏览器标签标题上显示待处理数量",
-    "暂仅支持应用内提醒；离开页面时不会推送。",
+    "系统桌面通知",
+    "离开页面时通过浏览器发送系统通知（不含对话正文）",
   ]) {
     assert.ok(notifications.includes(copy), `通知页缺文案：${copy}`)
   }
@@ -262,7 +250,7 @@ test("快捷键页：五组动作、点行右键录制、Esc 取消、冲突提�
   assert.match(shortcutsPage, /event\.key === "Escape"/)
   assert.match(shortcutsPage, /setRecording\(null\)/)
   assert.match(shortcutsPage, /aria-label="搜索快捷键"/)
-  assert.match(shortcutsPage, /点任意一行右侧的键位即可改键。/)
+  assert.match(shortcutsPage, /点任意一行右侧的键位即可改键/)
   assert.match(shortcutsPage, /data-shortcut-route=/)
   assert.match(shortcutsPage, /act\.setPref\("shortcuts"/)
   assert.doesNotMatch(shortcutsPage, /localStorage/)

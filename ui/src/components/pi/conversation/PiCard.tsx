@@ -16,6 +16,7 @@ export const CARD_HEAD =
   "flex min-w-0 items-center gap-2 pr-2 pl-2.5 font-(family-name:--cw-font-sans) text-(length:--cw-text-base) leading-(--cw-leading-tight) whitespace-nowrap"
 export const CARD_HEAD_H = "h-[31px]"
 export const CARD_HEAD_H_PHONE = "h-9"
+export const CARD_TERMINAL_HEAD_H = "h-[26px]"
 export const CARD_DIVIDER = "border-b border-(--cw-divider)"
 /** 卡头图标、展开箭头的尺寸 */
 export const CARD_ICON = 14

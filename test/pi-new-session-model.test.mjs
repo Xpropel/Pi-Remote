@@ -45,24 +45,25 @@ describe("新会话页的模型：只读显示设备默认模型，绝不向已�
 
   test("NewSessionContainer：不挂模型菜单 / sheet，不碰 set_model、set_thinking_level、Auto", () => {
     const src = code(read("pi/containers/NewSessionContainer.tsx"))
-    for (const bad of [/ModelMenuContent/, /useModelActions/, /set_model/, /set_thinking_level/, /setThinking|setModel\(/, /useModelAuto/, /useModelData/, /modelMenu=/, /C_IDS\.newModel/, /runCommand\(/]) {
+    for (const bad of [/ModelMenuContent/, /useModelActions/, /set_model/, /set_thinking_level/, /setThinking|setModel\(/, /useModelAuto/, /useModelData/, /modelMenu=/, /C_IDS\.newModel/, /runCommand\(["'](?:set_model|set_thinking_level|get_available_models)["']/]) {
       assert.doesNotMatch(src, bad, `新会话页不该出现 ${bad}`)
     }
     assert.match(src, /const modelName = useDeviceDefaultModelName\(relay, device\?\.id \?\? null\) \?\? EMPTY_MODEL_FALLBACK/)
     assert.match(src, /model=\{\{ name: modelName, thinking: "" \}\}/)
   })
 
-  test("useDeviceDefaultModelName：只发只读的 get_available_models，且只问同一台设备上的当前房间", () => {
+  test("useDeviceDefaultModelName：只发只读的 get_available_models（优先当前房间，否则走设备直连）", () => {
     const body = code(fnBody(read("pi/containers/cShared.ts"), "export function useDeviceDefaultModelName("))
-    assert.match(body, /currentRoomDeviceId\(relay\) === deviceId && commandsReady\(relay\)/)
-    assert.match(body, /ready \? "get_available_models" : null/)
+    assert.match(body, /currentRoomDeviceId\((?:relay|cur)\) === deviceId && commandsReady\((?:relay|cur)\)/)
+    assert.match(body, /runDeviceCommand/)
+    assert.match(body, /mode !== "off" \? "get_available_models" : null/)
     assert.deepEqual(body.match(/"[a-z]+_[a-z_]+"/g), ['"get_available_models"'], "只有这一条命令")
-    assert.doesNotMatch(body, /set_|runCommand\(/)
+    assert.doesNotMatch(body, /set_model|set_thinking_level/)
     assert.match(body, /return name \? modelPillName\(\{ model: name \}\) : null/)
     assert.doesNotMatch(read("pi/containers/cShared.ts"), /newModel:/, "C_IDS 里没有新会话页的模型菜单 id")
   })
 
-  test("PiEmptyComposer：模型是静态文字（不是按钮、没有菜单），配一句说明；拿不到名字写「设备默认模型」", () => {
+  test("PiEmptyComposer：模型是静态文字（不是按钮、没有菜单）；拿不到名字写「设备默认模型」且不带切换废话", () => {
     const src = code(read("components/pi/composer/PiEmptyComposer.tsx"))
     assert.doesNotMatch(src, /withMenu\(\s*"model"/)
     assert.doesNotMatch(src, /sheetClick\("model"/)
@@ -72,6 +73,7 @@ describe("新会话页的模型：只读显示设备默认模型，绝不向已�
     assert.doesNotMatch(block, /aria-haspopup|onClick|tabIndex/)
     assert.match(block, /\{modelLabel\}[\s\S]*\{modelNote\}/)
     assert.match(src, /export const EMPTY_MODEL_FALLBACK = "设备默认模型"/)
-    assert.match(src, /export const EMPTY_MODEL_NOTE = "开始后可在输入框里切换"/)
+    assert.match(src, /export const EMPTY_MODEL_NOTE = ""/)
+    assert.doesNotMatch(src, /开始后可在输入框里切换/)
   })
 })

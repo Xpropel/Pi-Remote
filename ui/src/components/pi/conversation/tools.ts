@@ -5,22 +5,24 @@
 import type { PiTerminalStatus } from "./PiTerminalCard"
 import { abortedToolResult } from "@/chat/capsules/terminalModel"
 import { piBaseName } from "@/components/pi/shared/format"
-import { turnErrorOf, type PiTurnEnd } from "@/pi/model/turnError"
+import { turnErrorEnOf, turnErrorOf, type PiTurnEnd } from "@/pi/model/turnError"
 import type { PiToolBlock } from "@/components/pi/shared/types"
 
-export type ToolWeight = "explore" | "read" | "terminal" | "diff" | "todo" | "other"
+export type ToolWeight = "explore" | "read" | "terminal" | "diff" | "todo" | "subagent" | "other"
 
 const EXPLORE = new Set(["grep", "find", "ls", "glob"])
 const TERMINAL = new Set(["bash", "powershell", "shell"])
 const TODO = new Set(["todo", "todo_write", "todowrite", "todo_read", "todoread", "tasks"])
+const SUBAGENT = new Set(["subagent", "task", "agent"])
 
 export function toolWeight(name: string): ToolWeight {
-  const n = name.toLowerCase()
+  const n = name.trim().toLowerCase()
   if (EXPLORE.has(n)) return "explore"
   if (n === "read" || n === "read_file") return "read"
   if (TERMINAL.has(n)) return "terminal"
   if (n === "edit" || n === "write" || n === "multi_edit") return "diff"
   if (TODO.has(n)) return "todo"
+  if (SUBAGENT.has(n)) return "subagent"
   return "other"
 }
 
@@ -62,10 +64,11 @@ function isEditPair(v: unknown): v is EditPair {
   return typeof v === "object" && v != null && typeof (v as EditPair).oldText === "string" && typeof (v as EditPair).newText === "string"
 }
 
-/** 没有可画改动的写入 / 编辑（参数没到，或停止时被 pi 丢掉）：一行的动词 + 文件名，不知道文件时写"写入文件" */
+/** 没有可画改动的写入 / 编辑（参数没到，或停止时被 pi 丢掉）：一行的动词 + 文件名，不知道文件时写 "Wrote file" / "Writing file" */
 export function diffLineOf(b: PiToolBlock, running: boolean): { verb: string; detail?: string } {
   const path = toolPath(b)
-  const verb = `${running ? "正在" : ""}${b.name.toLowerCase() === "write" ? "写入" : "编辑"}${path ? "" : "文件"}`
+  const write = b.name.toLowerCase() === "write"
+  const verb = `${running ? (write ? "Writing" : "Editing") : write ? "Wrote" : "Edited"}${path ? "" : " file"}`
   return path ? { verb, detail: piBaseName(path) } : { verb }
 }
 
@@ -93,23 +96,23 @@ export function bashPhrase(command: string): string {
     .replace(/^(cd\s+("[^"]*"|'[^']*'|\S+)\s*(&&|;)\s*)+/, "")
     .replace(/^(sudo|env \S+=\S+)\s+/, "")
   const rules: [RegExp, string][] = [
-    [/^(npm|pnpm|yarn) (run )?test\b|^npx (vitest|jest)\b|^node --test\b/, "运行测试"],
-    [/^(npm|pnpm|yarn) run lint\b|^npx eslint\b/, "检查代码规范"],
-    [/^npx tsc\b|^(npm|pnpm|yarn) run typecheck\b/, "类型检查"],
-    [/^(npm|pnpm|yarn) run build\b/, "构建项目"],
-    [/^git diff\b/, "查看 git 改动"],
-    [/^git status\b/, "查看 git 状态"],
-    [/^git log\b/, "查看提交记录"],
-    [/^git\b/, "执行 git 命令"],
-    [/^node\b/, "运行脚本"],
-    [/^rm\b/, "删除文件"],
-    [/^psql\b/, "执行 SQL"],
-    [/^nginx -t\b/, "检查 nginx 配置"],
-    [/^(ls|find|cat|head|tail|wc)\b/, "查看文件"],
-    [/^(grep|rg)\b/, "搜索文本"],
+    [/^(npm|pnpm|yarn) (run )?test\b|^npx (vitest|jest)\b|^node --test\b/, "Run tests"],
+    [/^(npm|pnpm|yarn) run lint\b|^npx eslint\b/, "Run lint"],
+    [/^npx tsc\b|^(npm|pnpm|yarn) run typecheck\b/, "Typecheck"],
+    [/^(npm|pnpm|yarn) run build\b/, "Build project"],
+    [/^git diff\b/, "Check git diff"],
+    [/^git status\b/, "Check git status"],
+    [/^git log\b/, "View git log"],
+    [/^git\b/, "Run git"],
+    [/^node\b/, "Run script"],
+    [/^rm\b/, "Remove files"],
+    [/^psql\b/, "Run SQL"],
+    [/^nginx -t\b/, "Check nginx config"],
+    [/^(ls|find|cat|head|tail|wc)\b/, "Inspect files"],
+    [/^(grep|rg)\b/, "Search text"],
   ]
   for (const [re, phrase] of rules) if (re.test(c)) return phrase
-  return "运行命令"
+  return "Run command"
 }
 
 /**
@@ -135,23 +138,25 @@ export function readDetail(b: PiToolBlock): string {
   return name
 }
 
-/** 一段连续探索调用 → "查看了 3 个文件，搜索 2 次"：grep = 搜索；find / ls = 按结果里列出的文件计数 */
+/** 一段连续探索调用 → "Explored 3 files, 2 searches" */
 export function exploreSummary(blocks: readonly PiToolBlock[]): string {
+  if (blocks.length === 0) return ""
   let searches = 0
   let files = 0
   for (const b of blocks) {
-    const n = b.name.toLowerCase()
+    const n = b.name.trim().toLowerCase()
     if (n === "grep") searches++
+    else if (n === "read" || n === "read_file") files++
     else files += b.outputText ? b.outputText.replace(/\n$/, "").split("\n").filter(Boolean).length : 0
   }
   const parts: string[] = []
-  if (files > 0) parts.push(`${files} 个文件`)
-  if (searches > 0) parts.push(`搜索 ${searches} 次`)
-  if (parts.length === 0) return `${blocks.length} 次`
-  return files > 0 ? parts.join("，") : parts[0]
+  if (files > 0) parts.push(`${files} ${files === 1 ? "file" : "files"}`)
+  if (searches > 0) parts.push(`${searches} ${searches === 1 ? "search" : "searches"}`)
+  if (parts.length === 0) return `${blocks.length} ${blocks.length === 1 ? "call" : "calls"}`
+  return files > 0 ? parts.join(", ") : parts[0]
 }
 
-/** 探索行展开后的一行（一次调用）：动词 + 对象 + 范围 + 结果计数，例 "搜索 visualViewport · ui/src · 3 处" */
+/** 探索行展开后的一行（一次调用）：动词 + 对象 + 范围 + 结果计数 */
 export type ExploreRow = { id: string; verb: string; target: string; scope?: string; count?: string; path?: string; running: boolean; failed: boolean }
 
 export function exploreRowOf(b: PiToolBlock, stopped = false): ExploreRow {
@@ -161,11 +166,11 @@ export function exploreRowOf(b: PiToolBlock, stopped = false): ExploreRow {
   const lines = b.outputText ? b.outputText.replace(/\n$/, "").split("\n").filter(Boolean).length : 0
   const base = { id: b.id, running: status === "running", failed: status === "failed" }
   const scope = str(b.input?.path)
-  if (n === "grep") return { ...base, verb: "搜索", target: str(b.input?.pattern) ?? partialArg(b, "pattern") ?? argsFallback(b), scope, count: done ? (lines > 0 ? `${lines} 处` : "无结果") : undefined }
-  if (n === "read" || n === "read_file") return { ...base, verb: "读取", target: readDetail(b), path: toolPath(b) || undefined }
-  if (n === "ls") return { ...base, verb: "列出", target: scope ?? partialArg(b, "path") ?? argsFallback(b), count: done ? `${lines} 项` : undefined }
+  if (n === "grep") return { ...base, verb: "Search", target: str(b.input?.pattern) ?? partialArg(b, "pattern") ?? argsFallback(b), scope, count: done ? (lines > 0 ? `${lines} ${lines === 1 ? "match" : "matches"}` : "no matches") : undefined }
+  if (n === "read" || n === "read_file") return { ...base, verb: "Read", target: readDetail(b), path: toolPath(b) || undefined }
+  if (n === "ls") return { ...base, verb: "List", target: scope ?? partialArg(b, "path") ?? argsFallback(b), count: done ? `${lines} ${lines === 1 ? "item" : "items"}` : undefined }
   const target = str(b.input?.pattern) ?? str(b.input?.glob) ?? str(b.input?.name) ?? partialArg(b, "pattern") ?? argsFallback(b)
-  return { ...base, verb: "查找", target, scope, count: done ? (lines > 0 ? `${lines} 个文件` : "无结果") : undefined }
+  return { ...base, verb: "Find", target, scope, count: done ? (lines > 0 ? `${lines} ${lines === 1 ? "file" : "files"}` : "no matches") : undefined }
 }
 
 /** 工具块的终端 / 轻行状态（toolDisplayState 的口径 + outcome） */
@@ -233,7 +238,7 @@ export function splitThinking(text: string): { phase?: string; body: string } {
   return { body: text.trim() }
 }
 
-/** 回合结束原因 → 一行字（D18）：口径在 pi/model/turnError.ts（错误写人话，原文进 detail，P5.4） */
+/** 回合结束原因 → 一行字（D18）：口径在 pi/model/turnError.ts */
 export function stopReasonText(stopReason: string | undefined, errorMessage: string | undefined): PiTurnEnd | null {
-  return turnErrorOf(stopReason, errorMessage)
+  return turnErrorEnOf(stopReason, errorMessage)
 }

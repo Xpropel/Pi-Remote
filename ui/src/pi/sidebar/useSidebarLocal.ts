@@ -11,10 +11,12 @@ import {
   parseSidebarLocalState,
   serializeSidebarLocalState,
   setSidebarFolderCollapsed,
+  setWorkspaceCustomName,
   sidebarScopeStateOf,
   sidebarStorageScope,
   toggleSidebarArchive,
   toggleSidebarPin,
+  workspaceCustomName,
   type PiSidebarLocalState,
   type PiSidebarScopeState,
 } from "./storage.ts"
@@ -26,7 +28,14 @@ import {
  */
 const localListeners = new Set<(state: PiSidebarLocalState) => void>()
 
-function publishSidebarLocal(next: PiSidebarLocalState): void {
+export function subscribeSidebarLocal(listener: (state: PiSidebarLocalState) => void): () => void {
+  localListeners.add(listener)
+  return () => {
+    localListeners.delete(listener)
+  }
+}
+
+export function publishSidebarLocal(next: PiSidebarLocalState): void {
   for (const listener of [...localListeners]) listener(next)
 }
 
@@ -50,6 +59,8 @@ export interface SidebarLocalState {
   toggleFolder: (groupId: string, collapsedNow?: boolean) => void
   /** 组从没手动开合过时记成展开（当前会话所在的组用）；开合过的不动 */
   revealFolder: (groupId: string) => void
+  workspaceName: (groupKey: string) => string | undefined
+  renameWorkspace: (groupKey: string, name: string) => void
   clearScope: () => void
 }
 
@@ -88,10 +99,12 @@ export function useSidebarLocalState(accountId: string | undefined | null, devic
     if (sidebarScopeStateOf(state, scope).folders[groupId] !== undefined) return
     persist(setSidebarFolderCollapsed(state, scope, groupId, false))
   }, [persist, state, scope])
+  const workspaceName = useCallback((groupKey: string) => workspaceCustomName(state, scope, groupKey), [state, scope])
+  const renameWorkspace = useCallback((groupKey: string, name: string) => persist(setWorkspaceCustomName(state, scope, groupKey, name)), [persist, state, scope])
   const clearScope = useCallback(() => {
     const next = parseSidebarLocalState(state)
     delete next.scopes[scope]
     persist(next)
   }, [persist, state, scope])
-  return { scope, scopeState, pins: scopeState.pins, archives: scopeState.archives, togglePin, toggleArchive, toggleFolder, revealFolder, clearScope }
+  return { scope, scopeState, pins: scopeState.pins, archives: scopeState.archives, togglePin, toggleArchive, toggleFolder, revealFolder, workspaceName, renameWorkspace, clearScope }
 }

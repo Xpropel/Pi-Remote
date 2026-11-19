@@ -183,7 +183,7 @@ export function PlayPane({ ui, act }: PlaySlotProps) {
       />
       {view === "changes" ? (
         <PiChangesPane files={CHANGED_FILES} total={CHANGES_TOTAL} variant="desktop" />
-      ) : view === "terminal" ? (
+      ) : view === "terminal" || view === "shell" ? (
         <PiTerminalPane items={TERMINALS} now={NOW} variant="desktop" />
       ) : (
         <PiFilePane file={FILE_RESULT} variant="desktop" />
