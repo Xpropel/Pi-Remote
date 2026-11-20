@@ -131,7 +131,7 @@ test("A-1 component: bare Enter picks the highlight; arrows then Enter picks row
 test("A-1 component: render shows the typed buffer instead of hiding it", () => {
   const { comp } = runComponent(["你好"])
   const text = comp.render(80).join("\n")
-  assert.ok(text.includes("输入中：你好"), "the user can see what they typed")
+  assert.ok(text.includes("Typing: 你好"), "the user can see what they typed")
   assert.ok(text.includes("→ 面条"), "highlight still on row 1")
 })
 

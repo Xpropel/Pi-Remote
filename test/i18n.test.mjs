@@ -127,6 +127,12 @@ test('approval bridge values and unregistered device IDs remain protocol values 
   assert.deepEqual(options, ['允许一次', '本会话都允许', '拒绝'])
   assert.equal(translate(options[0], [], 'en'), 'Allow once')
   assert.equal(translate(options[2], [], 'en'), 'Deny')
+  assert.deepEqual(gate.approvalPartsOf({ title: 'Allow edit outside the workspace? /tmp/用户文件' }), {
+    question: 'Allow edit outside the workspace?', command: '/tmp/用户文件',
+  })
+  assert.deepEqual(gate.approvalPartsOf({ title: 'Allow bash? echo ok', message: 'echo ok\necho next' }), {
+    question: 'Allow bash?', command: 'echo ok\necho next',
+  })
   const marker = evaluate('export const id = /* i18n-ignore: protocol value */ "未登记设备"')
   assert.equal(marker.id, '未登记设备')
 })

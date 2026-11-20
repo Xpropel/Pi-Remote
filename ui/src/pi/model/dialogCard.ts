@@ -68,6 +68,8 @@ export function dialogIsApproval(card: PiDialogApprovalLike | null | undefined):
  */
 export function approvalPartsOf(card: PiDialogApprovalLike): { question: string; command: string } {
   const title = card.title ?? ""
+  const english = /^(Allow\s+\S+(?:\s+outside the workspace)?\?)\s*([\s\S]*)$/.exec(title)
+  if (english) return { question: english[1], command: (card.message || english[2] || "").trim() }
   const match = /^允许执行\s+(\S+?)？\s*([\s\S]*)$/.exec(title)
   if (match) {
     return { question: `允许执行 ${match[1]}？`, command: (card.message || match[2] || "").trim() }

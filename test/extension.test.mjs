@@ -1979,12 +1979,12 @@ test("G2 审批：开启后——允许一次放行 / 拒绝 block / 超时未�
   assert.equal(await once.b.checkToolCallApproval(bashEvent, { hasUI: true, ui: once.ui }), undefined)
   assert.match(once.calls[0][0], /bash/, "卡面标题带工具名")
   assert.match(once.calls[0][0], /rm -rf build/, "卡面标题带入参摘要")
-  assert.deepEqual(once.calls[0][1], [ext.APPROVAL_CHOICE_ONCE, ext.APPROVAL_CHOICE_SESSION, ext.APPROVAL_CHOICE_DENY], "三档选项")
+  assert.deepEqual(once.calls[0][1], ["Allow once", "Allow for this session", "Deny"], "English terminal labels preserve the wire choices")
 
   const deny = gateBridge(DESTRUCTIVE_BASH, () => ext.APPROVAL_CHOICE_DENY)
   const blocked = await deny.b.checkToolCallApproval(bashEvent, { hasUI: true, ui: deny.ui })
   assert.equal(blocked.block, true)
-  assert.match(blocked.reason, /拒绝/)
+  assert.match(blocked.reason, /denied/)
 
   const silent = gateBridge(DESTRUCTIVE_BASH, () => undefined)
   const timedOut = await silent.b.checkToolCallApproval(bashEvent, { hasUI: true, ui: silent.ui })
@@ -2007,7 +2007,7 @@ test("G2 审批：ask_user 自身豁免；无 UI 时 fail-closed；名单制只�
 
   const noUi = await g.b.checkToolCallApproval(bashEvent, { hasUI: false, ui: g.ui })
   assert.equal(noUi.block, true)
-  assert.match(noUi.reason, /没有可确认的界面/)
+  assert.match(noUi.reason, /no confirmation UI is available/)
 
   const list = gateBridge(DESTRUCTIVE_BASH, () => ext.APPROVAL_CHOICE_DENY)
   list.b.approvalGateTier = "list"

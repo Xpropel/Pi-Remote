@@ -22,7 +22,7 @@ const ext = await jiti.import(new URL("../extension/pi-remote-sync.ts", import.m
 test.after(() => { try { fs.rmSync(LOG_PATH, { force: true }) } catch {} })
 
 const EVENT = { type: "tool_call", toolName: "bash", input: { command: "rm -rf build" } }
-const REJECTED = "用户拒绝了该工具调用"
+const REJECTED = "The user denied this tool call."
 
 function gateBridge() {
   const b = new ext.Bridge()
@@ -39,12 +39,13 @@ test("审批门文案矩阵：只有明确拒绝才称「用户拒绝」", () =>
   assert.equal(ext.approvalBlockReason("拒绝", "local"), REJECTED)
   assert.equal(ext.approvalBlockReason(undefined, "denied"), REJECTED, "远程 deny 动作（含带理由拒绝）")
   const timeout = ext.approvalBlockReason(undefined, "timeout")
-  assert.match(timeout, /超时/, "桥侧超时要说清是超时")
-  assert.match(timeout, /无人应答/)
+  assert.match(timeout, /timed out/, "bridge timeout must be distinct from denial")
+  assert.match(timeout, /nobody responded/)
   assert.notEqual(timeout, REJECTED)
   for (const reason of ["local", "aborted", "answered", ""]) {
     const text = ext.approvalBlockReason(undefined, reason)
-    assert.match(text, /未完成/, `reason=${reason || "(空)"} 落未完成口径`)
+    assert.match(text, /not completed/, `reason=${reason || "(empty)"} is not explicit denial`)
+    assert.doesNotMatch(text, /\p{Script=Han}/u)
     assert.notEqual(text, REJECTED)
   }
 })
@@ -61,7 +62,7 @@ test("审批门本机路径：选中「拒绝」= 用户拒绝；Esc 取消 = �
   const cancelUi = { select: async () => undefined, confirm: async () => true, input: async () => "x" }
   const cancelled = await b.checkToolCallApproval(EVENT, { hasUI: true, mode: "rpc", ui: cancelUi })
   assert.equal(cancelled.block, true)
-  assert.match(cancelled.reason, /未完成/)
+  assert.match(cancelled.reason, /not completed/)
   assert.notEqual(cancelled.reason, REJECTED)
   b.clearTimers()
 })
@@ -69,7 +70,12 @@ test("审批门本机路径：选中「拒绝」= 用户拒绝；Esc 取消 = �
 test("审批门本机路径：允许一次放行；本会话都允许后同工具不再问", async () => {
   const b = gateBridge()
   let asks = 0
-  const sessionUi = { select: async (title, options) => { asks += 1; return options[1] }, confirm: async () => true, input: async () => "x" }
+  const sessionUi = { select: async (title, options) => {
+    asks += 1
+    assert.match(title, /^Allow bash\?/)
+    assert.deepEqual(options, ["Allow once", "Allow for this session", "Deny"])
+    return options[1]
+  }, confirm: async () => true, input: async () => "x" }
   assert.equal(await b.checkToolCallApproval(EVENT, { hasUI: true, mode: "rpc", ui: sessionUi }), undefined)
   assert.equal(await b.checkToolCallApproval(EVENT, { hasUI: true, mode: "rpc", ui: sessionUi }), undefined)
   assert.equal(asks, 1, "本会话都允许只问一次")
@@ -97,8 +103,25 @@ function manualUi() {
       })
     },
   }
-  return { ui, calls, feed: (chunk) => { if (comp) comp.handleInput(chunk); else pending.push(chunk) } }
+  return { ui, calls, render: () => comp ? comp.render(300) : [], feed: (chunk) => { if (comp) comp.handleInput(chunk); else pending.push(chunk) } }
 }
+
+test("terminal approval renders English prompts, choices and keyboard help", async () => {
+  const b = gateBridge()
+  const m = manualUi()
+  const pending = b.checkToolCallApproval(EVENT, { hasUI: true, mode: "tui", ui: m.ui })
+  await new Promise(resolve => setImmediate(resolve))
+  const text = m.render().join("\n")
+  assert.match(text, /Allow bash\?/)
+  assert.match(text, /Allow once/)
+  assert.match(text, /Allow for this session/)
+  assert.match(text, /Deny/)
+  assert.match(text, /Enter to confirm/)
+  assert.doesNotMatch(text, /\p{Script=Han}/u)
+  m.feed("\x1b")
+  assert.equal((await pending).block, true)
+  b.clearTimers()
+})
 
 test("审批门终端路径：打字 + 回车绝不误批（A-1 语义），Esc 后按未完成拦截", async () => {
   const b = gateBridge()
@@ -113,7 +136,7 @@ test("审批门终端路径：打字 + 回车绝不误批（A-1 语义），Esc 
   m.feed("\x1b") // Esc 取消
   const out = await p
   assert.equal(out.block, true)
-  assert.match(out.reason, /未完成/)
+  assert.match(out.reason, /not completed/)
   assert.deepEqual(m.calls, ["custom"], "终端只用安全选择器，不回宿主 select")
   b.clearTimers()
 })
@@ -204,7 +227,7 @@ test("审批门持留路径：桥侧超时落定 = 超时无人应答，不是�
   b.settleHeldDialog(entry, undefined, "timeout")
   const out = await p
   assert.equal(out.block, true)
-  assert.match(out.reason, /超时/)
+  assert.match(out.reason, /timed out/)
   assert.notEqual(out.reason, REJECTED)
   b.uninstallDialogTap()
   b.clearTimers()
@@ -217,7 +240,7 @@ test("审批门持留路径：会话拆除（cancel 收尾）= 确认未完成",
   b.releaseAllHeldDialogs("cancel")
   const out = await p
   assert.equal(out.block, true)
-  assert.match(out.reason, /未完成/)
+  assert.match(out.reason, /not completed/)
   b.uninstallDialogTap()
   b.clearTimers()
 })
