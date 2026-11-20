@@ -295,7 +295,7 @@ export function modelExplainerOf(row: PiModelRow, contextWindow?: number | null)
   if (row.reasoning) facts.push("支持思考")
   if (facts.length) out.context = facts.join(" · ")
   if (row.costNote) {
-    const i = row.costNote.indexOf("时")
+    const i = row.costNote.indexOf(/* i18n-ignore: Chinese sentence delimiter, not an hour label */ "时")
     out.cost = i > 0 && i < row.costNote.length - 1 ? [row.costNote.slice(0, i + 1), row.costNote.slice(i + 1)] : [row.costNote]
   }
   return out

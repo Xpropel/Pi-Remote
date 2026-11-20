@@ -13,6 +13,7 @@
  *    PiPrefs + legacy-style path the composer settings popover uses.)
  */
 import { useState } from "react"
+import { LANGUAGE_LABELS } from "../../../i18n/locale.ts"
 import { commandErrorText, usePrefsWriter, useSettingsPrefs } from "@/pi/containers/cShared"
 import { useNow } from "@/pi/hooks/useNow"
 import { serverDisplayName } from "@/pi/model/serverName"
@@ -80,7 +81,7 @@ const DELIVERY_OPTIONS = [
   { value: "all", label: "全部一起" },
 ] as const satisfies readonly { value: SettingsDeliveryMode; label: string }[]
 
-const LANGUAGE_OPTIONS = SETTINGS_LANGUAGES.map((language) => ({ value: language, label: "简体中文" })) as readonly {
+const LANGUAGE_OPTIONS = SETTINGS_LANGUAGES.map((language) => ({ value: language, label: LANGUAGE_LABELS[language] })) as readonly {
   value: SettingsLanguage
   label: string
 }[]

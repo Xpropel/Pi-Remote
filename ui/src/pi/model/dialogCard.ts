@@ -39,11 +39,14 @@ export function dialogSealedBlockedText(blocked: "waiting" | "failed"): string {
  *  dialog card types used by the three shells). */
 export type PiDialogApprovalLike = { kind: string; title?: string; options?: string[]; message?: string }
 
-const APPROVAL_OPTION_FIRST = "允许一次"
-const APPROVAL_OPTION_DENY = "拒绝"
+const APPROVAL_OPTION_FIRST = /* i18n-ignore: exact bridge protocol value */ "允许一次"
+const APPROVAL_OPTION_DENY = /* i18n-ignore: exact bridge protocol value */ "拒绝"
 // The session-wide allow label exists in two spellings: the shipped bridge
 // wording and the design-gallery wording. Both are gate-only labels.
-const APPROVAL_OPTION_SESSION: readonly string[] = ["本会话都允许", "这个会话里都允许"]
+const APPROVAL_OPTION_SESSION: readonly string[] = [
+  /* i18n-ignore: exact bridge protocol value */ "本会话都允许",
+  /* i18n-ignore: legacy bridge protocol value */ "这个会话里都允许",
+]
 
 /**
  * Approval-gate dialogs (the bridge's tool_call gate) arrive as ordinary

@@ -5,6 +5,9 @@ import "./styles/tokens.local.css"
 import "./styles/tokens.css"
 import "./styles/index.css"
 import PiApp from "./PiApp"
+import { installLanguageSync } from "../i18n/locale.ts"
+
+installLanguageSync()
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

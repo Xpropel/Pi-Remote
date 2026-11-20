@@ -135,7 +135,7 @@ export function ATokenInput({
       />
       {/* 手机（48 高框）：眼睛钮 44×44（design §4.4；视觉审查第 1 轮 A1，之前 40） */}
       <GhostIconButton
-        label={live && reveal ? revealLabel.replace("显示", "隐藏") : revealLabel}
+        label={live && reveal ? revealLabel.replace(/显示|Show/i, revealLabel.startsWith("Show") ? "Hide" : "隐藏") : revealLabel}
         icon={<Eye />}
         className={scale === "lg" ? "size-11 [&>svg]:size-5" : undefined}
         {...(live ? { onClick: () => setReveal((on) => !on), "aria-pressed": reveal } : {})}

@@ -4,6 +4,7 @@ import { PiSpinner } from "@/components/pi/shared/PiSpinner"
 import { usePiStatic } from "@/components/pi/shared/layers"
 import { Check, CircleHelp, ShieldCheck } from "@/components/kit/icons"
 import { cn } from "@/lib/utils"
+import { translate } from "@/i18n"
 import { piClock, piDuration } from "@/components/pi/shared/format"
 import {
   APPROVAL_ANNOUNCE_IDLE,
@@ -200,7 +201,7 @@ export function PiApprovalCard({
                   onClick={interactive ? () => answer({ action: "submit", value: opt }) : undefined}
                   className={cn(OPTION, "border-(--cw-border)", rowH)}
                 >
-                  <span className="min-w-0 flex-1">{opt}</span>
+                  <span className="min-w-0 flex-1">{approval ? translate(opt) : opt}</span>
                   {busy && <PiSpinner size={12} tone="muted" label="发送中" />}
                 </button>
               )

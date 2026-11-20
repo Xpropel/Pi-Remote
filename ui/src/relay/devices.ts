@@ -2,7 +2,7 @@
 // test/*.test.mjs 用 node 直接跑 .ts 源文件，相对导入必须带扩展名
 import { sessionTitleOf } from "./titleText.ts"
 
-export const UNREGISTERED_DEVICE_ID = "未登记设备"
+export const UNREGISTERED_DEVICE_ID = /* i18n-ignore: relay device identifier */ "未登记设备"
 
 export const SESSION_ONLINE_WATCH_MS = 60_000
 /**
@@ -352,7 +352,7 @@ export function deviceErrorText(error: unknown): string {
   const message = error instanceof Error ? error.message : ""
   if (code === "spawn_failed") {
     const reason = message && message !== "失败" ? message : "未知原因"
-    return reason.startsWith("本机启动失败") ? reason : `本机启动失败：${reason}`
+    return /^(本机启动失败|Local launch failed)/i.test(reason) ? reason : `本机启动失败：${reason}`
   }
   if (code && CODE_COPY[code]) return CODE_COPY[code]
   return message || "失败"

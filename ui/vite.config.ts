@@ -2,6 +2,7 @@ import path from "node:path"
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig, type Plugin } from "vite"
+import { piI18n } from "./i18n-plugin.ts"
 
 /**
  * 构建入口（实施计划 D1、D6）：
@@ -73,7 +74,7 @@ function inlineEntryForFile(htmlName: string): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), ...(gallery ? [inlineEntryForFile("gallery.html")] : [])],
+  plugins: [...(gallery ? [] : [piI18n()]), react(), tailwindcss(), ...(gallery ? [inlineEntryForFile("gallery.html")] : [])],
   // 画廊产物用相对路径，才能从 file:// 打开（命令行的 --base 仍然优先）
   ...(gallery ? { base: "./" } : {}),
   resolve: {

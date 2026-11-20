@@ -153,8 +153,8 @@ export type SettingsStartView = (typeof SETTINGS_START_VIEWS)[number]
 export const SETTINGS_NEW_SESSION_MODES = ["agent", "ask"] as const
 export type SettingsNewSessionMode = (typeof SETTINGS_NEW_SESSION_MODES)[number]
 
-/** 第一期只有简体中文；字段先固定成稳定类型，后续加语言只扩数组。 */
-export const SETTINGS_LANGUAGES = ["zh-CN"] as const
+/** Interface languages; values are stable persisted preference IDs. */
+export const SETTINGS_LANGUAGES = ["en", "zh-CN"] as const
 export type SettingsLanguage = (typeof SETTINGS_LANGUAGES)[number]
 
 export const SETTINGS_SEND_KEYS = ["enter", "ctrl-enter"] as const

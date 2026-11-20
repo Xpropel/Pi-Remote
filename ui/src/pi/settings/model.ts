@@ -6,6 +6,7 @@
  * 设置页 v2 的本地偏好自成一份，互不污染。
  * 旧版本存过的 appearanceStyle（cursor / claude / codex 界面风格）按未知字段丢弃，版本号不升。
  */
+import { browserLanguage } from "../../i18n/locale.ts"
 import {
   SETTINGS_ACCENTS,
   SETTINGS_APPROVAL_ALLOWLIST_DEFAULT,
@@ -60,7 +61,7 @@ export function defaultSettingsShortcuts(): SettingsShortcutMap {
 export const DEFAULT_SETTINGS_PREFS: SettingsPrefs = {
   startView: "last",
   sidebarPersistentSearch: true,
-  language: "zh-CN",
+  language: browserLanguage(),
   sendKey: "enter",
   autoScroll: true,
   autoArchive: "never",

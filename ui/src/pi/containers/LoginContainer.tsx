@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { LanguagePicker } from "./LanguagePicker.tsx"
 import { PiLoginCard } from "@/components/pi/shell"
 import { PiPhonePage } from "@/components/pi/shared"
 import { relayHostOf } from "@/pi/model/boot"
@@ -34,9 +35,10 @@ export function LoginContainer(props: PiContainerProps) {
   if (variant === "phone") {
     return (
       <PiPhonePage className="pi-hub-surface" contentClassName="px-4 pt-24">
+        <LanguagePicker />
         {card}
       </PiPhonePage>
     )
   }
-  return <div className="pi-hub-surface absolute inset-0 flex items-center justify-center pb-20">{card}</div>
+  return <div className="pi-hub-surface absolute inset-0 flex items-center justify-center pb-20"><LanguagePicker />{card}</div>
 }

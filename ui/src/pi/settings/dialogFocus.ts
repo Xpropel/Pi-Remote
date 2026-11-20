@@ -11,6 +11,7 @@
  * 只操作 DOM 焦点，不读业务数据；触发器按 aria-label 记忆，手机设置退出时
  * 顶栏按钮会重挂载，仍能把焦点还回同一入口。
  */
+import { translate } from "@/i18n"
 import { useEffect, useLayoutEffect, useRef } from "react"
 
 export interface SettingsRootRef {
@@ -87,7 +88,7 @@ export function restoreTriggerOf(trigger: HTMLElement | null): HTMLElement | nul
  */
 export function visibleSettingsTrigger(): HTMLElement | null {
   if (typeof document === "undefined") return null
-  const candidates = document.querySelectorAll<HTMLElement>('button[aria-label^="设置"], [role="button"][aria-label^="设置"]')
+  const candidates = document.querySelectorAll<HTMLElement>(`button[aria-label^="${translate("设置")}"], [role="button"][aria-label^="${translate("设置")}"]`)
   for (const candidate of candidates) {
     if (candidate.closest("[data-pi-settings]")) continue
     const style = window.getComputedStyle(candidate)
