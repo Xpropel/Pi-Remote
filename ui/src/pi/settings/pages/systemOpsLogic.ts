@@ -685,7 +685,7 @@ export function compactSystemOpLabelOf(row: SystemOpRow): string {
   if (row.buttonAction === "retry") return `重试${OPERATION_TITLES[row.kind]}`
   if (row.kind === "update_pi") {
     if (row.buttonPrimary && row.buttonLabel) {
-      return `更新 Pi (${row.buttonLabel.replace(/^更新到\s*/, "")})`
+      return `更新 Pi (${row.buttonLabel.replace(/^(?:更新到|Update to)\s*/i, "")})`
     }
     if (row.buttonAction === "recheck") return "检查 Pi 更新"
     if (row.buttonLabel === "已是最新") return "Pi 已是最新"
@@ -728,8 +728,8 @@ export function compactSystemOpsSummaryOf(
     if (harnessRow && !harnessRow.buttonEnabled && harnessRow.description) {
       mutedParts.push(harnessRow.description)
     }
-    const hostUnsup = hostRow && !hostRow.buttonEnabled && /不是常驻方式启动/.test(hostRow.description)
-    const compUnsup = compRow && !compRow.buttonEnabled && /不是常驻方式启动/.test(compRow.description)
+    const hostUnsup = hostRow && !hostRow.buttonEnabled && /不是常驻方式启动|not running in persistent mode/i.test(hostRow.description)
+    const compUnsup = compRow && !compRow.buttonEnabled && /不是常驻方式启动|not running in persistent mode/i.test(compRow.description)
     if (hostUnsup && compUnsup) {
       mutedParts.push("非守护模式启动，暂不支持远程重启或更新设备端组件")
     } else {

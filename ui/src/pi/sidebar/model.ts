@@ -88,7 +88,7 @@ export function storedTimeLabel(now: number, at: number | undefined | null): str
   if (diff < 60_000) return "刚刚"
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
   const full = fullTimeLabel(at)
-  return new Date(at).getFullYear() === new Date(now).getFullYear() ? full.slice(full.indexOf("年") + 1) : full
+  return new Date(at).getFullYear() === new Date(now).getFullYear() ? full.replace(/^\d+年|^\d{4}[/-]/, "") : full
 }
 
 /** Accessible row label: title + full timestamp, so screen readers and tooltips can tell same-title rows apart (D-3). */

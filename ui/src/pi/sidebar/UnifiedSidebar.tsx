@@ -1,3 +1,4 @@
+import { translate } from "@/i18n"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import "./tokens.css"
 import "./sidebar.css"
@@ -50,7 +51,7 @@ export function UnifiedSidebar({ data, actions, slots, className, onHoverSession
   // a11y：搜索关闭后把焦点还给工具行搜索按钮（portal/浮层关闭不丢焦点）
   useEffect(() => {
     if (wasSearchOpen.current && !data.search.open) {
-      const button = document.querySelector<HTMLButtonElement>('[data-pi-sidebar] [aria-label="搜索会话"]')
+      const button = document.querySelector<HTMLButtonElement>(`[data-pi-sidebar] [aria-label="${translate("搜索会话")}"]`)
       button?.focus()
     }
     wasSearchOpen.current = data.search.open

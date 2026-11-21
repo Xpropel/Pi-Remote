@@ -151,7 +151,7 @@ export function sessionDeleteErrorText(error: unknown): string {
   else if (code === "internal") what = /没有权限|EACCES|EPERM/.test(raw) ? "没有权限删除这个文件" : "电脑上删除文件时出错"
   if (what) return raw ? `删除失败：${what}（${raw}）` : `删除失败：${what}`
   const text = deviceErrorText(error)
-  return text.startsWith("删除失败") ? text : `删除失败：${text}`
+  return /^(删除失败|Delete failed)/i.test(text) ? text : `删除失败：${text}`
 }
 
 export function sessionMenuOf(input: PiSessionMenuInput): PiSessionMenuModel {

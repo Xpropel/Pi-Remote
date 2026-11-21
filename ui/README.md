@@ -3,6 +3,47 @@
 React 19 + TypeScript + Vite 8 + Tailwind CSS 4。构建产物写到仓库根的 `web/`，由 relay 在 7002 端口同口托管（见根 README）。
 界面的设计依据是 Cursor 3 Agents Window 的复刻（`--cw-*` 令牌）加 Pi-Remote 自己的部件（`--cw-pi-*`）。
 
+## Interface languages
+
+The product UI supports English (`en`) and Simplified Chinese (`zh-CN`).
+Change it in **Settings → General → Interface language** on desktop or mobile,
+or use the language picker before login. The preference uses the existing
+`pi_remote_pi_settings_v2.prefs.language` store; a saved choice wins over the
+browser language. Changing language reloads the app so module-level option
+lists, notifications and visible labels all agree. Draft persistence is unchanged.
+
+- `src/i18n/en.ts`: English catalog keyed by original source-owned messages.
+  Preserve numbered placeholders such as `{0}`; values are inserted as text.
+- `src/i18n/locale.ts`: language detection, safe storage reads and cross-tab sync.
+- `src/i18n/index.ts`: exact catalog lookup and tagged-template interpolation.
+- `i18n-plugin.ts`: TypeScript-syntax-aware Vite transform, enabled for product
+  development and production. It wraps cataloged literals, JSX text/attributes,
+  templates and corresponding label comparisons. Types, object keys, selectors,
+  tagged code templates and developer-gallery fixtures are excluded. Browser
+  number formatting and locale-aware sorting follow the selected language.
+- New source-owned copy needs an English entry. `npm run test:i18n` at the
+  repository root checks catalog coverage, interpolation and transform behavior.
+- Relay/session/user text is never scanned or rewritten; original errors can
+  still be in the language of the device. The developer gallery and attach CLI
+  keep their original language.
+
+Browser regression tests exercise the built UI against a fake WebSocket relay,
+with no real credentials or remote commands:
+
+```sh
+npm ci
+npm --prefix ui ci
+npm run test:i18n
+cd ui
+npx playwright install chromium
+npm run test:i18n
+```
+
+To use an existing Chromium/Chrome binary, set
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its executable path. Tests cover English
+login, desktop/mobile settings, switching both ways, persistence after reload,
+and preservation of names received from the relay.
+
 ## 入口
 
 | 文件 | 内容 | 进不进生产包 |

@@ -84,7 +84,7 @@ export const IDENTITY_INSECURE_CONTEXT_NOTE =
 /** 中转的拒绝只经名册通道带回文案（「需要管理员令牌」），没有错误码可认，所以两种都认。 */
 export function viewerRosterAdminOnlyOf(error: unknown): boolean {
   if (error && typeof error === "object" && (error as { code?: unknown }).code === "admin_required") return true
-  return error instanceof Error && error.message.includes("需要管理员")
+  return error instanceof Error && /需要管理员|admin(?:istrator)? required/i.test(error.message)
 }
 
 /* ------------------------------------------------------------------ */

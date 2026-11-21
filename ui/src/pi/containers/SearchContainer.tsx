@@ -1,3 +1,4 @@
+import { translate } from "@/i18n"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { ASearchField, ATextButton, PiSearchResults, type PiSearchSection } from "@/components/pi/shell"
@@ -30,7 +31,7 @@ type BodyState =
   | { phase: "error"; query: string; text: string }
 
 const SEARCH_NAV = '[data-pi-sidebar] [data-pi-nav="search"]'
-const PHONE_SEARCH_BTN = '[data-pi-topbar="phone-list"] button[aria-label="搜索会话"]'
+const PHONE_SEARCH_BTN = `[data-pi-topbar="phone-list"] button[aria-label="${translate("搜索会话")}"]`
 
 /** 退出搜索：清掉 ui.search，焦点回"搜索"行（桌面）/ 搜索钮（手机） */
 function exitSearch(p: PiContainerProps) {

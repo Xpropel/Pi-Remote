@@ -1739,6 +1739,7 @@ function buildDialogOpen(kind: string, args: any[], dialogId: string, startedAt:
 export const ASK_USER_TOOL_NAME = "ask_user";
 export const ASK_FREE_TEXT_SENTINEL = "其他（自己输入）…";
 export const ASK_UNANSWERED_TEXT = "用户未作答（取消或超时）。请自行做出合理假设继续，并在回复中声明该假设。";
+// Stable wire values: local labels are English, answers keep these protocol IDs.
 export const APPROVAL_CHOICE_ONCE = "允许一次";
 export const APPROVAL_CHOICE_SESSION = "本会话都允许";
 export const APPROVAL_CHOICE_DENY = "拒绝";
@@ -1996,14 +1997,14 @@ export function askSelectComponentFactory(title: string, display: string[], opts
         }
         lines.push("");
         if (state.typed) {
-          lines.push(`输入中：${state.typed}`);
+          lines.push(`Typing: ${state.typed}`);
           lines.push(allowFreeText
-            ? "回车 = 以这段文字作答 · 退格修改 · Esc 取消"
-            : "本题只能从选项中选择：退格清除文字后用 ↑↓ + 回车选择 · Esc 取消");
+            ? "Enter = submit this text · Backspace to edit · Esc to cancel"
+            : "Choose an option: clear typed text with Backspace, then use ↑↓ + Enter · Esc to cancel");
         } else {
           lines.push(allowFreeText
-            ? "↑↓ 选择 · 回车 确认 · 直接打字 = 自定义答案"
-            : "↑↓ 选择 · 回车 确认");
+            ? "↑↓ to choose · Enter to confirm · Type a custom answer"
+            : "↑↓ to choose · Enter to confirm");
         }
         return lines.map((l) => clip(l, width));
       },
@@ -2155,9 +2156,9 @@ export function approvalSummary(toolName: string, input: any): string {
  *  outcome (terminal Esc, abort, session teardown) means the confirmation
  *  never completed. Neither may borrow the rejection wording. */
 export function approvalBlockReason(picked: any, settleReason: string): string {
-  if (picked === APPROVAL_CHOICE_DENY || settleReason === "denied") return "用户拒绝了该工具调用";
-  if (settleReason === "timeout") return "Pi-Remote 审批门：等待确认超时，无人应答，该工具调用被拦截。";
-  return "Pi-Remote 审批门：确认未完成（被取消或中断），该工具调用被拦截。";
+  if (picked === APPROVAL_CHOICE_DENY || settleReason === "denied") return "The user denied this tool call.";
+  if (settleReason === "timeout") return "Pi-Remote approval gate: confirmation timed out; nobody responded. This tool call was blocked.";
+  return "Pi-Remote approval gate: confirmation was not completed (cancelled or interrupted). This tool call was blocked.";
 }
 
 /** dialog 方法的 wrap：O2 接管判定 → 命中则桥持 promise 等远程裁决；否则 O1 观察路径
@@ -6537,7 +6538,7 @@ class Bridge {
     } catch {}
     const isReadOnlyTool = (!!annotations && annotations.readOnlyHint === true) || APPROVAL_READONLY_TOOLS.has(toolName);
     if (this.approvalScope === "read-only" && !isReadOnlyTool) {
-      return { block: true, reason: "当前审批范围设为「仅查看」，已拦截修改或执行类工具调用。" };
+      return { block: true, reason: "Pi-Remote approval scope is read-only. Tool calls that modify files or execute commands are blocked." };
     }
     const targetPath = typeof event?.input?.path === "string"
       ? event.input.path
@@ -6561,19 +6562,19 @@ class Bridge {
     }
     if (!ctx || ctx.hasUI === false || !ctx.ui || typeof ctx.ui.select !== "function") {
       // 需要问而无界面可问：fail-closed（§7 审批语义），不许静默放行
-      log("审批门：无 UI 可确认，拦截工具调用:", toolName);
+      log("Approval gate: no confirmation UI available; blocking tool call:", toolName);
       return {
         block: true,
         reason: outsideWorkspace
-          ? "写入目标位于当前工作区外，且当前没有可确认的界面，已拦截该操作。"
-          : "Pi-Remote 审批门已开启，但当前没有可确认的界面，该工具调用被拦截。",
+          ? "The write target is outside the workspace and no confirmation UI is available. This operation was blocked."
+          : "Pi-Remote approval gate is enabled, but no confirmation UI is available. This tool call was blocked.",
       };
     }
     const summary = approvalSummary(toolName, event.input);
     const hint = summary ? summary.split(/\r?\n/)[0] : "";
     const composed = outsideWorkspace
-      ? `允许向工作区外执行 ${toolName}？${hint ? " " + hint : ""}`
-      : `允许执行 ${toolName}？${hint ? " " + hint : ""}`;
+      ? `Allow ${toolName} outside the workspace?${hint ? " " + hint : ""}`
+      : `Allow ${toolName}?${hint ? " " + hint : ""}`;
     const titleLine = composed.slice(0, PROTOCOL.limits.dialogTitleMax);
     // When the summary is multi-line or the title line had to cut it, the
     // full summary rides after a newline; buildDialogOpen splits it back
@@ -6605,7 +6606,12 @@ class Bridge {
   private async approvalSelectHeldOrLocal(ctx: any, title: string): Promise<{ picked: any; settleReason: string }> {
     const ui = ctx.ui;
     const choices = [APPROVAL_CHOICE_ONCE, APPROVAL_CHOICE_SESSION, APPROVAL_CHOICE_DENY];
-    const localSelect = () => this.askSelectLocal(ui, ctx, title, choices, undefined, false);
+    const labels = ["Allow once", "Allow for this session", "Deny"];
+    const localSelect = async () => {
+      const selected = await this.askSelectLocal(ui, ctx, title, labels, undefined, false);
+      const index = labels.indexOf(selected);
+      return index < 0 ? selected : choices[index];
+    };
     let settleReason = "";
     const held = this.beginDialog("select", [title, choices], localSelect, (reason) => { settleReason = reason; });
     if (held) {

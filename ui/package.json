@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:i18n": "playwright test -c playwright.i18n.config.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
@@ -36,10 +37,12 @@
     "use-stick-to-bottom": "^1.1.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
+    "magic-string": "^1.4.5",
     "oxlint": "^1.81.0",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"

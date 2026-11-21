@@ -11,6 +11,7 @@
  *   ◌ 本页无预留项。
  */
 import { useState } from "react"
+import { LANGUAGE_LABELS, SUPPORTED_LANGUAGES } from "../../../../i18n/locale.ts"
 import { commandErrorText, usePrefsWriter, useSettingsPrefs } from "@/pi/containers/cShared"
 import { useNow } from "@/pi/hooks/useNow"
 import { serverDisplayName } from "@/pi/model/serverName"
@@ -156,7 +157,12 @@ export function GeneralPage() {
           checked={prefs.sidebarPersistentSearch}
           onChange={(checked) => act.setPref("sidebarPersistentSearch", checked)}
         />
-        <MobileReadOnlyRow title="界面语言" value="简体中文" />
+        <MobileSelect
+          label="界面语言"
+          value={prefs.language}
+          options={SUPPORTED_LANGUAGES.map((language) => ({ value: language, label: LANGUAGE_LABELS[language] }))}
+          onChange={(value) => act.setPref("language", value)}
+        />
       </MobileGroup>
 
       <MobileGroup label="发送与会话">
