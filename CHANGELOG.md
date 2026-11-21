@@ -9,6 +9,11 @@ relay 新增 Docker 一键部署（部署方式补充，不改运行时行为）
 - **Docker Compose 一条命令启动** — 新增 `deploy/docker/`：Dockerfile（`node:22-bookworm-slim`、仅生产依赖、非 root 运行，只含 relay 与预构建网页）、docker-compose.yml（数据存命名卷、`restart: unless-stopped`、`/healthz` 健康检查；7001 默认只发布到宿主机回环）与 `.env.example`（token 经 `.env` 注入，缺必填 token 时 compose 拒绝启动）。说明见 `deploy/docker/README.md`，运维手册新增第 3.1 节索引。
 - **升级前只读自检** — 新增 `deploy/docker/pre-upgrade-check.cjs`：升级换镜像前校验账号索引与房间文件可读、JSONL 索引逐行可解析、目录可写；只读不改数据，不过（退出码 1）就先停下处理。个别坏行只告警，与 relay 加载时跳过坏行的口径一致。
 
+## 2.1.28 — 2026-11-22
+
+- **六种界面语言与语言切换（英文框架为社区贡献 @siviae，PR #2）** — 界面语言可在登录页与设置中切换：简体中文 / English / 日本語 / 한국어 / Español / Français，偏好存入本地设置；未保存时按浏览器语言决定。实现为构建期源码级翻译（以中文原文为键、每种语言一部 2583 条字典），中文模式下字符串原样返回、行为不变；消息内容、代码、设备名与服务器原始错误不翻译。某语言缺译时先回退英文，不会中英混杂。设备端审批的本地终端选项标签与拦截理由同步英文化，协议线缆值不变。
+- **i18n 覆盖守卫进默认测试清单** — `test/i18n.test.mjs` 加入 `npm test`：源码新增中文文案而任一语言字典漏译时，测试会直接报警。
+
 ## 2.1.27 — 2026-11-19
 
 合入 Mac 本地完成的一批更新：

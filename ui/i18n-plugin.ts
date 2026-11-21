@@ -3,9 +3,14 @@ import MagicString from "magic-string"
 import ts from "typescript"
 import type { Plugin } from "vite"
 import { EN } from "./src/i18n/en.ts"
+import { JA } from "./src/i18n/ja.ts"
+import { KO } from "./src/i18n/ko.ts"
+import { ES } from "./src/i18n/es.ts"
+import { FR } from "./src/i18n/fr.ts"
 
 const helpers = 'import { translate as __piTranslate, template as __piTemplate, getLanguage as __piLocale } from "@/i18n";\n'
-const own = (text: string) => Object.hasOwn(EN, text) || Object.hasOwn(EN, text.trim())
+const MESSAGE_KEYS = new Set([...Object.keys(EN), ...Object.keys(JA), ...Object.keys(KO), ...Object.keys(ES), ...Object.keys(FR)])
+const own = (text: string) => MESSAGE_KEYS.has(text) || MESSAGE_KEYS.has(text.trim())
 
 /** JSX entities are decoded by React's compiler, including in Chinese mode. */
 function jsxEntities(text: string): string {

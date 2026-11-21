@@ -154,7 +154,7 @@ export const SETTINGS_NEW_SESSION_MODES = ["agent", "ask"] as const
 export type SettingsNewSessionMode = (typeof SETTINGS_NEW_SESSION_MODES)[number]
 
 /** Interface languages; values are stable persisted preference IDs. */
-export const SETTINGS_LANGUAGES = ["en", "zh-CN"] as const
+export const SETTINGS_LANGUAGES = ["en", "zh-CN", "ja", "ko", "es", "fr"] as const
 export type SettingsLanguage = (typeof SETTINGS_LANGUAGES)[number]
 
 export const SETTINGS_SEND_KEYS = ["enter", "ctrl-enter"] as const

@@ -9,6 +9,10 @@ const ts = require('../ui/node_modules/typescript')
 const root = new URL('../ui/', import.meta.url).pathname
 const jiti = createJiti(import.meta.url, { interopDefault: false })
 const { EN } = await jiti.import(path.join(root, 'src/i18n/en.ts'))
+const { JA } = await jiti.import(path.join(root, 'src/i18n/ja.ts'))
+const { KO } = await jiti.import(path.join(root, 'src/i18n/ko.ts'))
+const { ES } = await jiti.import(path.join(root, 'src/i18n/es.ts'))
+const { FR } = await jiti.import(path.join(root, 'src/i18n/fr.ts'))
 const { translate, template } = await jiti.import(path.join(root, 'src/i18n/index.ts'))
 const { resolveLanguage, readLanguage, installLanguageSync } = await jiti.import(path.join(root, 'src/i18n/locale.ts'))
 const { transformMessages, productModule, sourceMessage, excludedNode } = await jiti.import(path.join(root, 'i18n-plugin.ts'))
@@ -168,4 +172,24 @@ test('all product-owned Chinese messages have a catalog entry', () => {
   }
   walk(path.join(root, 'src'))
   assert.deepEqual(missing, [])
+})
+
+test('all language catalogs share the English key set and preserve placeholders', () => {
+  const catalogs = { ja: JA, ko: KO, es: ES, fr: FR }
+  const englishKeys = Object.keys(EN).sort()
+  for (const [language, catalog] of Object.entries(catalogs)) {
+    assert.deepEqual(Object.keys(catalog).sort(), englishKeys, language)
+    for (const [source, text] of Object.entries(catalog)) {
+      assert.ok(text.trim(), `${language}: ${source}`)
+      assert.deepEqual((text.match(/\{\d+\}/g) ?? []).sort(), (source.match(/\{\d+\}/g) ?? []).sort(), `${language}: ${source}`)
+    }
+  }
+  assert.equal(translate('已连接', [], 'ja'), JA['已连接'])
+  assert.equal(translate('not in catalog {0}', ['x'], 'ja'), 'not in catalog x')
+  assert.equal(resolveLanguage('ja'), 'ja')
+  assert.equal(resolveLanguage(undefined, 'ja-JP'), 'ja')
+  assert.equal(resolveLanguage(undefined, 'ko-KR'), 'ko')
+  assert.equal(resolveLanguage(undefined, 'es-ES'), 'es')
+  assert.equal(resolveLanguage(undefined, 'fr-FR'), 'fr')
+  assert.equal(resolveLanguage(undefined, 'de-DE'), 'en')
 })
